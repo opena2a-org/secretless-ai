@@ -16,3 +16,14 @@ export {
   type ClassifiedEnv, type ProtectOptions, type ProtectResult,
   type RewriteResult,
 } from './mcp';
+
+// Backend management
+export {
+  createBackend, isKeychainAvailable,
+  resolveBackendType, readBackendConfig, writeBackendConfig,
+  migrateSecrets,
+  LocalBackend, MacOSKeychainBackend, LinuxKeychainBackend,
+  type SecretBackend, type WritableSecretBackend, type BackendHealth,
+  type BackendType, type SelectableBackendType,
+  type MigrateOptions, type MigrateResult,
+} from './backends';

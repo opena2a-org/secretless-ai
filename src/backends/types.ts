@@ -14,6 +14,18 @@ export interface SecretBackend {
   healthCheck(): Promise<BackendHealth>;
 }
 
+/**
+ * A secret backend that also supports writing and deleting secrets.
+ * LocalBackend and keychain backends implement this interface.
+ */
+export interface WritableSecretBackend extends SecretBackend {
+  /** Store a single secret by key. */
+  store(key: string, value: string): Promise<void>;
+
+  /** Delete a secret by key. Returns true if the key existed. */
+  delete(key: string): Promise<boolean>;
+}
+
 export interface BackendHealth {
   healthy: boolean;
   latencyMs: number;
@@ -32,14 +44,14 @@ export interface BackendConfig {
   prefix?: string;
 }
 
-export type BackendType = 'env' | 'local' | 'vault' | 'aws-sm' | '1password';
+export type BackendType = 'env' | 'local' | 'keychain' | 'vault' | 'aws-sm' | '1password';
 
 /** Access audit entry */
 export interface AccessAuditEntry {
   timestamp: string;
   backend: string;
   path: string;
-  action: 'resolve' | 'healthCheck' | 'migrate';
+  action: 'resolve' | 'healthCheck' | 'migrate' | 'store' | 'delete';
   success: boolean;
   latencyMs: number;
 }

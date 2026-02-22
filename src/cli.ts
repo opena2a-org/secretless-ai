@@ -26,6 +26,10 @@ import { protectMcp } from './mcp/protect';
 import { discoverMcpConfigs } from './mcp/discover';
 import { classifyEnvVars } from './mcp/classify';
 import { restoreConfig } from './mcp/rewrite';
+import { isKeychainAvailable, createBackend } from './backends/factory';
+import { readBackendConfig, writeBackendConfig, resolveBackendType } from './backends/config';
+import { migrateSecrets } from './backends/migrate';
+import type { SelectableBackendType } from './backends/config';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: VERSION } = require('../package.json');
@@ -69,13 +73,19 @@ function main(): void {
       runWatch(args.slice(1));
       break;
     case 'protect-mcp':
-      runProtectMcp();
+      runProtectMcp(args.slice(1));
       break;
     case 'mcp-status':
       runMcpStatus();
       break;
     case 'mcp-unprotect':
       runMcpUnprotect();
+      break;
+    case 'backend':
+      runBackend(args.slice(1));
+      break;
+    case 'migrate':
+      runMigrate(args.slice(1));
       break;
     case '--version':
     case '-v':
@@ -464,12 +474,25 @@ function runWatch(args: string[]): void {
   }
 }
 
-function runProtectMcp(): void {
+function runProtectMcp(args: string[]): void {
   console.log('\n  Secretless MCP Protection\n');
 
   const wrapperPath = getWrapperPath();
 
-  protectMcp({ wrapperPath }).then((result) => {
+  // Parse --backend flag
+  let backendType: SelectableBackendType | undefined;
+  const backendIdx = args.indexOf('--backend');
+  if (backendIdx !== -1 && args[backendIdx + 1]) {
+    const val = args[backendIdx + 1];
+    if (val === 'local' || val === 'keychain') {
+      backendType = val;
+    } else {
+      console.error(`  Unknown backend type: ${val}. Use 'local' or 'keychain'.\n`);
+      process.exit(1);
+    }
+  }
+
+  protectMcp({ wrapperPath, backendType }).then((result) => {
     if (result.clientsScanned === 0) {
       console.log('  No MCP configurations found.\n');
       console.log('  Looked for configs from: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf');
@@ -564,6 +587,105 @@ function runMcpUnprotect(): void {
   }
 }
 
+function runBackend(args: string[]): void {
+  const subcommand = args[0];
+
+  if (subcommand === 'set') {
+    const type = args[1];
+    if (type !== 'local' && type !== 'keychain') {
+      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local' or 'keychain'.\n`);
+      process.exit(1);
+    }
+
+    if (type === 'keychain') {
+      const kc = isKeychainAvailable();
+      if (!kc.available) {
+        console.error(`\n  Cannot use keychain backend: ${kc.message}\n`);
+        process.exit(1);
+      }
+    }
+
+    writeBackendConfig(type);
+    console.log(`\n  Backend set to: ${type}\n`);
+    console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
+    console.log('  Or use `npx secretless-ai migrate --from local --to keychain` to migrate existing secrets.\n');
+    return;
+  }
+
+  // Default: show current backend status
+  const current = resolveBackendType();
+  const configFile = readBackendConfig();
+  const kc = isKeychainAvailable();
+
+  console.log('\n  Secretless Backend\n');
+  console.log(`  Current:      ${current}${configFile ? '' : ' (default)'}`);
+  console.log(`  Config file:  ${configFile ?? '(not set)'}`);
+  console.log(`  Keychain:     ${kc.available ? 'available' : 'unavailable'} (${kc.message})`);
+  console.log(`  Platform:     ${kc.platform}`);
+  console.log();
+  console.log('  Commands:');
+  console.log('    npx secretless-ai backend set local      Use local encrypted file');
+  console.log('    npx secretless-ai backend set keychain    Use OS keychain');
+  console.log();
+}
+
+function runMigrate(args: string[]): void {
+  let fromType: SelectableBackendType | undefined;
+  let toType: SelectableBackendType | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from' && args[i + 1]) {
+      const val = args[++i];
+      if (val === 'local' || val === 'keychain') fromType = val;
+    }
+    if (args[i] === '--to' && args[i + 1]) {
+      const val = args[++i];
+      if (val === 'local' || val === 'keychain') toType = val;
+    }
+  }
+
+  if (!fromType || !toType) {
+    console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain> --to <local|keychain>\n');
+    process.exit(1);
+  }
+
+  if (fromType === toType) {
+    console.error(`\n  Source and destination backends are the same: ${fromType}\n`);
+    process.exit(1);
+  }
+
+  console.log('\n  Secretless Migration\n');
+  console.log(`  From: ${fromType}`);
+  console.log(`  To:   ${toType}\n`);
+
+  const source = createBackend(fromType);
+  const destination = createBackend(toType);
+
+  migrateSecrets(source, destination, { deleteFromSource: false }).then((result) => {
+    if (result.migrated === 0 && result.failed === 0) {
+      console.log('  No secrets found to migrate.\n');
+      return;
+    }
+
+    console.log(`  Migrated: ${result.migrated} secret(s)`);
+    if (result.failed > 0) {
+      console.log(`  Failed:   ${result.failed} secret(s)`);
+      for (const err of result.errors) {
+        console.log(`    - ${err.key}: ${err.message}`);
+      }
+    }
+    console.log();
+
+    // Update config to use the new backend
+    writeBackendConfig(toType!);
+    console.log(`  Backend config updated to: ${toType}`);
+    console.log('  Run `npx secretless-ai protect-mcp` to update MCP wrapper configs.\n');
+  }).catch((err) => {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
 function printHelp(): void {
   console.log(`
   Secretless v${VERSION}
@@ -582,6 +704,11 @@ function printHelp(): void {
     npx secretless-ai protect-mcp    Encrypt MCP server secrets
     npx secretless-ai mcp-status     Show MCP protection status
     npx secretless-ai mcp-unprotect  Restore original MCP configs
+
+  Backend Management:
+    npx secretless-ai backend             Show current backend and keychain status
+    npx secretless-ai backend set <type>  Set backend (local or keychain)
+    npx secretless-ai migrate             Migrate secrets between backends
 
   Clean options:
     --dry-run     Report findings without redacting

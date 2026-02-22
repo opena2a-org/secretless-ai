@@ -89,6 +89,7 @@ function writeManifest(backupDir: string, manifest: Record<string, string>): voi
  * @param serverSecrets - Map of serverName → {envKey: value} for secrets to protect
  * @param wrapperPath   - Path to the secretless-mcp wrapper binary
  * @param backupDir     - Directory to store backup files and manifest
+ * @param backendType   - Optional backend type to pass to the wrapper (omitted for 'local')
  * @returns Result with count of servers rewritten and path to backup file
  */
 export function rewriteConfig(
@@ -97,6 +98,7 @@ export function rewriteConfig(
   serverSecrets: Record<string, Record<string, string>>,
   wrapperPath: string,
   backupDir: string,
+  backendType?: string,
 ): RewriteResult {
   // Read and parse the config file
   const content = fs.readFileSync(configPath, 'utf-8');
@@ -126,10 +128,11 @@ export function rewriteConfig(
     const secrets = serverSecrets[serverName];
     if (!secrets || Object.keys(secrets).length === 0) continue;
 
-    // Build new args: ['--server', name, '--client', client, '--', originalCommand, ...originalArgs]
+    // Build new args: ['--server', name, '--client', client, [--backend type], '--', originalCommand, ...originalArgs]
     const newArgs = [
       '--server', serverName,
       '--client', client,
+      ...(backendType && backendType !== 'local' ? ['--backend', backendType] : []),
       '--',
       command,
       ...args,

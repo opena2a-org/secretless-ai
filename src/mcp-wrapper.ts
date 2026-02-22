@@ -22,6 +22,7 @@ function parseArgs(argv: string[]): {
   client: string;
   vaultDir: string;
   vaultKey: string;
+  backend: string;
   childCommand: string;
   childArgs: string[];
 } | null {
@@ -29,6 +30,7 @@ function parseArgs(argv: string[]): {
   let client = '';
   let vaultDir = '';
   let vaultKey = '';
+  let backend = '';
   let separatorIdx = -1;
 
   for (let i = 0; i < argv.length; i++) {
@@ -37,6 +39,7 @@ function parseArgs(argv: string[]): {
     if (argv[i] === '--client' && argv[i + 1]) { client = argv[++i]; continue; }
     if (argv[i] === '--vault-dir' && argv[i + 1]) { vaultDir = argv[++i]; continue; }
     if (argv[i] === '--vault-key' && argv[i + 1]) { vaultKey = argv[++i]; continue; }
+    if (argv[i] === '--backend' && argv[i + 1]) { backend = argv[++i]; continue; }
   }
 
   if (separatorIdx === -1 || separatorIdx >= argv.length - 1) return null;
@@ -50,6 +53,7 @@ function parseArgs(argv: string[]): {
     client,
     vaultDir,
     vaultKey,
+    backend,
     childCommand: argv[separatorIdx + 1],
     childArgs: argv.slice(separatorIdx + 2),
   };
@@ -63,17 +67,23 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Validate vault directory exists
-  if (!fs.existsSync(args.vaultDir)) {
-    process.stderr.write(`secretless-mcp: Vault directory not found: ${args.vaultDir}\n`);
-    process.stderr.write(`secretless-mcp: Run 'npx secretless-ai mcp-protect' to set up MCP secret protection.\n`);
-    process.exit(1);
+  // Validate vault directory exists (only needed for local backend)
+  if (!args.backend || args.backend === 'local') {
+    if (!fs.existsSync(args.vaultDir)) {
+      process.stderr.write(`secretless-mcp: Vault directory not found: ${args.vaultDir}\n`);
+      process.stderr.write(`secretless-mcp: Run 'npx secretless-ai mcp-protect' to set up MCP secret protection.\n`);
+      process.exit(1);
+    }
   }
 
   // Load secrets from vault
   let secrets: Record<string, string> = {};
   try {
-    const vault = new McpVault({ storeDir: args.vaultDir, key: args.vaultKey });
+    const vault = new McpVault({
+      storeDir: args.vaultDir,
+      key: args.vaultKey,
+      ...(args.backend ? { backendType: args.backend } : {}),
+    });
     secrets = await vault.getServerSecrets(args.client, args.server);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
