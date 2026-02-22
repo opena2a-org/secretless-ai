@@ -55,7 +55,7 @@ describe('MacOSKeychainBackend', () => {
       // Verify add was called
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'security',
-        ['add-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY', '-w', 'secret-value', '-U'],
+        ['add-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY', '-l', 'secretless: mcp/client/server/KEY', '-w', 'secret-value'],
         expect.any(Object),
       );
     });

@@ -62,11 +62,12 @@ describe('MCP Protection E2E', () => {
     // 2. Install wrapper to stable location
     const wrapper = installWrapper(dataDir);
 
-    // 3. Run protect-mcp
+    // 3. Run protect-mcp (explicitly local backend so test doesn't depend on config state)
     const result = await protectMcp({
       homeDir,
       dataDir,
       wrapperPath: wrapper.args[0], // path to mcp-wrapper.js
+      backendType: 'local',
     });
 
     expect(result.secretsFound).toBe(1);
@@ -81,7 +82,7 @@ describe('MCP Protection E2E', () => {
     // 5. Verify secrets are in the vault
     const vaultDir = path.join(dataDir, 'mcp-vault');
     const vaultKey = `${homeDir}-secretless-mcp-${process.env.USER ?? 'default'}`;
-    const vault = new McpVault({ storeDir: vaultDir, key: vaultKey });
+    const vault = new McpVault({ storeDir: vaultDir, key: vaultKey, backendType: 'local' });
     const secrets = await vault.getServerSecrets('cursor', 'github');
     expect(secrets.GITHUB_TOKEN).toBe('ghp_test1234567890abcdef1234567890abcdef1234');
 
@@ -145,11 +146,12 @@ describe('MCP Protection E2E', () => {
 
     const wrapper = installWrapper(dataDir);
 
-    // Protect
+    // Protect (explicitly local backend)
     await protectMcp({
       homeDir,
       dataDir,
       wrapperPath: wrapper.args[0],
+      backendType: 'local',
     });
 
     // Verify it's rewritten
@@ -201,6 +203,7 @@ describe('MCP Protection E2E', () => {
       homeDir,
       dataDir,
       wrapperPath: wrapper.args[0],
+      backendType: 'local',
     });
 
     // 2 clients scanned

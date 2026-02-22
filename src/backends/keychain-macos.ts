@@ -63,13 +63,13 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
       // Entry didn't exist — that's fine
     }
 
-    // Add the new entry
+    // Add the new entry with a descriptive label (visible in Keychain Access)
     execFileSync('security', [
       'add-generic-password',
       '-s', SERVICE_NAME,
       '-a', key,
+      '-l', `secretless: ${key}`,
       '-w', value,
-      '-U',
     ], { stdio: 'pipe' });
 
     // Update index
