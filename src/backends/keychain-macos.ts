@@ -19,6 +19,27 @@ import type { WritableSecretBackend, BackendHealth } from './types';
 const SERVICE_NAME = 'secretless';
 const INDEX_FILENAME = 'keychain-index.json';
 
+/**
+ * macOS `security find-generic-password -w` hex-encodes passwords that contain
+ * non-printable characters (e.g. newlines). Detect and decode hex output.
+ *
+ * Hex output: even-length string matching /^[0-9a-fA-F]+$/.
+ * To avoid false positives on normal hex-like passwords (e.g. "deadbeef"),
+ * only decode if the hex bytes contain at least one non-printable character.
+ */
+function decodeKeychainValue(raw: string): string {
+  if (raw.length >= 2 && raw.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(raw)) {
+    const buf = Buffer.from(raw, 'hex');
+    const decoded = buf.toString('utf-8');
+    // Only use decoded value if it contains a non-printable char (newline, tab, etc.)
+    // This prevents false-positive decoding of passwords that happen to look like hex
+    if (/[\x00-\x08\x0a-\x1f\x7f]/.test(decoded)) {
+      return decoded;
+    }
+  }
+  return raw;
+}
+
 export class MacOSKeychainBackend implements WritableSecretBackend {
   readonly name = 'keychain-macos';
   private readonly indexPath: string;
@@ -68,13 +89,13 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
     const results: Record<string, string> = {};
     for (const key of matchingKeys) {
       try {
-        const value = execFileSync('security', [
+        const raw = execFileSync('security', [
           'find-generic-password',
           '-s', SERVICE_NAME,
           '-a', key,
           '-w',
         ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' }).trimEnd();
-        results[key] = value;
+        results[key] = decodeKeychainValue(raw);
       } catch {
         // Key was in index but not in keychain — skip (stale index entry)
       }
