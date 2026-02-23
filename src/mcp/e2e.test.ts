@@ -102,7 +102,7 @@ describe('MCP Protection E2E', () => {
       ];
 
       const proc = spawn(process.execPath, wrapperArgs, {
-        env: { ...process.env, ...github.env },
+        env: { ...process.env, HOME: homeDir, ...github.env },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
