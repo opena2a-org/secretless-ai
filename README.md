@@ -37,12 +37,17 @@ Stores secrets in a dedicated "Secretless" vault using the [`op` CLI](https://de
 **Setup:**
 
 ```bash
+brew install --cask 1password                 # Install 1Password desktop app
 brew install --cask 1password-cli             # Install op CLI
-# Enable CLI integration in 1Password > Settings > Developer
+```
+
+Then enable CLI integration: **1Password > Settings > Developer > "Integrate with 1Password CLI"**. This allows the CLI to authenticate through the desktop app with biometric unlock (Touch ID / Windows Hello).
+
+```bash
 npx secretless-ai backend set 1password       # Switch backend
 ```
 
-**CI/CD:** Set `OP_SERVICE_ACCOUNT_TOKEN` — same secrets, no code changes.
+**CI/CD:** Set `OP_SERVICE_ACCOUNT_TOKEN` — same secrets, no code changes. No desktop app needed.
 
 ## Secret Management
 
