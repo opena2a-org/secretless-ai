@@ -1,10 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as child_process from 'child_process';
+import * as fs from 'fs';
 import { OnePasswordBackend } from './onepassword';
 
 vi.mock('child_process', () => ({
   execFileSync: vi.fn(),
 }));
+
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    writeFileSync: vi.fn(),
+    unlinkSync: vi.fn(),
+  };
+});
 
 const mockExecFileSync = vi.mocked(child_process.execFileSync);
 
@@ -92,19 +102,31 @@ describe('OnePasswordBackend', () => {
         expect.any(Object),
       );
 
-      // Verify item create
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'op',
-        [
-          'item', 'create',
-          '--vault', VAULT_ID,
-          '--category', 'Password',
-          '--title', 'secret/API_KEY',
-          '--tags', 'secretless',
-          'password=sk-12345',
-        ],
-        expect.any(Object),
+      // Verify item create via template file (secret not in argv)
+      const createCall = mockExecFileSync.mock.calls.find(
+        call => call[0] === 'op' && Array.isArray(call[1]) &&
+          call[1][0] === 'item' && call[1][1] === 'create',
       );
+      expect(createCall).toBeDefined();
+      const createArgs = createCall![1] as string[];
+      expect(createArgs[0]).toBe('item');
+      expect(createArgs[1]).toBe('create');
+      expect(createArgs[2]).toBe('--vault');
+      expect(createArgs[3]).toBe(VAULT_ID);
+      expect(createArgs[4]).toBe('--template');
+      // Template path is a temp file — secret never in argv
+      expect(createArgs[5]).toMatch(/secretless-op-/);
+
+      // Verify template file contains the secret
+      const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(
+        call => typeof call[0] === 'string' && (call[0] as string).includes('secretless-op-'),
+      );
+      expect(writeCall).toBeDefined();
+      const templateContent = JSON.parse(writeCall![1] as string);
+      expect(templateContent.title).toBe('secret/API_KEY');
+      expect(templateContent.fields[0].value).toBe('sk-12345');
+      // File created with restricted permissions
+      expect(writeCall![2]).toEqual({ mode: 0o600 });
     });
 
     it('creates vault when it does not exist', async () => {
@@ -330,6 +352,24 @@ describe('OnePasswordBackend', () => {
       const health = await backend.healthCheck();
 
       expect(health.healthy).toBe(false);
+    });
+  });
+
+  describe('vault name validation', () => {
+    it('accepts valid vault names', () => {
+      mockVaultExists();
+      expect(() => new OnePasswordBackend({ vault: 'My-Vault_1' })).not.toThrow();
+      expect(() => new OnePasswordBackend({ vault: 'Secretless' })).not.toThrow();
+    });
+
+    it('rejects vault names with special characters', () => {
+      expect(() => new OnePasswordBackend({ vault: '--format raw' })).toThrow(/Invalid vault name/);
+      expect(() => new OnePasswordBackend({ vault: 'vault; rm -rf /' })).toThrow(/Invalid vault name/);
+      expect(() => new OnePasswordBackend({ vault: '' })).toThrow(/Invalid vault name/);
+    });
+
+    it('rejects vault names exceeding 64 characters', () => {
+      expect(() => new OnePasswordBackend({ vault: 'a'.repeat(65) })).toThrow(/Invalid vault name/);
     });
   });
 

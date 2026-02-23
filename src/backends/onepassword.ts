@@ -22,6 +22,9 @@
  */
 
 import { execFileSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { WritableSecretBackend, BackendHealth } from './types';
 
 const DEFAULT_VAULT = 'Secretless';
@@ -49,7 +52,11 @@ export class OnePasswordBackend implements WritableSecretBackend {
   private cachedVaultId: string | null = null;
 
   constructor(config?: Record<string, unknown>) {
-    this.vaultName = (config?.vault as string) ?? DEFAULT_VAULT;
+    const vault = (config?.vault as string) ?? DEFAULT_VAULT;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,63}$/.test(vault)) {
+      throw new Error(`Invalid vault name: "${vault}". Must start with alphanumeric, may contain spaces/hyphens/underscores (max 64 chars).`);
+    }
+    this.vaultName = vault;
   }
 
   async store(key: string, value: string): Promise<void> {
@@ -62,16 +69,33 @@ export class OnePasswordBackend implements WritableSecretBackend {
       // Entry didn't exist — that's fine
     }
 
-    // Create new item. The password=VALUE field assignment is the standard
-    // approach documented by 1Password for CLI automation.
-    execFileSync('op', [
-      'item', 'create',
-      '--vault', vaultId,
-      '--category', 'Password',
-      '--title', key,
-      '--tags', ITEM_TAG,
-      `password=${value}`,
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    // Create new item via JSON template file.
+    // Using a temp file (mode 0600) keeps the secret value out of process
+    // argv, where it would be visible in /proc/<pid>/cmdline on Linux.
+    // The file is always cleaned up in the finally block.
+    const template = JSON.stringify({
+      title: key,
+      category: 'PASSWORD',
+      tags: [ITEM_TAG],
+      fields: [{
+        id: 'password',
+        type: 'CONCEALED',
+        purpose: 'PASSWORD',
+        value: value,
+      }],
+    });
+
+    const tmpFile = path.join(os.tmpdir(), `secretless-op-${process.pid}-${Date.now()}.json`);
+    try {
+      fs.writeFileSync(tmpFile, template, { mode: 0o600 });
+      execFileSync('op', [
+        'item', 'create',
+        '--vault', vaultId,
+        '--template', tmpFile,
+      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch { /* already cleaned up */ }
+    }
   }
 
   async resolve(secretPath: string): Promise<Record<string, string>> {

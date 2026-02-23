@@ -39,7 +39,15 @@ function parseArgs(argv: string[]): {
     if (argv[i] === '--client' && argv[i + 1]) { client = argv[++i]; continue; }
     if (argv[i] === '--vault-dir' && argv[i + 1]) { vaultDir = argv[++i]; continue; }
     if (argv[i] === '--vault-key' && argv[i + 1]) { vaultKey = argv[++i]; continue; }
-    if (argv[i] === '--backend' && argv[i + 1]) { backend = argv[++i]; continue; }
+    if (argv[i] === '--backend' && argv[i + 1]) {
+      const val = argv[++i];
+      if (val !== 'local' && val !== 'keychain' && val !== '1password') {
+        process.stderr.write(`secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', or '1password'.\n`);
+        process.exit(1);
+      }
+      backend = val;
+      continue;
+    }
   }
 
   if (separatorIdx === -1 || separatorIdx >= argv.length - 1) return null;
