@@ -20,6 +20,10 @@ export interface SetupResult {
   set: number;
   /** Number of secrets that already existed. */
   existing: number;
+  /** Number of required secrets still missing. */
+  missing: number;
+  /** Names of missing required secrets. */
+  missingNames: string[];
   /** Number of optional secrets skipped. */
   skipped: number;
   /** Whether all required secrets are satisfied. */
@@ -40,7 +44,7 @@ export async function runSetup(
   if (!entries) {
     process.stderr.write('  No .secretless manifest found in this directory.\n');
     process.stderr.write('  Create a .secretless file listing required secret names.\n');
-    return { set: 0, existing: 0, skipped: 0, complete: true };
+    return { set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: true };
   }
 
   const check = await checkManifest(dir, options);
@@ -50,6 +54,8 @@ export async function runSetup(
     return {
       set: 0,
       existing: check.satisfied.length,
+      missing: check.missing.length,
+      missingNames: check.missing.map(e => e.name),
       skipped: check.optional.length,
       complete: check.missing.length === 0,
     };
@@ -64,6 +70,8 @@ export async function runSetup(
     return {
       set: 0,
       existing: check.satisfied.length,
+      missing: 0,
+      missingNames: [],
       skipped: 0,
       complete: true,
     };
@@ -109,6 +117,8 @@ export async function runSetup(
   return {
     set: setCount,
     existing: check.satisfied.length,
+    missing: 0,
+    missingNames: [],
     skipped: skippedCount,
     complete: true,
   };

@@ -941,12 +941,17 @@ function runSetupCommand(args: string[]): void {
 
   runSetup(dir, { check: checkOnly }).then((result) => {
     if (checkOnly) {
-      console.log(`  Required:  ${result.existing + (result.complete ? 0 : 1)} entries`);
-      console.log(`  Satisfied: ${result.existing}`);
-      console.log(`  Skipped:   ${result.skipped} (optional)\n`);
+      console.log(`  Satisfied: ${result.existing} secret(s)`);
+      console.log(`  Missing:   ${result.missing} required`);
+      console.log(`  Optional:  ${result.skipped} not set\n`);
 
       if (!result.complete) {
-        console.log('  FAIL: Missing required secrets. Run `secretless-ai setup` to configure.\n');
+        console.log('  Missing secrets:');
+        for (const name of result.missingNames) {
+          console.log(`    - ${name}`);
+        }
+        console.log();
+        console.log('  FAIL: Run `secretless-ai setup` to configure missing secrets.\n');
         process.exit(1);
       } else {
         console.log('  PASS: All required secrets are configured.\n');
