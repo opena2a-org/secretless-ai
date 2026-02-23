@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { SecretBackend, BackendHealth } from './types';
+import type { WritableSecretBackend, BackendHealth } from './types';
 
 const STORE_FILE = 'secrets.enc';
 const META_FILE = 'secrets.meta.json';
@@ -15,7 +15,7 @@ interface StoreMeta {
  * Local encrypted store backend — resolves secrets from a local AES-256-GCM encrypted file.
  * Used for development/local setups. Zero network dependencies.
  */
-export class LocalBackend implements SecretBackend {
+export class LocalBackend implements WritableSecretBackend {
   readonly name = 'local';
   private readonly storeDir: string;
   private readonly encryptionKey: Buffer;

@@ -13,6 +13,110 @@ Part of the [OpenA2A](https://opena2a.org) ecosystem — open-source security fo
 npx secretless-ai init
 ```
 
+## Secret Storage Backends
+
+Secretless stores secrets in your choice of backend. Secrets are never in environment variables, shell profiles, or config files — they exist only in the backend and get injected into process memory at runtime.
+
+| Backend | Storage | Sync | Auth | Best For |
+|---------|---------|------|------|----------|
+| `local` | AES-256-GCM encrypted file | None (single machine) | Filesystem | Quick start, simple setups |
+| `keychain` | macOS Keychain / Linux Secret Service | Device-local | OS login | Native OS integration |
+| `1password` | 1Password vault | Cross-device | Biometric (Touch ID) / Service Account | Teams, CI/CD, multi-device |
+
+```bash
+npx secretless-ai backend                     # Show available backends
+npx secretless-ai backend set 1password       # Switch to 1Password
+npx secretless-ai backend set keychain        # Switch to OS keychain
+npx secretless-ai migrate --from local --to 1password  # Migrate existing secrets
+```
+
+### 1Password Backend
+
+Stores secrets in a dedicated "Secretless" vault using the [`op` CLI](https://developer.1password.com/docs/cli). Secrets never touch disk.
+
+**Setup:**
+
+```bash
+brew install --cask 1password                 # Install 1Password desktop app
+brew install --cask 1password-cli             # Install op CLI
+```
+
+Then enable CLI integration: **1Password > Settings > Developer > "Integrate with 1Password CLI"**. This allows the CLI to authenticate through the desktop app with biometric unlock (Touch ID / Windows Hello).
+
+```bash
+npx secretless-ai backend set 1password       # Switch backend
+```
+
+**CI/CD:** Set `OP_SERVICE_ACCOUNT_TOKEN` — same secrets, no code changes. No desktop app needed.
+
+## Secret Management
+
+Store, list, and inject secrets without exposing them to AI tools.
+
+```bash
+npx secretless-ai secret set STRIPE_KEY=sk_live_...   # Store a secret
+npx secretless-ai secret set DATABASE_URL              # Read value from stdin
+npx secretless-ai secret list                          # List secret names (never values)
+npx secretless-ai secret rm STRIPE_KEY                 # Remove a secret
+```
+
+### Running Commands with Secrets
+
+Inject secrets as environment variables into any command. The AI tool sees the command output but never the secret values.
+
+```bash
+npx secretless-ai run -- npm test                              # Inject all secrets
+npx secretless-ai run --only STRIPE_KEY -- curl -u "$STRIPE_KEY:" https://api.stripe.com/v1/balance
+npx secretless-ai run --only DATABASE_URL -- npm run migrate   # Inject specific key
+```
+
+### AI-Safe by Design
+
+When an AI tool tries to read a secret value, secretless blocks it:
+
+```
+$ npx secretless-ai secret get STRIPE_KEY    # (run by AI tool)
+
+  secretless: Blocked -- secret values cannot be read in non-interactive contexts.
+  AI tools capture stdout, which would expose the secret in their context.
+
+  To inject secrets into a command:
+    npx secretless-ai run -- <command>
+```
+
+Direct terminal access (human) works normally. The guard detects non-interactive execution (how AI tools run commands) and refuses to output.
+
+### Import from .env Files
+
+```bash
+npx secretless-ai import .env                 # Import from specific file
+npx secretless-ai import --detect             # Auto-find and import all .env files
+```
+
+### Project Manifests
+
+Define required secrets in a `.secretless` file at the project root:
+
+```
+STRIPE_KEY        required    Stripe API key for payments
+DATABASE_URL      required    PostgreSQL connection string
+SENTRY_DSN        optional    Error tracking
+```
+
+```bash
+npx secretless-ai setup                       # Interactive setup for missing secrets
+npx secretless-ai setup --check               # CI: fail if required secrets are missing
+```
+
+## Backend Inspection
+
+```bash
+npx secretless-ai backend list                # Show all entries grouped by prefix
+npx secretless-ai backend purge               # Dry-run: show what would be deleted
+npx secretless-ai backend purge --yes         # Delete all entries
+npx secretless-ai backend purge --prefix mcp --yes  # Delete only mcp/ entries
+```
+
 ## MCP Secret Protection
 
 Every MCP server config has plaintext API keys sitting in JSON files on your laptop. The LLM sees them. Secretless encrypts them.
@@ -42,48 +146,14 @@ npx secretless-ai protect-mcp
 
 1. Scans MCP configs across Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf
 2. Identifies which env vars are secrets (key name patterns + value regex matching)
-3. Encrypts secrets into a local AES-256-GCM vault (`~/.secretless-ai/mcp-vault/`)
+3. Stores secrets in your configured backend (local, keychain, or 1Password)
 4. Rewrites configs to use the `secretless-mcp` wrapper — decrypts at runtime, injects as env vars
 5. Non-secret env vars (URLs, org names, regions) stay in the config untouched
 
-**Before:**
-```json
-{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["@github/mcp-server"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_plaintext_visible_to_LLM",
-        "GITHUB_ORG": "my-org"
-      }
-    }
-  }
-}
-```
-
-**After:**
-```json
-{
-  "mcpServers": {
-    "github": {
-      "command": "secretless-mcp",
-      "args": ["--server", "github", "--client", "claude-desktop", "--", "npx", "@github/mcp-server"],
-      "env": {
-        "GITHUB_ORG": "my-org"
-      }
-    }
-  }
-}
-```
-
-The secret moves to the encrypted vault. The wrapper decrypts it at startup (<10ms overhead) and passes it to the MCP server as an env var. The LLM never sees it.
-
-**Other MCP commands:**
-
 ```bash
-npx secretless-ai mcp-status      # Show which servers are protected/exposed
-npx secretless-ai mcp-unprotect   # Restore original configs from backup
+npx secretless-ai protect-mcp --backend 1password  # Store MCP secrets in 1Password
+npx secretless-ai mcp-status                       # Show which servers are protected/exposed
+npx secretless-ai mcp-unprotect                    # Restore original configs from backup
 ```
 
 ---
@@ -117,7 +187,7 @@ npx secretless-ai init
 Output:
 
 ```
-  Secretless v0.6.0
+  Secretless v0.7.1
   Keeping secrets out of AI
 
   Detected:
@@ -153,40 +223,13 @@ Non-interactive subprocesses (Claude Code's Bash tool, CI/CD, Docker) don't sour
 | Linux | bash | `~/.bashrc` | Sourced by interactive bash; most tools source it explicitly |
 | Windows | — | System Environment Variables | Use `setx` or Settings > System > Environment Variables |
 
-**Common mistakes Secretless auto-fixes:**
-- **macOS:** Adding `export` lines to `~/.zshrc` instead of `~/.zshenv`. Secretless copies them to the correct file during `init`.
-- **Linux:** Adding exports to `~/.bash_profile` instead of `~/.bashrc`, or placing them after the interactive guard in `.bashrc`. Secretless inserts them before the guard.
-- **Windows:** Setting keys only in PowerShell `$PROFILE` (session-only). Secretless runs `setx` to set persistent user environment variables.
-
-```bash
-# macOS (zsh) — add to ~/.zshenv
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-proj-..."
-
-# Linux (bash) — add to ~/.bashrc (before the interactive guard)
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-proj-..."
-```
-
-```powershell
-# Windows — use setx (or Settings > System > Environment Variables)
-setx ANTHROPIC_API_KEY "sk-ant-..."
-setx OPENAI_API_KEY "sk-proj-..."
-```
-
-**Step 2: Remove keys from AI config files**
-
-Delete any hardcoded keys from `CLAUDE.md`, `.cursorrules`, `.env`, etc.
-
-**Step 3: Run secretless init**
+**Step 2: Run secretless init**
 
 ```bash
 npx secretless-ai init
 ```
 
-Secretless detects which env vars are set and adds a reference table to your AI tool's instruction file. The AI knows *which* keys are available and *how* to authenticate — without seeing the actual values.
-
-**Step 4: Verify**
+**Step 3: Verify**
 
 ```bash
 npx secretless-ai verify
@@ -202,94 +245,52 @@ npx secretless-ai verify
   PASS: Secrets are accessible via env vars but hidden from AI context.
 ```
 
-**Before:** Claude sees `ANTHROPIC_API_KEY=sk-ant-api03-abc123...` in CLAUDE.md — the key is in the context window, extractable via prompt injection.
+## Git Protection
 
-**After:** Claude sees a table saying `$ANTHROPIC_API_KEY` exists and the auth header is `x-api-key: $ANTHROPIC_API_KEY`. It uses `$ANTHROPIC_API_KEY` in shell commands. The shell resolves it. Claude never sees the actual value.
-
-## Commands
-
-### `npx secretless-ai init`
-
-Detects AI tools in your project and installs protections. If API keys are set as env vars, includes a reference table with service names and auth header formats so the AI can use them without seeing values. Safe to run multiple times.
-
-### `npx secretless-ai scan`
-
-Scans config files for hardcoded credentials — both project-level and global (`~/.claude/CLAUDE.md`). Detects 49 credential patterns including Anthropic, OpenAI, AWS, GitHub, Slack, Google, Stripe, SendGrid, Supabase, Azure, GitLab, Twilio, Mailgun, and more.
-
-```
-  Found 2 credential(s):
-
-  [CRIT] Anthropic API Key
-         ~/.claude/CLAUDE.md:286
-         ANTHROPIC_API_KEY=[Anthropic API Key REDACTED]
-
-  [CRIT] OpenAI Project Key
-         ~/.claude/CLAUDE.md:284
-         OPENAI_API_KEY=[OpenAI Project Key REDACTED]
-```
-
-### `npx secretless-ai verify`
-
-Confirms keys are usable but hidden from AI. Checks that env vars are set AND that the actual key values don't appear in any AI context file.
-
-```
-  PASS: Secrets are accessible via env vars but hidden from AI context.
-```
-
-### `npx secretless-ai doctor`
-
-Diagnoses shell profile issues that cause "No API keys found" errors. Detects when keys are in an interactive-only profile (like `~/.zshrc`) that non-interactive subprocesses can't see.
-
-Use `--fix` to auto-fix: copies export lines from the wrong profile to the correct one (non-destructive, does not modify the original file).
+Prevent secrets from being committed:
 
 ```bash
-npx secretless-ai doctor         # Diagnose
-npx secretless-ai doctor --fix   # Diagnose and auto-fix
+npx secretless-ai hook install       # Install pre-commit secret scanner
+npx secretless-ai hook status        # Check hook installation status
+npx secretless-ai hook uninstall     # Remove pre-commit hook
 ```
 
-Note: `init` also runs this auto-fix automatically, so most users never need to run `doctor` separately.
+## All Commands
 
-```
-  Secretless Doctor
-
-  Platform: darwin
-  Shell:    zsh
-
-  Shell profiles:
-    - ~/.zshenv (RECOMMENDED): not found
-    + ~/.zshrc (interactive-only): 2 key(s)
-    - ~/.zprofile (login-only): not found
-
-  Auto-fix applied:
-    Copied 2 export(s) from ~/.zshrc to ~/.zshenv
-      + ANTHROPIC_API_KEY
-      + OPENAI_API_KEY
-    Restart your terminal for changes to take effect.
-```
-
-### `npx secretless-ai protect-mcp`
-
-Scans all MCP configs on your machine, encrypts plaintext secrets into a local vault, and rewrites configs to use the `secretless-mcp` wrapper. Safe to run multiple times — skips already-protected servers.
-
-### `npx secretless-ai mcp-status`
-
-Shows protection status for every MCP server across all clients. Tells you which servers have exposed secrets and which are protected.
-
-### `npx secretless-ai mcp-unprotect`
-
-Restores all MCP configs to their original state from backups. One command to undo everything.
-
-### `npx secretless-ai status`
-
-Shows current protection status.
-
-```
-  Protected:  Yes
-  Tools:      Claude Code, Cursor
-  Hook:       Installed
-  Deny rules: 14
-  Secrets:    0 found in config files
-```
+| Command | Description |
+|---------|-------------|
+| `init` | Set up protections for your AI tools |
+| `scan` | Scan for hardcoded secrets (49 patterns) |
+| `status` | Show protection status |
+| `verify` | Verify keys are usable but hidden from AI |
+| `doctor [--fix]` | Diagnose and auto-fix shell profile issues |
+| `clean [--dry-run]` | Scan and redact credentials in transcripts |
+| `watch` | Monitor transcripts in real-time |
+| **Secret Management** | |
+| `secret set <NAME[=VALUE]>` | Store a secret |
+| `secret list` | List stored secret names |
+| `secret get <NAME>` | Retrieve a secret value (blocked in non-interactive contexts) |
+| `secret rm <NAME>` | Remove a secret |
+| `run [--only K1,K2] -- <cmd>` | Run command with secrets injected as env vars |
+| `import <file>` | Import secrets from .env file |
+| `import --detect` | Auto-find and import .env files |
+| **Project Setup** | |
+| `setup` | Interactive setup from `.secretless` manifest |
+| `setup --check` | CI: fail if required secrets are missing |
+| **Git Protection** | |
+| `hook install` | Install pre-commit secret scanner |
+| `hook uninstall` | Remove pre-commit hook |
+| `hook status` | Check hook installation status |
+| **MCP Protection** | |
+| `protect-mcp [--backend TYPE]` | Encrypt MCP server secrets |
+| `mcp-status` | Show MCP protection status |
+| `mcp-unprotect` | Restore original MCP configs |
+| **Backend Management** | |
+| `backend` | Show current backend status |
+| `backend set <TYPE>` | Set backend (local, keychain, 1password) |
+| `backend list` | List all stored entries |
+| `backend purge [--prefix] [--yes]` | Delete entries from backend |
+| `migrate --from TYPE --to TYPE` | Migrate secrets between backends |
 
 ## What Gets Blocked
 
@@ -309,19 +310,11 @@ Commands that dump secret files (`cat .env`, `head *.key`) and commands that ech
 
 For Claude Code, Secretless installs a PreToolUse hook that intercepts every `Read`, `Grep`, `Glob`, `Bash`, `Write`, and `Edit` tool call. The hook runs *before* the tool executes, so secrets never enter the AI context window.
 
-```bash
-# .claude/hooks/secretless-guard.sh
-# Runs before every tool call, checks file paths against block list
-# Returns deny decision if a secret file is targeted
-```
-
-Additionally, Secretless adds `permissions.deny` rules to `.claude/settings.json` as a second layer of defense, and adds instructions to `CLAUDE.md` so Claude understands why certain files are blocked.
-
 ## Development
 
 ```bash
 npm run build      # Compile TypeScript to dist/
-npm test           # Run tests (vitest)
+npm test           # Run tests (vitest, 461 tests)
 npm run dev        # Watch mode — recompile on file changes
 npm run clean      # Remove dist/ directory
 ```
@@ -330,10 +323,12 @@ npm run clean      # Remove dist/ directory
 
 - Node.js 18+
 - A project directory with at least one AI tool configured (or Secretless defaults to Claude Code)
+- **Optional:** 1Password CLI (`op`) for 1Password backend
+- **Optional:** macOS Keychain or `secret-tool` (Linux) for keychain backend
 
 ## Zero Dependencies
 
-Secretless has zero runtime dependencies. The npm package is 18 KB.
+Secretless has zero runtime dependencies.
 
 ## OpenA2A Ecosystem
 

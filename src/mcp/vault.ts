@@ -1,11 +1,17 @@
 /**
  * MCP Vault — encrypted secret storage namespaced by client/server.
  *
- * Thin wrapper around LocalBackend that stores secrets with key
+ * Thin wrapper around a WritableSecretBackend that stores secrets with key
  * `mcp/{client}/{server}/{envKey}`, providing per-server isolation.
+ *
+ * By default uses the LocalBackend for backward compatibility.
+ * Can be configured to use the OS keychain backend via backendType option.
  */
 
-import { LocalBackend } from '../backends/local';
+import { createBackend } from '../backends/factory';
+import { resolveBackendType } from '../backends/config';
+import type { WritableSecretBackend } from '../backends/types';
+import type { SelectableBackendType } from '../backends/config';
 
 const MCP_PREFIX = 'mcp';
 
@@ -18,11 +24,38 @@ function validateName(label: string, value: string): void {
   }
 }
 
-export class McpVault {
-  private readonly backend: LocalBackend;
+export interface McpVaultOptions {
+  /** Store directory for the backend (passed as config.storeDir) */
+  storeDir?: string;
+  /** Encryption key for the local backend (passed as config.key) */
+  key?: string;
+  /** Backend type to use. Resolved from config if not provided. */
+  backendType?: SelectableBackendType;
+  /** Pre-constructed backend instance (overrides backendType). For DI/testing. */
+  backend?: WritableSecretBackend;
+}
 
-  constructor(config?: Record<string, unknown>) {
-    this.backend = new LocalBackend(config);
+export class McpVault {
+  private readonly backend: WritableSecretBackend;
+
+  constructor(options?: McpVaultOptions | Record<string, unknown>) {
+    // Support pre-constructed backend for DI/testing
+    if (options && 'backend' in options && options.backend) {
+      this.backend = options.backend as WritableSecretBackend;
+      return;
+    }
+
+    // Build config for the backend constructor
+    const config: Record<string, unknown> = {};
+    if (options && 'storeDir' in options) config.storeDir = options.storeDir;
+    if (options && 'key' in options) config.key = options.key;
+
+    // Resolve backend type
+    const backendType = (options && 'backendType' in options)
+      ? resolveBackendType(options.backendType as string | undefined)
+      : resolveBackendType();
+
+    this.backend = createBackend(backendType, config);
   }
 
   /**

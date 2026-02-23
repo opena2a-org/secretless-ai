@@ -16,3 +16,23 @@ export {
   type ClassifiedEnv, type ProtectOptions, type ProtectResult,
   type RewriteResult,
 } from './mcp';
+
+// Backend management
+export {
+  createBackend, isKeychainAvailable,
+  resolveBackendType, readBackendConfig, writeBackendConfig,
+  migrateSecrets,
+  LocalBackend, MacOSKeychainBackend, LinuxKeychainBackend,
+  type SecretBackend, type WritableSecretBackend, type BackendHealth,
+  type BackendType, type SelectableBackendType,
+  type MigrateOptions, type MigrateResult,
+} from './backends';
+
+// Secret management
+export { SecretStore, type SecretStoreOptions } from './secret-store';
+export { runWithSecrets, type RunOptions } from './run';
+export { parseEnvFile, importEnvFile, detectEnvFiles, type EnvEntry, type ImportResult } from './env-import';
+export { parseManifest, readManifest, checkManifest, type ManifestEntry, type ManifestCheck } from './manifest';
+export { runSetup, type SetupOptions, type SetupResult } from './setup';
+export { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from './git-hook';
+export { scanStagedFiles } from './scan-staged';

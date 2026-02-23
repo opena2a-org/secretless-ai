@@ -11,6 +11,7 @@ import { discoverMcpConfigs } from './discover';
 import { classifyEnvVars } from './classify';
 import { McpVault } from './vault';
 import { rewriteConfig } from './rewrite';
+import type { SelectableBackendType } from '../backends/config';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +24,8 @@ export interface ProtectOptions {
   dataDir?: string;
   /** Absolute path to the secretless-mcp wrapper */
   wrapperPath: string;
+  /** Backend type for secret storage. Defaults to config file or 'local'. */
+  backendType?: SelectableBackendType;
 }
 
 export interface ProtectedServer {
@@ -76,6 +79,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   const vault = new McpVault({
     storeDir: vaultDir,
     ...(vaultKey ? { key: vaultKey } : {}),
+    ...(options.backendType ? { backendType: options.backendType } : {}),
   });
 
   // 1. Discover all MCP configs
@@ -126,6 +130,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         serverSecrets,
         options.wrapperPath,
         backupDir,
+        options.backendType,
       );
       result.serversProtected += rewriteResult.serversRewritten;
     }

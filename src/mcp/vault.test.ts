@@ -19,7 +19,7 @@ describe('McpVault', () => {
   afterEach(() => { cleanup(dir); });
 
   it('stores and retrieves secrets for a server', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     await vault.storeServerSecrets('claude-desktop', 'my-server', {
       ANTHROPIC_API_KEY: 'sk-ant-123',
@@ -34,14 +34,14 @@ describe('McpVault', () => {
   });
 
   it('returns empty for non-existent server', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     const secrets = await vault.getServerSecrets('claude-desktop', 'no-such-server');
     expect(secrets).toEqual({});
   });
 
   it('stores secrets for multiple servers independently', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     await vault.storeServerSecrets('cursor', 'server-a', {
       API_KEY: 'key-a',
@@ -58,7 +58,7 @@ describe('McpVault', () => {
   });
 
   it('stores secrets for multiple clients independently', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     await vault.storeServerSecrets('claude-desktop', 'shared-server', {
       TOKEN: 'claude-token',
@@ -75,7 +75,7 @@ describe('McpVault', () => {
   });
 
   it('overwrites existing secrets on re-store', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     await vault.storeServerSecrets('claude-desktop', 'my-server', {
       API_KEY: 'old-key',
@@ -95,7 +95,7 @@ describe('McpVault', () => {
   });
 
   it('removes secrets for a server', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     await vault.storeServerSecrets('cursor', 'server-a', {
       KEY1: 'val1',
@@ -116,7 +116,7 @@ describe('McpVault', () => {
   });
 
   it('lists all stored server entries', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     await vault.storeServerSecrets('claude-desktop', 'server-1', {
       KEY_A: 'a',
@@ -149,7 +149,7 @@ describe('McpVault', () => {
   });
 
   it('encrypts data on disk (no plaintext secrets in raw file)', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
 
     const sensitiveValue = 'super-secret-api-key-12345';
     await vault.storeServerSecrets('claude-desktop', 'my-server', {

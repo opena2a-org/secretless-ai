@@ -11,6 +11,11 @@
  *   npx secretless-ai doctor   — Diagnose shell profile issues
  *   npx secretless-ai clean    — Scan and redact credentials in transcripts
  *   npx secretless-ai watch    — Monitor transcripts in real-time
+ *   npx secretless-ai secret   — Manage secrets (set, list, get, rm)
+ *   npx secretless-ai run      — Run command with secrets injected
+ *   npx secretless-ai import   — Import secrets from .env files
+ *   npx secretless-ai setup    — Set up secrets from .secretless manifest
+ *   npx secretless-ai hook     — Manage pre-commit hook
  */
 
 import * as path from 'path';
@@ -26,6 +31,16 @@ import { protectMcp } from './mcp/protect';
 import { discoverMcpConfigs } from './mcp/discover';
 import { classifyEnvVars } from './mcp/classify';
 import { restoreConfig } from './mcp/rewrite';
+import { isKeychainAvailable, isOnePasswordAvailable, createBackend } from './backends/factory';
+import { readBackendConfig, writeBackendConfig, resolveBackendType } from './backends/config';
+import { migrateSecrets } from './backends/migrate';
+import { SecretStore } from './secret-store';
+import { runWithSecrets } from './run';
+import { importEnvFile, detectEnvFiles } from './env-import';
+import { runSetup } from './setup';
+import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from './git-hook';
+import { scanStagedFiles } from './scan-staged';
+import type { SelectableBackendType } from './backends/config';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: VERSION } = require('../package.json');
@@ -69,13 +84,37 @@ function main(): void {
       runWatch(args.slice(1));
       break;
     case 'protect-mcp':
-      runProtectMcp();
+      runProtectMcp(args.slice(1));
       break;
     case 'mcp-status':
       runMcpStatus();
       break;
     case 'mcp-unprotect':
       runMcpUnprotect();
+      break;
+    case 'backend':
+      runBackend(args.slice(1));
+      break;
+    case 'migrate':
+      runMigrate(args.slice(1));
+      break;
+    case 'secret':
+      runSecret(args.slice(1));
+      break;
+    case 'run':
+      runRun(args.slice(1));
+      break;
+    case 'import':
+      runImport(args.slice(1));
+      break;
+    case 'setup':
+      runSetupCommand(args.slice(1));
+      break;
+    case 'hook':
+      runHook(args.slice(1));
+      break;
+    case 'scan-staged':
+      runScanStaged();
       break;
     case '--version':
     case '-v':
@@ -464,12 +503,25 @@ function runWatch(args: string[]): void {
   }
 }
 
-function runProtectMcp(): void {
+function runProtectMcp(args: string[]): void {
   console.log('\n  Secretless MCP Protection\n');
 
   const wrapperPath = getWrapperPath();
 
-  protectMcp({ wrapperPath }).then((result) => {
+  // Parse --backend flag
+  let backendType: SelectableBackendType | undefined;
+  const backendIdx = args.indexOf('--backend');
+  if (backendIdx !== -1 && args[backendIdx + 1]) {
+    const val = args[backendIdx + 1];
+    if (val === 'local' || val === 'keychain' || val === '1password') {
+      backendType = val;
+    } else {
+      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', or '1password'.\n`);
+      process.exit(1);
+    }
+  }
+
+  protectMcp({ wrapperPath, backendType }).then((result) => {
     if (result.clientsScanned === 0) {
       console.log('  No MCP configurations found.\n');
       console.log('  Looked for configs from: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf');
@@ -513,6 +565,9 @@ function getWrapperPath(): string {
 function runMcpStatus(): void {
   console.log('\n  Secretless MCP Status\n');
 
+  const backend = resolveBackendType();
+  console.log(`  Backend: ${backend}\n`);
+
   const configs = discoverMcpConfigs();
 
   if (configs.length === 0) {
@@ -520,15 +575,20 @@ function runMcpStatus(): void {
     return;
   }
 
+  let protectedCount = 0;
+  let exposedCount = 0;
+
   for (const config of configs) {
     console.log(`  ${config.client} (${config.filePath})`);
     for (const server of config.servers) {
       if (server.alreadyProtected) {
         console.log(`    + ${server.name}: protected`);
+        protectedCount++;
       } else {
         const secretCount = Object.keys(classifyEnvVars(server.env).secrets).length;
         if (secretCount > 0) {
           console.log(`    ! ${server.name}: EXPOSED (${secretCount} plaintext secret(s))`);
+          exposedCount++;
         } else {
           console.log(`    * ${server.name}: clean (no secrets in env)`);
         }
@@ -537,7 +597,11 @@ function runMcpStatus(): void {
     console.log();
   }
 
-  console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
+  if (exposedCount > 0) {
+    console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
+  } else if (protectedCount > 0) {
+    console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
+  }
 }
 
 function runMcpUnprotect(): void {
@@ -564,6 +628,568 @@ function runMcpUnprotect(): void {
   }
 }
 
+function runBackend(args: string[]): void {
+  const subcommand = args[0];
+
+  if (subcommand === 'list') {
+    const backendType = resolveBackendType();
+    const backend = createBackend(backendType);
+
+    Promise.all([
+      backend.resolve('mcp'),
+      backend.resolve('secret'),
+    ]).then(([mcpEntries, secretEntries]) => {
+      const mcpKeys = Object.keys(mcpEntries).sort();
+      const secretKeys = Object.keys(secretEntries).sort();
+      const total = mcpKeys.length + secretKeys.length;
+
+      console.log('\n  Secretless Backend Entries\n');
+
+      if (total === 0) {
+        console.log('  No entries found.\n');
+        return;
+      }
+
+      if (mcpKeys.length > 0) {
+        console.log(`  mcp/ (${mcpKeys.length} ${mcpKeys.length === 1 ? 'entry' : 'entries'}):`);
+        for (const key of mcpKeys) {
+          console.log(`    ${key}`);
+        }
+        console.log();
+      }
+
+      if (secretKeys.length > 0) {
+        console.log(`  secret/ (${secretKeys.length} ${secretKeys.length === 1 ? 'entry' : 'entries'}):`);
+        for (const key of secretKeys) {
+          console.log(`    ${key}`);
+        }
+        console.log();
+      }
+
+      console.log(`  Total: ${total} ${total === 1 ? 'entry' : 'entries'}\n`);
+    }).catch((err) => {
+      console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
+    return;
+  }
+
+  if (subcommand === 'purge') {
+    const hasYes = args.includes('--yes');
+    let prefixFilter: string | undefined;
+    const prefixIdx = args.indexOf('--prefix');
+    if (prefixIdx !== -1 && args[prefixIdx + 1]) {
+      const val = args[prefixIdx + 1];
+      if (val !== 'mcp' && val !== 'secret') {
+        console.error(`\n  Unknown prefix: ${val}. Use 'mcp' or 'secret'.\n`);
+        process.exit(1);
+      }
+      prefixFilter = val;
+    }
+
+    const backendType = resolveBackendType();
+    const backend = createBackend(backendType);
+    const prefixes = prefixFilter ? [prefixFilter] : ['mcp', 'secret'];
+
+    Promise.all(prefixes.map(p => backend.resolve(p))).then(async (results) => {
+      const keysByPrefix: Record<string, string[]> = {};
+      for (let i = 0; i < prefixes.length; i++) {
+        const keys = Object.keys(results[i]);
+        if (keys.length > 0) {
+          keysByPrefix[prefixes[i]] = keys;
+        }
+      }
+
+      const allKeys = Object.values(keysByPrefix).flat();
+      if (allKeys.length === 0) {
+        console.log('\n  No entries to purge.\n');
+        return;
+      }
+
+      if (!hasYes) {
+        console.log(`\n  This will delete ${allKeys.length} ${allKeys.length === 1 ? 'entry' : 'entries'} from the ${backendType} backend.\n`);
+        for (const [prefix, keys] of Object.entries(keysByPrefix)) {
+          console.log(`  ${prefix}/:  ${keys.length}`);
+        }
+        console.log(`\n  To confirm, run: secretless-ai backend purge${prefixFilter ? ` --prefix ${prefixFilter}` : ''} --yes\n`);
+        return;
+      }
+
+      let deleted = 0;
+      let failed = 0;
+      for (const key of allKeys) {
+        const ok = await backend.delete(key);
+        if (ok) {
+          deleted++;
+        } else {
+          failed++;
+        }
+      }
+
+      if (prefixFilter) {
+        console.log(`\n  Deleted ${deleted} ${prefixFilter}/ ${deleted === 1 ? 'entry' : 'entries'} from ${backendType}.`);
+      } else {
+        console.log(`\n  Deleted ${deleted} ${deleted === 1 ? 'entry' : 'entries'} from ${backendType}.`);
+      }
+      if (failed > 0) {
+        console.log(`  Failed: ${failed}`);
+      }
+      console.log();
+    }).catch((err) => {
+      console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
+    return;
+  }
+
+  if (subcommand === 'set') {
+    const type = args[1];
+    if (type !== 'local' && type !== 'keychain' && type !== '1password') {
+      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', or '1password'.\n`);
+      process.exit(1);
+    }
+
+    if (type === 'keychain') {
+      const kc = isKeychainAvailable();
+      if (!kc.available) {
+        console.error(`\n  Cannot use keychain backend: ${kc.message}\n`);
+        process.exit(1);
+      }
+    }
+
+    if (type === '1password') {
+      const op = isOnePasswordAvailable();
+      if (!op.available) {
+        console.error(`\n  Cannot use 1Password backend: ${op.message}\n`);
+        process.exit(1);
+      }
+    }
+
+    writeBackendConfig(type);
+    console.log(`\n  Backend set to: ${type}\n`);
+    console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
+    console.log('  Or use `npx secretless-ai migrate` to migrate existing secrets.\n');
+    return;
+  }
+
+  // Default: show current backend status
+  const current = resolveBackendType();
+  const configFile = readBackendConfig();
+  const kc = isKeychainAvailable();
+  const op = isOnePasswordAvailable();
+
+  console.log('\n  Secretless Backend\n');
+  console.log(`  Current:      ${current}${configFile ? '' : ' (default)'}`);
+  console.log(`  Config file:  ${configFile ?? '(not set)'}`);
+  console.log(`  Keychain:     ${kc.available ? 'available' : 'unavailable'} (${kc.message})`);
+  console.log(`  1Password:    ${op.available ? 'available' : 'unavailable'} (${op.message})`);
+  console.log(`  Platform:     ${kc.platform}`);
+  console.log();
+  console.log('  Commands:');
+  console.log('    npx secretless-ai backend set local       Use local encrypted file');
+  console.log('    npx secretless-ai backend set keychain     Use OS keychain');
+  console.log('    npx secretless-ai backend set 1password    Use 1Password vault');
+  console.log('    npx secretless-ai backend list             List all stored entries');
+  console.log('    npx secretless-ai backend purge            Delete all entries (--yes to confirm)');
+  console.log();
+}
+
+function runMigrate(args: string[]): void {
+  let fromType: SelectableBackendType | undefined;
+  let toType: SelectableBackendType | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from' && args[i + 1]) {
+      const val = args[++i];
+      if (val === 'local' || val === 'keychain' || val === '1password') fromType = val;
+    }
+    if (args[i] === '--to' && args[i + 1]) {
+      const val = args[++i];
+      if (val === 'local' || val === 'keychain' || val === '1password') toType = val;
+    }
+  }
+
+  if (!fromType || !toType) {
+    console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password> --to <local|keychain|1password>\n');
+    process.exit(1);
+  }
+
+  if (fromType === toType) {
+    console.error(`\n  Source and destination backends are the same: ${fromType}\n`);
+    process.exit(1);
+  }
+
+  console.log('\n  Secretless Migration\n');
+  console.log(`  From: ${fromType}`);
+  console.log(`  To:   ${toType}\n`);
+
+  const source = createBackend(fromType);
+  const destination = createBackend(toType);
+
+  migrateSecrets(source, destination, { deleteFromSource: false }).then((result) => {
+    if (result.migrated === 0 && result.failed === 0) {
+      console.log('  No secrets found to migrate.\n');
+      return;
+    }
+
+    console.log(`  Migrated: ${result.migrated} secret(s)`);
+    if (result.failed > 0) {
+      console.log(`  Failed:   ${result.failed} secret(s)`);
+      for (const err of result.errors) {
+        console.log(`    - ${err.key}: ${err.message}`);
+      }
+    }
+    console.log();
+
+    // Update config to use the new backend
+    writeBackendConfig(toType!);
+    console.log(`  Backend config updated to: ${toType}`);
+    console.log('  Run `npx secretless-ai protect-mcp` to update MCP wrapper configs.\n');
+  }).catch((err) => {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
+function runSecret(args: string[]): void {
+  const subcommand = args[0];
+
+  switch (subcommand) {
+    case 'set': {
+      const nameArg = args[1];
+      if (!nameArg) {
+        console.error('\n  Usage: secretless-ai secret set <NAME[=VALUE]>\n');
+        process.exit(1);
+      }
+
+      // Check for inline value: NAME=VALUE
+      const eqIdx = nameArg.indexOf('=');
+      if (eqIdx !== -1) {
+        const name = nameArg.slice(0, eqIdx);
+        const value = nameArg.slice(eqIdx + 1);
+        const store = new SecretStore();
+        store.setSecret(name, value).then(() => {
+          console.log(`  Stored: ${name}`);
+        }).catch((err) => {
+          console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        });
+        return;
+      }
+
+      // Read value from stdin
+      const name = nameArg;
+      let input = '';
+      process.stdin.setEncoding('utf-8');
+
+      if (process.stdin.isTTY) {
+        process.stderr.write(`  Enter value for ${name}: `);
+      }
+
+      process.stdin.on('data', (chunk) => { input += chunk; });
+      process.stdin.on('end', () => {
+        const value = input.trim();
+        if (!value) {
+          console.error('  Error: empty value');
+          process.exit(1);
+        }
+        const store = new SecretStore();
+        store.setSecret(name, value).then(() => {
+          console.log(`  Stored: ${name}`);
+        }).catch((err) => {
+          console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        });
+      });
+      break;
+    }
+
+    case 'list': {
+      const store = new SecretStore();
+      store.listSecrets().then((names) => {
+        if (names.length === 0) {
+          console.log('\n  No secrets stored.\n');
+          return;
+        }
+        console.log(`\n  ${names.length} secret(s):\n`);
+        for (const name of names) {
+          console.log(`    ${name}`);
+        }
+        console.log();
+      }).catch((err) => {
+        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      });
+      break;
+    }
+
+    case 'get': {
+      const name = args[1];
+      if (!name) {
+        console.error('\n  Usage: secretless-ai secret get <NAME>\n');
+        process.exit(1);
+      }
+
+      // Block output in non-interactive contexts (AI tools capture stdout).
+      // This prevents AI coding assistants from reading secret values into
+      // their context, which would defeat the purpose of secretless.
+      if (!process.stdout.isTTY && !args.includes('--force')) {
+        console.error('  secretless: Blocked -- secret values cannot be read in non-interactive contexts.');
+        console.error('  AI tools capture stdout, which would expose the secret in their context.');
+        console.error('');
+        console.error('  To inject secrets into a command:');
+        console.error('    npx secretless-ai run -- <command>');
+        console.error('');
+        console.error('  To force output (e.g. piping to clipboard):');
+        console.error('    npx secretless-ai secret get <NAME> --force');
+        process.exit(1);
+      }
+
+      const store = new SecretStore();
+      store.getSecret(name).then((value) => {
+        if (value === undefined) {
+          console.error(`  Secret not found: ${name}`);
+          process.exit(1);
+        }
+        process.stdout.write(value);
+        // Add newline if stdout is a terminal
+        if (process.stdout.isTTY) {
+          process.stdout.write('\n');
+        }
+      }).catch((err) => {
+        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      });
+      break;
+    }
+
+    case 'rm':
+    case 'remove':
+    case 'delete': {
+      const name = args[1];
+      if (!name) {
+        console.error('\n  Usage: secretless-ai secret rm <NAME>\n');
+        process.exit(1);
+      }
+      const store = new SecretStore();
+      store.removeSecret(name).then((removed) => {
+        if (removed) {
+          console.log(`  Removed: ${name}`);
+        } else {
+          console.error(`  Secret not found: ${name}`);
+          process.exit(1);
+        }
+      }).catch((err) => {
+        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      });
+      break;
+    }
+
+    default:
+      console.error(`\n  Unknown secret command: ${subcommand ?? '(none)'}`);
+      console.log('  Usage: secretless-ai secret <set|list|get|rm> [args]\n');
+      process.exit(1);
+  }
+}
+
+function runRun(args: string[]): void {
+  // Parse --only flag before --
+  let only: string[] | undefined;
+  const separatorIdx = args.indexOf('--');
+
+  // Check for --only before the separator
+  const searchEnd = separatorIdx !== -1 ? separatorIdx : args.length;
+  for (let i = 0; i < searchEnd; i++) {
+    if (args[i] === '--only' && args[i + 1]) {
+      only = args[i + 1].split(',').map(s => s.trim()).filter(Boolean);
+      break;
+    }
+  }
+
+  // Everything after -- is the child command
+  if (separatorIdx === -1 || separatorIdx >= args.length - 1) {
+    console.error('\n  Usage: secretless-ai run [--only KEY1,KEY2] -- <command> [args...]\n');
+    process.exit(1);
+  }
+
+  const childCommand = args[separatorIdx + 1];
+  const childArgs = args.slice(separatorIdx + 2);
+
+  runWithSecrets(childCommand, childArgs, { only }).then((code) => {
+    process.exit(code);
+  }).catch((err) => {
+    console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}
+
+function runImport(args: string[]): void {
+  console.log('\n  Secretless Import\n');
+
+  if (args.includes('--detect')) {
+    const dir = process.cwd();
+    const files = detectEnvFiles(dir);
+    if (files.length === 0) {
+      console.log('  No .env files found in current directory.\n');
+      return;
+    }
+
+    let totalImported = 0;
+    const importNext = (idx: number): void => {
+      if (idx >= files.length) {
+        console.log(`\n  Total: ${totalImported} secret(s) imported.\n`);
+        return;
+      }
+      const file = files[idx];
+      importEnvFile(file).then((result) => {
+        console.log(`  ${path.basename(file)}: ${result.imported} imported`);
+        if (result.skipped > 0) {
+          console.log(`    (${result.skipped} skipped — invalid names)`);
+        }
+        totalImported += result.imported;
+        importNext(idx + 1);
+      }).catch((err) => {
+        console.error(`  Error importing ${file}: ${err instanceof Error ? err.message : String(err)}`);
+        importNext(idx + 1);
+      });
+    };
+    importNext(0);
+    return;
+  }
+
+  const filePath = args[0];
+  if (!filePath) {
+    console.error('  Usage: secretless-ai import <file> or secretless-ai import --detect\n');
+    process.exit(1);
+  }
+
+  const resolvedPath = path.resolve(filePath);
+  importEnvFile(resolvedPath).then((result) => {
+    if (result.imported === 0) {
+      console.log('  No secrets found in file.\n');
+      return;
+    }
+
+    console.log(`  Imported ${result.imported} secret(s) from ${path.basename(resolvedPath)}:\n`);
+    for (const name of result.entries) {
+      console.log(`    + ${name}`);
+    }
+    if (result.skipped > 0) {
+      console.log(`\n  Skipped: ${result.skipped} (invalid names)`);
+    }
+    console.log();
+  }).catch((err) => {
+    console.error(`  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
+function runSetupCommand(args: string[]): void {
+  const checkOnly = args.includes('--check');
+  const dir = process.cwd();
+
+  console.log('\n  Secretless Setup\n');
+
+  runSetup(dir, { check: checkOnly }).then((result) => {
+    if (checkOnly) {
+      console.log(`  Satisfied: ${result.existing} secret(s)`);
+      console.log(`  Missing:   ${result.missing} required`);
+      console.log(`  Optional:  ${result.skipped} not set\n`);
+
+      if (!result.complete) {
+        console.log('  Missing secrets:');
+        for (const name of result.missingNames) {
+          console.log(`    - ${name}`);
+        }
+        console.log();
+        console.log('  FAIL: Run `secretless-ai setup` to configure missing secrets.\n');
+        process.exit(1);
+      } else {
+        console.log('  PASS: All required secrets are configured.\n');
+      }
+      return;
+    }
+
+    if (result.set > 0 || result.existing > 0) {
+      console.log(`\n  Set:      ${result.set} secret(s)`);
+      console.log(`  Existing: ${result.existing}`);
+      console.log(`  Skipped:  ${result.skipped} (optional)\n`);
+    }
+  }).catch((err) => {
+    console.error(`  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
+function runHook(args: string[]): void {
+  const subcommand = args[0];
+  const projectDir = process.cwd();
+
+  switch (subcommand) {
+    case 'install': {
+      const result = installPreCommitHook(projectDir);
+      console.log(`\n  ${result.message}\n`);
+      if (!result.installed) {
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'uninstall': {
+      const result = uninstallPreCommitHook(projectDir);
+      console.log(`\n  ${result.message}\n`);
+      if (!result.removed) {
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'status': {
+      const installed = isHookInstalled(projectDir);
+      console.log(`\n  Pre-commit hook: ${installed ? 'installed' : 'not installed'}\n`);
+      break;
+    }
+
+    default:
+      console.error(`\n  Unknown hook command: ${subcommand ?? '(none)'}`);
+      console.log('  Usage: secretless-ai hook <install|uninstall|status>\n');
+      process.exit(1);
+  }
+}
+
+function runScanStaged(): void {
+  const { findings, blockedFiles } = scanStagedFiles();
+  const total = findings.length + blockedFiles.length;
+
+  if (total === 0) {
+    // Clean — allow commit
+    process.exit(0);
+  }
+
+  console.error('\n  secretless: Blocked commit — secrets detected\n');
+
+  if (blockedFiles.length > 0) {
+    console.error('  Secret files staged for commit:');
+    for (const file of blockedFiles) {
+      console.error(`    ! ${file}`);
+    }
+    console.error();
+  }
+
+  if (findings.length > 0) {
+    console.error('  Credentials found in staged files:');
+    for (const f of findings) {
+      console.error(`    ! ${f.patternName} in ${f.file}:${f.line}`);
+    }
+    console.error();
+  }
+
+  console.error('  Remove the secrets and try again.');
+  console.error('  To bypass: git commit --no-verify\n');
+  process.exit(1);
+}
+
 function printHelp(): void {
   console.log(`
   Secretless v${VERSION}
@@ -578,10 +1204,35 @@ function printHelp(): void {
     npx secretless-ai clean     Scan and redact credentials in transcripts
     npx secretless-ai watch     Monitor transcripts in real-time
 
+  Secret Management:
+    npx secretless-ai secret set <NAME[=VALUE]>  Store a secret
+    npx secretless-ai secret list                List stored secret names
+    npx secretless-ai secret get <NAME>          Retrieve a secret value
+    npx secretless-ai secret rm <NAME>           Remove a secret
+    npx secretless-ai import <file>              Import secrets from .env file
+    npx secretless-ai import --detect            Auto-find and import .env files
+    npx secretless-ai run -- <command>           Run command with secrets injected
+
+  Project Setup:
+    npx secretless-ai setup              Set up secrets from .secretless manifest
+    npx secretless-ai setup --check      Check for missing required secrets (CI)
+
+  Git Protection:
+    npx secretless-ai hook install       Install pre-commit secret scanner
+    npx secretless-ai hook uninstall     Remove pre-commit hook
+    npx secretless-ai hook status        Check hook installation status
+
   MCP Protection:
     npx secretless-ai protect-mcp    Encrypt MCP server secrets
     npx secretless-ai mcp-status     Show MCP protection status
     npx secretless-ai mcp-unprotect  Restore original MCP configs
+
+  Backend Management:
+    npx secretless-ai backend             Show current backend status
+    npx secretless-ai backend set <type>  Set backend (local, keychain, or 1password)
+    npx secretless-ai backend list        List all entries in current backend
+    npx secretless-ai backend purge       Delete all entries (--prefix mcp|secret, --yes)
+    npx secretless-ai migrate             Migrate secrets between backends
 
   Clean options:
     --dry-run     Report findings without redacting

@@ -44,7 +44,7 @@ describe('secretless-mcp wrapper', () => {
 
   it('injects secrets as env vars into child process', async () => {
     // Store a secret in the vault
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
     await vault.storeServerSecrets('cursor', 'test-server', {
       MY_SECRET: 'injected-value-123',
     });
@@ -54,7 +54,7 @@ describe('secretless-mcp wrapper', () => {
     fs.writeFileSync(scriptPath, 'console.log(JSON.stringify({ MY_SECRET: process.env.MY_SECRET }));');
 
     const result = await runWrapper(
-      ['--server', 'test-server', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--', 'node', scriptPath],
+      ['--server', 'test-server', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
     );
 
     expect(result.code).toBe(0);
@@ -64,7 +64,7 @@ describe('secretless-mcp wrapper', () => {
 
   it('exits with error when vault dir is missing', async () => {
     const result = await runWrapper(
-      ['--server', 'x', '--client', 'y', '--vault-dir', '/nonexistent/path', '--', 'echo', 'hi'],
+      ['--server', 'x', '--client', 'y', '--vault-dir', '/nonexistent/path', '--backend', 'local', '--', 'echo', 'hi'],
     );
 
     expect(result.code).not.toBe(0);
@@ -84,18 +84,18 @@ describe('secretless-mcp wrapper', () => {
     const scriptPath = path.join(dir, 'fail.js');
     fs.writeFileSync(scriptPath, 'process.exit(42);');
 
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
     await vault.storeServerSecrets('cursor', 'srv', {});
 
     const result = await runWrapper(
-      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--', 'node', scriptPath],
+      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
     );
 
     expect(result.code).toBe(42);
   });
 
   it('passes existing env vars through to child', async () => {
-    const vault = new McpVault({ storeDir: dir, key: 'test-key' });
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
     await vault.storeServerSecrets('cursor', 'srv', { INJECTED: 'from-vault' });
 
     const scriptPath = path.join(dir, 'check-env.js');
@@ -107,7 +107,7 @@ describe('secretless-mcp wrapper', () => {
     `);
 
     const result = await runWrapper(
-      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--', 'node', scriptPath],
+      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
       { EXISTING_VAR: 'already-here' },
     );
 
