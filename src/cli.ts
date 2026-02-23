@@ -619,6 +619,117 @@ function runMcpUnprotect(): void {
 function runBackend(args: string[]): void {
   const subcommand = args[0];
 
+  if (subcommand === 'list') {
+    const backendType = resolveBackendType();
+    const backend = createBackend(backendType);
+
+    Promise.all([
+      backend.resolve('mcp'),
+      backend.resolve('secret'),
+    ]).then(([mcpEntries, secretEntries]) => {
+      const mcpKeys = Object.keys(mcpEntries).sort();
+      const secretKeys = Object.keys(secretEntries).sort();
+      const total = mcpKeys.length + secretKeys.length;
+
+      console.log('\n  Secretless Backend Entries\n');
+
+      if (total === 0) {
+        console.log('  No entries found.\n');
+        return;
+      }
+
+      if (mcpKeys.length > 0) {
+        console.log(`  mcp/ (${mcpKeys.length} ${mcpKeys.length === 1 ? 'entry' : 'entries'}):`);
+        for (const key of mcpKeys) {
+          console.log(`    ${key}`);
+        }
+        console.log();
+      }
+
+      if (secretKeys.length > 0) {
+        console.log(`  secret/ (${secretKeys.length} ${secretKeys.length === 1 ? 'entry' : 'entries'}):`);
+        for (const key of secretKeys) {
+          console.log(`    ${key}`);
+        }
+        console.log();
+      }
+
+      console.log(`  Total: ${total} ${total === 1 ? 'entry' : 'entries'}\n`);
+    }).catch((err) => {
+      console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
+    return;
+  }
+
+  if (subcommand === 'purge') {
+    const hasYes = args.includes('--yes');
+    let prefixFilter: string | undefined;
+    const prefixIdx = args.indexOf('--prefix');
+    if (prefixIdx !== -1 && args[prefixIdx + 1]) {
+      const val = args[prefixIdx + 1];
+      if (val !== 'mcp' && val !== 'secret') {
+        console.error(`\n  Unknown prefix: ${val}. Use 'mcp' or 'secret'.\n`);
+        process.exit(1);
+      }
+      prefixFilter = val;
+    }
+
+    const backendType = resolveBackendType();
+    const backend = createBackend(backendType);
+    const prefixes = prefixFilter ? [prefixFilter] : ['mcp', 'secret'];
+
+    Promise.all(prefixes.map(p => backend.resolve(p))).then(async (results) => {
+      const keysByPrefix: Record<string, string[]> = {};
+      for (let i = 0; i < prefixes.length; i++) {
+        const keys = Object.keys(results[i]);
+        if (keys.length > 0) {
+          keysByPrefix[prefixes[i]] = keys;
+        }
+      }
+
+      const allKeys = Object.values(keysByPrefix).flat();
+      if (allKeys.length === 0) {
+        console.log('\n  No entries to purge.\n');
+        return;
+      }
+
+      if (!hasYes) {
+        console.log(`\n  This will delete ${allKeys.length} ${allKeys.length === 1 ? 'entry' : 'entries'} from the ${backendType} backend.\n`);
+        for (const [prefix, keys] of Object.entries(keysByPrefix)) {
+          console.log(`  ${prefix}/:  ${keys.length}`);
+        }
+        console.log(`\n  To confirm, run: secretless-ai backend purge${prefixFilter ? ` --prefix ${prefixFilter}` : ''} --yes\n`);
+        return;
+      }
+
+      let deleted = 0;
+      let failed = 0;
+      for (const key of allKeys) {
+        const ok = await backend.delete(key);
+        if (ok) {
+          deleted++;
+        } else {
+          failed++;
+        }
+      }
+
+      if (prefixFilter) {
+        console.log(`\n  Deleted ${deleted} ${prefixFilter}/ ${deleted === 1 ? 'entry' : 'entries'} from ${backendType}.`);
+      } else {
+        console.log(`\n  Deleted ${deleted} ${deleted === 1 ? 'entry' : 'entries'} from ${backendType}.`);
+      }
+      if (failed > 0) {
+        console.log(`  Failed: ${failed}`);
+      }
+      console.log();
+    }).catch((err) => {
+      console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
+    return;
+  }
+
   if (subcommand === 'set') {
     const type = args[1];
     if (type !== 'local' && type !== 'keychain') {
@@ -655,6 +766,8 @@ function runBackend(args: string[]): void {
   console.log('  Commands:');
   console.log('    npx secretless-ai backend set local      Use local encrypted file');
   console.log('    npx secretless-ai backend set keychain    Use OS keychain');
+  console.log('    npx secretless-ai backend list            List all stored entries');
+  console.log('    npx secretless-ai backend purge           Delete all entries (--yes to confirm)');
   console.log();
 }
 
@@ -1078,6 +1191,8 @@ function printHelp(): void {
   Backend Management:
     npx secretless-ai backend             Show current backend and keychain status
     npx secretless-ai backend set <type>  Set backend (local or keychain)
+    npx secretless-ai backend list        List all entries in current backend
+    npx secretless-ai backend purge       Delete all entries (--prefix mcp|secret, --yes)
     npx secretless-ai migrate             Migrate secrets between backends
 
   Clean options:
