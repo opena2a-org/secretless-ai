@@ -10,7 +10,7 @@ import * as path from 'path';
 import type { BackendType } from './types';
 
 /** Writable backend types that can be selected by the user. */
-export type SelectableBackendType = 'local' | 'keychain';
+export type SelectableBackendType = 'local' | 'keychain' | '1password';
 
 const CONFIG_FILENAME = 'config.json';
 const DEFAULT_BACKEND: SelectableBackendType = 'local';
@@ -33,7 +33,7 @@ export function readBackendConfig(): SelectableBackendType | undefined {
   try {
     const raw = fs.readFileSync(configPath(), 'utf-8');
     const config = JSON.parse(raw) as SecretlessConfig;
-    if (config.backend === 'local' || config.backend === 'keychain') {
+    if (config.backend === 'local' || config.backend === 'keychain' || config.backend === '1password') {
       return config.backend;
     }
     return undefined;
@@ -68,7 +68,7 @@ export function writeBackendConfig(backend: SelectableBackendType): void {
  * Priority: explicit flag > config file > default ('local').
  */
 export function resolveBackendType(explicitFlag?: string): SelectableBackendType {
-  if (explicitFlag === 'local' || explicitFlag === 'keychain') {
+  if (explicitFlag === 'local' || explicitFlag === 'keychain' || explicitFlag === '1password') {
     return explicitFlag;
   }
   return readBackendConfig() ?? DEFAULT_BACKEND;

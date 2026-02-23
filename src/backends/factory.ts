@@ -2,20 +2,22 @@
  * Backend factory — creates the appropriate WritableSecretBackend based on type.
  *
  * Dispatches 'keychain' to the platform-specific implementation (macOS or Linux).
+ * Dispatches '1password' to the OnePasswordBackend (requires `op` CLI).
  * Falls back to 'local' on unsupported platforms with a console message.
  */
 
 import { LocalBackend } from './local';
 import { MacOSKeychainBackend } from './keychain-macos';
 import { LinuxKeychainBackend } from './keychain-linux';
+import { OnePasswordBackend } from './onepassword';
 import type { WritableSecretBackend } from './types';
 import type { SelectableBackendType } from './config';
 
 /**
  * Create a WritableSecretBackend instance for the given type.
  *
- * @param type   - 'local' or 'keychain'
- * @param config - Backend-specific configuration (e.g. storeDir, key)
+ * @param type   - 'local', 'keychain', or '1password'
+ * @param config - Backend-specific configuration (e.g. storeDir, key, vault)
  */
 export function createBackend(
   type: SelectableBackendType,
@@ -24,6 +26,9 @@ export function createBackend(
   switch (type) {
     case 'keychain':
       return createKeychainBackend(config);
+
+    case '1password':
+      return new OnePasswordBackend(config);
 
     case 'local':
     default:
@@ -67,6 +72,36 @@ export function isKeychainAvailable(): { available: boolean; platform: string; m
     platform: platform,
     message: `OS keychain is not supported on ${platform}. Using local encrypted backend.`,
   };
+}
+
+/**
+ * Check if the 1Password CLI (`op`) is available and authenticated.
+ * Returns availability status and an actionable message.
+ */
+export function isOnePasswordAvailable(): { available: boolean; message: string } {
+  try {
+    const { execFileSync } = require('child_process');
+    execFileSync('op', ['--version'], { stdio: 'pipe' });
+  } catch {
+    return {
+      available: false,
+      message: '1Password CLI (op) not found. Install from https://developer.1password.com/docs/cli',
+    };
+  }
+
+  try {
+    const { execFileSync } = require('child_process');
+    execFileSync('op', ['account', 'get', '--format', 'json'], { stdio: 'pipe' });
+    return {
+      available: true,
+      message: '1Password CLI installed and authenticated',
+    };
+  } catch {
+    return {
+      available: false,
+      message: '1Password CLI installed but not signed in. Run `op signin` or set OP_SERVICE_ACCOUNT_TOKEN.',
+    };
+  }
 }
 
 function createKeychainBackend(config?: Record<string, unknown>): WritableSecretBackend {
