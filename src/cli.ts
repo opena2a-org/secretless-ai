@@ -917,6 +917,22 @@ function runSecret(args: string[]): void {
         console.error('\n  Usage: secretless-ai secret get <NAME>\n');
         process.exit(1);
       }
+
+      // Block output in non-interactive contexts (AI tools capture stdout).
+      // This prevents AI coding assistants from reading secret values into
+      // their context, which would defeat the purpose of secretless.
+      if (!process.stdout.isTTY && !args.includes('--force')) {
+        console.error('  secretless: Blocked -- secret values cannot be read in non-interactive contexts.');
+        console.error('  AI tools capture stdout, which would expose the secret in their context.');
+        console.error('');
+        console.error('  To inject secrets into a command:');
+        console.error('    npx secretless-ai run -- <command>');
+        console.error('');
+        console.error('  To force output (e.g. piping to clipboard):');
+        console.error('    npx secretless-ai secret get <NAME> --force');
+        process.exit(1);
+      }
+
       const store = new SecretStore();
       store.getSecret(name).then((value) => {
         if (value === undefined) {
