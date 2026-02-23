@@ -48,6 +48,7 @@ describe('protectMcp', () => {
       homeDir,
       dataDir,
       wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
     });
 
     expect(result.clientsScanned).toBeGreaterThan(0);
@@ -66,6 +67,7 @@ describe('protectMcp', () => {
       homeDir,
       dataDir,
       wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
     });
 
     expect(result.clientsScanned).toBe(0);
@@ -92,6 +94,7 @@ describe('protectMcp', () => {
       homeDir,
       dataDir,
       wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
     });
 
     expect(result.clientsScanned).toBe(1);
@@ -129,6 +132,7 @@ describe('protectMcp', () => {
       homeDir,
       dataDir,
       wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
     });
 
     expect(result.clientsScanned).toBe(2);
@@ -153,6 +157,7 @@ describe('protectMcp', () => {
       homeDir,
       dataDir,
       wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
     });
 
     expect(result.serversProtected).toBe(1); // Only 'raw', not 'already'
