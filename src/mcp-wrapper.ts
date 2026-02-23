@@ -16,6 +16,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 import { McpVault } from './mcp/vault';
+import { resolveBackendType } from './backends/config';
 
 function parseArgs(argv: string[]): {
   server: string;
@@ -75,8 +76,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Resolve backend: explicit --backend flag > config file > default ('local').
+  // This ensures that switching backends via `backend set 1password` applies
+  // to existing MCP configs that were written without a --backend flag.
+  const backendType = args.backend || resolveBackendType();
+
   // Validate vault directory exists (only needed for local backend)
-  if (!args.backend || args.backend === 'local') {
+  if (backendType === 'local') {
     if (!fs.existsSync(args.vaultDir)) {
       process.stderr.write(`secretless-mcp: Vault directory not found: ${args.vaultDir}\n`);
       process.stderr.write(`secretless-mcp: Run 'npx secretless-ai mcp-protect' to set up MCP secret protection.\n`);
@@ -90,7 +96,7 @@ async function main(): Promise<void> {
     const vault = new McpVault({
       storeDir: args.vaultDir,
       key: args.vaultKey,
-      ...(args.backend ? { backendType: args.backend } : {}),
+      backendType,
     });
     secrets = await vault.getServerSecrets(args.client, args.server);
   } catch (err) {

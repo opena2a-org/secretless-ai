@@ -565,6 +565,9 @@ function getWrapperPath(): string {
 function runMcpStatus(): void {
   console.log('\n  Secretless MCP Status\n');
 
+  const backend = resolveBackendType();
+  console.log(`  Backend: ${backend}\n`);
+
   const configs = discoverMcpConfigs();
 
   if (configs.length === 0) {
@@ -572,15 +575,20 @@ function runMcpStatus(): void {
     return;
   }
 
+  let protectedCount = 0;
+  let exposedCount = 0;
+
   for (const config of configs) {
     console.log(`  ${config.client} (${config.filePath})`);
     for (const server of config.servers) {
       if (server.alreadyProtected) {
         console.log(`    + ${server.name}: protected`);
+        protectedCount++;
       } else {
         const secretCount = Object.keys(classifyEnvVars(server.env).secrets).length;
         if (secretCount > 0) {
           console.log(`    ! ${server.name}: EXPOSED (${secretCount} plaintext secret(s))`);
+          exposedCount++;
         } else {
           console.log(`    * ${server.name}: clean (no secrets in env)`);
         }
@@ -589,7 +597,11 @@ function runMcpStatus(): void {
     console.log();
   }
 
-  console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
+  if (exposedCount > 0) {
+    console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
+  } else if (protectedCount > 0) {
+    console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
+  }
 }
 
 function runMcpUnprotect(): void {

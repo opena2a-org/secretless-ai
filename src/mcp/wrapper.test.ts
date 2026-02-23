@@ -64,7 +64,7 @@ describe('secretless-mcp wrapper', () => {
 
   it('exits with error when vault dir is missing', async () => {
     const result = await runWrapper(
-      ['--server', 'x', '--client', 'y', '--vault-dir', '/nonexistent/path', '--', 'echo', 'hi'],
+      ['--server', 'x', '--client', 'y', '--vault-dir', '/nonexistent/path', '--backend', 'local', '--', 'echo', 'hi'],
     );
 
     expect(result.code).not.toBe(0);
