@@ -13,6 +13,10 @@ Part of the [OpenA2A](https://opena2a.org) ecosystem — open-source security fo
 npx secretless-ai init
 ```
 
+<p align="center">
+  <img src="docs/secretless-ai-demo.gif" alt="Secretless AI scanning and protecting credentials" width="700" />
+</p>
+
 ## Secret Storage Backends
 
 Secretless stores secrets in your choice of backend. Secrets are never in environment variables, shell profiles, or config files — they exist only in the backend and get injected into process memory at runtime.
