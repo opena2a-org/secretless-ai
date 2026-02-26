@@ -197,7 +197,7 @@ function runInit(projectDir: string): void {
 
   // Star prompt (interactive TTY only)
   if (process.stdout.isTTY) {
-    console.log('  Helpful? Star the project: https://github.com/opena2a-org\n');
+    console.log('  Helpful? Star the project: https://github.com/opena2a-org/opena2a\n');
   }
 }
 
