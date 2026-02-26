@@ -194,6 +194,11 @@ function runInit(projectDir: string): void {
   }
 
   console.log('  Done. Secrets are now blocked from AI context.\n');
+
+  // Star prompt (interactive TTY only)
+  if (process.stdout.isTTY) {
+    console.log('  Helpful? Star the project: https://github.com/opena2a-org\n');
+  }
 }
 
 function runScan(projectDir: string): void {
