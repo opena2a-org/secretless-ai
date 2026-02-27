@@ -7,8 +7,6 @@
 
 One command to keep secrets out of AI LLMs. Works with Claude Code, Cursor, Copilot, Windsurf, Cline, and Aider.
 
-Part of the [OpenA2A](https://opena2a.org) ecosystem — open-source security for AI agents.
-
 ```bash
 npx secretless-ai init
 ```
