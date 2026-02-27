@@ -884,6 +884,7 @@ function runSecret(args: string[]): void {
 
       // Read value from stdin
       const name = nameArg;
+
       let input = '';
       process.stdin.setEncoding('utf-8');
 
@@ -891,7 +892,28 @@ function runSecret(args: string[]): void {
         process.stderr.write(`  Enter value for ${name}: `);
       }
 
-      process.stdin.on('data', (chunk) => { input += chunk; });
+      process.stdin.on('data', (chunk) => {
+        input += chunk;
+        // In TTY mode, each Enter press delivers a line — store immediately.
+        // In piped mode, we may get multiple chunks, but the first is usually all.
+        if (process.stdin.isTTY) {
+          const value = input.trim();
+          if (!value) {
+            console.error('  Error: empty value');
+            process.exit(1);
+          }
+          const store = new SecretStore();
+          store.setSecret(name, value).then(() => {
+            console.log(`  Stored: ${name}`);
+            process.exit(0);
+          }).catch((err) => {
+            console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+            process.exit(1);
+          });
+        }
+      });
+
+      // Piped mode: wait for stdin to close, then store
       process.stdin.on('end', () => {
         const value = input.trim();
         if (!value) {
@@ -901,6 +923,7 @@ function runSecret(args: string[]): void {
         const store = new SecretStore();
         store.setSecret(name, value).then(() => {
           console.log(`  Stored: ${name}`);
+          process.exit(0);
         }).catch((err) => {
           console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
           process.exit(1);
