@@ -36,3 +36,16 @@ export { parseManifest, readManifest, checkManifest, type ManifestEntry, type Ma
 export { runSetup, type SetupOptions, type SetupResult } from './setup';
 export { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from './git-hook';
 export { scanStagedFiles } from './scan-staged';
+
+// Broker service
+export {
+  PolicyEngine, matchGlob, isWithinTimeWindow,
+  RateLimiter, AuditLogger, AimClient,
+  CredentialResolver, BrokerServer,
+  startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning,
+  type BrokerConfig, type ResolveRequest, type ResolveResponse,
+  type PolicyRule, type PolicyConstraints, type PolicyEvaluation,
+  type AuditEntry, type AgentIdentity,
+  type BrokerHealth, type BrokerStatus,
+  type ResolverOptions, type DaemonOptions,
+} from './broker';
