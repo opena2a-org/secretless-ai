@@ -307,6 +307,23 @@ describe('PolicyEngine', () => {
       expect(() => fileEngine.loadPolicies()).toThrow('Failed to load policies');
     });
 
+    it('loads policies from a bare JSON array', () => {
+      const policies = [{
+        id: 'bare-rule',
+        agentSelector: 'scanner-*',
+        credentialSelector: 'GITHUB_TOKEN',
+        constraints: {},
+        effect: 'allow',
+      }];
+      fs.writeFileSync(policyFile, JSON.stringify(policies));
+
+      const fileEngine = new PolicyEngine({ policyFile });
+      const count = fileEngine.loadPolicies();
+      expect(count).toBe(1);
+      expect(fileEngine.evaluate('scanner-01', 'GITHUB_TOKEN').allowed).toBe(true);
+      expect(fileEngine.evaluate('deploy-agent', 'GITHUB_TOKEN').allowed).toBe(false);
+    });
+
     it('throws on missing rules array', () => {
       fs.writeFileSync(policyFile, JSON.stringify({ notRules: [] }));
       const fileEngine = new PolicyEngine({ policyFile });
