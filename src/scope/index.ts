@@ -59,7 +59,9 @@ export function createScopeProvider(provider: string, credential: string): Scope
     case 'gcp':
       return new GCPScopeProvider(credential);
     case 'vault':
-      return new VaultScopeProvider();
+      // credential IS the vault token -- use it for scope inspection
+      // VAULT_ADDR still comes from env (the server address doesn't change)
+      return new VaultScopeProvider(undefined, credential);
     default:
       throw new Error(`Unsupported scope provider: "${provider}"`);
   }

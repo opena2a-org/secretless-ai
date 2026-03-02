@@ -36,29 +36,86 @@ export class VaultBackend implements WritableSecretBackend {
     this.mountPath = c.mountPath ?? DEFAULT_MOUNT_PATH;
   }
 
+  /**
+   * Resolve secrets from Vault.
+   *
+   * Matches the LocalBackend contract:
+   * - resolve("secret/KEY") returns { "secret/KEY": "value" }
+   * - resolve("secret") returns all keys under the "secret/" prefix
+   */
   async resolve(path: string): Promise<Record<string, string>> {
     this.ensureConfigured();
 
-    const url = `${this.addr}/v1/${this.mountPath}/data/${path}`;
-    const response = await this.request('GET', url);
+    // Try direct read first
+    const readUrl = `${this.addr}/v1/${this.mountPath}/data/${path}`;
+    const readResponse = await this.request('GET', readUrl);
 
-    if (response.status === 404) {
+    if (readResponse.ok) {
+      const body = await readResponse.json() as {
+        data?: { data?: Record<string, string> };
+      };
+      const value = body.data?.data?.value;
+      if (value !== undefined) {
+        return { [path]: value };
+      }
       return {};
     }
 
-    if (response.status === 403) {
+    if (readResponse.status === 403) {
       throw new Error(`Vault: permission denied reading "${path}"`);
     }
 
-    if (!response.ok) {
-      throw new Error(`Vault: read failed (HTTP ${response.status})`);
+    // 404 on direct read -- try listing keys under this prefix
+    if (readResponse.status === 404) {
+      return this.listPrefix(path);
     }
 
-    const body = await response.json() as {
-      data?: { data?: Record<string, string> };
+    throw new Error(`Vault: read failed (HTTP ${readResponse.status})`);
+  }
+
+  /**
+   * List all keys under a prefix and read each one.
+   * Uses the KV v2 metadata LIST endpoint.
+   */
+  private async listPrefix(prefix: string): Promise<Record<string, string>> {
+    const listUrl = `${this.addr}/v1/${this.mountPath}/metadata/${prefix}`;
+    const listResponse = await this.request('LIST', listUrl);
+
+    if (listResponse.status === 404) {
+      return {};
+    }
+
+    if (!listResponse.ok) {
+      return {};
+    }
+
+    const listBody = await listResponse.json() as {
+      data?: { keys?: string[] };
     };
 
-    return body.data?.data ?? {};
+    const keys = listBody.data?.keys ?? [];
+    const results: Record<string, string> = {};
+
+    for (const key of keys) {
+      // Skip subdirectories (trailing /)
+      if (key.endsWith('/')) continue;
+
+      const fullPath = `${prefix}/${key}`;
+      const readUrl = `${this.addr}/v1/${this.mountPath}/data/${fullPath}`;
+      const readResponse = await this.request('GET', readUrl);
+
+      if (readResponse.ok) {
+        const body = await readResponse.json() as {
+          data?: { data?: Record<string, string> };
+        };
+        const value = body.data?.data?.value;
+        if (value !== undefined) {
+          results[fullPath] = value;
+        }
+      }
+    }
+
+    return results;
   }
 
   async store(key: string, value: string): Promise<void> {

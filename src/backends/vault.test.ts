@@ -25,7 +25,7 @@ function createVault(overrides?: { addr?: string; token?: string; mountPath?: st
 
 describe('VaultBackend', () => {
   describe('resolve', () => {
-    it('reads a KV v2 secret', async () => {
+    it('reads a KV v2 secret and returns { path: value }', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -38,22 +38,74 @@ describe('VaultBackend', () => {
       });
 
       const vault = createVault();
-      const result = await vault.resolve('my-secret');
+      const result = await vault.resolve('secret/MY_KEY');
 
-      expect(result).toEqual({ value: 'secret-value-123' });
+      expect(result).toEqual({ 'secret/MY_KEY': 'secret-value-123' });
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
       const [url, opts] = mockFetch.mock.calls[0];
-      expect(url).toBe(`${TEST_ADDR}/v1/secret/data/my-secret`);
+      expect(url).toBe(`${TEST_ADDR}/v1/secret/data/secret/MY_KEY`);
       expect(opts.method).toBe('GET');
       expect(opts.headers['X-Vault-Token']).toBe(TEST_TOKEN);
     });
 
-    it('returns empty object for 404', async () => {
+    it('lists and reads keys when direct read returns 404 (prefix mode)', async () => {
+      // Direct read of "secret" path -> 404
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+
+      // LIST metadata -> returns two keys
       mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 404,
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { keys: ['KEY_A', 'KEY_B'] } }),
       });
+
+      // Read KEY_A
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { data: { value: 'val-a' } } }),
+      });
+
+      // Read KEY_B
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { data: { value: 'val-b' } } }),
+      });
+
+      const vault = createVault();
+      const result = await vault.resolve('secret');
+
+      expect(result).toEqual({
+        'secret/KEY_A': 'val-a',
+        'secret/KEY_B': 'val-b',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('skips subdirectories in LIST results', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { keys: ['KEY_A', 'subdir/'] } }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { data: { value: 'val-a' } } }),
+      });
+
+      const vault = createVault();
+      const result = await vault.resolve('secret');
+
+      expect(result).toEqual({ 'secret/KEY_A': 'val-a' });
+    });
+
+    it('returns empty for 404 on both read and list', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
 
       const vault = createVault();
       const result = await vault.resolve('nonexistent');
@@ -61,10 +113,7 @@ describe('VaultBackend', () => {
     });
 
     it('throws on 403', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 403,
-      });
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 403 });
 
       const vault = createVault();
       await expect(vault.resolve('forbidden')).rejects.toThrow('permission denied');
