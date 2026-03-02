@@ -13,25 +13,46 @@
 import * as crypto from 'crypto';
 import type { ScopeProvider } from './types';
 
-/** AI-relevant GCP permissions to probe. */
+/**
+ * AI-relevant GCP permissions to probe.
+ *
+ * All permissions are validated against the Cloud Resource Manager
+ * testIamPermissions API (project-level). The generativelanguage.*
+ * permissions are NOT valid for this endpoint and will cause 400 errors.
+ */
 const AI_RELEVANT_PERMISSIONS = [
+  // Vertex AI / AI Platform
   'aiplatform.endpoints.predict',
   'aiplatform.endpoints.list',
   'aiplatform.models.list',
   'aiplatform.models.get',
-  'generativelanguage.models.list',
-  'generativelanguage.models.generateContent',
+  'aiplatform.datasets.list',
+  // Legacy ML Engine
   'ml.models.predict',
-  'ml.jobs.create',
+  'ml.models.list',
+  // Storage (training data, model artifacts)
   'storage.objects.get',
   'storage.objects.list',
-  'storage.objects.create',
+  'storage.buckets.list',
+  // BigQuery (data pipelines)
   'bigquery.jobs.create',
   'bigquery.tables.getData',
+  // Secret Manager
   'secretmanager.versions.access',
+  // Compute / deployment
+  'cloudfunctions.functions.invoke',
+  'run.routes.invoke',
+  // IAM (privilege escalation indicators)
   'iam.serviceAccounts.actAs',
-  'run.services.create',
-  'cloudfunctions.functions.create',
+  'iam.serviceAccounts.list',
+  'iam.roles.list',
+  // Project-level
+  'resourcemanager.projects.get',
+  'resourcemanager.projects.getIamPolicy',
+  'serviceusage.services.list',
+  // Observability
+  'logging.logEntries.list',
+  'monitoring.timeSeries.list',
 ];
 
 const GCP_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';

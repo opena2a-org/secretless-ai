@@ -115,7 +115,7 @@ describe('GCPScopeProvider', () => {
         permissions: [
           'aiplatform.endpoints.predict',
           'storage.objects.get',
-          'generativelanguage.models.list',
+          'iam.serviceAccounts.list',
         ],
       }),
     });
@@ -125,7 +125,7 @@ describe('GCPScopeProvider', () => {
 
     expect(permissions).toEqual([
       'aiplatform.endpoints.predict',
-      'generativelanguage.models.list',
+      'iam.serviceAccounts.list',
       'storage.objects.get',
     ]);
 
