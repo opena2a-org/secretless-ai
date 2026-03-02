@@ -294,6 +294,46 @@ npx secretless-ai hook uninstall     # Remove pre-commit hook
 | `backend purge [--prefix] [--yes]` | Delete entries from backend |
 | `migrate --from TYPE --to TYPE` | Migrate secrets between backends |
 
+## Usage via OpenA2A CLI
+
+Secretless capabilities are also available through the [OpenA2A CLI](https://github.com/opena2a-org/opena2a), which provides a unified interface across the entire OpenA2A security ecosystem. The CLI delegates to Secretless under the hood via adapter commands.
+
+### Secrets Management
+
+```bash
+opena2a secrets init       # Initialize secretless protection for the current project
+opena2a secrets verify     # Verify that secrets are accessible via env vars but hidden from AI context
+```
+
+These commands map to `secretless-ai init` and `secretless-ai verify` respectively, with the same behavior and output.
+
+### Identity-Aware Credential Broker
+
+The broker is a daemon that provides identity-aware credential brokering for AI agents. Instead of giving agents direct access to secrets, the broker requires agents to authenticate (via AIM identity tokens) before credentials are injected into their process environment. This ensures that only authorized agents with valid identities can access secrets.
+
+```bash
+opena2a broker start       # Start the credential broker daemon
+opena2a broker status      # Check broker daemon status and connected agents
+```
+
+### Data Loss Prevention (DLP)
+
+DLP commands scan AI tool transcripts (conversation logs, shell history, tool output) for accidentally leaked credentials. If an API key, token, or connection string appears in a transcript, DLP flags it so you can rotate the exposed credential.
+
+```bash
+opena2a dlp scan           # Scan AI tool transcripts for leaked credentials
+opena2a dlp report         # Generate a DLP report with findings and remediation steps
+```
+
+### When to Use Which Interface
+
+| Use Case | Command |
+|----------|---------|
+| Quick project setup | `npx secretless-ai init` |
+| Standalone secret management | `npx secretless-ai secret set`, `run`, `verify` |
+| Unified workflow across OpenA2A tools | `opena2a secrets`, `opena2a broker`, `opena2a dlp` |
+| CI/CD pipelines with multiple OpenA2A checks | `opena2a` (single binary, all tools) |
+
 ## What Gets Blocked
 
 ### File patterns (20+)
