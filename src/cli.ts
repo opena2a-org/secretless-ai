@@ -536,10 +536,10 @@ function runProtectMcp(args: string[]): void {
   const backendIdx = args.indexOf('--backend');
   if (backendIdx !== -1 && args[backendIdx + 1]) {
     const val = args[backendIdx + 1];
-    if (val === 'local' || val === 'keychain' || val === '1password') {
+    if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault') {
       backendType = val;
     } else {
-      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', or '1password'.\n`);
+      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', '1password', or 'vault'.\n`);
       process.exit(1);
     }
   }
@@ -767,8 +767,8 @@ function runBackend(args: string[]): void {
 
   if (subcommand === 'set') {
     const type = args[1];
-    if (type !== 'local' && type !== 'keychain' && type !== '1password') {
-      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', or '1password'.\n`);
+    if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault') {
+      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', '1password', or 'vault'.\n`);
       process.exit(1);
     }
 
