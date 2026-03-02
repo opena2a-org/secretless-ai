@@ -17,6 +17,7 @@
  *   npx secretless-ai import   — Import secrets from .env files
  *   npx secretless-ai setup    — Set up secrets from .secretless manifest
  *   npx secretless-ai hook     — Manage pre-commit hook
+ *   npx secretless-ai broker   — Manage credential broker daemon (start, stop, status)
  */
 
 import * as path from 'path';
@@ -44,6 +45,7 @@ import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from '.
 import { scanStagedFiles } from './scan-staged';
 import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER } from './env';
 import type { SelectableBackendType } from './backends/config';
+import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning } from './broker/daemon';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: VERSION } = require('../package.json');
@@ -124,6 +126,9 @@ function main(): void {
       break;
     case 'cache':
       runCache(args.slice(1));
+      break;
+    case 'broker':
+      runBroker(args.slice(1));
       break;
     case '--version':
     case '-v':
@@ -1357,6 +1362,113 @@ function runCache(args: string[]): void {
   console.log();
 }
 
+function runBroker(args: string[]): void {
+  const subcommand = args[0];
+
+  switch (subcommand) {
+    case 'start': {
+      // Parse optional flags
+      let aimUrl: string | undefined;
+      let port: number | undefined;
+      let policyFile: string | undefined;
+
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--aim-url' && args[i + 1]) {
+          aimUrl = args[++i];
+        } else if (args[i] === '--port' && args[i + 1]) {
+          const parsed = parseInt(args[++i], 10);
+          if (!isNaN(parsed) && parsed > 0) {
+            port = parsed;
+          } else {
+            console.error(`\n  Invalid port: ${args[i]}. Must be a positive integer.\n`);
+            process.exit(1);
+          }
+        } else if (args[i] === '--policy-file' && args[i + 1]) {
+          policyFile = path.resolve(args[++i]);
+        }
+      }
+
+      console.log('\n  Secretless Broker\n');
+      console.log('  Starting credential broker daemon...');
+
+      startDaemon({ aimUrl, httpPort: port, policyFile }).then((server) => {
+        const info = server.getStatus();
+        console.log('  Broker is running.\n');
+        console.log(`  PID:          ${info.pid}`);
+        console.log(`  HTTP port:    ${info.httpPort}`);
+        console.log(`  Socket:       ${info.socketPath}`);
+        console.log(`  AIM:          ${aimUrl ?? 'not configured'}`);
+        console.log(`  Policy file:  ${policyFile ?? '(default)'}`);
+        console.log('\n  Press Ctrl+C to stop.\n');
+      }).catch((err) => {
+        console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+      });
+      break;
+    }
+
+    case 'stop': {
+      const stopped = stopDaemon();
+      if (stopped) {
+        console.log('\n  Broker daemon stopped.\n');
+      } else {
+        console.log('\n  Broker daemon is not running.\n');
+      }
+      break;
+    }
+
+    case 'status': {
+      const brokerStatus = getDaemonStatus();
+      if (!brokerStatus) {
+        console.log('\n  Broker daemon is not running.\n');
+        break;
+      }
+
+      const uptime = formatUptime(brokerStatus.uptimeSeconds);
+
+      console.log('\n  Secretless Broker Status\n');
+      console.log(`  Status:       running`);
+      console.log(`  PID:          ${brokerStatus.pid}`);
+      console.log(`  Uptime:       ${uptime}`);
+      console.log(`  Started at:   ${brokerStatus.startedAt}`);
+      console.log(`  HTTP port:    ${brokerStatus.httpPort}`);
+      console.log(`  Socket:       ${brokerStatus.socketPath}`);
+      console.log(`  AIM:          ${brokerStatus.aimConnected ? 'connected' : 'not connected'}`);
+      console.log(`  Policies:     ${brokerStatus.policyCount}`);
+      console.log(`  Requests:     ${brokerStatus.requestCount}`);
+      console.log();
+      break;
+    }
+
+    default:
+      console.error(`\n  Unknown broker command: ${subcommand ?? '(none)'}`);
+      console.log('  Usage: secretless-ai broker <start|stop|status>\n');
+      console.log('  Commands:');
+      console.log('    start    Start the credential broker daemon (foreground)');
+      console.log('    stop     Stop the running broker daemon');
+      console.log('    status   Show broker daemon status\n');
+      console.log('  Start options:');
+      console.log('    --aim-url <url>        AIM server URL for identity verification');
+      console.log('    --port <port>          HTTP port (default: 19421)');
+      console.log('    --policy-file <path>   Policy file path\n');
+      process.exit(1);
+  }
+}
+
+/** Format seconds into a human-readable uptime string. */
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${secs}s`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours < 24) return `${hours}h ${mins}m`;
+  const days = Math.floor(hours / 24);
+  const hrs = hours % 24;
+  return `${days}d ${hrs}h`;
+}
+
 function printHelp(): void {
   console.log(`
   Secretless v${VERSION}
@@ -1401,6 +1513,11 @@ function printHelp(): void {
     npx secretless-ai backend list        List all entries in current backend
     npx secretless-ai backend purge       Delete all entries (--prefix mcp|secret, --yes)
     npx secretless-ai migrate             Migrate secrets between backends
+
+  Credential Broker:
+    npx secretless-ai broker start        Start the credential broker daemon
+    npx secretless-ai broker stop         Stop the running broker daemon
+    npx secretless-ai broker status       Show broker daemon status
 
   Cache (reduces OS auth prompts for keychain/1password):
     npx secretless-ai cache               Show cache status
