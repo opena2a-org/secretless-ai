@@ -46,6 +46,7 @@ import { scanStagedFiles } from './scan-staged';
 import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER } from './env';
 import type { SelectableBackendType } from './backends/config';
 import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning } from './broker/daemon';
+import { discoverScope, listBaselines, resetBaseline, compareToBaseline, loadBaseline, detectProvider } from './scope';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: VERSION } = require('../package.json');
@@ -129,6 +130,9 @@ function main(): void {
       break;
     case 'broker':
       runBroker(args.slice(1));
+      break;
+    case 'scope':
+      runScope(args.slice(1));
       break;
     case '--version':
     case '-v':
@@ -532,10 +536,10 @@ function runProtectMcp(args: string[]): void {
   const backendIdx = args.indexOf('--backend');
   if (backendIdx !== -1 && args[backendIdx + 1]) {
     const val = args[backendIdx + 1];
-    if (val === 'local' || val === 'keychain' || val === '1password') {
+    if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault') {
       backendType = val;
     } else {
-      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', or '1password'.\n`);
+      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', '1password', or 'vault'.\n`);
       process.exit(1);
     }
   }
@@ -763,8 +767,8 @@ function runBackend(args: string[]): void {
 
   if (subcommand === 'set') {
     const type = args[1];
-    if (type !== 'local' && type !== 'keychain' && type !== '1password') {
-      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', or '1password'.\n`);
+    if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault') {
+      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', '1password', or 'vault'.\n`);
       process.exit(1);
     }
 
@@ -1455,6 +1459,189 @@ function runBroker(args: string[]): void {
   }
 }
 
+function runScope(args: string[]): void {
+  const subcommand = args[0];
+
+  switch (subcommand) {
+    case 'discover': {
+      const credentialName = args[1];
+      if (!credentialName) {
+        console.error('\n  Usage: secretless-ai scope discover <credential-name>\n');
+        console.log('  Reads the credential value from the secret store and discovers its scope.\n');
+        process.exit(1);
+      }
+
+      const store = new SecretStore({ backendType: resolveBackendType() });
+      store.getSecret(credentialName).then(async (value) => {
+        if (!value) {
+          console.error(`\n  Credential "${credentialName}" not found in secret store.\n`);
+          process.exit(1);
+        }
+
+        console.log(`\n  Scope Discovery: ${credentialName}\n`);
+
+        const provider = detectProvider(value);
+        if (!provider) {
+          console.error('  Unable to detect credential provider.');
+          console.log('  Supported: GCP service account key (JSON), Vault token (hvs./s. prefix)\n');
+          process.exit(1);
+        }
+
+        console.log(`  Provider: ${provider.toUpperCase()}`);
+        console.log('  Discovering permissions...\n');
+
+        try {
+          const result = await discoverScope(credentialName, value, { saveAsBaseline: true });
+
+          console.log(`  Permissions found: ${result.currentPermissions.length}`);
+          if (result.currentPermissions.length > 0) {
+            for (const p of result.currentPermissions) {
+              console.log(`    - ${p}`);
+            }
+          }
+
+          if (result.baselinePermissions.length > 0) {
+            console.log(`\n  Baseline comparison:`);
+            console.log(`    Previous: ${result.baselinePermissions.length} permissions`);
+            console.log(`    Current:  ${result.currentPermissions.length} permissions`);
+
+            if (result.added.length > 0) {
+              console.log(`\n  EXPANDED: +${result.added.length} new permissions`);
+              for (const p of result.added) {
+                console.log(`    + ${p}`);
+              }
+            }
+            if (result.removed.length > 0) {
+              console.log(`\n  Contracted: -${result.removed.length} removed permissions`);
+              for (const p of result.removed) {
+                console.log(`    - ${p}`);
+              }
+            }
+            if (result.added.length === 0 && result.removed.length === 0) {
+              console.log('    No changes since last baseline.');
+            }
+          } else {
+            console.log('\n  First baseline saved. Future checks will compare against this.');
+          }
+
+          console.log(`\n  Baseline saved at: ${result.checkedAt}\n`);
+        } catch (err) {
+          console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+          process.exit(1);
+        }
+      }).catch((err) => {
+        console.error(`\n  Error reading credential: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+      });
+      break;
+    }
+
+    case 'check': {
+      const credentialName = args[1];
+      if (!credentialName) {
+        console.error('\n  Usage: secretless-ai scope check <credential-name>\n');
+        console.log('  Re-checks scope and compares to stored baseline.\n');
+        process.exit(1);
+      }
+
+      const baseline = loadBaseline(credentialName);
+      if (!baseline) {
+        console.error(`\n  No baseline found for "${credentialName}".`);
+        console.log('  Run "secretless-ai scope discover" first to create a baseline.\n');
+        process.exit(1);
+      }
+
+      const store = new SecretStore({ backendType: resolveBackendType() });
+      store.getSecret(credentialName).then(async (value) => {
+        if (!value) {
+          console.error(`\n  Credential "${credentialName}" not found in secret store.\n`);
+          process.exit(1);
+        }
+
+        try {
+          const result = await discoverScope(credentialName, value, { saveAsBaseline: false });
+
+          console.log(`\n  Scope Check: ${credentialName}`);
+          console.log(`  Provider: ${result.provider.toUpperCase()}`);
+          console.log(`  Last baseline: ${baseline.checkedAt}`);
+          console.log(`  Current permissions: ${result.currentPermissions.length}`);
+          console.log(`  Baseline permissions: ${result.baselinePermissions.length}`);
+
+          if (result.hasExpanded) {
+            console.log(`  EXPANDED: +${result.added.length} new permissions detected`);
+            for (const p of result.added) {
+              console.log(`    + ${p}`);
+            }
+            console.log(`\n  WARNING: Credential scope has expanded since baseline.`);
+            console.log(`  Run 'secretless-ai scope discover ${credentialName}' to update baseline.\n`);
+          } else if (result.removed.length > 0) {
+            console.log(`  Contracted: -${result.removed.length} removed permissions`);
+            for (const p of result.removed) {
+              console.log(`    - ${p}`);
+            }
+            console.log();
+          } else {
+            console.log('  No changes since baseline.\n');
+          }
+        } catch (err) {
+          console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+          process.exit(1);
+        }
+      }).catch((err) => {
+        console.error(`\n  Error reading credential: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+      });
+      break;
+    }
+
+    case 'list': {
+      const baselines = listBaselines();
+      if (baselines.length === 0) {
+        console.log('\n  No scope baselines stored.\n');
+        console.log('  Run "secretless-ai scope discover <credential-name>" to create one.\n');
+        break;
+      }
+
+      console.log('\n  Scope Baselines\n');
+      for (const b of baselines) {
+        console.log(`  ${b.credentialName}`);
+        console.log(`    Provider:    ${b.provider.toUpperCase()}`);
+        console.log(`    Permissions: ${b.permissions.length}`);
+        console.log(`    Last check:  ${b.checkedAt}`);
+        console.log();
+      }
+      break;
+    }
+
+    case 'reset': {
+      const credentialName = args[1];
+      if (!credentialName) {
+        console.error('\n  Usage: secretless-ai scope reset <credential-name>\n');
+        process.exit(1);
+      }
+
+      const cleared = resetBaseline(credentialName);
+      if (cleared) {
+        console.log(`\n  Baseline for "${credentialName}" cleared.`);
+        console.log('  Next discover will create a fresh baseline.\n');
+      } else {
+        console.log(`\n  No baseline found for "${credentialName}".\n`);
+      }
+      break;
+    }
+
+    default:
+      console.error(`\n  Unknown scope command: ${subcommand ?? '(none)'}`);
+      console.log('  Usage: secretless-ai scope <discover|check|list|reset>\n');
+      console.log('  Commands:');
+      console.log('    discover <name>   Discover permissions and save baseline');
+      console.log('    check <name>      Re-check and compare to baseline');
+      console.log('    list              Show all stored baselines');
+      console.log('    reset <name>      Clear baseline for re-baseline\n');
+      process.exit(1);
+  }
+}
+
 /** Format seconds into a human-readable uptime string. */
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -1513,6 +1700,12 @@ function printHelp(): void {
     npx secretless-ai backend list        List all entries in current backend
     npx secretless-ai backend purge       Delete all entries (--prefix mcp|secret, --yes)
     npx secretless-ai migrate             Migrate secrets between backends
+
+  Scope Discovery:
+    npx secretless-ai scope discover <name>  Discover permissions and save baseline
+    npx secretless-ai scope check <name>     Re-check and compare to baseline
+    npx secretless-ai scope list             Show all stored baselines
+    npx secretless-ai scope reset <name>     Clear baseline for re-baseline
 
   Credential Broker:
     npx secretless-ai broker start        Start the credential broker daemon

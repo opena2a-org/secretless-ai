@@ -59,6 +59,8 @@ export interface PolicyConstraints {
   minTrustScore?: number;
   /** AIM capability the agent must possess. */
   requireCapability?: string;
+  /** Block if credential scope has expanded beyond baseline. */
+  scopeCheck?: boolean;
 }
 
 /** Audit log entry for credential access attempts. */
