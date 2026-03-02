@@ -47,11 +47,13 @@ export class PolicyEngine {
       const raw = fs.readFileSync(this.policyFile, 'utf-8');
       const parsed = JSON.parse(raw);
 
-      if (!Array.isArray(parsed.rules)) {
-        throw new Error('Policy file must contain a "rules" array');
+      // Accept both { rules: [...] } and bare array [...] formats
+      const rules = Array.isArray(parsed) ? parsed : parsed.rules;
+      if (!Array.isArray(rules)) {
+        throw new Error('Policy file must contain a "rules" array or be a JSON array');
       }
 
-      this.rules = parsed.rules.map((r: unknown) => validateRule(r));
+      this.rules = rules.map((r: unknown) => validateRule(r));
       return this.rules.length;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
