@@ -79,17 +79,24 @@ describe('verify', () => {
   });
 
   it('warns when no env vars are set at all', () => {
-    // Clear all known credential env vars
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.AWS_ACCESS_KEY_ID;
-    delete process.env.GITHUB_TOKEN;
-    delete process.env.SLACK_TOKEN;
-    delete process.env.GOOGLE_API_KEY;
-    delete process.env.STRIPE_SECRET_KEY;
-    delete process.env.SENDGRID_API_KEY;
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-    delete process.env.AZURE_API_KEY;
+    // Clear ALL known credential env vars (not just a subset)
+    const knownVars = [
+      'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'GROQ_API_KEY',
+      'REPLICATE_API_TOKEN', 'HUGGING_FACE_HUB_TOKEN', 'PERPLEXITY_API_KEY',
+      'FIREWORKS_API_KEY', 'AWS_ACCESS_KEY_ID', 'GOOGLE_API_KEY', 'GOOGLE_ACCESS_TOKEN',
+      'DIGITALOCEAN_TOKEN', 'HEROKU_API_KEY', 'FLY_API_TOKEN', 'NETLIFY_AUTH_TOKEN',
+      'AZURE_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SLACK_TOKEN', 'SLACK_WEBHOOK_URL',
+      'SLACK_APP_TOKEN', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN', 'DISCORD_WEBHOOK_URL',
+      'TWILIO_API_KEY', 'SENDGRID_API_KEY', 'GITHUB_TOKEN', 'GITLAB_TOKEN',
+      'NPM_TOKEN', 'PYPI_API_TOKEN', 'DOCKER_TOKEN', 'BITBUCKET_TOKEN',
+      'STRIPE_SECRET_KEY', 'STRIPE_RESTRICTED_KEY', 'STRIPE_WEBHOOK_SECRET',
+      'SQUARE_ACCESS_TOKEN', 'MONGODB_URI', 'DATABASE_URL', 'REDIS_URL',
+      'PRIVATE_KEY', 'FIREBASE_SERVER_KEY', 'NEW_RELIC_API_KEY', 'SENTRY_AUTH_TOKEN',
+      'GRAFANA_API_KEY', 'LINEAR_API_KEY',
+    ];
+    for (const v of knownVars) {
+      delete process.env[v];
+    }
 
     const result = verify(dir);
     // No env vars set, no context exposure — still fails because nothing is usable
