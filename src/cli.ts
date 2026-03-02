@@ -33,7 +33,8 @@ import { discoverMcpConfigs } from './mcp/discover';
 import { classifyEnvVars } from './mcp/classify';
 import { restoreConfig } from './mcp/rewrite';
 import { isKeychainAvailable, isOnePasswordAvailable, createBackend } from './backends/factory';
-import { readBackendConfig, writeBackendConfig, resolveBackendType } from './backends/config';
+import { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl, writeCacheTtl, parseDuration, formatTtl } from './backends/config';
+import { clearCacheFile } from './backends/cache';
 import { migrateSecrets } from './backends/migrate';
 import { SecretStore } from './secret-store';
 import { runWithSecrets } from './run';
@@ -120,6 +121,9 @@ function main(): void {
       break;
     case 'scan-staged':
       runScanStaged();
+      break;
+    case 'cache':
+      runCache(args.slice(1));
       break;
     case '--version':
     case '-v':
@@ -1290,6 +1294,69 @@ function runScanStaged(): void {
   process.exit(1);
 }
 
+function runCache(args: string[]): void {
+  const subcommand = args[0];
+
+  if (subcommand === 'clear') {
+    const removed = clearCacheFile();
+    if (removed) {
+      console.log('\n  Cache cleared.\n');
+    } else {
+      console.log('\n  No cache file found.\n');
+    }
+    return;
+  }
+
+  if (subcommand === 'ttl') {
+    const value = args[1];
+
+    if (!value) {
+      // Show current TTL
+      const current = readCacheTtl();
+      console.log(`\n  Cache TTL: ${formatTtl(current)}${current <= 0 ? ' (disabled)' : ''}\n`);
+      return;
+    }
+
+    const seconds = parseDuration(value);
+    if (seconds < 0) {
+      console.error(`\n  Invalid duration: "${value}". Use: 5m, 1h, 1d, 300, or off\n`);
+      process.exit(1);
+    }
+
+    writeCacheTtl(seconds);
+    if (seconds <= 0) {
+      // Also clear existing cache when disabling
+      clearCacheFile();
+      console.log('\n  Cache disabled. Existing cache cleared.\n');
+    } else {
+      console.log(`\n  Cache TTL set to ${formatTtl(seconds)}.\n`);
+    }
+    return;
+  }
+
+  // Default: show cache status
+  const ttl = readCacheTtl();
+  const backendType = resolveBackendType();
+  const needsCache = backendType === 'keychain' || backendType === '1password';
+
+  console.log('\n  Secret Cache\n');
+  console.log(`  Backend:  ${backendType}`);
+  console.log(`  TTL:      ${formatTtl(ttl)}${ttl <= 0 ? ' (disabled)' : ''}`);
+
+  if (!needsCache) {
+    console.log(`  Status:   Not needed (${backendType} backend has no auth prompts)`);
+  } else if (ttl <= 0) {
+    console.log('  Status:   Disabled');
+  } else {
+    console.log('  Status:   Active');
+  }
+
+  console.log('\n  Commands:');
+  console.log('    secretless-ai cache ttl <duration>  Set cache TTL (5m, 1h, 1d, off)');
+  console.log('    secretless-ai cache clear           Clear cached secrets');
+  console.log();
+}
+
 function printHelp(): void {
   console.log(`
   Secretless v${VERSION}
@@ -1334,6 +1401,11 @@ function printHelp(): void {
     npx secretless-ai backend list        List all entries in current backend
     npx secretless-ai backend purge       Delete all entries (--prefix mcp|secret, --yes)
     npx secretless-ai migrate             Migrate secrets between backends
+
+  Cache (reduces OS auth prompts for keychain/1password):
+    npx secretless-ai cache               Show cache status
+    npx secretless-ai cache ttl <dur>     Set TTL (5m, 1h, 1d, off)
+    npx secretless-ai cache clear         Clear cached secrets
 
   Clean options:
     --dry-run     Report findings without redacting

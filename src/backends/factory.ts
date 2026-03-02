@@ -10,6 +10,8 @@ import { LocalBackend } from './local';
 import { MacOSKeychainBackend } from './keychain-macos';
 import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
+import { CachedBackend } from './cache';
+import { readCacheTtl } from './config';
 import type { WritableSecretBackend } from './types';
 import type { SelectableBackendType } from './config';
 
@@ -23,17 +25,29 @@ export function createBackend(
   type: SelectableBackendType,
   config?: Record<string, unknown>,
 ): WritableSecretBackend {
+  let backend: WritableSecretBackend;
+
   switch (type) {
     case 'keychain':
-      return createKeychainBackend(config);
+      backend = createKeychainBackend(config);
+      break;
 
     case '1password':
-      return new OnePasswordBackend(config);
+      backend = new OnePasswordBackend(config);
+      break;
 
     case 'local':
     default:
+      // Local backend uses file-based encryption — no OS prompts, no cache needed
       return new LocalBackend(config);
   }
+
+  // Wrap keychain and 1password backends with a TTL cache to reduce OS auth prompts
+  const ttlSeconds = readCacheTtl();
+  if (ttlSeconds > 0) {
+    return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000 });
+  }
+  return backend;
 }
 
 /**

@@ -32,7 +32,11 @@ describe('createBackend', () => {
     const backend = createBackend('keychain', { storeDir: dir });
     // On macOS it should be keychain-macos, on Linux keychain-linux
     // On other platforms it falls back to local
-    const validNames = ['keychain-macos', 'keychain-linux', 'local'];
+    // With default cache TTL > 0, keychain backends get wrapped in CachedBackend
+    const validNames = [
+      'keychain-macos', 'keychain-linux', 'local',
+      'cached(keychain-macos)', 'cached(keychain-linux)', 'cached(local)',
+    ];
     expect(validNames).toContain(backend.name);
   });
 });
