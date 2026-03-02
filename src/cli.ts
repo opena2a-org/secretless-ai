@@ -13,6 +13,7 @@
  *   npx secretless-ai watch    — Monitor transcripts in real-time
  *   npx secretless-ai secret   — Manage secrets (set, list, get, rm)
  *   npx secretless-ai run      — Run command with secrets injected
+ *   npx secretless-ai env      — Output export statements for stored secrets
  *   npx secretless-ai import   — Import secrets from .env files
  *   npx secretless-ai setup    — Set up secrets from .secretless manifest
  *   npx secretless-ai hook     — Manage pre-commit hook
@@ -40,6 +41,7 @@ import { importEnvFile, detectEnvFiles } from './env-import';
 import { runSetup } from './setup';
 import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from './git-hook';
 import { scanStagedFiles } from './scan-staged';
+import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER } from './env';
 import type { SelectableBackendType } from './backends/config';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -103,6 +105,9 @@ function main(): void {
       break;
     case 'run':
       runRun(args.slice(1));
+      break;
+    case 'env':
+      runEnv(args.slice(1));
       break;
     case 'import':
       runImport(args.slice(1));
@@ -856,6 +861,48 @@ function runMigrate(args: string[]): void {
   });
 }
 
+/**
+ * Ensure the shell profile has the eval hook for auto-loading secrets.
+ * Called after `secret set` to make stored secrets available as env vars.
+ */
+function ensureShellHook(): void {
+  const os = require('os');
+  const fs = require('fs');
+
+  const home = os.homedir();
+  const shell = process.env.SHELL ?? '';
+  const platform = os.platform();
+
+  // Determine the right profile to modify
+  let profilePath: string;
+  if (platform === 'darwin' || shell.endsWith('/zsh')) {
+    profilePath = path.join(home, '.zshenv');
+  } else {
+    profilePath = path.join(home, '.bashrc');
+  }
+
+  // Check if hook already exists
+  let existing = '';
+  try {
+    existing = fs.readFileSync(profilePath, 'utf-8');
+  } catch {
+    // File doesn't exist — will create it
+  }
+
+  if (existing.includes(SHELL_HOOK_MARKER) || existing.includes('secretless-ai env')) {
+    return; // Already installed
+  }
+
+  // Append the hook
+  const hookLine = getShellHookLine();
+  const block = `\n${SHELL_HOOK_MARKER}\n${hookLine}\n`;
+  fs.writeFileSync(profilePath, existing + block);
+
+  const profileName = path.basename(profilePath);
+  console.log(`  Shell hook installed in ~/${profileName}`);
+  console.log(`  Run: source ~/${profileName}   (or open a new terminal)`);
+}
+
 function runSecret(args: string[]): void {
   const subcommand = args[0];
 
@@ -875,6 +922,7 @@ function runSecret(args: string[]): void {
         const store = new SecretStore();
         store.setSecret(name, value).then(() => {
           console.log(`  Stored: ${name}`);
+          ensureShellHook();
         }).catch((err) => {
           console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
           process.exit(1);
@@ -905,6 +953,7 @@ function runSecret(args: string[]): void {
           const store = new SecretStore();
           store.setSecret(name, value).then(() => {
             console.log(`  Stored: ${name}`);
+            ensureShellHook();
             process.exit(0);
           }).catch((err) => {
             console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -923,6 +972,7 @@ function runSecret(args: string[]): void {
         const store = new SecretStore();
         store.setSecret(name, value).then(() => {
           console.log(`  Stored: ${name}`);
+          ensureShellHook();
           process.exit(0);
         }).catch((err) => {
           console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1048,6 +1098,28 @@ function runRun(args: string[]): void {
     process.exit(code);
   }).catch((err) => {
     console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}
+
+function runEnv(args: string[]): void {
+  // Parse --only flag
+  let only: string[] | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--only' && args[i + 1]) {
+      only = args[i + 1].split(',').map(s => s.trim()).filter(Boolean);
+      break;
+    }
+  }
+
+  generateEnvExports({ only }).then((output) => {
+    if (output) {
+      process.stdout.write(output + '\n');
+    }
+  }).catch((err) => {
+    // Silently fail — this runs inside eval in shell profiles.
+    // Writing to stderr would show errors on every shell launch.
+    process.stderr.write(`secretless: env: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(1);
   });
 }
@@ -1240,6 +1312,7 @@ function printHelp(): void {
     npx secretless-ai import <file>              Import secrets from .env file
     npx secretless-ai import --detect            Auto-find and import .env files
     npx secretless-ai run -- <command>           Run command with secrets injected
+    npx secretless-ai env                        Output export statements for shell
 
   Project Setup:
     npx secretless-ai setup              Set up secrets from .secretless manifest
