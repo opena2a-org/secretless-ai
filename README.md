@@ -24,6 +24,7 @@ Secretless stores secrets in your choice of backend. Secrets are never in enviro
 | `local` | AES-256-GCM encrypted file | None (single machine) | Filesystem | Quick start, simple setups |
 | `keychain` | macOS Keychain / Linux Secret Service | Device-local | OS login | Native OS integration |
 | `1password` | 1Password vault | Cross-device | Biometric (Touch ID) / Service Account | Teams, CI/CD, multi-device |
+| `vault` | HashiCorp Vault KV v2 | Cross-device / cluster | Vault token | Enterprise, self-hosted, team secrets |
 
 ```bash
 npx secretless-ai backend                     # Show available backends
@@ -50,6 +51,56 @@ npx secretless-ai backend set 1password       # Switch backend
 ```
 
 **CI/CD:** Set `OP_SERVICE_ACCOUNT_TOKEN` — same secrets, no code changes. No desktop app needed.
+
+### HashiCorp Vault Backend
+
+Stores secrets in a Vault KV v2 engine using the HTTP API. Zero SDK dependency — raw `fetch` calls.
+
+**Setup:**
+
+```bash
+brew install vault                            # Install Vault CLI
+vault server -dev                             # Start dev server (for testing)
+```
+
+```bash
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=<your-token>
+npx secretless-ai backend set vault           # Switch backend
+npx secretless-ai secret set DB_PASSWORD=...  # Stored in Vault KV v2
+```
+
+Supports custom mount paths via backend config. Default mount: `secret`.
+
+## Credential Scope Discovery
+
+Credentials are not static — their effective permissions change when platforms evolve. Secretless detects when a credential's scope expands beyond its baseline, catching privilege escalation before it becomes a breach.
+
+```bash
+npx secretless-ai scope discover MY_CREDENTIAL   # Discover current permissions, save baseline
+npx secretless-ai scope check MY_CREDENTIAL      # Compare to baseline, report drift
+npx secretless-ai scope list                      # Show all baselines
+npx secretless-ai scope reset MY_CREDENTIAL      # Clear baseline
+```
+
+### Supported Providers
+
+| Provider | Detection | API Used | Permissions Needed |
+|----------|-----------|----------|-------------------|
+| **GCP** | Service account key JSON | `testIamPermissions` (Cloud Resource Manager) | None (self-inspection) |
+| **Vault** | Token prefix (`hvs.`, `s.`) | `capabilities-self` (Sys) | None (self-inspection) |
+| **AWS** | Access key prefix (`AKIA`) | Planned | — |
+
+### How It Works
+
+1. Auto-detects the provider from credential format
+2. Calls the provider's self-inspection API to discover current permissions
+3. Compares against the stored baseline (`~/.secretless-ai/scope-baselines.json`)
+4. Reports added/removed permissions and flags scope expansion
+
+### Broker Integration
+
+Add `scopeCheck: true` to any broker policy rule. The broker will block credential access if the credential's scope has expanded beyond its baseline.
 
 ## Secret Management
 
@@ -289,10 +340,15 @@ npx secretless-ai hook uninstall     # Remove pre-commit hook
 | `mcp-unprotect` | Restore original MCP configs |
 | **Backend Management** | |
 | `backend` | Show current backend status |
-| `backend set <TYPE>` | Set backend (local, keychain, 1password) |
+| `backend set <TYPE>` | Set backend (local, keychain, 1password, vault) |
 | `backend list` | List all stored entries |
 | `backend purge [--prefix] [--yes]` | Delete entries from backend |
 | `migrate --from TYPE --to TYPE` | Migrate secrets between backends |
+| **Scope Discovery** | |
+| `scope discover <NAME>` | Discover credential permissions and save baseline |
+| `scope check <NAME>` | Compare current permissions to baseline |
+| `scope list` | Show all scope baselines |
+| `scope reset <NAME>` | Clear a scope baseline |
 
 ## Usage via OpenA2A CLI
 
@@ -356,7 +412,7 @@ For Claude Code, Secretless installs a PreToolUse hook that intercepts every `Re
 
 ```bash
 npm run build      # Compile TypeScript to dist/
-npm test           # Run tests (vitest, 461 tests)
+npm test           # Run tests (vitest, 638 tests)
 npm run dev        # Watch mode — recompile on file changes
 npm run clean      # Remove dist/ directory
 ```
