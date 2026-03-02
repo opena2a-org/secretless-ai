@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { PolicyRule, PolicyConstraints, AgentIdentity } from './types';
 import { RateLimiter } from './rate-limiter';
+import { compareToBaseline } from '../scope/baselines';
 
 const DEFAULT_POLICY_FILE = path.join(os.homedir(), '.secretless-ai', 'broker-policies.json');
 
@@ -184,6 +185,18 @@ export class PolicyEngine {
       }
     }
 
+    // Scope check
+    if (constraints.scopeCheck) {
+      const scopeResult = compareToBaseline(credentialName, '', []);
+      // Only enforce if a baseline exists (baselinePermissions > 0 means we have a baseline)
+      if (scopeResult.baselinePermissions.length > 0 && scopeResult.hasExpanded) {
+        return {
+          passed: false,
+          reason: `Credential scope has expanded since baseline (+${scopeResult.added.length} permissions)`,
+        };
+      }
+    }
+
     // Capability check
     if (constraints.requireCapability) {
       if (!agentIdentity) {
@@ -299,6 +312,10 @@ function validateRule(raw: unknown): PolicyRule {
 
     if (typeof c.requireCapability === 'string') {
       constraints.requireCapability = c.requireCapability;
+    }
+
+    if (typeof c.scopeCheck === 'boolean') {
+      constraints.scopeCheck = c.scopeCheck;
     }
   }
 

@@ -10,6 +10,7 @@ import { LocalBackend } from './local';
 import { MacOSKeychainBackend } from './keychain-macos';
 import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
+import { VaultBackend } from './vault';
 import { CachedBackend } from './cache';
 import { readCacheTtl } from './config';
 import type { WritableSecretBackend } from './types';
@@ -34,6 +35,10 @@ export function createBackend(
 
     case '1password':
       backend = new OnePasswordBackend(config);
+      break;
+
+    case 'vault':
+      backend = new VaultBackend(config);
       break;
 
     case 'local':

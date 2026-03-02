@@ -2,6 +2,7 @@ export type { SecretBackend, WritableSecretBackend, BackendHealth, BackendConfig
 export { LocalBackend } from './local';
 export { MacOSKeychainBackend } from './keychain-macos';
 export { LinuxKeychainBackend } from './keychain-linux';
+export { VaultBackend, type VaultBackendConfig } from './vault';
 export { createBackend, isKeychainAvailable } from './factory';
 export { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl, writeCacheTtl, parseDuration, formatTtl, DEFAULT_CACHE_TTL_SECONDS, type SelectableBackendType } from './config';
 export { CachedBackend, clearCacheFile } from './cache';

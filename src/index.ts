@@ -22,9 +22,9 @@ export {
   createBackend, isKeychainAvailable,
   resolveBackendType, readBackendConfig, writeBackendConfig,
   migrateSecrets,
-  LocalBackend, MacOSKeychainBackend, LinuxKeychainBackend,
+  LocalBackend, MacOSKeychainBackend, LinuxKeychainBackend, VaultBackend,
   type SecretBackend, type WritableSecretBackend, type BackendHealth,
-  type BackendType, type SelectableBackendType,
+  type BackendType, type SelectableBackendType, type VaultBackendConfig,
   type MigrateOptions, type MigrateResult,
 } from './backends';
 
@@ -36,6 +36,14 @@ export { parseManifest, readManifest, checkManifest, type ManifestEntry, type Ma
 export { runSetup, type SetupOptions, type SetupResult } from './setup';
 export { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from './git-hook';
 export { scanStagedFiles } from './scan-staged';
+
+// Scope discovery
+export {
+  discoverScope, detectProvider, createScopeProvider,
+  GCPScopeProvider, VaultScopeProvider,
+  saveBaseline, loadBaseline, listBaselines, compareToBaseline, resetBaseline,
+  type ScopeBaseline, type ScopeCheckResult, type ScopeProvider,
+} from './scope';
 
 // Broker service
 export {
