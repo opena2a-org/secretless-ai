@@ -47,6 +47,7 @@ import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER } from './env';
 import type { SelectableBackendType } from './backends/config';
 import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning } from './broker/daemon';
 import { discoverScope, listBaselines, resetBaseline, compareToBaseline, loadBaseline, detectProvider } from './scope';
+import { scanHistory, cleanHistory } from './history';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: VERSION } = require('../package.json');
@@ -63,6 +64,10 @@ function main(): void {
       break;
     }
     case 'scan': {
+      if (args.includes('--history')) {
+        runScanHistory();
+        break;
+      }
       const dirArg = args[1];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
       runScan(projectDir);
@@ -133,6 +138,12 @@ function main(): void {
       break;
     case 'scope':
       runScope(args.slice(1));
+      break;
+    case 'scan-history':
+      runScanHistory();
+      break;
+    case 'clean-history':
+      runCleanHistory(args.includes('--dry-run'));
       break;
     case '--version':
     case '-v':
@@ -1483,7 +1494,7 @@ function runScope(args: string[]): void {
         const provider = detectProvider(value);
         if (!provider) {
           console.error('  Unable to detect credential provider.');
-          console.log('  Supported: GCP service account key (JSON), Vault token (hvs./s. prefix)\n');
+          console.log('  Supported: GCP service account key (JSON), Vault token (hvs./s. prefix), AWS access key (AKIA/ASIA prefix)\n');
           process.exit(1);
         }
 
@@ -1656,6 +1667,66 @@ function formatUptime(seconds: number): string {
   return `${days}d ${hrs}h`;
 }
 
+function runScanHistory(): void {
+  console.log('\n  Shell History Scanner\n');
+
+  scanHistory().then((result) => {
+    console.log(`  Files scanned: ${result.filesScanned}`);
+
+    if (result.findingCount === 0) {
+      console.log('  No credentials found in shell history.\n');
+      return;
+    }
+
+    console.log(`  Found ${result.findingCount} credential(s):\n`);
+    for (const finding of result.findings) {
+      console.log(`  [${finding.patternId}] ${finding.patternName}`);
+      console.log(`         ${finding.file}:${finding.line}`);
+      console.log(`         ${finding.preview}`);
+      console.log();
+    }
+
+    console.log('  Run `npx secretless-ai clean-history` to redact credentials.');
+    console.log('  Run `npx secretless-ai clean-history --dry-run` to preview changes.\n');
+    process.exit(1);
+  }).catch((err) => {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
+function runCleanHistory(dryRun: boolean): void {
+  if (dryRun) {
+    console.log('\n  Shell History Cleaner (dry run)\n');
+  } else {
+    console.log('\n  Shell History Cleaner\n');
+  }
+
+  cleanHistory(dryRun).then((result) => {
+    console.log(`  Files scanned:  ${result.filesScanned}`);
+    console.log(`  Files modified: ${result.filesModified}`);
+    console.log(`  Lines redacted: ${result.linesRedacted}`);
+
+    if (result.backupPaths.length > 0) {
+      console.log('\n  Backups created:');
+      for (const p of result.backupPaths) {
+        console.log(`    ${p}`);
+      }
+    }
+
+    if (result.linesRedacted === 0) {
+      console.log('\n  No credentials found in shell history.\n');
+    } else if (dryRun) {
+      console.log('\n  Dry run complete. Run without --dry-run to apply changes.\n');
+    } else {
+      console.log('\n  History cleaned. Backups saved with .bak extension.\n');
+    }
+  }).catch((err) => {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
 function printHelp(): void {
   console.log(`
   Secretless v${VERSION}
@@ -1706,6 +1777,12 @@ function printHelp(): void {
     npx secretless-ai scope check <name>     Re-check and compare to baseline
     npx secretless-ai scope list             Show all stored baselines
     npx secretless-ai scope reset <name>     Clear baseline for re-baseline
+
+  Shell History:
+    npx secretless-ai scan --history         Scan shell history for credentials
+    npx secretless-ai scan-history           Scan shell history for credentials
+    npx secretless-ai clean-history          Redact credentials in shell history
+    npx secretless-ai clean-history --dry-run  Preview without modifying
 
   Credential Broker:
     npx secretless-ai broker start        Start the credential broker daemon

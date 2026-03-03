@@ -40,10 +40,16 @@ export { scanStagedFiles } from './scan-staged';
 // Scope discovery
 export {
   discoverScope, detectProvider, createScopeProvider,
-  GCPScopeProvider, VaultScopeProvider,
+  GCPScopeProvider, AWSScopeProvider, VaultScopeProvider,
   saveBaseline, loadBaseline, listBaselines, compareToBaseline, resetBaseline,
   type ScopeBaseline, type ScopeCheckResult, type ScopeProvider,
 } from './scope';
+
+// Shell history scanning
+export {
+  scanHistory, cleanHistory,
+  type HistoryFinding, type HistoryScanResult, type HistoryCleanResult,
+} from './history';
 
 // Broker service
 export {

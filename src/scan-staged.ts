@@ -67,6 +67,11 @@ export function scanStagedFiles(): { findings: StagedFinding[]; blockedFiles: st
 
   // Scan staged file contents for credential patterns
   for (const file of stagedFiles) {
+    // Skip test files -- they intentionally contain fake credential patterns
+    if (file.endsWith('.test.ts') || file.endsWith('.test.js') || file.endsWith('.spec.ts') || file.endsWith('.spec.js')) {
+      continue;
+    }
+
     // Skip binary files and very large files
     let content: string;
     try {

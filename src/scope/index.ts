@@ -7,6 +7,7 @@
 
 export type { ScopeBaseline, ScopeCheckResult, ScopeProvider } from './types';
 export { GCPScopeProvider, parseServiceAccountKey, createSignedJwt } from './gcp';
+export { AWSScopeProvider } from './aws';
 export { VaultScopeProvider } from './vault';
 export {
   saveBaseline, loadBaseline, listBaselines,
@@ -15,6 +16,7 @@ export {
 
 import type { ScopeCheckResult, ScopeProvider } from './types';
 import { GCPScopeProvider } from './gcp';
+import { AWSScopeProvider } from './aws';
 import { VaultScopeProvider } from './vault';
 import { saveBaseline, compareToBaseline } from './baselines';
 
@@ -23,7 +25,7 @@ import { saveBaseline, compareToBaseline } from './baselines';
  *
  * - JSON with `type: "service_account"` -> GCP
  * - Starts with `hvs.` or `s.` -> Vault
- * - Starts with `AKIA` -> AWS (not yet implemented)
+ * - Starts with `AKIA` or `ASIA` -> AWS
  */
 export function detectProvider(credential: string): string | null {
   const trimmed = credential.trim();
@@ -43,8 +45,8 @@ export function detectProvider(credential: string): string | null {
     return 'vault';
   }
 
-  // AWS access key (future)
-  if (/^AKIA[0-9A-Z]{16}$/.test(trimmed)) {
+  // AWS access key (AKIA for permanent, ASIA for STS temporary)
+  if (/^A[KS]IA[0-9A-Z]{16}$/.test(trimmed)) {
     return 'aws';
   }
 
@@ -62,6 +64,8 @@ export function createScopeProvider(provider: string, credential: string): Scope
       // credential IS the vault token -- use it for scope inspection
       // VAULT_ADDR still comes from env (the server address doesn't change)
       return new VaultScopeProvider(undefined, credential);
+    case 'aws':
+      return new AWSScopeProvider();
     default:
       throw new Error(`Unsupported scope provider: "${provider}"`);
   }
@@ -89,14 +93,7 @@ export async function discoverScope(
   if (!providerName) {
     throw new Error(
       'Unable to detect credential provider. Supported formats: ' +
-      'GCP service account key (JSON), Vault token (hvs./s. prefix)',
-    );
-  }
-
-  if (providerName === 'aws') {
-    throw new Error(
-      'AWS scope discovery is not yet implemented. ' +
-      'Use the opena2a CLI DRIFT-002 check for AWS key liveness verification.',
+      'GCP service account key (JSON), Vault token (hvs./s. prefix), AWS access key (AKIA/ASIA prefix)',
     );
   }
 
