@@ -5,6 +5,8 @@
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
+Every AI coding assistant in your terminal can read `~/.aws/credentials`, `echo $OPENAI_API_KEY`, and access any secret on your machine. Secretless makes secrets invisible to AI context without changing your workflow.
+
 One command to keep secrets out of AI LLMs. Works with Claude Code, Cursor, Copilot, Windsurf, Cline, and Aider.
 
 ```bash
