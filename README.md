@@ -1,4 +1,4 @@
-> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [ABG](https://github.com/opena2a-org/AI-BrowserGuard) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [OASB](https://github.com/opena2a-org/oasb) · [ARP](https://github.com/opena2a-org/arp) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
+> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [OpenA2A CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [AI Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent) · [Registry](https://registry.opena2a.org)
 
 # Secretless AI
 
@@ -349,6 +349,12 @@ npx secretless-ai hook uninstall     # Remove pre-commit hook
 | `scope check <NAME>` | Compare current permissions to baseline |
 | `scope list` | Show all scope baselines |
 | `scope reset <NAME>` | Clear a scope baseline |
+| **Shell Integration** | |
+| `env [--only K1,K2]` | Output export statements for stored secrets (use with `eval`) |
+| `scan-staged` | Scan git staged files for secrets (used by pre-commit hook) |
+| **Cache Management** | |
+| `cache clear` | Clear the encrypted secret cache |
+| `cache ttl [DURATION]` | Show or set cache TTL (e.g., `5m`, `1h`, `off`) |
 
 ## Usage via OpenA2A CLI
 
@@ -372,6 +378,44 @@ opena2a broker start       # Start the credential broker daemon
 opena2a broker status      # Check broker daemon status and connected agents
 ```
 
+**Policy example** -- define rules in `~/.secretless-ai/broker-policies.json`:
+
+```json
+{
+  "rules": [
+    {
+      "id": "scan-agents-read-github",
+      "agentSelector": "scan-*",
+      "credentialSelector": "GITHUB_*",
+      "effect": "allow",
+      "constraints": {
+        "minTrustScore": 0.7,
+        "rateLimit": { "maxPerMinute": 10 },
+        "scopeCheck": true
+      }
+    },
+    {
+      "id": "deny-all-production-keys",
+      "agentSelector": "*",
+      "credentialSelector": "PROD_*",
+      "effect": "deny",
+      "constraints": {}
+    }
+  ]
+}
+```
+
+The policy engine is default-deny: deny rules are evaluated first, then allow rules. All constraints must pass for an allow rule to grant access. Supported constraints include `minTrustScore` (AIM trust score), `rateLimit`, `timeWindow`, `requireCapability`, and `scopeCheck` (blocks access if a credential's scope has expanded beyond its baseline).
+
+**Request flow:**
+
+1. `opena2a broker start` -- starts the broker daemon on a local socket
+2. An agent requests a credential (e.g., `GITHUB_TOKEN`)
+3. The broker verifies the agent's AIM identity token
+4. The policy engine evaluates the request against loaded rules
+5. If allowed, the broker resolves the secret from the configured backend and returns it
+6. If denied, the broker returns an error and logs the attempt to the audit log
+
 ### Data Loss Prevention (DLP)
 
 DLP commands scan AI tool transcripts (conversation logs, shell history, tool output) for accidentally leaked credentials. If an API key, token, or connection string appears in a transcript, DLP flags it so you can rotate the exposed credential.
@@ -380,6 +424,41 @@ DLP commands scan AI tool transcripts (conversation logs, shell history, tool ou
 opena2a dlp scan           # Scan AI tool transcripts for leaked credentials
 opena2a dlp report         # Generate a DLP report with findings and remediation steps
 ```
+
+**Example output from `opena2a dlp scan`:**
+
+```
+  DLP Transcript Scan
+
+  Scanning 3 transcript(s)...
+
+  ! claude-code/2026-03-01-project-setup.jsonl
+      Line 142: AWS Access Key (AKIA...) — AKIA2EXAMPLE7XRQWZ
+      Line 307: Stripe Secret Key (sk_live_...) — sk_live_51J3Example
+
+  ! cursor/composer-history.json
+      Line 89: GitHub PAT (ghp_...) — ghp_A1b2C3ExampleToken
+
+  3 leaked credential(s) found in 2 transcript(s).
+
+  Rotate these credentials immediately — they have been sent to
+  an external API as part of the AI conversation context.
+```
+
+Each finding shows the transcript file, line number, credential type, and a truncated value preview. The `opena2a dlp report` command generates a structured report with remediation steps for each finding.
+
+### Cross-Product Integration
+
+Secretless connects to the wider OpenA2A ecosystem at multiple levels:
+
+| Entry Point | Command | What It Does |
+|-------------|---------|--------------|
+| Standalone | `npx secretless-ai init` | Protect AI tool context, manage secrets, encrypt MCP configs |
+| Credential drift | `opena2a protect` | Detect when credential scopes expand beyond their baselines |
+| Credential brokering | `opena2a broker start` | Identity-aware secret injection for AI agents via AIM tokens |
+| Leak detection | `opena2a dlp scan` | Scan transcripts and shell history for exposed credentials |
+
+Each layer builds on the previous one. Start with `secretless-ai init` for immediate protection, then add drift detection, brokering, and DLP as your agent deployment grows.
 
 ### When to Use Which Interface
 
@@ -432,11 +511,12 @@ Secretless has zero runtime dependencies.
 
 | Project | Description | Install |
 |---------|-------------|---------|
-| [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent Identity Management -- identity and access control for AI agents | `pip install aim-sdk` |
-| [**HackMyAgent**](https://github.com/opena2a-org/hackmyagent) | Security scanner -- 147 checks, attack mode, auto-fix | `npx hackmyagent secure` |
-| [**OASB**](https://github.com/opena2a-org/oasb) | Open Agent Security Benchmark -- 182 attack scenarios | `npm install @opena2a/oasb` |
-| [**ARP**](https://github.com/opena2a-org/arp) | Agent Runtime Protection -- process, network, filesystem monitoring | `npm install @opena2a/arp` |
-| [**DVAA**](https://github.com/opena2a-org/damn-vulnerable-ai-agent) | Damn Vulnerable AI Agent -- security training and red-teaming | `docker pull opena2a/dvaa` |
+| [**OpenA2A CLI**](https://github.com/opena2a-org/opena2a) | Unified security CLI -- orchestrates all OpenA2A tools | `npx opena2a` |
+| [**HackMyAgent**](https://github.com/opena2a-org/hackmyagent) | Security scanner and red-team toolkit -- checks, attack mode, benchmarks, runtime protection | `npx hackmyagent secure` |
+| [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent Identity Management -- identity, access control, and trust scoring for AI agents | Self-hosted |
+| [**AI Browser Guard**](https://github.com/opena2a-org/AI-BrowserGuard) | Browser agent detection and control -- 4-layer detection, delegation engine | Chrome Web Store |
+| [**DVAA**](https://github.com/opena2a-org/damn-vulnerable-ai-agent) | Damn Vulnerable AI Agent -- security training target | `docker pull opena2a/dvaa` |
+| [**Registry**](https://registry.opena2a.org) | Trust registry -- agent discovery, trust scores, supply chain verification | `registry.opena2a.org` |
 
 ## License
 
