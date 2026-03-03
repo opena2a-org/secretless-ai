@@ -2,3 +2,18 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+*.log
+
+# Environment
+.env
+.env.*
+
+# Secrets and credentials
+secrets.json
+*.pem
+*.key
+*.p12
+
+# Coverage
+coverage/
+.pre-push-review-passed
