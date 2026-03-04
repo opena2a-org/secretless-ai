@@ -52,6 +52,8 @@ Then enable CLI integration: **1Password > Settings > Developer > "Integrate wit
 npx secretless-ai backend set 1password       # Switch backend
 ```
 
+**Prevent repeated popups:** Run `npx secretless-ai warm --ttl 1h` before starting an AI coding session. This pre-loads all secrets into the encrypted cache so no `op` CLI calls (and no biometric popups) happen during the session. See [Session Management](#session-management).
+
 **CI/CD:** Set `OP_SERVICE_ACCOUNT_TOKEN` — same secrets, no code changes. No desktop app needed.
 
 ### HashiCorp Vault Backend
@@ -242,7 +244,7 @@ npx secretless-ai init
 Output:
 
 ```
-  Secretless v0.10.1
+  Secretless v0.10.2
   Keeping secrets out of AI
 
   Detected:
@@ -300,6 +302,89 @@ npx secretless-ai verify
   PASS: Secrets are accessible via env vars but hidden from AI context.
 ```
 
+## Session Management
+
+If you use 1Password or OS keychain as your backend, every secret access triggers a biometric prompt (Touch ID, 1Password popup). During an AI coding session, these fire repeatedly and interrupt your workflow.
+
+The `warm` command front-loads all authentication into one intentional moment:
+
+```bash
+npx secretless-ai warm               # Authenticate once, pre-load all secrets into cache
+npx secretless-ai warm --ttl 1h      # Set session length (default: 5m, accepts 300, 10m, 1h, 1d)
+npx secretless-ai warm --no-broker   # Skip auto-starting the broker daemon
+```
+
+**What happens during warm:**
+
+1. Touch ID authenticates your biometric session (macOS)
+2. All secrets are resolved from your backend (1Password, keychain, vault) and cached in an AES-256-GCM encrypted file at `~/.secretless-ai/store/.secret-cache`
+3. Cache TTL is synced with your session TTL so entries don't expire mid-session
+4. The broker daemon starts if not already running
+
+**After warm, for the entire session:** every `resolve()` call hits the encrypted file cache. Zero `op` CLI calls, zero keychain prompts, zero popups.
+
+```
+$ npx secretless-ai warm --ttl 1h
+
+  Secretless Session
+
+  Warming session...
+  Session is warm.
+
+  TTL:          3600s (1h 0m)
+  Expires at:   2026-03-04T17:30:00.000Z
+  Touch ID:     used
+  Cache:        12 secrets preloaded
+  Broker:       running
+
+  You can now use AI tools without repeated auth prompts.
+```
+
+### Auto-Start on Login (macOS)
+
+Install as a macOS LaunchAgent so the broker starts automatically:
+
+```bash
+npx secretless-ai install            # Install LaunchAgent
+npx secretless-ai install status     # Check installation status
+npx secretless-ai install uninstall  # Remove LaunchAgent
+```
+
+### Claude Code Integration
+
+Add a session gate to Claude Code so it blocks tool calls when your session has expired:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": ["npx secretless-ai hook --check-only"]
+      }
+    ]
+  }
+}
+```
+
+When the session is warm, the hook passes silently (exit 0, ~57ms). When expired, it blocks with an actionable message:
+
+```
+Secretless session expired. Run: secretless-ai warm
+```
+
+If secretless has never been set up (no session file exists), the hook passes — it won't block users who haven't opted in.
+
+### Secret Cache
+
+The cache reduces OS authentication prompts for keychain and 1Password backends by storing resolved secrets in an AES-256-GCM encrypted file. The `warm` command pre-populates the cache automatically.
+
+```bash
+npx secretless-ai cache              # Show cache status
+npx secretless-ai cache ttl 1h       # Set cache TTL (5m, 1h, 1d, off)
+npx secretless-ai cache clear        # Clear cached secrets
+```
+
 ## Git Protection
 
 Prevent secrets from being committed:
@@ -310,17 +395,35 @@ npx secretless-ai hook status        # Check hook installation status
 npx secretless-ai hook uninstall     # Remove pre-commit hook
 ```
 
+## Shell History Protection
+
+Scan and clean credentials that leaked into shell history files:
+
+```bash
+npx secretless-ai scan --history         # Scan shell history for credentials
+npx secretless-ai clean-history          # Redact credentials in shell history
+npx secretless-ai clean-history --dry-run  # Preview without modifying
+```
+
 ## All Commands
 
 | Command | Description |
 |---------|-------------|
 | `init` | Set up protections for your AI tools |
 | `scan` | Scan for hardcoded secrets (49 patterns) |
-| `status` | Show protection status |
+| `status` | Show protection status (session, broker, transcripts) |
 | `verify` | Verify keys are usable but hidden from AI |
 | `doctor [--fix]` | Diagnose and auto-fix shell profile issues |
-| `clean [--dry-run]` | Scan and redact credentials in transcripts |
+| `clean [--dry-run] [--path P]` | Scan and redact credentials in transcripts |
 | `watch` | Monitor transcripts in real-time |
+| **Session Management** | |
+| `warm` | Warm biometric session and pre-load secrets into cache |
+| `warm --ttl 10m` | Set session TTL (accepts seconds, 5m, 1h, 1d) |
+| `warm --no-broker` | Skip auto-starting the broker daemon |
+| `install` | Install broker as macOS login daemon (LaunchAgent) |
+| `install uninstall` | Remove LaunchAgent |
+| `install status` | Check daemon installation status |
+| `hook --check-only` | Session gate for Claude Code PreToolUse hooks |
 | **Secret Management** | |
 | `secret set <NAME[=VALUE]>` | Store a secret |
 | `secret list` | List stored secret names |
@@ -336,6 +439,10 @@ npx secretless-ai hook uninstall     # Remove pre-commit hook
 | `hook install` | Install pre-commit secret scanner |
 | `hook uninstall` | Remove pre-commit hook |
 | `hook status` | Check hook installation status |
+| **Shell History** | |
+| `scan --history` | Scan shell history for credentials |
+| `clean-history` | Redact credentials in shell history |
+| `clean-history --dry-run` | Preview redaction without modifying |
 | **MCP Protection** | |
 | `protect-mcp [--backend TYPE]` | Encrypt MCP server secrets |
 | `mcp-status` | Show MCP protection status |
@@ -355,8 +462,13 @@ npx secretless-ai hook uninstall     # Remove pre-commit hook
 | `env [--only K1,K2]` | Output export statements for stored secrets (use with `eval`) |
 | `scan-staged` | Scan git staged files for secrets (used by pre-commit hook) |
 | **Cache Management** | |
+| `cache` | Show cache status (backend, TTL, entries) |
 | `cache clear` | Clear the encrypted secret cache |
 | `cache ttl [DURATION]` | Show or set cache TTL (e.g., `5m`, `1h`, `off`) |
+| **Credential Broker** | |
+| `broker start` | Start the credential broker daemon |
+| `broker stop` | Stop the broker daemon |
+| `broker status` | Show broker status, uptime, and request count |
 
 ## Usage via OpenA2A CLI
 
@@ -493,7 +605,7 @@ For Claude Code, Secretless installs a PreToolUse hook that intercepts every `Re
 
 ```bash
 npm run build      # Compile TypeScript to dist/
-npm test           # Run tests (vitest, 677 tests)
+npm test           # Run tests (vitest, 738 tests)
 npm run dev        # Watch mode — recompile on file changes
 npm run clean      # Remove dist/ directory
 ```
