@@ -236,9 +236,16 @@ function runInit(projectDir: string): void {
 
   console.log('  Done. Secrets are now blocked from AI context.\n');
 
+  // Suggest warm for backends that trigger OS auth prompts
+  const configuredBackend = readBackendConfig();
+  if (configuredBackend === '1password' || configuredBackend === 'keychain') {
+    console.log(`  Tip: Run 'npx secretless-ai warm' before starting an AI session`);
+    console.log(`  to avoid repeated ${configuredBackend === '1password' ? '1Password' : 'keychain'} auth prompts.\n`);
+  }
+
   // Star prompt (interactive TTY only)
   if (process.stdout.isTTY) {
-    console.log('  Helpful? Star the project: https://github.com/opena2a-org/opena2a\n');
+    console.log('  Helpful? Star the project: https://github.com/opena2a-org/secretless-ai\n');
   }
 }
 
@@ -493,7 +500,9 @@ function runClean(args: string[]): void {
     }
   }
 
-  console.log('\n  Scanning Claude Code transcripts...\n');
+  console.log(targetPath
+    ? `\n  Scanning transcripts at ${targetPath}...\n`
+    : '\n  Scanning Claude Code transcripts...\n');
 
   const result = cleanTranscripts({ dryRun, targetPath, lastSession });
 
@@ -608,7 +617,7 @@ function runProtectMcp(args: string[]): void {
     if (result.clientsScanned === 0) {
       console.log('  No MCP configurations found.\n');
       console.log('  Looked for configs from: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf');
-      console.log('  Custom location? npx secretless-ai protect-mcp --path /path/to/config.json\n');
+      console.log('  Supported clients: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf\n');
       return;
     }
 
@@ -873,6 +882,7 @@ function runBackend(args: string[]): void {
   console.log('    npx secretless-ai backend set local       Use local encrypted file');
   console.log('    npx secretless-ai backend set keychain     Use OS keychain');
   console.log('    npx secretless-ai backend set 1password    Use 1Password vault');
+  console.log('    npx secretless-ai backend set vault        Use HashiCorp Vault');
   console.log('    npx secretless-ai backend list             List all stored entries');
   console.log('    npx secretless-ai backend purge            Delete all entries (--yes to confirm)');
   console.log();
@@ -885,16 +895,16 @@ function runMigrate(args: string[]): void {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--from' && args[i + 1]) {
       const val = args[++i];
-      if (val === 'local' || val === 'keychain' || val === '1password') fromType = val;
+      if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault') fromType = val;
     }
     if (args[i] === '--to' && args[i + 1]) {
       const val = args[++i];
-      if (val === 'local' || val === 'keychain' || val === '1password') toType = val;
+      if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault') toType = val;
     }
   }
 
   if (!fromType || !toType) {
-    console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password> --to <local|keychain|1password>\n');
+    console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password|vault> --to <local|keychain|1password|vault>\n');
     process.exit(1);
   }
 
@@ -1060,7 +1070,9 @@ function runSecret(args: string[]): void {
       const store = new SecretStore();
       store.listSecrets().then((names) => {
         if (names.length === 0) {
-          console.log('\n  No secrets stored.\n');
+          console.log('\n  No secrets stored.');
+          console.log('  Store one:    npx secretless-ai secret set MY_KEY=my_value');
+          console.log('  Import .env:  npx secretless-ai import .env\n');
           return;
         }
         console.log(`\n  ${names.length} secret(s):\n`);
@@ -1338,7 +1350,11 @@ function runHook(args: string[]): void {
 
     default:
       console.error(`\n  Unknown hook command: ${subcommand ?? '(none)'}`);
-      console.log('  Usage: secretless-ai hook <install|uninstall|status|--check-only>\n');
+      console.log('  Usage:');
+      console.log('    secretless-ai hook install       Install pre-commit hook');
+      console.log('    secretless-ai hook uninstall     Remove pre-commit hook');
+      console.log('    secretless-ai hook status        Check hook status');
+      console.log('    secretless-ai hook --check-only  Session gate for Claude Code hooks (silent, fast)\n');
       process.exit(1);
   }
 }
@@ -1789,15 +1805,16 @@ function runCleanHistory(dryRun: boolean): void {
 }
 
 function runWarm(args: string[]): void {
-  // Parse --ttl flag
+  // Parse --ttl flag (accepts seconds or duration strings like 5m, 1h, 1d)
   let ttlSeconds: number | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ttl' && args[i + 1]) {
-      const parsed = parseInt(args[++i], 10);
-      if (!isNaN(parsed) && parsed > 0) {
+      const raw = args[++i];
+      const parsed = parseDuration(raw);
+      if (parsed > 0) {
         ttlSeconds = parsed;
       } else {
-        console.error(`\n  Invalid TTL: ${args[i]}. Must be a positive number of seconds.\n`);
+        console.error(`\n  Invalid TTL: ${raw}. Examples: 300, 5m, 1h, 1d\n`);
         process.exit(1);
       }
     }
@@ -1945,7 +1962,7 @@ function printHelp(): void {
 
   Backend Management:
     npx secretless-ai backend             Show current backend status
-    npx secretless-ai backend set <type>  Set backend (local, keychain, or 1password)
+    npx secretless-ai backend set <type>  Set backend (local, keychain, 1password, or vault)
     npx secretless-ai backend list        List all entries in current backend
     npx secretless-ai backend purge       Delete all entries (--prefix mcp|secret, --yes)
     npx secretless-ai migrate             Migrate secrets between backends
@@ -1969,7 +1986,8 @@ function printHelp(): void {
 
   Session Management:
     npx secretless-ai warm                Warm biometric session (Touch ID)
-    npx secretless-ai warm --ttl 600      Set session TTL (seconds)
+    npx secretless-ai warm --ttl 10m      Set session TTL (300, 5m, 1h, 1d)
+    npx secretless-ai warm --no-broker    Skip auto-starting the broker daemon
     npx secretless-ai install             Install broker as macOS login daemon
     npx secretless-ai install uninstall   Remove login daemon
     npx secretless-ai install status      Check daemon installation status
