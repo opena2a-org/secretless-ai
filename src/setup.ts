@@ -43,7 +43,9 @@ export async function runSetup(
   const entries = readManifest(dir);
   if (!entries) {
     process.stderr.write('  No .secretless manifest found in this directory.\n');
-    process.stderr.write('  Create a .secretless file listing required secret names.\n');
+    process.stderr.write('  Create a .secretless file with one secret name per line:\n');
+    process.stderr.write('    ANTHROPIC_API_KEY\n');
+    process.stderr.write('    DATABASE_URL\n');
     return { set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: true };
   }
 
