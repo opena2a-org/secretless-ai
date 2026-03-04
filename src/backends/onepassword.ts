@@ -178,10 +178,15 @@ export class OnePasswordBackend implements WritableSecretBackend {
   /**
    * Look up the vault ID by name. Returns null if the vault doesn't exist
    * or the CLI is not authenticated.
+   *
+   * Falls back to `op vault list` when `op vault get` fails due to
+   * ambiguous name (multiple vaults with the same name). This prevents
+   * ensureVault() from creating duplicate vaults.
    */
   private getVaultId(): string | null {
     if (this.cachedVaultId) return this.cachedVaultId;
 
+    // Fast path: unambiguous vault lookup
     try {
       const out = execFileSync('op', [
         'vault', 'get', this.vaultName,
@@ -192,8 +197,26 @@ export class OnePasswordBackend implements WritableSecretBackend {
       this.cachedVaultId = vault.id;
       return vault.id;
     } catch {
-      return null;
+      // May fail due to: not found, ambiguous name, or auth error
     }
+
+    // Fallback: list all vaults and find by name (handles duplicate names)
+    try {
+      const out = execFileSync('op', [
+        'vault', 'list', '--format', 'json',
+      ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+
+      const vaults: Array<{ id: string; name: string }> = JSON.parse(out || '[]');
+      const match = vaults.find(v => v.name === this.vaultName);
+      if (match) {
+        this.cachedVaultId = match.id;
+        return match.id;
+      }
+    } catch {
+      // CLI not available or not authenticated
+    }
+
+    return null;
   }
 
   /**

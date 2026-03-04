@@ -373,6 +373,76 @@ describe('OnePasswordBackend', () => {
     });
   });
 
+  describe('duplicate vault handling', () => {
+    it('falls back to vault list when vault get fails due to ambiguous name', async () => {
+      mockExecFileSync.mockImplementation((cmd, args) => {
+        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+
+        const sub = `${args[0]} ${args[1]}`;
+
+        if (sub === 'vault get') {
+          throw new Error('More than one vault matches "Secretless"');
+        }
+        if (sub === 'vault list') {
+          return JSON.stringify([
+            { id: 'vault-dup-1', name: 'Secretless' },
+            { id: 'vault-dup-2', name: 'Secretless' },
+            { id: 'vault-other', name: 'Personal' },
+          ]) as unknown as Buffer;
+        }
+        if (sub === 'item list') {
+          return JSON.stringify([]) as unknown as Buffer;
+        }
+        return '' as unknown as Buffer;
+      });
+
+      const backend = new OnePasswordBackend();
+      const result = await backend.resolve('mcp');
+
+      // Should have used vault list fallback, not created a new vault
+      expect(mockExecFileSync).not.toHaveBeenCalledWith(
+        'op',
+        expect.arrayContaining(['vault', 'create']),
+        expect.any(Object),
+      );
+      expect(result).toEqual({});
+    });
+
+    it('does not create a new vault when duplicates exist', async () => {
+      mockExecFileSync.mockImplementation((cmd, args) => {
+        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+
+        const sub = `${args[0]} ${args[1]}`;
+
+        if (sub === 'vault get') {
+          throw new Error('More than one vault matches "Secretless"');
+        }
+        if (sub === 'vault list') {
+          return JSON.stringify([
+            { id: 'vault-dup-1', name: 'Secretless' },
+          ]) as unknown as Buffer;
+        }
+        if (sub === 'item delete') {
+          throw new Error('not found');
+        }
+        if (sub === 'item create') {
+          return '' as unknown as Buffer;
+        }
+        return '' as unknown as Buffer;
+      });
+
+      const backend = new OnePasswordBackend();
+      await backend.store('secret/KEY', 'value');
+
+      // Should use existing vault, not create new
+      expect(mockExecFileSync).not.toHaveBeenCalledWith(
+        'op',
+        expect.arrayContaining(['vault', 'create']),
+        expect.any(Object),
+      );
+    });
+  });
+
   describe('vault caching', () => {
     it('caches vault ID across multiple operations', async () => {
       mockOpCli([]);
