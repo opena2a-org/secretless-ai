@@ -93,7 +93,7 @@ npx secretless-ai scope reset MY_CREDENTIAL      # Clear baseline
 |----------|-----------|----------|-------------------|
 | **GCP** | Service account key JSON | `testIamPermissions` (Cloud Resource Manager) | None (self-inspection) |
 | **Vault** | Token prefix (`hvs.`, `s.`) | `capabilities-self` (Sys) | None (self-inspection) |
-| **AWS** | Access key prefix (`AKIA`) | Planned | — |
+| **AWS** | Access key prefix (`AKIA`) | STS `GetCallerIdentity` + IAM policy introspection | None (self-inspection) |
 
 ### How It Works
 
@@ -360,7 +360,12 @@ Add a session gate to Claude Code so it blocks tool calls when your session has 
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": ["npx secretless-ai hook --check-only"]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx secretless-ai hook --check-only"
+          }
+        ]
       }
     ]
   }
@@ -585,13 +590,13 @@ Each layer builds on the previous one. Start with `secretless-ai init` for immed
 
 ## What Gets Blocked
 
-### File patterns (20+)
+### File patterns (21)
 
 `.env`, `.env.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.crt`, `.aws/credentials`, `.ssh/*`, `.docker/config.json`, `.git-credentials`, `.npmrc`, `.pypirc`, `*.tfstate`, `*.tfvars`, `secrets/`, `credentials/`
 
-### Credential patterns (49)
+### Credential patterns (56)
 
-Anthropic API keys, OpenAI keys, AWS access keys, GitHub PATs, Slack tokens, Google API keys, Stripe keys, SendGrid keys, Supabase keys, Azure keys, GitLab tokens, Twilio keys, Mailgun keys, MongoDB URIs, JWTs, and 34 more
+Anthropic API keys, OpenAI keys, AWS access keys, GitHub PATs, Slack tokens, Google API keys, Stripe keys, SendGrid keys, Supabase keys, Azure keys, GitLab tokens, Twilio keys, Mailgun keys, MongoDB URIs, JWTs, and 41 more
 
 ### Bash commands
 

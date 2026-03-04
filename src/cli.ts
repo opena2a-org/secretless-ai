@@ -47,11 +47,11 @@ import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from '.
 import { scanStagedFiles } from './scan-staged';
 import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER } from './env';
 import type { SelectableBackendType } from './backends/config';
-import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning } from './broker/daemon';
-import { discoverScope, listBaselines, resetBaseline, compareToBaseline, loadBaseline, detectProvider } from './scope';
+import { startDaemon, stopDaemon, getDaemonStatus } from './broker/daemon';
+import { discoverScope, listBaselines, resetBaseline, loadBaseline, detectProvider } from './scope';
 import { scanHistory, cleanHistory } from './history';
 import { warm } from './session/warm';
-import { getSessionStatus, isSessionWarm } from './session/session-state';
+import { getSessionStatus } from './session/session-state';
 import { installDaemon, uninstallDaemon, isDaemonInstalled } from './session/install';
 import { runHookCheck } from './session/hook';
 
@@ -159,7 +159,7 @@ function main(): void {
       break;
     case '--version':
     case '-v':
-      console.log(`secretless v${VERSION}`);
+      console.log(`Secretless v${VERSION}`);
       break;
     case '--help':
     case '-h':
@@ -892,14 +892,25 @@ function runMigrate(args: string[]): void {
   let fromType: SelectableBackendType | undefined;
   let toType: SelectableBackendType | undefined;
 
+  const validBackends = ['local', 'keychain', '1password', 'vault'];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--from' && args[i + 1]) {
       const val = args[++i];
-      if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault') fromType = val;
+      if (validBackends.includes(val)) {
+        fromType = val as SelectableBackendType;
+      } else {
+        console.error(`\n  Unknown backend type: ${val}. Valid: ${validBackends.join(', ')}\n`);
+        process.exit(1);
+      }
     }
     if (args[i] === '--to' && args[i + 1]) {
       const val = args[++i];
-      if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault') toType = val;
+      if (validBackends.includes(val)) {
+        toType = val as SelectableBackendType;
+      } else {
+        console.error(`\n  Unknown backend type: ${val}. Valid: ${validBackends.join(', ')}\n`);
+        process.exit(1);
+      }
     }
   }
 
@@ -1313,8 +1324,8 @@ function runHook(args: string[]): void {
   const subcommand = args[0];
   const projectDir = process.cwd();
 
-  // Fast path: --check-only for Claude Code PreToolUse hook
-  if (subcommand === '--check-only' || args.includes('--check-only')) {
+  // Fast path: --check-only for Claude Code PreToolUse hook (must be first arg)
+  if (subcommand === '--check-only') {
     runHookCheck();
     return; // runHookCheck calls process.exit()
   }
@@ -1469,10 +1480,10 @@ function runBroker(args: string[]): void {
           aimUrl = args[++i];
         } else if (args[i] === '--port' && args[i + 1]) {
           const parsed = parseInt(args[++i], 10);
-          if (!isNaN(parsed) && parsed > 0) {
+          if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) {
             port = parsed;
           } else {
-            console.error(`\n  Invalid port: ${args[i]}. Must be a positive integer.\n`);
+            console.error(`\n  Invalid port: ${args[i]}. Must be 1-65535.\n`);
             process.exit(1);
           }
         } else if (args[i] === '--policy-file' && args[i + 1]) {
@@ -1890,6 +1901,16 @@ function runInstall(args: string[]): void {
     return;
   }
 
+  // Reject unknown subcommands
+  if (subcommand && subcommand !== 'install') {
+    console.error(`\n  Unknown install command: ${subcommand}`);
+    console.log('  Usage:');
+    console.log('    secretless-ai install              Install broker as login daemon');
+    console.log('    secretless-ai install uninstall     Remove login daemon');
+    console.log('    secretless-ai install status        Check installation status\n');
+    process.exit(1);
+  }
+
   // Default: install
   console.log('\n  Secretless Installer\n');
 
@@ -1940,11 +1961,12 @@ function printHelp(): void {
     npx secretless-ai secret set <NAME[=VALUE]>  Store a secret
     npx secretless-ai secret list                List stored secret names
     npx secretless-ai secret get <NAME>          Retrieve a secret value
+    npx secretless-ai secret get --force <NAME>  Retrieve in non-interactive contexts
     npx secretless-ai secret rm <NAME>           Remove a secret
     npx secretless-ai import <file>              Import secrets from .env file
     npx secretless-ai import --detect            Auto-find and import .env files
-    npx secretless-ai run -- <command>           Run command with secrets injected
-    npx secretless-ai env                        Output export statements for shell
+    npx secretless-ai run [--only K1,K2] -- <cmd>  Run with secrets injected
+    npx secretless-ai env [--only K1,K2]         Output export statements for shell
 
   Project Setup:
     npx secretless-ai setup              Set up secrets from .secretless manifest
@@ -1956,7 +1978,7 @@ function printHelp(): void {
     npx secretless-ai hook status        Check hook installation status
 
   MCP Protection:
-    npx secretless-ai protect-mcp    Encrypt MCP server secrets
+    npx secretless-ai protect-mcp [--backend TYPE]  Encrypt MCP server secrets
     npx secretless-ai mcp-status     Show MCP protection status
     npx secretless-ai mcp-unprotect  Restore original MCP configs
 
