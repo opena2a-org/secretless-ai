@@ -1,22 +1,73 @@
 /**
  * Touch ID integration — manages biometric authentication on macOS.
  *
- * Uses the macOS `security` command and keychain to perform Touch ID
- * authentication without requiring a compiled Swift binary. The approach:
- *
- * 1. Create a keychain item specifically for session authentication
- * 2. Access it with `-T` (ACL) that requires biometric confirmation
- * 3. Successful access = Touch ID confirmed = session is warm
+ * Uses the macOS LocalAuthentication framework via an inline Swift script
+ * to trigger real Touch ID authentication. The Swift script is compiled
+ * once and cached at ~/.secretless-ai/bin/secretless-touchid.
  *
  * Falls back gracefully on non-macOS platforms or when Touch ID is unavailable.
  */
 
 import * as os from 'os';
-import { execSync, type ExecSyncOptions } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import { execSync, execFileSync, type ExecSyncOptions } from 'child_process';
 import { writeSessionState, getSessionStatus, type SessionStatus } from './session-state';
 
-const KEYCHAIN_SERVICE = 'com.opena2a.secretless.session';
-const KEYCHAIN_ACCOUNT = 'secretless-session-token';
+const SECRETLESS_DIR = path.join(os.homedir(), '.secretless-ai');
+const BIN_DIR = path.join(SECRETLESS_DIR, 'bin');
+const TOUCHID_BINARY = path.join(BIN_DIR, 'secretless-touchid');
+const TOUCHID_SWIFT_SRC = path.join(BIN_DIR, 'secretless-touchid.swift');
+
+/**
+ * Swift source for the Touch ID helper binary.
+ * Uses LAContext from LocalAuthentication framework to trigger real biometrics.
+ * Exits 0 on success, 1 on failure/cancellation.
+ */
+const SWIFT_SOURCE = `
+import Foundation
+import LocalAuthentication
+
+let context = LAContext()
+
+// Allow reuse of recent biometric auth within the session
+if CommandLine.arguments.count > 1, let ttl = TimeInterval(CommandLine.arguments[1]) {
+    context.touchIDAuthenticationAllowableReuseDuration = ttl
+}
+
+var error: NSError?
+guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+    // No biometric hardware or not enrolled
+    // Fall back to device passcode
+    guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+        fputs("error: No authentication method available\\n", stderr)
+        exit(2)
+    }
+    let semaphore = DispatchSemaphore(value: 0)
+    var authSuccess = false
+    context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Secretless: Authenticate to access credentials") { success, _ in
+        authSuccess = success
+        semaphore.signal()
+    }
+    semaphore.wait()
+    exit(authSuccess ? 0 : 1)
+}
+
+let semaphore = DispatchSemaphore(value: 0)
+var authSuccess = false
+
+context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Secretless: Authenticate to access credentials") { success, _ in
+    authSuccess = success
+    semaphore.signal()
+}
+
+semaphore.wait()
+exit(authSuccess ? 0 : 1)
+`.trim();
+
+/** Hash of the Swift source to detect when recompilation is needed. */
+const SWIFT_SOURCE_HASH = crypto.createHash('sha256').update(SWIFT_SOURCE).digest('hex').slice(0, 12);
 
 /** Check if we're running on macOS. */
 export function isMacOS(): boolean {
@@ -28,51 +79,97 @@ export function isTouchIDAvailable(): boolean {
   if (!isMacOS()) return false;
 
   try {
-    // Check for biometric hardware via bioutil
     const result = execSync('bioutil -r -s', {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    return result.includes('biometric');
+    return result.toLowerCase().includes('biometric');
   } catch {
-    // bioutil not available or no biometric hardware
-    // Fall back to checking if Touch ID keychain operations work
+    return false;
+  }
+}
+
+/**
+ * Ensure the Touch ID helper binary is compiled and up to date.
+ * Compiles from Swift source on first run or when source changes.
+ * Returns the path to the binary, or null if compilation fails.
+ */
+export function ensureTouchIdBinary(): string | null {
+  if (!isMacOS()) return null;
+
+  fs.mkdirSync(BIN_DIR, { recursive: true, mode: 0o700 });
+
+  // Check if binary exists and is current
+  const hashFile = TOUCHID_BINARY + '.hash';
+  if (fs.existsSync(TOUCHID_BINARY) && fs.existsSync(hashFile)) {
     try {
-      execSync('security find-generic-password -h 2>&1 || true', {
-        encoding: 'utf-8',
-        timeout: 2000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      return true; // security command available, Touch ID may work
+      const existingHash = fs.readFileSync(hashFile, 'utf-8').trim();
+      if (existingHash === SWIFT_SOURCE_HASH) {
+        return TOUCHID_BINARY;
+      }
     } catch {
-      return false;
+      // Recompile
     }
+  }
+
+  // Write Swift source
+  fs.writeFileSync(TOUCHID_SWIFT_SRC, SWIFT_SOURCE, { mode: 0o600 });
+
+  // Compile
+  try {
+    execSync(
+      `swiftc -O -o "${TOUCHID_BINARY}" "${TOUCHID_SWIFT_SRC}" -framework LocalAuthentication 2>&1`,
+      {
+        encoding: 'utf-8',
+        timeout: 30000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+    fs.chmodSync(TOUCHID_BINARY, 0o700);
+    fs.writeFileSync(hashFile, SWIFT_SOURCE_HASH, { mode: 0o600 });
+    return TOUCHID_BINARY;
+  } catch (err) {
+    // Compilation failed — clean up
+    try { fs.unlinkSync(TOUCHID_SWIFT_SRC); } catch { /* ignore */ }
+    return null;
   }
 }
 
 /**
  * Warm the session by triggering Touch ID authentication.
  *
- * This creates (or accesses) a keychain item that requires biometric
- * confirmation. Successful access proves the user is present and
- * authenticated. The session state is then written to disk.
+ * On macOS: compiles (once) and runs a Swift binary that calls LAContext.
+ * On other platforms: just writes session state (no biometric gate).
  *
  * @param ttlSeconds - How long the session should remain warm
  * @returns Session status after warming
  */
 export async function warmSession(ttlSeconds?: number): Promise<SessionStatus> {
+  const ttl = ttlSeconds ?? 300;
+
   if (!isMacOS()) {
     // On non-macOS, just write session state (no biometric gate)
-    writeSessionState(ttlSeconds);
+    writeSessionState(ttl);
     return getSessionStatus();
   }
 
-  // Ensure the keychain item exists
-  ensureKeychainItem();
+  if (!isTouchIDAvailable()) {
+    // No biometric hardware — write session without biometric gate
+    writeSessionState(ttl);
+    return getSessionStatus();
+  }
 
-  // Access the keychain item (triggers Touch ID / password prompt)
-  const authenticated = await authenticateViaKeychain();
+  // Compile the Touch ID binary if needed
+  const binary = ensureTouchIdBinary();
+  if (!binary) {
+    // Compilation failed — fall back to session-only (no biometric gate)
+    writeSessionState(ttl);
+    return getSessionStatus();
+  }
+
+  // Run the Touch ID binary (this triggers the actual biometric prompt)
+  const authenticated = runTouchIdBinary(binary, ttl);
 
   if (!authenticated) {
     return {
@@ -80,62 +177,27 @@ export async function warmSession(ttlSeconds?: number): Promise<SessionStatus> {
       remainingSeconds: 0,
       expiresAt: '',
       authenticatedAt: '',
-      ttlSeconds: ttlSeconds ?? 300,
+      ttlSeconds: ttl,
     };
   }
 
   // Authentication succeeded — write session state
-  writeSessionState(ttlSeconds);
+  writeSessionState(ttl);
   return getSessionStatus();
 }
 
 /**
- * Ensure a keychain item exists for session authentication.
- * Creates one if it doesn't exist. Idempotent.
+ * Run the Touch ID binary.
+ * @param binary - Path to the compiled binary
+ * @param reuseDuration - LAContext reuse duration in seconds
+ * @returns true if authentication succeeded
  */
-function ensureKeychainItem(): void {
-  const execOpts: ExecSyncOptions = {
-    encoding: 'utf-8' as const,
-    timeout: 5000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  };
-
+function runTouchIdBinary(binary: string, reuseDuration: number): boolean {
   try {
-    // Check if item already exists
-    execSync(
-      `security find-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" 2>/dev/null`,
-      execOpts,
-    );
-    // Item exists
-  } catch {
-    // Item doesn't exist — create it
-    try {
-      execSync(
-        `security add-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" -w "secretless-session" -U`,
-        execOpts,
-      );
-    } catch {
-      // May fail if keychain is locked — that's okay, we'll catch it during auth
-    }
-  }
-}
-
-/**
- * Authenticate by accessing the keychain item.
- * On macOS, this triggers the system authentication dialog (Touch ID or password).
- */
-async function authenticateViaKeychain(): Promise<boolean> {
-  const execOpts: ExecSyncOptions = {
-    encoding: 'utf-8' as const,
-    timeout: 30000, // 30s for user to complete Touch ID
-    stdio: ['pipe', 'pipe', 'pipe'],
-  };
-
-  try {
-    execSync(
-      `security find-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" -w 2>/dev/null`,
-      execOpts,
-    );
+    execFileSync(binary, [String(reuseDuration)], {
+      timeout: 60000, // 60s for user to complete Touch ID
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     return true;
   } catch {
     return false;
