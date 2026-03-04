@@ -242,7 +242,7 @@ npx secretless-ai init
 Output:
 
 ```
-  Secretless v0.7.1
+  Secretless v0.10.1
   Keeping secrets out of AI
 
   Detected:
@@ -493,7 +493,7 @@ For Claude Code, Secretless installs a PreToolUse hook that intercepts every `Re
 
 ```bash
 npm run build      # Compile TypeScript to dist/
-npm test           # Run tests (vitest, 638 tests)
+npm test           # Run tests (vitest, 677 tests)
 npm run dev        # Watch mode — recompile on file changes
 npm run clean      # Remove dist/ directory
 ```
