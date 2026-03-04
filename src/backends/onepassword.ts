@@ -30,6 +30,16 @@ import type { WritableSecretBackend, BackendHealth } from './types';
 const DEFAULT_VAULT = 'Secretless';
 const ITEM_TAG = 'secretless';
 
+/**
+ * Environment variables passed to all `op` CLI calls so 1Password shows
+ * "Secretless" instead of generic "terminal" in the approval dialog.
+ */
+const OP_ENV: Record<string, string> = {
+  ...process.env as Record<string, string>,
+  OP_INTEGRATION_NAME: 'Secretless',
+  OP_INTEGRATION_ID: 'secretless-ai',
+};
+
 /** Minimal shape returned by `op item list --format json`. */
 interface OpItem {
   id: string;
@@ -88,11 +98,11 @@ export class OnePasswordBackend implements WritableSecretBackend {
     const tmpFile = path.join(os.tmpdir(), `secretless-op-${process.pid}-${Date.now()}.json`);
     try {
       fs.writeFileSync(tmpFile, template, { mode: 0o600 });
-      execFileSync('op', [
+      this.op([
         'item', 'create',
         '--vault', vaultId,
         '--template', tmpFile,
-      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+      ]);
     } finally {
       try { fs.unlinkSync(tmpFile); } catch { /* already cleaned up */ }
     }
@@ -136,9 +146,7 @@ export class OnePasswordBackend implements WritableSecretBackend {
   async healthCheck(): Promise<BackendHealth> {
     const start = Date.now();
     try {
-      execFileSync('op', ['account', 'get', '--format', 'json'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      this.op(['account', 'get', '--format', 'json']);
       return {
         healthy: true,
         latencyMs: Date.now() - start,
@@ -157,6 +165,16 @@ export class OnePasswordBackend implements WritableSecretBackend {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /** Run `op` with integration env so 1Password shows "Secretless" in the approval dialog. */
+  private op(args: string[], opts?: { encoding?: 'utf-8'; stdio?: 'pipe' | Array<'pipe'>; input?: string }): string {
+    return execFileSync('op', args, {
+      stdio: opts?.stdio ?? ['pipe', 'pipe', 'pipe'],
+      encoding: opts?.encoding ?? 'utf-8',
+      env: OP_ENV,
+      ...(opts?.input ? { input: opts.input } : {}),
+    }) as unknown as string;
+  }
+
   /**
    * Get or create the Secretless vault. Returns the vault ID.
    * Caches the vault ID for the lifetime of this backend instance.
@@ -165,10 +183,10 @@ export class OnePasswordBackend implements WritableSecretBackend {
     const existing = this.getVaultId();
     if (existing) return existing;
 
-    const out = execFileSync('op', [
+    const out = this.op([
       'vault', 'create', this.vaultName,
       '--format', 'json',
-    ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+    ]);
 
     const vault: OpVault = JSON.parse(out);
     this.cachedVaultId = vault.id;
@@ -188,10 +206,10 @@ export class OnePasswordBackend implements WritableSecretBackend {
 
     // Fast path: unambiguous vault lookup
     try {
-      const out = execFileSync('op', [
+      const out = this.op([
         'vault', 'get', this.vaultName,
         '--format', 'json',
-      ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+      ]);
 
       const vault: OpVault = JSON.parse(out);
       this.cachedVaultId = vault.id;
@@ -202,9 +220,9 @@ export class OnePasswordBackend implements WritableSecretBackend {
 
     // Fallback: list all vaults and find by name (handles duplicate names)
     try {
-      const out = execFileSync('op', [
+      const out = this.op([
         'vault', 'list', '--format', 'json',
-      ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+      ]);
 
       const vaults: Array<{ id: string; name: string }> = JSON.parse(out || '[]');
       const match = vaults.find(v => v.name === this.vaultName);
@@ -225,12 +243,12 @@ export class OnePasswordBackend implements WritableSecretBackend {
    */
   private listItems(vaultId: string): OpItem[] {
     try {
-      const out = execFileSync('op', [
+      const out = this.op([
         'item', 'list',
         '--vault', vaultId,
         '--tags', ITEM_TAG,
         '--format', 'json',
-      ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+      ]);
 
       const parsed = JSON.parse(out || '[]');
       return Array.isArray(parsed) ? parsed : [];
@@ -243,12 +261,12 @@ export class OnePasswordBackend implements WritableSecretBackend {
    * Retrieve the password field value for a single item by ID.
    */
   private getItemPassword(itemId: string, vaultId: string): string {
-    const out = execFileSync('op', [
+    const out = this.op([
       'item', 'get', itemId,
       '--vault', vaultId,
       '--fields', 'password',
       '--format', 'json',
-    ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+    ]);
 
     const field: OpFieldResult = JSON.parse(out);
     return field.value;
@@ -263,9 +281,9 @@ export class OnePasswordBackend implements WritableSecretBackend {
    * delete-before-create in store()), this is always unambiguous.
    */
   private deleteByTitle(title: string, vaultId: string): void {
-    execFileSync('op', [
+    this.op([
       'item', 'delete', title,
       '--vault', vaultId,
-    ], { stdio: 'pipe' });
+    ]);
   }
 }
