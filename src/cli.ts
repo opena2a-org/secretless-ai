@@ -18,6 +18,8 @@
  *   npx secretless-ai setup    — Set up secrets from .secretless manifest
  *   npx secretless-ai hook     — Manage pre-commit hook
  *   npx secretless-ai broker   — Manage credential broker daemon (start, stop, status)
+ *   npx secretless-ai warm     — Warm biometric session (Touch ID on macOS)
+ *   npx secretless-ai install  — Install broker as login daemon (macOS LaunchAgent)
  */
 
 import * as path from 'path';
@@ -48,6 +50,10 @@ import type { SelectableBackendType } from './backends/config';
 import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning } from './broker/daemon';
 import { discoverScope, listBaselines, resetBaseline, compareToBaseline, loadBaseline, detectProvider } from './scope';
 import { scanHistory, cleanHistory } from './history';
+import { warm } from './session/warm';
+import { getSessionStatus, isSessionWarm } from './session/session-state';
+import { installDaemon, uninstallDaemon, isDaemonInstalled } from './session/install';
+import { runHookCheck } from './session/hook';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: VERSION } = require('../package.json');
@@ -144,6 +150,12 @@ function main(): void {
       break;
     case 'clean-history':
       runCleanHistory(args.includes('--dry-run'));
+      break;
+    case 'warm':
+      runWarm(args.slice(1));
+      break;
+    case 'install':
+      runInstall(args.slice(1));
       break;
     case '--version':
     case '-v':
@@ -264,6 +276,41 @@ function runStatus(projectDir: string): void {
   console.log(`  Hook:       ${s.hookInstalled ? 'Installed' : 'Not installed'}`);
   console.log(`  Deny rules: ${s.denyRuleCount}`);
   console.log(`  Secrets:    ${s.secretsFound} found in config files`);
+
+  // Session status
+  const session = getSessionStatus();
+  console.log();
+  console.log('  Session:');
+  if (session.warm) {
+    console.log(`    Status:    warm`);
+    console.log(`    Expires:   ${formatRemainingTime(session.remainingSeconds)} (${session.expiresAt})`);
+  } else if (session.authenticatedAt) {
+    console.log(`    Status:    expired`);
+    console.log(`    Last auth: ${session.authenticatedAt}`);
+    console.log('    Warm it:   npx secretless-ai warm');
+  } else {
+    console.log(`    Status:    not initialized`);
+    console.log('    Set up:    npx secretless-ai warm');
+  }
+
+  // Broker status
+  const brokerStatus = getDaemonStatus();
+  console.log();
+  console.log('  Broker:');
+  if (brokerStatus) {
+    console.log(`    Status:    running (PID ${brokerStatus.pid})`);
+    console.log(`    Uptime:    ${formatUptime(brokerStatus.uptimeSeconds)}`);
+    console.log(`    Socket:    ${brokerStatus.socketPath}`);
+    console.log(`    Policies:  ${brokerStatus.policyCount}`);
+  } else {
+    console.log(`    Status:    not running`);
+    const installed = isDaemonInstalled();
+    if (!installed) {
+      console.log('    Install:   npx secretless-ai install');
+    } else {
+      console.log('    Start:     npx secretless-ai broker start');
+    }
+  }
 
   // Transcript protection status
   if (s.transcriptProtection) {
@@ -1254,6 +1301,12 @@ function runHook(args: string[]): void {
   const subcommand = args[0];
   const projectDir = process.cwd();
 
+  // Fast path: --check-only for Claude Code PreToolUse hook
+  if (subcommand === '--check-only' || args.includes('--check-only')) {
+    runHookCheck();
+    return; // runHookCheck calls process.exit()
+  }
+
   switch (subcommand) {
     case 'install': {
       const result = installPreCommitHook(projectDir);
@@ -1285,7 +1338,7 @@ function runHook(args: string[]): void {
 
     default:
       console.error(`\n  Unknown hook command: ${subcommand ?? '(none)'}`);
-      console.log('  Usage: secretless-ai hook <install|uninstall|status>\n');
+      console.log('  Usage: secretless-ai hook <install|uninstall|status|--check-only>\n');
       process.exit(1);
   }
 }
@@ -1735,6 +1788,115 @@ function runCleanHistory(dryRun: boolean): void {
   });
 }
 
+function runWarm(args: string[]): void {
+  // Parse --ttl flag
+  let ttlSeconds: number | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--ttl' && args[i + 1]) {
+      const parsed = parseInt(args[++i], 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        ttlSeconds = parsed;
+      } else {
+        console.error(`\n  Invalid TTL: ${args[i]}. Must be a positive number of seconds.\n`);
+        process.exit(1);
+      }
+    }
+  }
+
+  const noBroker = args.includes('--no-broker');
+
+  console.log('\n  Secretless Session\n');
+
+  // Check if already warm
+  const current = getSessionStatus(ttlSeconds);
+  if (current.warm) {
+    console.log('  Session is already warm.');
+    console.log(`  Expires in:   ${formatRemainingTime(current.remainingSeconds)}`);
+    console.log(`  Expires at:   ${current.expiresAt}`);
+    console.log();
+    return;
+  }
+
+  console.log('  Warming session...');
+
+  warm(ttlSeconds, !noBroker).then((result) => {
+    if (!result.sessionWarm) {
+      console.error(`  Session warming failed.${result.error ? ` ${result.error}` : ''}`);
+      console.log('  Try again or check system authentication settings.\n');
+      process.exit(1);
+      return;
+    }
+
+    console.log('  Session is warm.\n');
+    console.log(`  TTL:          ${result.session.ttlSeconds}s (${formatRemainingTime(result.session.ttlSeconds)})`);
+    console.log(`  Expires at:   ${result.session.expiresAt}`);
+    console.log(`  Touch ID:     ${result.touchIdUsed ? 'used' : 'not required'}`);
+
+    if (result.brokerStarted) {
+      console.log('  Broker:       started (was not running)');
+    } else if (result.brokerRunning) {
+      console.log('  Broker:       running');
+    } else {
+      console.log('  Broker:       not running (start with: secretless-ai broker start)');
+    }
+
+    console.log('\n  You can now use AI tools without repeated auth prompts.\n');
+  }).catch((err) => {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
+function runInstall(args: string[]): void {
+  const subcommand = args[0];
+
+  if (subcommand === 'uninstall' || subcommand === 'remove') {
+    const result = uninstallDaemon();
+    console.log(`\n  ${result.message}\n`);
+    if (!result.removed) process.exit(1);
+    return;
+  }
+
+  if (subcommand === 'status' || subcommand === 'check') {
+    const installed = isDaemonInstalled();
+    console.log(`\n  LaunchAgent: ${installed ? 'installed' : 'not installed'}`);
+    if (!installed) {
+      console.log('  Install: npx secretless-ai install');
+    }
+    console.log();
+    return;
+  }
+
+  // Default: install
+  console.log('\n  Secretless Installer\n');
+
+  const result = installDaemon();
+
+  if (result.installed) {
+    console.log(`  Platform:     ${result.platform}`);
+    console.log(`  Plist:        ${result.plistPath}`);
+    console.log(`  Daemon:       ${result.loaded ? 'loaded and running' : 'installed (not loaded)'}`);
+    console.log();
+
+    if (result.loaded) {
+      console.log('  Broker daemon will start automatically on login.');
+      console.log('  Warm your session: npx secretless-ai warm\n');
+    }
+  } else {
+    console.log(`  ${result.message}\n`);
+    process.exit(1);
+  }
+}
+
+function formatRemainingTime(seconds: number): string {
+  if (seconds <= 0) return 'expired';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${mins}m`;
+}
+
 function printHelp(): void {
   console.log(`
   Secretless v${VERSION}
@@ -1748,6 +1910,8 @@ function printHelp(): void {
     npx secretless-ai doctor    Diagnose shell profile issues (--fix to auto-fix)
     npx secretless-ai clean     Scan and redact credentials in transcripts
     npx secretless-ai watch     Monitor transcripts in real-time
+    npx secretless-ai warm      Warm biometric session (Touch ID on macOS)
+    npx secretless-ai install   Install broker as login daemon (macOS)
 
   Secret Management:
     npx secretless-ai secret set <NAME[=VALUE]>  Store a secret
@@ -1796,6 +1960,16 @@ function printHelp(): void {
     npx secretless-ai broker start        Start the credential broker daemon
     npx secretless-ai broker stop         Stop the running broker daemon
     npx secretless-ai broker status       Show broker daemon status
+
+  Session Management:
+    npx secretless-ai warm                Warm biometric session (Touch ID)
+    npx secretless-ai warm --ttl 600      Set session TTL (seconds)
+    npx secretless-ai install             Install broker as macOS login daemon
+    npx secretless-ai install uninstall   Remove login daemon
+    npx secretless-ai install status      Check daemon installation status
+
+  Claude Code Integration:
+    npx secretless-ai hook --check-only   Session check (for PreToolUse hooks)
 
   Cache (reduces OS auth prompts for keychain/1password):
     npx secretless-ai cache               Show cache status
