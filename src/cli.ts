@@ -236,7 +236,8 @@ function runScan(projectDir: string): void {
   const findings = scan(projectDir);
 
   if (findings.length === 0) {
-    console.log('  No hardcoded credentials found.\n');
+    console.log('  No hardcoded credentials found.');
+    console.log('  Verify keys are working: npx secretless-ai verify\n');
     return;
   }
 
@@ -507,7 +508,8 @@ function runWatch(args: string[]): void {
       if (isWatchRunning()) {
         console.log('\n  Watcher: running\n');
       } else {
-        console.log('\n  Watcher: not running\n');
+        console.log('\n  Watcher: not running');
+        console.log('  Start: npx secretless-ai watch start\n');
       }
       break;
 
@@ -559,7 +561,7 @@ function runProtectMcp(args: string[]): void {
     if (result.clientsScanned === 0) {
       console.log('  No MCP configurations found.\n');
       console.log('  Looked for configs from: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf');
-      console.log('  If your configs are in a non-standard location, please open an issue.\n');
+      console.log('  Custom location? npx secretless-ai protect-mcp --path /path/to/config.json\n');
       return;
     }
 
@@ -768,6 +770,7 @@ function runBackend(args: string[]): void {
       if (failed > 0) {
         console.log(`  Failed: ${failed}`);
       }
+      console.log('  Re-import secrets: npx secretless-ai import .env');
       console.log();
     }).catch((err) => {
       console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -1191,7 +1194,8 @@ function runImport(args: string[]): void {
   const resolvedPath = path.resolve(filePath);
   importEnvFile(resolvedPath).then((result) => {
     if (result.imported === 0) {
-      console.log('  No secrets found in file.\n');
+      console.log('  No secrets found in file.');
+      console.log('  Expected format: KEY=value (one per line)\n');
       return;
     }
 
@@ -1271,7 +1275,11 @@ function runHook(args: string[]): void {
 
     case 'status': {
       const installed = isHookInstalled(projectDir);
-      console.log(`\n  Pre-commit hook: ${installed ? 'installed' : 'not installed'}\n`);
+      console.log(`\n  Pre-commit hook: ${installed ? 'installed' : 'not installed'}`);
+      if (!installed) {
+        console.log('  Install: npx secretless-ai hook install');
+      }
+      console.log();
       break;
     }
 

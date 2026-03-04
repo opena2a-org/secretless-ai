@@ -50,7 +50,7 @@ export function installPreCommitHook(projectDir: string): {
     // Foreign hook — don't overwrite
     return {
       installed: false,
-      message: 'A pre-commit hook already exists (not from secretless). Remove it first or add `npx secretless-ai scan-staged` to it manually.',
+      message: 'A pre-commit hook already exists (not from secretless). Append this line to it: npx secretless-ai scan-staged',
     };
   }
 
