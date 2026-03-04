@@ -1832,6 +1832,12 @@ function runWarm(args: string[]): void {
     console.log(`  Expires at:   ${result.session.expiresAt}`);
     console.log(`  Touch ID:     ${result.touchIdUsed ? 'used' : 'not required'}`);
 
+    if (result.cachePreloaded > 0) {
+      console.log(`  Cache:        ${result.cachePreloaded} secret${result.cachePreloaded === 1 ? '' : 's'} preloaded`);
+    } else {
+      console.log('  Cache:        no secrets to preload');
+    }
+
     if (result.brokerStarted) {
       console.log('  Broker:       started (was not running)');
     } else if (result.brokerRunning) {

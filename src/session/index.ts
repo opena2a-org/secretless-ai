@@ -19,6 +19,7 @@ export {
 
 export {
   warm,
+  preloadCache,
   type WarmResult,
 } from './warm';
 
