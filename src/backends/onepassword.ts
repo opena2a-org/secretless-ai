@@ -30,16 +30,6 @@ import type { WritableSecretBackend, BackendHealth } from './types';
 const DEFAULT_VAULT = 'Secretless';
 const ITEM_TAG = 'secretless';
 
-/**
- * Environment variables passed to all `op` CLI calls so 1Password shows
- * "Secretless" instead of generic "terminal" in the approval dialog.
- */
-const OP_ENV: Record<string, string> = {
-  ...process.env as Record<string, string>,
-  OP_INTEGRATION_NAME: 'Secretless',
-  OP_INTEGRATION_ID: 'secretless-ai',
-};
-
 /** Minimal shape returned by `op item list --format json`. */
 interface OpItem {
   id: string;
@@ -165,13 +155,10 @@ export class OnePasswordBackend implements WritableSecretBackend {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  /** Run `op` with integration env so 1Password shows "Secretless" in the approval dialog. */
-  private op(args: string[], opts?: { encoding?: 'utf-8'; stdio?: 'pipe' | Array<'pipe'>; input?: string }): string {
+  private op(args: string[]): string {
     return execFileSync('op', args, {
-      stdio: opts?.stdio ?? ['pipe', 'pipe', 'pipe'],
-      encoding: opts?.encoding ?? 'utf-8',
-      env: OP_ENV,
-      ...(opts?.input ? { input: opts.input } : {}),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
     }) as unknown as string;
   }
 
