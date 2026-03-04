@@ -18,8 +18,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { WritableSecretBackend, BackendHealth } from './types';
 
-const SERVICE_NAME = 'secretless';
+const LEGACY_SERVICE_NAME = 'secretless';
 const INDEX_FILENAME = 'keychain-index.json';
+
+/**
+ * Derive a per-key service name so password managers show a descriptive
+ * name instead of "secretless" for every entry.
+ */
+function serviceNameFor(key: string): string {
+  const lastSegment = key.split('/').pop() ?? key;
+  return `Secretless: ${lastSegment}`;
+}
 
 export class LinuxKeychainBackend implements WritableSecretBackend {
   readonly name = 'keychain-linux';
@@ -33,11 +42,24 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
   }
 
   async store(key: string, value: string): Promise<void> {
+    const svc = serviceNameFor(key);
+
+    // Delete legacy entry to prevent duplicates
+    try {
+      execFileSync('secret-tool', [
+        'clear',
+        'service', LEGACY_SERVICE_NAME,
+        'account', key,
+      ], { stdio: 'pipe' });
+    } catch {
+      // No legacy entry — that's fine
+    }
+
     // secret-tool store reads the value from stdin
     execFileSync('secret-tool', [
       'store',
-      '--label=secretless',
-      'service', SERVICE_NAME,
+      `--label=Secretless: ${key}`,
+      'service', svc,
       'account', key,
     ], {
       input: value,
@@ -60,39 +82,50 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
 
     const results: Record<string, string> = {};
     for (const key of matchingKeys) {
-      try {
-        const value = execFileSync('secret-tool', [
-          'lookup',
-          'service', SERVICE_NAME,
-          'account', key,
-        ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' }).trimEnd();
-        if (value) {
-          results[key] = value;
-        }
-      } catch {
-        // Key was in index but not in keyring — skip
+      // Try new per-key service name first, fall back to legacy
+      const value = this.lookupSecret(serviceNameFor(key), key)
+        ?? this.lookupSecret(LEGACY_SERVICE_NAME, key);
+      if (value) {
+        results[key] = value;
       }
     }
     return results;
   }
 
   async delete(key: string): Promise<boolean> {
+    let deleted = false;
+
+    // Delete new-format entry
     try {
       execFileSync('secret-tool', [
         'clear',
-        'service', SERVICE_NAME,
+        'service', serviceNameFor(key),
         'account', key,
       ], { stdio: 'pipe' });
+      deleted = true;
+    } catch {
+      // Not found with new service name
+    }
 
-      // Remove from index
+    // Also delete legacy entry if it exists
+    try {
+      execFileSync('secret-tool', [
+        'clear',
+        'service', LEGACY_SERVICE_NAME,
+        'account', key,
+      ], { stdio: 'pipe' });
+      deleted = true;
+    } catch {
+      // No legacy entry
+    }
+
+    if (deleted) {
       const index = this.readIndex();
       const filtered = index.filter(k => k !== key);
       this.writeIndex(filtered);
-
-      return true;
-    } catch {
-      return false;
     }
+
+    return deleted;
   }
 
   async healthCheck(): Promise<BackendHealth> {
@@ -110,6 +143,19 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
         latencyMs: Date.now() - start,
         message: 'secret-tool not found. Install libsecret-tools (Debian/Ubuntu) or libsecret (Fedora/RHEL).',
       };
+    }
+  }
+
+  private lookupSecret(service: string, account: string): string | null {
+    try {
+      const value = execFileSync('secret-tool', [
+        'lookup',
+        'service', service,
+        'account', account,
+      ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' }).trimEnd();
+      return value || null;
+    } catch {
+      return null;
     }
   }
 

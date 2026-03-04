@@ -16,8 +16,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { WritableSecretBackend, BackendHealth } from './types';
 
-const SERVICE_NAME = 'secretless';
+const LEGACY_SERVICE_NAME = 'secretless';
 const INDEX_FILENAME = 'keychain-index.json';
+
+/**
+ * Derive a per-key service name so macOS Passwords.app shows a descriptive
+ * name instead of "Secretless" for every entry.
+ *
+ * Examples:
+ *   "secret/ANTHROPIC_API_KEY" → "Secretless: ANTHROPIC_API_KEY"
+ *   "mcp/claude-desktop/server/TOKEN" → "Secretless: TOKEN"
+ */
+function serviceNameFor(key: string): string {
+  const lastSegment = key.split('/').pop() ?? key;
+  return `Secretless: ${lastSegment}`;
+}
 
 /**
  * macOS `security find-generic-password -w` hex-encodes passwords that contain
@@ -52,23 +65,36 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
   }
 
   async store(key: string, value: string): Promise<void> {
-    // Delete existing entry first (ignore errors if it doesn't exist)
+    const svc = serviceNameFor(key);
+
+    // Delete existing entry (new service name)
     try {
       execFileSync('security', [
         'delete-generic-password',
-        '-s', SERVICE_NAME,
+        '-s', svc,
         '-a', key,
       ], { stdio: 'pipe' });
     } catch {
       // Entry didn't exist — that's fine
     }
 
-    // Add the new entry with a descriptive label (visible in Keychain Access)
+    // Also delete legacy entry (old unified service name) to prevent duplicates
+    try {
+      execFileSync('security', [
+        'delete-generic-password',
+        '-s', LEGACY_SERVICE_NAME,
+        '-a', key,
+      ], { stdio: 'pipe' });
+    } catch {
+      // No legacy entry — that's fine
+    }
+
+    // Add the new entry with a per-key service name (visible in macOS Passwords.app)
     execFileSync('security', [
       'add-generic-password',
-      '-s', SERVICE_NAME,
+      '-s', svc,
       '-a', key,
-      '-l', `secretless: ${key}`,
+      '-l', `Secretless: ${key}`,
       '-w', value,
     ], { stdio: 'pipe' });
 
@@ -88,38 +114,50 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
 
     const results: Record<string, string> = {};
     for (const key of matchingKeys) {
-      try {
-        const raw = execFileSync('security', [
-          'find-generic-password',
-          '-s', SERVICE_NAME,
-          '-a', key,
-          '-w',
-        ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' }).trimEnd();
+      // Try new per-key service name first, fall back to legacy
+      const raw = this.findPassword(serviceNameFor(key), key)
+        ?? this.findPassword(LEGACY_SERVICE_NAME, key);
+      if (raw !== null) {
         results[key] = decodeKeychainValue(raw);
-      } catch {
-        // Key was in index but not in keychain — skip (stale index entry)
       }
     }
     return results;
   }
 
   async delete(key: string): Promise<boolean> {
+    let deleted = false;
+
+    // Delete new-format entry
     try {
       execFileSync('security', [
         'delete-generic-password',
-        '-s', SERVICE_NAME,
+        '-s', serviceNameFor(key),
         '-a', key,
       ], { stdio: 'pipe' });
+      deleted = true;
+    } catch {
+      // Not found with new service name
+    }
 
-      // Remove from index
+    // Also delete legacy entry if it exists
+    try {
+      execFileSync('security', [
+        'delete-generic-password',
+        '-s', LEGACY_SERVICE_NAME,
+        '-a', key,
+      ], { stdio: 'pipe' });
+      deleted = true;
+    } catch {
+      // No legacy entry
+    }
+
+    if (deleted) {
       const index = this.readIndex();
       const filtered = index.filter(k => k !== key);
       this.writeIndex(filtered);
-
-      return true;
-    } catch {
-      return false;
     }
+
+    return deleted;
   }
 
   async healthCheck(): Promise<BackendHealth> {
@@ -137,6 +175,19 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
         latencyMs: Date.now() - start,
         message: 'macOS Keychain not accessible',
       };
+    }
+  }
+
+  private findPassword(service: string, account: string): string | null {
+    try {
+      return execFileSync('security', [
+        'find-generic-password',
+        '-s', service,
+        '-a', account,
+        '-w',
+      ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' }).trimEnd();
+    } catch {
+      return null;
     }
   }
 

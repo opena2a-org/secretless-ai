@@ -32,15 +32,23 @@ describe('LinuxKeychainBackend', () => {
   });
 
   describe('store()', () => {
-    it('calls secret-tool store with value via stdin', async () => {
+    it('calls secret-tool store with per-key service name', async () => {
       const backend = new LinuxKeychainBackend({ storeDir: dir });
       mockExecFileSync.mockReturnValue(Buffer.from(''));
 
       await backend.store('mcp/client/server/KEY', 'secret-value');
 
+      // Verify legacy clear was attempted
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'secret-tool',
-        ['store', '--label=secretless', 'service', 'secretless', 'account', 'mcp/client/server/KEY'],
+        ['clear', 'service', 'secretless', 'account', 'mcp/client/server/KEY'],
+        expect.any(Object),
+      );
+
+      // Verify store uses per-key service name
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'secret-tool',
+        ['store', '--label=Secretless: mcp/client/server/KEY', 'service', 'Secretless: KEY', 'account', 'mcp/client/server/KEY'],
         expect.objectContaining({ input: 'secret-value' }),
       );
     });
@@ -85,7 +93,7 @@ describe('LinuxKeychainBackend', () => {
   });
 
   describe('delete()', () => {
-    it('calls secret-tool clear and removes from index', async () => {
+    it('deletes both new and legacy entries and removes from index', async () => {
       const backend = new LinuxKeychainBackend({ storeDir: dir });
 
       const indexPath = path.join(dir, 'keychain-index.json');
@@ -96,6 +104,14 @@ describe('LinuxKeychainBackend', () => {
       const result = await backend.delete('mcp/client/server/KEY1');
       expect(result).toBe(true);
 
+      // Verify delete with new service name
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'secret-tool',
+        ['clear', 'service', 'Secretless: KEY1', 'account', 'mcp/client/server/KEY1'],
+        expect.any(Object),
+      );
+
+      // Verify legacy delete also attempted
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'secret-tool',
         ['clear', 'service', 'secretless', 'account', 'mcp/client/server/KEY1'],

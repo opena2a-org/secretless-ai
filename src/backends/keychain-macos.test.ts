@@ -32,7 +32,7 @@ describe('MacOSKeychainBackend', () => {
   });
 
   describe('store()', () => {
-    it('calls security delete then add with correct args', async () => {
+    it('calls security delete then add with per-key service name', async () => {
       const backend = new MacOSKeychainBackend({ storeDir: dir });
 
       // delete may throw (not found) — that's ok
@@ -45,17 +45,24 @@ describe('MacOSKeychainBackend', () => {
 
       await backend.store('mcp/client/server/KEY', 'secret-value');
 
-      // Verify delete was attempted
+      // Verify delete with new service name was attempted
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'security',
+        ['delete-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY'],
+        expect.any(Object),
+      );
+
+      // Verify legacy delete was also attempted
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'security',
         ['delete-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY'],
         expect.any(Object),
       );
 
-      // Verify add was called
+      // Verify add uses per-key service name
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'security',
-        ['add-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY', '-l', 'secretless: mcp/client/server/KEY', '-w', 'secret-value'],
+        ['add-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY', '-l', 'Secretless: mcp/client/server/KEY', '-w', 'secret-value'],
         expect.any(Object),
       );
     });
@@ -139,7 +146,7 @@ describe('MacOSKeychainBackend', () => {
   });
 
   describe('delete()', () => {
-    it('calls security delete and removes from index', async () => {
+    it('deletes both new and legacy entries and removes from index', async () => {
       const backend = new MacOSKeychainBackend({ storeDir: dir });
 
       // Pre-populate index
@@ -151,6 +158,14 @@ describe('MacOSKeychainBackend', () => {
       const result = await backend.delete('mcp/client/server/KEY1');
       expect(result).toBe(true);
 
+      // Verify delete with new service name
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'security',
+        ['delete-generic-password', '-s', 'Secretless: KEY1', '-a', 'mcp/client/server/KEY1'],
+        expect.any(Object),
+      );
+
+      // Verify legacy delete also attempted
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'security',
         ['delete-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY1'],
