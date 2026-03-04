@@ -23,3 +23,10 @@ export {
   isDaemonRunning,
   type DaemonOptions,
 } from './daemon';
+
+export {
+  CredentialEventEmitter,
+  type CredentialEvent,
+  type CredentialEventType,
+  type AlertLevel,
+} from './events';

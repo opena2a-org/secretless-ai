@@ -57,9 +57,33 @@ export {
   RateLimiter, AuditLogger, AimClient,
   CredentialResolver, BrokerServer,
   startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning,
+  CredentialEventEmitter,
   type BrokerConfig, type ResolveRequest, type ResolveResponse,
   type PolicyRule, type PolicyConstraints, type PolicyEvaluation,
   type AuditEntry, type AgentIdentity,
   type BrokerHealth, type BrokerStatus,
   type ResolverOptions, type DaemonOptions,
+  type CredentialEvent, type CredentialEventType, type AlertLevel,
 } from './broker';
+
+// Phantom references (secret:// URI scheme)
+export {
+  parseSecretRef, isSecretRef, findSecretRefs, buildSecretRef,
+  resolveRef, resolveEnvRefs, RefResolutionError,
+  type SecretRef, type SecretBackend as PhantomBackend,
+  type ResolveResult, type ResolveError,
+} from './phantom';
+
+// Session management
+export {
+  readSessionState, writeSessionState, getSessionStatus,
+  isSessionWarm, clearSessionState, getSessionFilePath,
+  DEFAULT_SESSION_TTL_SECONDS, MAX_SESSION_TTL_SECONDS,
+  warmSession, isMacOS, isTouchIDAvailable,
+  warm, preloadCache,
+  installDaemon, uninstallDaemon, isDaemonInstalled,
+  hookCheck, runHookCheck,
+  type SessionState, type SessionStatus,
+  type WarmResult, type InstallResult, type UninstallResult,
+  type HookCheckResult,
+} from './session';
