@@ -937,6 +937,16 @@ function runMigrate(args: string[]): void {
     process.exit(1);
   }
 
+  // Validate vault env vars before attempting migration
+  const vaultBackends = [fromType, toType].filter(t => t === 'vault');
+  if (vaultBackends.length > 0 && (!process.env.VAULT_ADDR || !process.env.VAULT_TOKEN)) {
+    console.error('\n  Vault backend requires VAULT_ADDR and VAULT_TOKEN environment variables.\n');
+    console.error('  Set them in your shell:');
+    console.error('    export VAULT_ADDR=http://127.0.0.1:8200');
+    console.error('    export VAULT_TOKEN=<your-token>\n');
+    process.exit(1);
+  }
+
   console.log('\n  Secretless Migration\n');
   console.log(`  From: ${fromType}`);
   console.log(`  To:   ${toType}\n`);
