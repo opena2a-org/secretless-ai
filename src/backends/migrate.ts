@@ -10,7 +10,7 @@ import type { WritableSecretBackend } from './types';
 export interface MigrateOptions {
   /** Delete successfully migrated secrets from the source backend. Default: false. */
   deleteFromSource?: boolean;
-  /** Secret path prefix to migrate (e.g. 'mcp'). Default: 'mcp'. */
+  /** Secret path prefix to migrate. Empty string means all secrets. Default: '' (all). */
   prefix?: string;
 }
 
@@ -32,7 +32,7 @@ export async function migrateSecrets(
   destination: WritableSecretBackend,
   options?: MigrateOptions,
 ): Promise<MigrateResult> {
-  const prefix = options?.prefix ?? 'mcp';
+  const prefix = options?.prefix ?? '';
   const deleteFromSource = options?.deleteFromSource ?? false;
 
   const secrets = await source.resolve(prefix);
