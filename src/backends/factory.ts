@@ -19,12 +19,14 @@ import type { SelectableBackendType } from './config';
 /**
  * Create a WritableSecretBackend instance for the given type.
  *
- * @param type   - 'local', 'keychain', or '1password'
+ * @param type   - 'local', 'keychain', '1password', or 'vault'
  * @param config - Backend-specific configuration (e.g. storeDir, key, vault)
+ * @param strict - If true, throw instead of falling back to local. Default: false.
  */
 export function createBackend(
   type: SelectableBackendType,
   config?: Record<string, unknown>,
+  strict?: boolean,
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
 
@@ -33,13 +35,30 @@ export function createBackend(
       backend = createKeychainBackend(config);
       break;
 
-    case '1password':
+    case '1password': {
+      const op = isOnePasswordAvailable();
+      if (!op.available) {
+        if (strict) throw new Error(`Cannot use 1Password backend: ${op.message}`);
+        console.error(`secretless: 1Password CLI not available. Using local backend instead.`);
+        console.error(`  To fix: brew install 1password-cli && op signin`);
+        console.error(`  To switch: npx secretless-ai backend set local\n`);
+        return new LocalBackend(config);
+      }
       backend = new OnePasswordBackend(config);
       break;
+    }
 
-    case 'vault':
+    case 'vault': {
+      if (!process.env.VAULT_ADDR || !process.env.VAULT_TOKEN) {
+        if (strict) throw new Error('Cannot use Vault backend: VAULT_ADDR and VAULT_TOKEN must be set');
+        console.error(`secretless: Vault not configured. Using local backend instead.`);
+        console.error(`  To fix: export VAULT_ADDR=... VAULT_TOKEN=...`);
+        console.error(`  To switch: npx secretless-ai backend set local\n`);
+        return new LocalBackend(config);
+      }
       backend = new VaultBackend(config);
       break;
+    }
 
     case 'local':
     default:

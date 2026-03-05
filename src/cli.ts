@@ -951,8 +951,8 @@ function runMigrate(args: string[]): void {
   console.log(`  From: ${fromType}`);
   console.log(`  To:   ${toType}\n`);
 
-  const source = createBackend(fromType);
-  const destination = createBackend(toType);
+  const source = createBackend(fromType, undefined, true);
+  const destination = createBackend(toType, undefined, true);
 
   migrateSecrets(source, destination, { deleteFromSource: false }).then((result) => {
     if (result.migrated === 0 && result.failed === 0) {
