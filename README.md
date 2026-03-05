@@ -244,7 +244,7 @@ npx secretless-ai init
 Output:
 
 ```
-  Secretless v0.10.2
+  Secretless v0.11.4
   Keeping secrets out of AI
 
   Detected:
