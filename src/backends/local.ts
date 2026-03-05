@@ -40,10 +40,10 @@ export class LocalBackend implements WritableSecretBackend {
       const decrypted = this.decrypt(encrypted);
       const store = JSON.parse(decrypted);
 
-      // Path can be a key name or a glob pattern
+      // Empty prefix returns all secrets; otherwise match exact key or prefix/
       const results: Record<string, string> = {};
       for (const [key, value] of Object.entries(store)) {
-        if (key === secretPath || key.startsWith(secretPath + '/')) {
+        if (!secretPath || key === secretPath || key.startsWith(secretPath + '/')) {
           results[key] = value as string;
         }
       }

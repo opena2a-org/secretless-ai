@@ -858,6 +858,16 @@ function runBackend(args: string[]): void {
       }
     }
 
+    if (type === 'vault') {
+      if (!process.env.VAULT_ADDR || !process.env.VAULT_TOKEN) {
+        console.error('\n  Cannot use Vault backend: VAULT_ADDR and VAULT_TOKEN must be set.\n');
+        console.error('  Set them in your shell profile:');
+        console.error('    export VAULT_ADDR=http://127.0.0.1:8200');
+        console.error('    export VAULT_TOKEN=<your-token>\n');
+        process.exit(1);
+      }
+    }
+
     writeBackendConfig(type);
     console.log(`\n  Backend set to: ${type}\n`);
     console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
@@ -876,6 +886,9 @@ function runBackend(args: string[]): void {
   console.log(`  Config file:  ${configFile ?? '(not set)'}`);
   console.log(`  Keychain:     ${kc.available ? 'available' : 'unavailable'} (${kc.message})`);
   console.log(`  1Password:    ${op.available ? 'available' : 'unavailable'} (${op.message})`);
+  const vaultAddr = process.env.VAULT_ADDR;
+  const vaultConfigured = !!(vaultAddr && process.env.VAULT_TOKEN);
+  console.log(`  Vault:        ${vaultConfigured ? 'configured' : 'not configured'} (${vaultConfigured ? vaultAddr : 'set VAULT_ADDR + VAULT_TOKEN'})`);
   console.log(`  Platform:     ${kc.platform}`);
   console.log();
   console.log('  Commands:');
