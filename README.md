@@ -1,4 +1,4 @@
-> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · **Secretless AI** · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard)
+> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · **Secretless AI** · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent) · Registry (coming soon)
 
 # Secretless AI
 
@@ -10,7 +10,7 @@ AI coding tools can read `~/.aws/credentials`, `echo $OPENAI_API_KEY`, and acces
 
 Works with Claude Code, Cursor, Copilot, Windsurf, Cline, and Aider.
 
-[Website](https://opena2a.org) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a) | [Registry](https://registry.opena2a.org) | [Discord](https://discord.gg/opena2a)
+[Website](https://opena2a.org) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a) | [Discord](https://discord.gg/opena2a)
 
 ## Get Started in 30 Seconds
 
@@ -613,12 +613,12 @@ npm run clean      # Remove dist/ directory
 
 | Project | Description | Install |
 |---------|-------------|---------|
-| [**OpenA2A CLI**](https://github.com/opena2a-org/opena2a) | Unified security CLI — scan, protect, guard, shield | `npm install -g opena2a-cli` |
-| [**HackMyAgent**](https://github.com/opena2a-org/hackmyagent) | Security scanner and red-team toolkit — checks, attack mode, benchmarks | `npx hackmyagent secure` |
-| [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent identity and access control for AI agents | Self-hosted |
-| [**AI Browser Guard**](https://github.com/opena2a-org/AI-BrowserGuard) | Detect and control AI agents in the browser | Chrome Web Store |
-| [**DVAA**](https://github.com/opena2a-org/damn-vulnerable-ai-agent) | Deliberately vulnerable AI agent for training | `docker pull opena2a/dvaa` |
-| [**Registry**](https://registry.opena2a.org) | Trust registry — agent discovery, trust scores, supply chain verification | `registry.opena2a.org` |
+| [**OpenA2A CLI**](https://github.com/opena2a-org/opena2a) | Unified security CLI -- orchestrates all OpenA2A tools | `npx opena2a` |
+| [**HackMyAgent**](https://github.com/opena2a-org/hackmyagent) | Security scanner and red-team toolkit -- checks, attack mode, benchmarks, runtime protection | `npx hackmyagent secure` |
+| [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent Identity Management -- identity, access control, and trust scoring for AI agents | Self-hosted |
+| [**AI Browser Guard**](https://github.com/opena2a-org/AI-BrowserGuard) | Browser agent detection and control -- 4-layer detection, delegation engine | Chrome Web Store |
+| [**DVAA**](https://github.com/opena2a-org/damn-vulnerable-ai-agent) | Damn Vulnerable AI Agent -- security training target | `docker pull opena2a/dvaa` |
+| **Registry** | Trust registry -- agent discovery, trust scores, supply chain verification | Coming soon |
 
 ## License
 
