@@ -20,6 +20,10 @@ import type { SelectableBackendType } from './config';
 /**
  * Create a WritableSecretBackend instance for the given type.
  *
+ * When type is 'local', attempts to upgrade to 'keychain' if the OS keychain
+ * is available (macOS Keychain, Linux Secret Service, or Windows Credential
+ * Manager). Falls back to 'local' only when keychain initialization fails.
+ *
  * @param type   - 'local', 'keychain', '1password', 'vault', or 'gcp-sm'
  * @param config - Backend-specific configuration (e.g. storeDir, key, vault)
  * @param strict - If true, throw instead of falling back to local. Default: false.
@@ -30,6 +34,23 @@ export function createBackend(
   strict?: boolean,
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
+
+  // When callers request 'local', prefer keychain if the platform supports it
+  if (type === 'local' && !config?.key) {
+    const keychainStatus = isKeychainAvailable();
+    if (keychainStatus.available) {
+      try {
+        backend = createKeychainBackend(config);
+        const ttlSeconds = readCacheTtl();
+        if (ttlSeconds > 0) {
+          return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000 });
+        }
+        return backend;
+      } catch {
+        // Keychain initialization failed — fall through to local
+      }
+    }
+  }
 
   switch (type) {
     case 'keychain':

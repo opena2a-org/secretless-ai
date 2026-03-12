@@ -30,7 +30,37 @@ const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
 // Backup encryption (prevents plaintext secret leakage in backup files)
 // ---------------------------------------------------------------------------
 
+const SALT_FILE = '.salt';
+
+/**
+ * Load or create a 16-byte random salt for backup key derivation.
+ */
+function loadOrCreateBackupSalt(dir: string): Buffer {
+  const saltPath = path.join(dir, SALT_FILE);
+  try {
+    const existing = fs.readFileSync(saltPath);
+    if (existing.length === 16) return existing;
+  } catch {
+    // Salt file does not exist yet — will be created below
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const salt = crypto.randomBytes(16);
+  fs.writeFileSync(saltPath, salt, { mode: 0o600 });
+  return salt;
+}
+
 function deriveBackupKey(backupDir: string): Buffer {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
+  const keyMaterial = `${home}-secretless-mcp-backup-${process.env.USER ?? 'default'}`;
+  const salt = loadOrCreateBackupSalt(backupDir);
+  return crypto.scryptSync(keyMaterial, salt, 32, { N: 16384, r: 8, p: 1 });
+}
+
+/**
+ * Derive the legacy (pre-salt) backup key via single SHA-256.
+ * Used only during migration when restoring old backups.
+ */
+function deriveLegacyBackupKey(): Buffer {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
   const keyMaterial = `${home}-secretless-mcp-backup-${process.env.USER ?? 'default'}`;
   return crypto.createHash('sha256').update(keyMaterial).digest();
@@ -232,13 +262,20 @@ export function restoreConfig(configPath: string, backupDir: string): boolean {
   const rawBackup = fs.readFileSync(bkPath);
   let backupContent: string;
 
-  // Try decrypting first (new encrypted format), fall back to plaintext (legacy)
+  // Try decrypting: new scrypt key first, then legacy SHA-256 key, then plaintext
   try {
     const backupKey = deriveBackupKey(backupDir);
     backupContent = decryptBackup(rawBackup, backupKey);
   } catch {
-    // Legacy plaintext backup — still support reading it
-    backupContent = rawBackup.toString('utf-8');
+    try {
+      // Legacy SHA-256 encrypted backup
+      const legacyKey = deriveLegacyBackupKey();
+      backupContent = decryptBackup(rawBackup, legacyKey);
+      legacyKey.fill(0);
+    } catch {
+      // Legacy plaintext backup — still support reading it
+      backupContent = rawBackup.toString('utf-8');
+    }
   }
 
   // Verify backup is valid JSON before restoring
@@ -248,7 +285,8 @@ export function restoreConfig(configPath: string, backupDir: string): boolean {
     return false;
   }
 
-  fs.writeFileSync(configPath, backupContent);
+  fs.writeFileSync(configPath, backupContent, { mode: 0o600 });
+  fs.chmodSync(configPath, 0o600);
 
   return true;
 }

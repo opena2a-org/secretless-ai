@@ -11,6 +11,43 @@ interface StoreMeta {
   entries: Record<string, { createdAt: string }>;
 }
 
+const SALT_FILE = '.salt';
+
+/**
+ * Load or create a 16-byte random salt for key derivation.
+ * The salt is stored at `<dir>/.salt` with 0o600 permissions.
+ */
+function loadOrCreateSalt(dir: string): Buffer {
+  const saltPath = path.join(dir, SALT_FILE);
+  try {
+    const existing = fs.readFileSync(saltPath);
+    if (existing.length === 16) return existing;
+  } catch {
+    // Salt file does not exist yet — will be created below
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const salt = crypto.randomBytes(16);
+  fs.writeFileSync(saltPath, salt, { mode: 0o600 });
+  return salt;
+}
+
+/**
+ * Derive an encryption key using scrypt with a persistent random salt.
+ * Falls back to SHA-256 (legacy) when no salt file exists and data was
+ * encrypted with the old scheme.
+ */
+function deriveKey(keyMaterial: string, salt: Buffer): Buffer {
+  return crypto.scryptSync(keyMaterial, salt, 32, { N: 16384, r: 8, p: 1 });
+}
+
+/**
+ * Derive the legacy (pre-salt) encryption key via single SHA-256.
+ * Used only during migration from the old key derivation scheme.
+ */
+function deriveLegacyKey(keyMaterial: string): Buffer {
+  return crypto.createHash('sha256').update(keyMaterial).digest();
+}
+
 /**
  * Local encrypted store backend — resolves secrets from a local AES-256-GCM encrypted file.
  * Used for development/local setups. Zero network dependencies.
@@ -19,16 +56,63 @@ export class LocalBackend implements WritableSecretBackend {
   readonly name = 'local';
   private readonly storeDir: string;
   private readonly encryptionKey: Buffer;
+  private readonly keyMaterial: string;
 
   constructor(config?: Record<string, unknown>) {
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
     this.storeDir = (config?.storeDir as string) ?? path.join(home, '.secretless-ai', 'store');
 
-    // Derive key from machine-specific data. This deters casual reads but does not
-    // protect against an attacker with filesystem access. A future version should
-    // use OS keychain (macOS Keychain, libsecret) or a user-supplied passphrase.
-    const keyMaterial = (config?.key as string) ?? `${home}-secretless-${process.env.USER ?? 'default'}`;
-    this.encryptionKey = crypto.createHash('sha256').update(keyMaterial).digest();
+    // Key material is either caller-supplied or derived from machine-specific data.
+    // The actual encryption key is derived via scrypt with a persistent random salt.
+    this.keyMaterial = (config?.key as string) ?? `${home}-secretless-${process.env.USER ?? 'default'}`;
+    const salt = loadOrCreateSalt(this.storeDir);
+    this.encryptionKey = deriveKey(this.keyMaterial, salt);
+
+    // Migration: if secrets.enc exists but was encrypted with the legacy SHA-256 key,
+    // re-encrypt with the new scrypt-derived key.
+    this.migrateIfNeeded();
+  }
+
+  /** Zero the encryption key buffer. Call when the backend is no longer needed. */
+  destroy(): void {
+    this.encryptionKey.fill(0);
+  }
+
+  /**
+   * Detect and migrate data encrypted with the legacy SHA-256 key.
+   * If the current (scrypt) key cannot decrypt the store but the legacy key can,
+   * re-encrypt with the new key and persist.
+   */
+  private migrateIfNeeded(): void {
+    const storePath = path.join(this.storeDir, STORE_FILE);
+    if (!fs.existsSync(storePath)) return;
+
+    try {
+      // Try decrypting with the new key — if it works, no migration needed
+      const data = fs.readFileSync(storePath);
+      this.decrypt(data);
+    } catch {
+      // New key failed — try legacy key
+      try {
+        const data = fs.readFileSync(storePath);
+        const legacyKey = deriveLegacyKey(this.keyMaterial);
+        const iv = data.subarray(0, 16);
+        const tag = data.subarray(16, 32);
+        const ciphertext = data.subarray(32);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', legacyKey, iv);
+        decipher.setAuthTag(tag);
+        const plaintext = decipher.update(ciphertext) + decipher.final('utf-8');
+        legacyKey.fill(0);
+
+        // Legacy key worked — re-encrypt with new key
+        const encrypted = this.encrypt(plaintext);
+        const tmpPath = storePath + '.tmp';
+        fs.writeFileSync(tmpPath, encrypted, { mode: 0o600 });
+        fs.renameSync(tmpPath, storePath);
+      } catch {
+        // Neither key works — store is corrupted, nothing to migrate
+      }
+    }
   }
 
   async resolve(secretPath: string): Promise<Record<string, string>> {
