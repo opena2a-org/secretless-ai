@@ -21,6 +21,16 @@ const DEBOUNCE_MS = 3000;
 /** Plist identifier for macOS LaunchAgent */
 const LAUNCH_AGENT_LABEL = 'ai.secretless.watch';
 
+/** Escape a string for safe inclusion in XML content or attribute values. */
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 /**
  * Start watching Claude Code transcripts for credentials.
  * Runs in the foreground, monitoring file changes and auto-redacting.
@@ -214,15 +224,19 @@ export function installLaunchAgent(): boolean {
     }
   } catch { /* fallback to default path */ }
 
+  const safeLabel = escapeXml(LAUNCH_AGENT_LABEL);
+  const safeNpxPath = escapeXml(npxPath);
+  const safeLogFile = escapeXml(LOG_FILE);
+
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LAUNCH_AGENT_LABEL}</string>
+  <string>${safeLabel}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${npxPath}</string>
+    <string>${safeNpxPath}</string>
     <string>secretless-ai</string>
     <string>watch</string>
     <string>start</string>
@@ -232,13 +246,14 @@ export function installLaunchAgent(): boolean {
   <key>KeepAlive</key>
   <true/>
   <key>StandardErrorPath</key>
-  <string>${LOG_FILE}</string>
+  <string>${safeLogFile}</string>
   <key>StandardOutPath</key>
-  <string>${LOG_FILE}</string>
+  <string>${safeLogFile}</string>
 </dict>
 </plist>`;
 
   fs.writeFileSync(plistPath, plist);
+  fs.chmodSync(plistPath, 0o600);
   return true;
 }
 

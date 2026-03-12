@@ -83,7 +83,7 @@ function resolveDistDir(): string {
  * Overwrites existing files at the destination.
  */
 function copyRecursive(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
+  fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
   const entries = fs.readdirSync(src, { withFileTypes: true });
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
@@ -92,6 +92,7 @@ function copyRecursive(src: string, dest: string): void {
       copyRecursive(srcPath, destPath);
     } else {
       fs.copyFileSync(srcPath, destPath);
+      fs.chmodSync(destPath, 0o600);
     }
   }
 }

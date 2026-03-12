@@ -12,9 +12,20 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 
 const SECRETLESS_DIR = path.join(os.homedir(), '.secretless-ai');
 const SESSION_FILE = path.join(SECRETLESS_DIR, 'session.json');
+
+/** Derive an HMAC key from machine-local identity (not secret, but prevents trivial forgery). */
+function getHmacKey(): string {
+  return `${os.homedir()}-secretless-session-${os.userInfo().username}`;
+}
+
+/** Compute HMAC-SHA256 over the given content string. */
+function computeHmac(content: string): string {
+  return crypto.createHmac('sha256', getHmacKey()).update(content).digest('hex');
+}
 
 /** Default session duration: 5 minutes (300 seconds). */
 const DEFAULT_SESSION_TTL_SECONDS = 300;
@@ -66,7 +77,21 @@ export function readSessionState(): SessionState | null {
       typeof parsed.authenticatedAt === 'string' &&
       typeof parsed.ttlSeconds === 'number'
     ) {
-      return parsed as SessionState;
+      // Verify HMAC integrity if present
+      if (typeof parsed.hmac === 'string') {
+        const storedHmac = parsed.hmac;
+        // Rebuild JSON without the hmac field to compute expected HMAC
+        const { hmac: _removed, ...dataWithoutHmac } = parsed;
+        const content = JSON.stringify(dataWithoutHmac, null, 2);
+        const expectedHmac = computeHmac(content);
+        if (!crypto.timingSafeEqual(Buffer.from(storedHmac, 'hex'), Buffer.from(expectedHmac, 'hex'))) {
+          // HMAC mismatch — treat as expired/tampered
+          return null;
+        }
+      }
+      // Return state without the hmac field
+      const { hmac: _h, ...state } = parsed;
+      return state as SessionState;
     }
   } catch {
     // Corrupted session file — treat as no session
@@ -93,8 +118,13 @@ export function writeSessionState(ttlSeconds?: number): SessionState {
     version: 1,
   };
 
+  // Compute HMAC over the state JSON and include it in the persisted file
+  const content = JSON.stringify(state, null, 2);
+  const hmac = computeHmac(content);
+  const persisted = { ...state, hmac };
+
   fs.mkdirSync(SECRETLESS_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(SESSION_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
+  fs.writeFileSync(SESSION_FILE, JSON.stringify(persisted, null, 2), { mode: 0o600 });
 
   return state;
 }

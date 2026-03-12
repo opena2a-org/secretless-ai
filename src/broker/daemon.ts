@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { BrokerConfig, BrokerStatus } from './types';
-import { BrokerServer } from './server';
+import { BrokerServer, TOKEN_FILE } from './server';
 
 const SECRETLESS_DIR = path.join(os.homedir(), '.secretless-ai');
 const DEFAULT_PID_FILE = path.join(SECRETLESS_DIR, 'broker.pid');
@@ -103,6 +103,9 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
     throw err;
   }
 
+  // Print token file path so callers know where to read the auth token
+  console.log(`Broker auth token: ${TOKEN_FILE}`);
+
   return server;
 }
 
@@ -120,11 +123,22 @@ export function stopDaemon(pidFile?: string): boolean {
     process.kill(pidInfo.pid, 'SIGTERM');
     // Wait briefly for cleanup, then remove PID file
     cleanupPidFile(file);
+    cleanupTokenFile();
     return true;
   } catch {
     // Process already dead — clean up
     cleanupPidFile(file);
+    cleanupTokenFile();
     return false;
+  }
+}
+
+/** Remove token file (best-effort). */
+function cleanupTokenFile(): void {
+  try {
+    fs.unlinkSync(TOKEN_FILE);
+  } catch {
+    // Ignore — file may already be gone (server.stop() may have removed it)
   }
 }
 

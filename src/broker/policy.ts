@@ -158,17 +158,6 @@ export class PolicyEngine {
       }
     }
 
-    // Rate limit check
-    if (constraints.rateLimit) {
-      const key = `${agentId}:${credentialName}`;
-      if (!this.rateLimiter.check(key, constraints.rateLimit.maxPerMinute)) {
-        return {
-          passed: false,
-          reason: `Rate limit exceeded (${constraints.rateLimit.maxPerMinute}/min)`,
-        };
-      }
-    }
-
     // Trust score check
     if (constraints.minTrustScore !== undefined) {
       if (!agentIdentity) {
@@ -209,6 +198,18 @@ export class PolicyEngine {
         return {
           passed: false,
           reason: `Agent lacks required capability "${constraints.requireCapability}"`,
+        };
+      }
+    }
+
+    // Rate limit check — evaluated LAST so that denied requests from other
+    // constraints do not consume rate limit slots
+    if (constraints.rateLimit) {
+      const key = `${agentId}:${credentialName}`;
+      if (!this.rateLimiter.check(key, constraints.rateLimit.maxPerMinute)) {
+        return {
+          passed: false,
+          reason: `Rate limit exceeded (${constraints.rateLimit.maxPerMinute}/min)`,
         };
       }
     }

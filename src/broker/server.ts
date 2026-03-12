@@ -14,12 +14,18 @@
 
 import * as http from 'http';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as net from 'net';
+import * as path from 'path';
+import * as os from 'os';
 import type { BrokerConfig, ResolveRequest, BrokerHealth, BrokerStatus } from './types';
 import { PolicyEngine } from './policy';
 import { CredentialResolver } from './resolver';
 import { AuditLogger } from './audit';
 import { AimClient } from './aim-client';
+
+/** Path to the broker authentication token file. */
+export const TOKEN_FILE = path.join(os.homedir(), '.secretless-ai', 'broker.token');
 
 /** Maximum request body size (64 KB — credential names should be tiny). */
 const MAX_BODY_SIZE = 64 * 1024;
@@ -35,6 +41,7 @@ export class BrokerServer {
   private httpServer: http.Server | null = null;
   private startedAt: Date | null = null;
   private requestCount = 0;
+  private authToken: Buffer | null = null;
 
   constructor(
     config: BrokerConfig,
@@ -64,6 +71,13 @@ export class BrokerServer {
     } catch {
       // No policies is fine — default deny applies
     }
+
+    // Generate and persist bearer token for caller authentication
+    const tokenHex = crypto.randomBytes(32).toString('hex');
+    this.authToken = Buffer.from(tokenHex, 'utf-8');
+    const tokenDir = path.dirname(TOKEN_FILE);
+    fs.mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(TOKEN_FILE, tokenHex, { mode: 0o600 });
 
     this.startedAt = new Date();
 
@@ -129,6 +143,10 @@ export class BrokerServer {
       try { fs.unlinkSync(this.config.socketPath); } catch { /* ignore */ }
     }
 
+    // Clean up token file
+    try { fs.unlinkSync(TOKEN_FILE); } catch { /* ignore */ }
+    this.authToken = null;
+
     this.socketServer = null;
     this.httpServer = null;
     this.audit.close();
@@ -165,6 +183,22 @@ export class BrokerServer {
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     this.requestCount++;
 
+    // Authenticate caller via bearer token (defense in depth: applies to both HTTP and Unix socket)
+    if (!this.verifyAuth(req)) {
+      const remoteAddr = req.socket?.remoteAddress ?? 'unknown';
+      this.audit.logEvent(
+        'auth',
+        'unknown',
+        '',
+        '',
+        'denied',
+        `Unauthorized access attempt from ${remoteAddr}`,
+        0,
+      );
+      this.sendJson(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
 
@@ -184,6 +218,22 @@ export class BrokerServer {
     }
 
     this.sendJson(res, 404, { error: 'Not found' });
+  }
+
+  /**
+   * Verify the Authorization header contains the correct bearer token.
+   * Uses constant-time comparison to prevent timing attacks.
+   */
+  private verifyAuth(req: http.IncomingMessage): boolean {
+    if (!this.authToken) return false;
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return false;
+
+    const providedToken = Buffer.from(authHeader.slice(7), 'utf-8');
+    if (providedToken.length !== this.authToken.length) return false;
+
+    return crypto.timingSafeEqual(providedToken, this.authToken);
   }
 
   /** Handle POST /resolve — the core credential resolution endpoint. */
@@ -298,12 +348,14 @@ export class BrokerServer {
     });
   }
 
-  /** Send a JSON response. */
+  /** Send a JSON response with security headers. */
   private sendJson(res: http.ServerResponse, statusCode: number, data: unknown): void {
     const body = JSON.stringify(data);
     res.writeHead(statusCode, {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'no-store',
     });
     res.end(body);
   }

@@ -63,10 +63,14 @@ export interface CredentialEvent {
 export class CredentialEventEmitter {
   private readonly auditLogger: AuditLogger;
   private readonly aimAuditUrl: string | null;
+  private readonly aimAuthHeader: string | null;
 
   constructor(auditLogger: AuditLogger, aimAuditUrl?: string) {
     this.auditLogger = auditLogger;
     this.aimAuditUrl = aimAuditUrl ?? null;
+    // Read AIM API key from environment for authenticated event forwarding
+    const aimApiKey = process.env.AIM_API_KEY;
+    this.aimAuthHeader = aimApiKey ? `Bearer ${aimApiKey}` : null;
   }
 
   /** Emit a credential requested event. */
@@ -240,16 +244,21 @@ export class CredentialEventEmitter {
         const transport = url.protocol === 'https:' ? https : http;
         const body = JSON.stringify(event);
 
+        const headers: Record<string, string | number> = {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        };
+        if (this.aimAuthHeader) {
+          headers['Authorization'] = this.aimAuthHeader;
+        }
+
         const req = transport.request(
           {
             hostname: url.hostname,
             port: url.port,
             path: url.pathname,
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(body),
-            },
+            headers,
             timeout: 3000, // 3s timeout — don't block on AIM
           },
           (res) => {

@@ -18,6 +18,7 @@ import * as crypto from 'crypto';
 import type { WritableSecretBackend, BackendHealth } from './types';
 
 const CACHE_FILENAME = '.secret-cache';
+const SALT_FILE = '.salt';
 
 interface CacheEntry {
   value: string;
@@ -28,10 +29,29 @@ interface CacheStore {
   entries: Record<string, CacheEntry>;
 }
 
+/**
+ * Load or create a 16-byte random salt for key derivation.
+ * The salt is stored at `<dir>/.salt` with 0o600 permissions.
+ */
+function loadOrCreateCacheSalt(dir: string): Buffer {
+  const saltPath = path.join(dir, SALT_FILE);
+  try {
+    const existing = fs.readFileSync(saltPath);
+    if (existing.length === 16) return existing;
+  } catch {
+    // Salt file does not exist yet — will be created below
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const salt = crypto.randomBytes(16);
+  fs.writeFileSync(saltPath, salt, { mode: 0o600 });
+  return salt;
+}
+
 export class CachedBackend implements WritableSecretBackend {
   readonly name: string;
   private readonly inner: WritableSecretBackend;
   private readonly cachePath: string;
+  private readonly cacheDir: string;
   private readonly encryptionKey: Buffer;
   private readonly ttlMs: number;
 
@@ -47,13 +67,58 @@ export class CachedBackend implements WritableSecretBackend {
     this.ttlMs = options?.ttlMs ?? 5 * 60 * 1000; // default 5 minutes
 
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
-    const storeDir = options?.storeDir ?? path.join(home, '.secretless-ai', 'store');
+    const storeDir = options?.storeDir ?? path.join(home, '.secretless-ai', 'cache');
     fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
+    this.cacheDir = storeDir;
     this.cachePath = path.join(storeDir, CACHE_FILENAME);
 
-    // Same key derivation as LocalBackend — deterministic, no extra prompt
+    // Derive key via scrypt with a persistent random salt
     const keyMaterial = `${home}-secretless-cache-${process.env.USER ?? 'default'}`;
-    this.encryptionKey = crypto.createHash('sha256').update(keyMaterial).digest();
+    const salt = loadOrCreateCacheSalt(storeDir);
+    this.encryptionKey = crypto.scryptSync(keyMaterial, salt, 32, { N: 16384, r: 8, p: 1 });
+
+    // Migration: try to read existing cache with legacy SHA-256 key
+    this.migrateCacheIfNeeded(keyMaterial);
+  }
+
+  /** Zero the encryption key buffer. Call when the backend is no longer needed. */
+  destroy(): void {
+    this.encryptionKey.fill(0);
+  }
+
+  /**
+   * If cache file exists but cannot be decrypted with the new key,
+   * try the legacy SHA-256 key and re-encrypt if successful.
+   */
+  private migrateCacheIfNeeded(keyMaterial: string): void {
+    if (!fs.existsSync(this.cachePath)) return;
+
+    try {
+      const data = fs.readFileSync(this.cachePath);
+      this.decrypt(data);
+      // New key works — no migration needed
+    } catch {
+      try {
+        const data = fs.readFileSync(this.cachePath);
+        const legacyKey = crypto.createHash('sha256').update(keyMaterial).digest();
+        const iv = data.subarray(0, 16);
+        const tag = data.subarray(16, 32);
+        const ciphertext = data.subarray(32);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', legacyKey, iv);
+        decipher.setAuthTag(tag);
+        const plaintext = decipher.update(ciphertext) + decipher.final('utf-8');
+        legacyKey.fill(0);
+
+        // Re-encrypt with new key
+        const encrypted = this.encrypt(plaintext);
+        const tmpPath = this.cachePath + '.tmp';
+        fs.writeFileSync(tmpPath, encrypted, { mode: 0o600 });
+        fs.renameSync(tmpPath, this.cachePath);
+      } catch {
+        // Neither key works — discard corrupted cache
+        try { fs.unlinkSync(this.cachePath); } catch { /* ignore */ }
+      }
+    }
   }
 
   async resolve(secretPath: string): Promise<Record<string, string>> {
