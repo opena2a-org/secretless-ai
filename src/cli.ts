@@ -730,10 +730,21 @@ function runWatch(args: string[]): void {
       }
       break;
 
+    case '--help':
+    case '-h':
     default:
-      console.error(`\n  Unknown watch action: ${action}`);
-      console.log('  Usage: secretless-ai watch [start|stop|status|install|uninstall]\n');
-      process.exit(1);
+      if (action && action !== '--help' && action !== '-h') {
+        console.error(`\n  Unknown watch action: ${action}`);
+      }
+      console.log('\n  Usage: secretless-ai watch <start|stop|status|install|uninstall>\n');
+      console.log('  Commands:');
+      console.log('    start      Start watching transcripts for credentials');
+      console.log('    stop       Stop the watcher');
+      console.log('    status     Show watcher status');
+      console.log('    install    Install as macOS LaunchAgent');
+      console.log('    uninstall  Remove LaunchAgent\n');
+      if (action && action !== '--help' && action !== '-h') process.exit(1);
+      break;
   }
 }
 
@@ -1422,6 +1433,15 @@ function runRun(args: string[]): void {
 }
 
 function runEnv(args: string[]): void {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('\n  Usage: eval $(secretless-ai env [--only KEY1,KEY2])');
+    console.log('\n  Export secrets as shell environment variables.');
+    console.log('  Designed for use with eval in shell profiles.\n');
+    console.log('  Options:');
+    console.log('    --only KEY1,KEY2   Export only the specified secrets\n');
+    return;
+  }
+
   // Parse --only flag
   let only: string[] | undefined;
   for (let i = 0; i < args.length; i++) {
@@ -1429,6 +1449,12 @@ function runEnv(args: string[]): void {
       only = args[i + 1].split(',').map(s => s.trim()).filter(Boolean);
       break;
     }
+  }
+
+  // Warn if outputting to an interactive terminal (not piped/eval)
+  if (process.stdout.isTTY) {
+    process.stderr.write('  Warning: This command outputs secret values.\n');
+    process.stderr.write('  Intended usage: eval $(secretless-ai env)\n\n');
   }
 
   generateEnvExports({ only }).then((output) => {
@@ -1771,9 +1797,14 @@ function runBroker(args: string[]): void {
       break;
     }
 
-    default:
-      console.error(`\n  Unknown broker command: ${subcommand ?? '(none)'}`);
-      console.log('  Usage: secretless-ai broker <start|stop|status>\n');
+    case '--help':
+    case '-h':
+    default: {
+      const isUnknown = subcommand && subcommand !== '--help' && subcommand !== '-h';
+      if (isUnknown) {
+        console.error(`\n  Unknown broker command: ${subcommand}`);
+      }
+      console.log('\n  Usage: secretless-ai broker <start|stop|status>\n');
       console.log('  Commands:');
       console.log('    start    Start the credential broker daemon (foreground)');
       console.log('    stop     Stop the running broker daemon');
@@ -1782,7 +1813,9 @@ function runBroker(args: string[]): void {
       console.log('    --aim-url <url>        AIM server URL for identity verification');
       console.log('    --port <port>          HTTP port (default: 19421)');
       console.log('    --policy-file <path>   Policy file path\n');
-      process.exit(1);
+      if (isUnknown) process.exit(1);
+      break;
+    }
   }
 }
 
