@@ -101,6 +101,9 @@ function main(): void {
     case 'watch':
       runWatch(args.slice(1));
       break;
+    case 'rules':
+      runRules(args.slice(1));
+      break;
     case 'protect-mcp':
       runProtectMcp(args.slice(1));
       break;
@@ -406,6 +409,116 @@ function runVerify(projectDir: string): void {
       console.log('  Run `npx secretless-ai doctor` to diagnose shell profile issues.\n');
     }
     process.exit(1);
+  }
+}
+
+function runRules(args: string[]): void {
+  const {
+    loadCustomRules,
+    customRulesToDenyRules,
+    generateTemplate,
+    RULES_FILENAME,
+  } = require('./custom-rules') as typeof import('./custom-rules');
+
+  const subcommand = args[0] ?? 'list';
+  const projectDir = process.cwd();
+
+  switch (subcommand) {
+    case 'list': {
+      const rules = loadCustomRules(projectDir);
+      if (!rules) {
+        console.log(`\n  No ${RULES_FILENAME} found in this directory.`);
+        console.log(`  Create one: npx secretless-ai rules init\n`);
+        return;
+      }
+
+      console.log(`\n  Custom Rules (${RULES_FILENAME})\n`);
+
+      if (rules.env.length > 0) {
+        console.log('  Environment variables:');
+        for (const p of rules.env) {
+          console.log(`    ${p}`);
+        }
+      }
+      if (rules.files.length > 0) {
+        console.log('  File patterns:');
+        for (const p of rules.files) {
+          console.log(`    ${p}`);
+        }
+      }
+      if (rules.bash.length > 0) {
+        console.log('  Bash commands:');
+        for (const p of rules.bash) {
+          console.log(`    ${p}`);
+        }
+      }
+
+      const denyRules = customRulesToDenyRules(rules);
+      console.log(`\n  Generates ${denyRules.length} deny rules.`);
+      console.log('  Run: npx secretless-ai init  (to apply)\n');
+      break;
+    }
+
+    case 'init': {
+      const nodeFs = require('fs') as typeof import('fs');
+      const rulesPath = path.join(projectDir, RULES_FILENAME);
+      if (nodeFs.existsSync(rulesPath)) {
+        console.log(`\n  ${RULES_FILENAME} already exists.`);
+        console.log('  Edit it directly or use: npx secretless-ai rules list\n');
+        return;
+      }
+      nodeFs.writeFileSync(rulesPath, generateTemplate());
+      console.log(`\n  Created ${RULES_FILENAME}`);
+      console.log('  Edit it to add your organization-specific patterns.');
+      console.log('  Then run: npx secretless-ai init  (to apply)\n');
+      break;
+    }
+
+    case 'test': {
+      const pattern = args[1];
+      if (!pattern) {
+        console.error('\n  Usage: secretless-ai rules test <pattern>\n');
+        console.error('  Example: secretless-ai rules test "ACME_*"');
+        console.error('  Example: secretless-ai rules test "*.corp-secret"\n');
+        process.exit(1);
+      }
+
+      const { envPatternToDenyRules, filePatternToDenyRules, validatePattern, globToShellRegex } =
+        require('./custom-rules') as typeof import('./custom-rules');
+
+      if (!validatePattern(pattern)) {
+        console.error(`\n  Invalid pattern: ${pattern}`);
+        console.error('  Only alphanumeric, *, ., -, _, / characters allowed.\n');
+        process.exit(1);
+      }
+
+      console.log(`\n  Testing pattern: ${pattern}\n`);
+
+      // Determine if it looks like an env var or file pattern
+      const isEnvLike = /^[A-Z_*]+$/.test(pattern);
+      if (isEnvLike) {
+        console.log('  Detected: environment variable pattern');
+        console.log('  Deny rules generated:');
+        for (const rule of envPatternToDenyRules(pattern)) {
+          console.log(`    ${rule}`);
+        }
+        console.log(`  Shell regex: ${globToShellRegex(pattern)}`);
+      } else {
+        console.log('  Detected: file pattern');
+        console.log('  Deny rules generated:');
+        for (const rule of filePatternToDenyRules(pattern)) {
+          console.log(`    ${rule}`);
+        }
+        console.log(`  Shell regex: ${globToShellRegex(pattern)}`);
+      }
+      console.log();
+      break;
+    }
+
+    default:
+      console.error(`\n  Unknown rules subcommand: ${subcommand}`);
+      console.error('  Usage: secretless-ai rules <list|init|test>\n');
+      process.exit(1);
   }
 }
 
@@ -2032,6 +2145,11 @@ function printHelp(): void {
   Project Setup:
     npx secretless-ai setup              Set up secrets from .secretless manifest
     npx secretless-ai setup --check      Check for missing required secrets (CI)
+
+  Custom Rules:
+    npx secretless-ai rules              List custom deny rules
+    npx secretless-ai rules init         Create .secretless-rules.yaml template
+    npx secretless-ai rules test <pat>   Test a pattern (see generated deny rules)
 
   Git Protection:
     npx secretless-ai hook install       Install pre-commit secret scanner

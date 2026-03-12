@@ -7,6 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { detectAITools, toolDisplayName, type AITool } from './detect';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
+import { loadCustomRules, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, mergeRules } from './custom-rules';
+import type { CustomRules } from './custom-rules';
 
 /** Known API services with their auth header formats */
 const SERVICE_HINTS: Record<string, { service: string; authHeader: string }> = {
@@ -126,10 +128,16 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
   // Ensure directories exist
   fs.mkdirSync(hooksDir, { recursive: true });
 
+  // Load custom rules early (needed for both hook script and deny rules)
+  let projectCustomRules: CustomRules | null = null;
+  try {
+    projectCustomRules = loadCustomRules(projectDir);
+  } catch { /* handled later in deny rules section */ }
+
   // 1. Install PreToolUse hook
   const hookPath = path.join(hooksDir, 'secretless-guard.sh');
   if (!fs.existsSync(hookPath)) {
-    fs.writeFileSync(hookPath, generateClaudeHookScript(), { mode: 0o755 });
+    fs.writeFileSync(hookPath, generateClaudeHookScript(projectCustomRules), { mode: 0o755 });
     result.filesCreated.push('.claude/hooks/secretless-guard.sh');
   }
 
@@ -259,7 +267,12 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     'Bash(*secretless-ai/mcp-backups*)',
   ];
 
-  for (const rule of denyRules) {
+  // Merge custom rules from .secretless-rules.yaml (if loaded above)
+  const allDenyRules = projectCustomRules
+    ? mergeRules(denyRules, customRulesToDenyRules(projectCustomRules))
+    : denyRules;
+
+  for (const rule of allDenyRules) {
     if (!settings.permissions.deny.includes(rule)) {
       settings.permissions.deny.push(rule);
     }
@@ -418,7 +431,7 @@ function addSecretlessInstructions(filePath: string, tool: string, result: InitR
   }
 }
 
-function generateClaudeHookScript(): string {
+function generateClaudeHookScript(customRules?: CustomRules | null): string {
   // Build pattern list for the shell script
   const filePatterns = [
     '.env', '.env.local', '.env.development', '.env.production', '.env.staging',
@@ -430,6 +443,15 @@ function generateClaudeHookScript(): string {
     'secrets/', '.opena2a/secretless-ai/',
     '.secretless-ai/',
   ];
+
+  // Add custom file patterns from .secretless-rules.yaml
+  if (customRules?.files) {
+    for (const pattern of customRules.files) {
+      if (!filePatterns.includes(pattern)) {
+        filePatterns.push(pattern);
+      }
+    }
+  }
 
   return `#!/bin/bash
 # Secretless Guard — PreToolUse hook for Claude Code
@@ -490,7 +512,7 @@ if [ "$TOOL_NAME" = "Bash" ]; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to secretless data directory"}}'
     exit 0
   fi
-  exit 0
+${customRules ? customRulesToHookBlocks(customRules) : ''}  exit 0
 fi
 
 # Skip if no file path found
