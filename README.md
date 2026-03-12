@@ -44,7 +44,7 @@ Detects which AI coding tools you use, installs the right protections for each, 
 │    * Cursor                                      │
 │                                                  │
 │  Created:                                        │
-│    + .claude/hooks/secretless-guard.sh            │
+│    + .claude/hooks/secretless-guard.sh           │
 │    + CLAUDE.md                                   │
 │                                                  │
 │  Modified:                                       │
