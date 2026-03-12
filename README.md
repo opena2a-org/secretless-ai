@@ -32,7 +32,7 @@ Detects which AI coding tools you use, installs the right protections for each, 
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Secretless v0.12.2                              │
+│  Secretless v0.12.3                              │
 │  Keeping secrets out of AI                       │
 │                                                  │
 │  Detected:                                       │
@@ -676,6 +676,25 @@ jobs:
 | `rules init` | Create a `.secretless-rules.yaml` template |
 | `rules list` | Show active custom rules and deny rule count |
 | `rules test "PATTERN" [--bash]` | Preview generated deny rules for a pattern |
+
+## Security Architecture
+
+| Layer | Algorithm | Purpose |
+|-------|-----------|---------|
+| Secret encryption | AES-256-GCM | Encrypt secrets at rest (local store, cache, MCP backups) |
+| Key derivation | scrypt (N=16384, r=8, p=1) | Derive encryption keys from machine identity + random salt |
+| Session integrity | HMAC-SHA256 | Tamper detection on session state files |
+| Broker auth | crypto.randomBytes(32) | Bearer token for localhost credential broker |
+| Cloud signing | HMAC-SHA256 (AWS SigV4), RS256 (GCP JWT) | Authenticate to cloud secret managers |
+
+**Design principles:**
+- All encryption uses symmetric cryptography only (no RSA/ECDSA in core)
+- Encryption keys derived via scrypt with 16-byte random salts (not password-derived)
+- Constant-time comparison (`timingSafeEqual`) for all token and HMAC verification
+- Crypto agility: encryption isolated behind backend interfaces for algorithm portability
+- Key material zeroed after use (`Buffer.fill(0)`)
+- Restrictive file permissions (0o600 files, 0o700 directories)
+- No external crypto dependencies -- Node.js built-in `crypto` module only
 
 ## Development
 
