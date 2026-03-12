@@ -29,6 +29,15 @@ export async function runWithSecrets(
 
   const secretCount = Object.keys(secrets).length;
   if (secretCount === 0) {
+    // Check if the store actually has secrets (backend may have failed to load them)
+    const allSecrets = await store.listSecrets();
+    if (allSecrets.length > 0) {
+      process.stderr.write(
+        `secretless: Backend returned 0 secrets but the store contains ${allSecrets.length} entries. ` +
+        'This may indicate a backend failure. Aborting to prevent running without secrets.\n',
+      );
+      return 1;
+    }
     process.stderr.write(
       'secretless: No secrets found. Use `secretless-ai secret set <NAME>` to store secrets.\n',
     );

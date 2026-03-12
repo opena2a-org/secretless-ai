@@ -42,8 +42,8 @@ function parseArgs(argv: string[]): {
     if (argv[i] === '--vault-key' && argv[i + 1]) { vaultKey = argv[++i]; continue; }
     if (argv[i] === '--backend' && argv[i + 1]) {
       const val = argv[++i];
-      if (val !== 'local' && val !== 'keychain' && val !== '1password') {
-        process.stderr.write(`secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', or '1password'.\n`);
+      if (val !== 'local' && val !== 'keychain' && val !== '1password' && val !== 'vault' && val !== 'gcp-sm') {
+        process.stderr.write(`secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
         process.exit(1);
       }
       backend = val;
