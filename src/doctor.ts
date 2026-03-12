@@ -16,7 +16,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { CREDENTIAL_PATTERNS } from './patterns';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -530,11 +530,10 @@ function fixWindowsProfiles(
   const commands: string[] = [];
   for (const varName of varsToFix) {
     const value = varValues.get(varName)!;
-    const cmd = `setx ${varName} "${value}"`;
-    commands.push(cmd);
+    commands.push(`setx ${varName} "${value}"`);
     if (!dryRun) {
       try {
-        execSync(cmd, { stdio: 'pipe' });
+        execFileSync('setx', [varName, value], { stdio: 'pipe' });
       } catch {
         // setx failed — continue with remaining vars
       }

@@ -81,6 +81,9 @@ function walkDir(dir: string, files: Array<{ path: string; mtime: number }>): vo
   }
 
   for (const entry of entries) {
+    // Skip symlinks to prevent scanning/modifying files outside the target directory
+    if (entry.isSymbolicLink()) continue;
+
     const fullPath = path.join(dir, entry.name);
 
     // Skip tool-results directories

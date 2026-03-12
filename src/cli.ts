@@ -1210,6 +1210,9 @@ function runSecret(args: string[]): void {
         process.exit(1);
       }
 
+      // Validate secret name format
+      const SECRET_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+
       // Check for inline value: NAME=VALUE
       const eqIdx = nameArg.indexOf('=');
       if (eqIdx !== -1) {
@@ -1218,6 +1221,10 @@ function runSecret(args: string[]): void {
         if (!value) {
           console.error('  Error: no value provided.');
           console.error('  Usage: secretless-ai secret set NAME=VALUE\n');
+          process.exit(1);
+        }
+        if (!SECRET_NAME_RE.test(name)) {
+          console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
           process.exit(1);
         }
         const store = new SecretStore();
@@ -1233,6 +1240,10 @@ function runSecret(args: string[]): void {
 
       // Read value from stdin
       const name = nameArg;
+      if (!SECRET_NAME_RE.test(name)) {
+        console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
+        process.exit(1);
+      }
 
       let input = '';
       process.stdin.setEncoding('utf-8');

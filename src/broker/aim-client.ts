@@ -22,6 +22,9 @@ const DEFAULT_CACHE_TTL_MS = 60_000;
 /** Request timeout in milliseconds. */
 const REQUEST_TIMEOUT_MS = 5_000;
 
+/** Maximum response body size (1 MB). */
+const MAX_RESPONSE_SIZE = 1024 * 1024;
+
 export class AimClient {
   private readonly baseUrl: string;
   private readonly cache: Map<string, CacheEntry> = new Map();
@@ -118,7 +121,16 @@ export class AimClient {
         }
 
         const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        let size = 0;
+        res.on('data', (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > MAX_RESPONSE_SIZE) {
+            res.destroy();
+            resolve(undefined);
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on('end', () => {
           try {
             const body = Buffer.concat(chunks).toString('utf-8');
