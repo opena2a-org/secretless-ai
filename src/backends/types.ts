@@ -44,7 +44,7 @@ export interface BackendConfig {
   prefix?: string;
 }
 
-export type BackendType = 'env' | 'local' | 'keychain' | 'vault' | 'aws-sm' | '1password';
+export type BackendType = 'env' | 'local' | 'keychain' | 'vault' | 'aws-sm' | 'gcp-sm' | '1password';
 
 /** Access audit entry */
 export interface AccessAuditEntry {

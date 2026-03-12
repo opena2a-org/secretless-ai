@@ -11,6 +11,7 @@ import { MacOSKeychainBackend } from './keychain-macos';
 import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
+import { GCPSecretManagerBackend, isGCPAvailable } from './gcp-sm';
 import { CachedBackend } from './cache';
 import { readCacheTtl } from './config';
 import type { WritableSecretBackend } from './types';
@@ -57,6 +58,19 @@ export function createBackend(
         return new LocalBackend(config);
       }
       backend = new VaultBackend(config);
+      break;
+    }
+
+    case 'gcp-sm': {
+      const gcp = isGCPAvailable();
+      if (!gcp.available) {
+        if (strict) throw new Error(`Cannot use GCP Secret Manager backend: ${gcp.message}`);
+        console.error(`secretless: GCP credentials not available. Using local backend instead.`);
+        console.error(`  To fix: ${gcp.message}`);
+        console.error(`  To switch: npx secretless-ai backend set local\n`);
+        return new LocalBackend(config);
+      }
+      backend = new GCPSecretManagerBackend(config);
       break;
     }
 

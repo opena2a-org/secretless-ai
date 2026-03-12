@@ -36,6 +36,7 @@ import { discoverMcpConfigs } from './mcp/discover';
 import { classifyEnvVars } from './mcp/classify';
 import { restoreConfig } from './mcp/rewrite';
 import { isKeychainAvailable, isOnePasswordAvailable, createBackend } from './backends/factory';
+import { isGCPAvailable } from './backends/gcp-sm';
 import { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl, writeCacheTtl, parseDuration, formatTtl } from './backends/config';
 import { clearCacheFile } from './backends/cache';
 import { migrateSecrets } from './backends/migrate';
@@ -605,10 +606,10 @@ function runProtectMcp(args: string[]): void {
   const backendIdx = args.indexOf('--backend');
   if (backendIdx !== -1 && args[backendIdx + 1]) {
     const val = args[backendIdx + 1];
-    if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault') {
+    if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault' || val === 'gcp-sm') {
       backendType = val;
     } else {
-      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', '1password', or 'vault'.\n`);
+      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
       process.exit(1);
     }
   }
@@ -837,8 +838,8 @@ function runBackend(args: string[]): void {
 
   if (subcommand === 'set') {
     const type = args[1];
-    if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault') {
-      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', '1password', or 'vault'.\n`);
+    if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault' && type !== 'gcp-sm') {
+      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
       process.exit(1);
     }
 
@@ -868,6 +869,14 @@ function runBackend(args: string[]): void {
       }
     }
 
+    if (type === 'gcp-sm') {
+      const gcp = isGCPAvailable();
+      if (!gcp.available) {
+        console.error(`\n  Cannot use GCP Secret Manager backend: ${gcp.message}\n`);
+        process.exit(1);
+      }
+    }
+
     writeBackendConfig(type);
     console.log(`\n  Backend set to: ${type}\n`);
     console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
@@ -889,6 +898,8 @@ function runBackend(args: string[]): void {
   const vaultAddr = process.env.VAULT_ADDR;
   const vaultConfigured = !!(vaultAddr && process.env.VAULT_TOKEN);
   console.log(`  Vault:        ${vaultConfigured ? 'configured' : 'not configured'} (${vaultConfigured ? vaultAddr : 'set VAULT_ADDR + VAULT_TOKEN'})`);
+  const gcp = isGCPAvailable();
+  console.log(`  GCP SM:       ${gcp.available ? 'available' : 'unavailable'} (${gcp.message})`);
   console.log(`  Platform:     ${kc.platform}`);
   console.log();
   console.log('  Commands:');
@@ -896,6 +907,7 @@ function runBackend(args: string[]): void {
   console.log('    npx secretless-ai backend set keychain     Use OS keychain');
   console.log('    npx secretless-ai backend set 1password    Use 1Password vault');
   console.log('    npx secretless-ai backend set vault        Use HashiCorp Vault');
+  console.log('    npx secretless-ai backend set gcp-sm       Use GCP Secret Manager');
   console.log('    npx secretless-ai backend list             List all stored entries');
   console.log('    npx secretless-ai backend purge            Delete all entries (--yes to confirm)');
   console.log();
@@ -905,7 +917,7 @@ function runMigrate(args: string[]): void {
   let fromType: SelectableBackendType | undefined;
   let toType: SelectableBackendType | undefined;
 
-  const validBackends = ['local', 'keychain', '1password', 'vault'];
+  const validBackends = ['local', 'keychain', '1password', 'vault', 'gcp-sm'];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--from' && args[i + 1]) {
       const val = args[++i];
@@ -928,7 +940,7 @@ function runMigrate(args: string[]): void {
   }
 
   if (!fromType || !toType) {
-    console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password|vault> --to <local|keychain|1password|vault>\n');
+    console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password|vault|gcp-sm> --to <local|keychain|1password|vault|gcp-sm>\n');
     process.exit(1);
   }
 
@@ -945,6 +957,16 @@ function runMigrate(args: string[]): void {
     console.error('    export VAULT_ADDR=http://127.0.0.1:8200');
     console.error('    export VAULT_TOKEN=<your-token>\n');
     process.exit(1);
+  }
+
+  // Validate GCP credentials before attempting migration
+  const gcpBackends = [fromType, toType].filter(t => t === 'gcp-sm');
+  if (gcpBackends.length > 0) {
+    const gcp = isGCPAvailable();
+    if (!gcp.available) {
+      console.error(`\n  GCP Secret Manager backend requires credentials: ${gcp.message}\n`);
+      process.exit(1);
+    }
   }
 
   console.log('\n  Secretless Migration\n');
@@ -2007,7 +2029,7 @@ function printHelp(): void {
 
   Backend Management:
     npx secretless-ai backend             Show current backend status
-    npx secretless-ai backend set <type>  Set backend (local, keychain, 1password, or vault)
+    npx secretless-ai backend set <type>  Set backend (local, keychain, 1password, vault, or gcp-sm)
     npx secretless-ai backend list        List all entries in current backend
     npx secretless-ai backend purge       Delete all entries (--prefix mcp|secret, --yes)
     npx secretless-ai migrate             Migrate secrets between backends
