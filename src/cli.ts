@@ -256,6 +256,13 @@ function runInit(projectDir: string): void {
 function runScan(projectDir: string): void {
   console.log('\n  Secretless Scanner\n');
 
+  const nodeFs = require('fs') as typeof import('fs');
+  if (!nodeFs.existsSync(projectDir)) {
+    console.error(`  Directory not found: ${projectDir}`);
+    console.error('  Check the path and try again.\n');
+    process.exit(1);
+  }
+
   const findings = scan(projectDir);
 
   if (findings.length === 0) {
@@ -1208,6 +1215,11 @@ function runSecret(args: string[]): void {
       if (eqIdx !== -1) {
         const name = nameArg.slice(0, eqIdx);
         const value = nameArg.slice(eqIdx + 1);
+        if (!value) {
+          console.error('  Error: no value provided.');
+          console.error('  Usage: secretless-ai secret set NAME=VALUE\n');
+          process.exit(1);
+        }
         const store = new SecretStore();
         store.setSecret(name, value).then(() => {
           console.log(`  Stored: ${name}`);
@@ -1236,7 +1248,9 @@ function runSecret(args: string[]): void {
         if (process.stdin.isTTY) {
           const value = input.trim();
           if (!value) {
-            console.error('  Error: empty value');
+            console.error('  Error: no value provided.');
+            console.error('  Usage: secretless-ai secret set NAME=VALUE');
+            console.error('  Or:    echo "value" | secretless-ai secret set NAME\n');
             process.exit(1);
           }
           const store = new SecretStore();
@@ -1255,7 +1269,9 @@ function runSecret(args: string[]): void {
       process.stdin.on('end', () => {
         const value = input.trim();
         if (!value) {
-          console.error('  Error: empty value');
+          console.error('  Error: no value provided.');
+          console.error('  Usage: secretless-ai secret set NAME=VALUE');
+          console.error('  Or:    echo "value" | secretless-ai secret set NAME\n');
           process.exit(1);
         }
         const store = new SecretStore();

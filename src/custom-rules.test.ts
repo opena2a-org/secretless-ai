@@ -101,6 +101,25 @@ files:
     expect(result.env).toEqual(['FOO_*']);
     expect(result.files).toEqual(['*.bar']);
   });
+
+  it('ignores unknown keys with underscores/hyphens/numbers', () => {
+    const yaml = `
+env:
+  - FOO_*
+bogus_section:
+  - should-not-leak
+custom-rules-v2:
+  - also-ignored
+section3:
+  - nope
+files:
+  - "*.bar"
+`;
+    const result = parseRulesYaml(yaml);
+    expect(result.env).toEqual(['FOO_*']);
+    expect(result.files).toEqual(['*.bar']);
+    expect(result.bash).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

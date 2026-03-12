@@ -4,7 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-738-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-791-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 AI coding tools can read `~/.aws/credentials`, `echo $OPENAI_API_KEY`, and access any secret on your machine. Secretless makes secrets invisible to AI context without changing your workflow.
 
@@ -32,7 +32,7 @@ Detects which AI coding tools you use, installs the right protections for each, 
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Secretless v0.11.4                              │
+│  Secretless v0.12.2                              │
 │  Keeping secrets out of AI                       │
 │                                                  │
 │  Detected:                                       │
@@ -120,7 +120,9 @@ Claude Code gets the strongest protection because it supports [hooks](https://do
 | `verify` | Verify keys are usable but hidden from AI |
 | `doctor [--fix]` | Diagnose and auto-fix shell profile issues |
 | `clean [--dry-run] [--path P]` | Scan and redact credentials in transcripts |
-| `watch` | Monitor transcripts in real-time |
+| `watch start` | Start real-time transcript monitoring |
+| `watch stop` | Stop the transcript watcher |
+| `watch status` | Show watcher status |
 
 ### Secret Management
 
@@ -178,6 +180,58 @@ SENTRY_DSN        optional    Error tracking
 npx secretless-ai setup                       # Interactive setup for missing secrets
 npx secretless-ai setup --check               # CI: fail if required secrets are missing
 ```
+
+### Custom Rules
+
+Organizations can define their own deny patterns to block company-specific secrets from AI context. Custom rules extend the built-in protections with patterns tailored to your environment.
+
+**Quick start:**
+
+```bash
+npx secretless-ai rules init           # Create a .secretless-rules.yaml template
+```
+
+**`.secretless-rules.yaml` format:**
+
+```yaml
+env:
+  - "ACME_*"
+  - "INTERNAL_*_TOKEN"
+
+files:
+  - "*.corp-secret"
+  - "config/production-keys.*"
+
+bash:
+  - "curl*internal.corp.com*"
+  - "vault read*"
+```
+
+Each section maps to a deny rule type:
+
+| Section | Blocks |
+|---------|--------|
+| `env` | Environment variable references matching the pattern |
+| `files` | File reads matching the pattern |
+| `bash` | Bash commands matching the pattern |
+
+Patterns use glob syntax (`*` matches any characters).
+
+**Managing rules:**
+
+```bash
+npx secretless-ai rules list           # Show active rules and deny rule count
+npx secretless-ai rules test "ACME_*"  # Preview generated deny rules for a pattern
+npx secretless-ai rules test "curl*internal.corp.com*" --bash  # Force bash type detection
+```
+
+After editing `.secretless-rules.yaml`, apply changes:
+
+```bash
+npx secretless-ai init                 # Re-generates protections with custom rules included
+```
+
+The rules file is safe to commit to version control -- it contains patterns, not secrets.
 
 ### Secret Storage Backends
 
@@ -409,6 +463,14 @@ npx secretless-ai broker stop        # Stop the broker daemon
 npx secretless-ai broker status      # Show broker status, uptime, and request count
 ```
 
+**Broker start flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--aim-url URL` | None | AIM server URL for agent identity verification |
+| `--port N` | Auto | Port for the broker daemon |
+| `--policy-file PATH` | `~/.secretless-ai/broker-policies.json` | Path to policy rules file |
+
 **Policy example** — define rules in `~/.secretless-ai/broker-policies.json`:
 
 ```json
@@ -509,9 +571,9 @@ npx secretless-ai verify
 
 `.env`, `.env.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.crt`, `.aws/credentials`, `.ssh/*`, `.docker/config.json`, `.git-credentials`, `.npmrc`, `.pypirc`, `*.tfstate`, `*.tfvars`, `secrets/`, `credentials/`
 
-### Credential patterns (56)
+### Credential patterns (49)
 
-Anthropic API keys, OpenAI keys, AWS access keys, GitHub PATs, Slack tokens, Google API keys, Stripe keys, SendGrid keys, Supabase keys, Azure keys, GitLab tokens, Twilio keys, Mailgun keys, MongoDB URIs, JWTs, and 41 more
+Anthropic API keys, OpenAI keys, AWS access keys, GitHub PATs, Slack tokens, Google API keys, Stripe keys, SendGrid keys, Supabase keys, Azure keys, GitLab tokens, Twilio keys, Mailgun keys, MongoDB URIs, JWTs, and more
 
 ### Bash commands
 
@@ -551,7 +613,12 @@ jobs:
 | `verify` | Verify keys are usable but hidden from AI |
 | `doctor [--fix]` | Diagnose and auto-fix shell profile issues |
 | `clean [--dry-run] [--path P]` | Scan and redact credentials in transcripts |
-| `watch` | Monitor transcripts in real-time |
+| `watch start` | Start real-time transcript monitoring |
+| `watch stop` | Stop the transcript watcher |
+| `watch status` | Show watcher status |
+| `watch install` | Install watcher as a system daemon |
+| `watch uninstall` | Remove watcher daemon |
+| `scan-history` | Scan shell history and transcripts for leaked credentials |
 | **Session Management** | |
 | `warm` | Warm biometric session and pre-load secrets into cache |
 | `warm --ttl 10m` | Set session TTL (accepts seconds, 5m, 1h, 1d) |
@@ -602,15 +669,19 @@ jobs:
 | `cache clear` | Clear the encrypted secret cache |
 | `cache ttl [DURATION]` | Show or set cache TTL (e.g., `5m`, `1h`, `off`) |
 | **Credential Broker** | |
-| `broker start` | Start the credential broker daemon |
+| `broker start [--aim-url URL] [--port N] [--policy-file PATH]` | Start the credential broker daemon |
 | `broker stop` | Stop the broker daemon |
 | `broker status` | Show broker status, uptime, and request count |
+| **Custom Rules** | |
+| `rules init` | Create a `.secretless-rules.yaml` template |
+| `rules list` | Show active custom rules and deny rule count |
+| `rules test "PATTERN" [--bash]` | Preview generated deny rules for a pattern |
 
 ## Development
 
 ```bash
 npm run build      # Compile TypeScript to dist/
-npm test           # Run tests (vitest, 738 tests)
+npm test           # Run tests (vitest, 791 tests)
 npm run dev        # Watch mode — recompile on file changes
 npm run clean      # Remove dist/ directory
 ```

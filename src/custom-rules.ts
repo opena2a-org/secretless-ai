@@ -45,8 +45,8 @@ export function parseRulesYaml(content: string): CustomRules {
     // Skip empty lines and comment-only lines
     if (!line.trim() || line.trim().startsWith('#')) continue;
 
-    // Top-level key (e.g., "env:", "files:", "bash:")
-    const keyMatch = line.match(/^([a-z]+):\s*$/);
+    // Top-level key (e.g., "env:", "files:", "bash:", or unknown like "custom_section:")
+    const keyMatch = line.match(/^([a-zA-Z0-9_-]+):\s*$/);
     if (keyMatch) {
       const key = keyMatch[1] as string;
       if (key === 'env' || key === 'files' || key === 'bash') {
