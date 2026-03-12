@@ -20,7 +20,7 @@ import type { SelectableBackendType } from './config';
 /**
  * Create a WritableSecretBackend instance for the given type.
  *
- * @param type   - 'local', 'keychain', '1password', or 'vault'
+ * @param type   - 'local', 'keychain', '1password', 'vault', or 'gcp-sm'
  * @param config - Backend-specific configuration (e.g. storeDir, key, vault)
  * @param strict - If true, throw instead of falling back to local. Default: false.
  */

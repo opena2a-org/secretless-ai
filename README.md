@@ -274,7 +274,7 @@ npx secretless-ai protect-mcp
 
 1. Scans MCP configs across Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf
 2. Identifies which env vars are secrets (key name patterns + value regex matching)
-3. Stores secrets in your configured backend (local, keychain, or 1Password)
+3. Stores secrets in your configured backend (local, keychain, 1Password, Vault, or GCP Secret Manager)
 4. Rewrites configs to use the `secretless-mcp` wrapper — decrypts at runtime, injects as env vars
 5. Non-secret env vars (URLs, org names, regions) stay in the config untouched
 
