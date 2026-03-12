@@ -222,6 +222,22 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     'Bash(node -e*readFile*.env*)',
     'Bash(node -e*readFile*.key*)',
     'Bash(node -e*readFile*.pem*)',
+    // Block python/node env var extraction
+    'Bash(python3 -c*os.environ*SECRET*)',
+    'Bash(python3 -c*os.environ*API_KEY*)',
+    'Bash(python3 -c*os.environ*TOKEN*)',
+    'Bash(python3 -c*os.environ*PASSWORD*)',
+    'Bash(python3 -c*os.environ*CREDENTIAL*)',
+    'Bash(node -e*process.env*SECRET*)',
+    'Bash(node -e*process.env*API_KEY*)',
+    'Bash(node -e*process.env*TOKEN*)',
+    'Bash(node -e*process.env*PASSWORD*)',
+    'Bash(node -e*process.env*CREDENTIAL*)',
+    // Block eval-based env var extraction
+    'Bash(eval echo*SECRET*)',
+    'Bash(eval echo*API_KEY*)',
+    'Bash(eval echo*TOKEN*)',
+    'Bash(eval echo*PASSWORD*)',
     // Block echoing/printing secret env vars (Issue #4 - expanded)
     'Bash(echo $*SECRET*)',
     'Bash(echo $*PASSWORD*)',
@@ -442,6 +458,16 @@ if [ "$TOOL_NAME" = "Bash" ]; then
   # Block python/node one-liners that read secret files
   if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*\\.(env|key|pem|p12|pfx)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files"}}'
+    exit 0
+  fi
+  # Block python/node one-liners that read env vars containing secrets
+  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*(os\\.environ|process\\.env).*(SECRET|PASSWORD|API_KEY|TOKEN|PRIVATE_KEY|VAULT|CREDENTIAL)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret environment variables"}}'
+    exit 0
+  fi
+  # Block eval-based env var extraction
+  if echo "$COMMAND" | grep -qiE '(eval\\s+echo|\\$\\{!).*\\$(SECRET|PASSWORD|API_KEY|TOKEN|PRIVATE_KEY|VAULT|CREDENTIAL)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked eval-based secret extraction"}}'
     exit 0
   fi
   # Block commands that echo secret env vars (expanded with TOKEN, VAULT, CREDENTIAL)

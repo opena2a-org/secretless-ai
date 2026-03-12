@@ -85,9 +85,11 @@ describe('rewriteConfig', () => {
     expect(result.backupPath).toBeTruthy();
     expect(fs.existsSync(result.backupPath!)).toBe(true);
 
-    // Backup content should match original
-    const backupContent = JSON.parse(fs.readFileSync(result.backupPath!, 'utf-8'));
-    expect(backupContent).toEqual(originalConfig);
+    // Backup is encrypted — verify by restoring it
+    const restored = restoreConfig(configPath, backupDir);
+    expect(restored).toBe(true);
+    const restoredContent = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(restoredContent).toEqual(originalConfig);
   });
 
   it('skips servers with no secrets to protect', () => {

@@ -26,6 +26,33 @@ export interface RewriteResult {
 /** Validates server/client names contain only safe characters. */
 const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
 
+// ---------------------------------------------------------------------------
+// Backup encryption (prevents plaintext secret leakage in backup files)
+// ---------------------------------------------------------------------------
+
+function deriveBackupKey(backupDir: string): Buffer {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
+  const keyMaterial = `${home}-secretless-mcp-backup-${process.env.USER ?? 'default'}`;
+  return crypto.createHash('sha256').update(keyMaterial).digest();
+}
+
+function encryptBackup(plaintext: string, key: Buffer): Buffer {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]);
+}
+
+function decryptBackup(data: Buffer, key: Buffer): string {
+  const iv = data.subarray(0, 16);
+  const tag = data.subarray(16, 32);
+  const ciphertext = data.subarray(32);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return decipher.update(ciphertext) + decipher.final('utf-8');
+}
+
 /**
  * Check if a server command indicates it is already wrapped by secretless-mcp.
  */
@@ -163,10 +190,12 @@ export function rewriteConfig(
   // Create backup directory with restricted permissions
   fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
 
-  // Save backup of original content
+  // Save encrypted backup of original content (prevents plaintext secret leakage)
   const bkFilename = backupFilename(configPath);
   const bkPath = path.join(backupDir, bkFilename);
-  fs.writeFileSync(bkPath, content, { mode: 0o600 });
+  const backupKey = deriveBackupKey(backupDir);
+  const encryptedBackup = encryptBackup(content, backupKey);
+  fs.writeFileSync(bkPath, encryptedBackup, { mode: 0o600 });
   fs.chmodSync(bkPath, 0o600);
 
   // Update manifest
@@ -200,7 +229,17 @@ export function restoreConfig(configPath: string, backupDir: string): boolean {
     return false;
   }
 
-  const backupContent = fs.readFileSync(bkPath, 'utf-8');
+  const rawBackup = fs.readFileSync(bkPath);
+  let backupContent: string;
+
+  // Try decrypting first (new encrypted format), fall back to plaintext (legacy)
+  try {
+    const backupKey = deriveBackupKey(backupDir);
+    backupContent = decryptBackup(rawBackup, backupKey);
+  } catch {
+    // Legacy plaintext backup — still support reading it
+    backupContent = rawBackup.toString('utf-8');
+  }
 
   // Verify backup is valid JSON before restoring
   try {
