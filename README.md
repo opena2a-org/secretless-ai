@@ -10,7 +10,7 @@ AI coding tools can read `~/.aws/credentials`, `echo $OPENAI_API_KEY`, and acces
 
 Works with Claude Code, Cursor, Copilot, Windsurf, Cline, and Aider.
 
-[Website](https://opena2a.org) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a) | [Discord](https://discord.gg/opena2a)
+[Website](https://opena2a.org) | [Demos](https://opena2a.org/demos) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a) | [Discord](https://discord.gg/opena2a)
 
 ## Get Started in 30 Seconds
 
@@ -54,6 +54,10 @@ Detects which AI coding tools you use, installs the right protections for each, 
 │  Done. Secrets are now blocked from AI context.  │
 └──────────────────────────────────────────────────┘
 ```
+
+![Secretless AI Demo](docs/secretless-ai-demo.gif)
+
+> See all demos at [opena2a.org/demos](https://opena2a.org/demos)
 
 ## Installation
 
