@@ -976,7 +976,22 @@ function runMigrate(args: string[]): void {
   const source = createBackend(fromType, undefined, true);
   const destination = createBackend(toType, undefined, true);
 
-  migrateSecrets(source, destination, { deleteFromSource: false }).then((result) => {
+  // Migrate all known prefixes. Some backends (keychain, 1password) return nothing
+  // for empty prefix -- we need to resolve each prefix explicitly.
+  const PREFIXES = ['secret', 'mcp'];
+
+  Promise.all(
+    PREFIXES.map(p => migrateSecrets(source, destination, { deleteFromSource: false, prefix: p }))
+  ).then((results) => {
+    return results.reduce(
+      (acc, r) => ({
+        migrated: acc.migrated + r.migrated,
+        failed: acc.failed + r.failed,
+        errors: [...acc.errors, ...r.errors],
+      }),
+      { migrated: 0, failed: 0, errors: [] as Array<{ key: string; message: string }> },
+    );
+  }).then((result) => {
     if (result.migrated === 0 && result.failed === 0) {
       console.log('  No secrets found to migrate.\n');
       return;
