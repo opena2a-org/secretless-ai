@@ -185,11 +185,13 @@ Secrets are never in environment variables, shell profiles, or config files — 
 | `keychain` | macOS Keychain / Linux Secret Service | Device-local | OS login | Native OS integration |
 | `1password` | 1Password vault | Cross-device | Biometric (Touch ID) / Service Account | Teams, CI/CD, multi-device |
 | `vault` | HashiCorp Vault KV v2 | Cross-device / cluster | Vault token | Enterprise, self-hosted, team secrets |
+| `gcp-sm` | GCP Secret Manager | Cross-device / cloud | ADC / Service Account | GCP-native, Cloud Run, GKE |
 
 ```bash
 npx secretless-ai backend                     # Show available backends
 npx secretless-ai backend set 1password       # Switch to 1Password
 npx secretless-ai backend set keychain        # Switch to OS keychain
+npx secretless-ai backend set gcp-sm          # Switch to GCP Secret Manager
 npx secretless-ai migrate --from local --to 1password  # Migrate existing secrets
 ```
 
@@ -579,7 +581,7 @@ jobs:
 | `mcp-unprotect` | Restore original MCP configs |
 | **Backend Management** | |
 | `backend` | Show current backend status |
-| `backend set <TYPE>` | Set backend (local, keychain, 1password, vault) |
+| `backend set <TYPE>` | Set backend (local, keychain, 1password, vault, gcp-sm) |
 | `backend list` | List all stored entries |
 | `backend purge [--prefix] [--yes]` | Delete entries from backend |
 | `migrate --from TYPE --to TYPE` | Migrate secrets between backends |
