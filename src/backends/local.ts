@@ -82,7 +82,9 @@ export class LocalBackend implements WritableSecretBackend {
 
     store[key] = value;
     const encrypted = this.encrypt(JSON.stringify(store));
-    fs.writeFileSync(storePath, encrypted, { mode: 0o600 });
+    const tmpStorePath = storePath + '.tmp';
+    fs.writeFileSync(tmpStorePath, encrypted, { mode: 0o600 });
+    fs.renameSync(tmpStorePath, storePath);
 
     // Update metadata
     const metaPath = path.join(this.storeDir, META_FILE);
@@ -94,7 +96,9 @@ export class LocalBackend implements WritableSecretBackend {
     } catch { /* ignore */ }
 
     meta.entries[key] = { createdAt: new Date().toISOString() };
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), { mode: 0o600 });
+    const tmpMetaPath = metaPath + '.tmp';
+    fs.writeFileSync(tmpMetaPath, JSON.stringify(meta, null, 2), { mode: 0o600 });
+    fs.renameSync(tmpMetaPath, metaPath);
   }
 
   /** Delete a secret by key. Returns true if the key existed, false otherwise. */
@@ -114,7 +118,9 @@ export class LocalBackend implements WritableSecretBackend {
 
     delete store[key];
     const encrypted = this.encrypt(JSON.stringify(store));
-    fs.writeFileSync(storePath, encrypted, { mode: 0o600 });
+    const tmpStorePath = storePath + '.tmp';
+    fs.writeFileSync(tmpStorePath, encrypted, { mode: 0o600 });
+    fs.renameSync(tmpStorePath, storePath);
 
     // Update metadata
     const metaPath = path.join(this.storeDir, META_FILE);
@@ -122,7 +128,9 @@ export class LocalBackend implements WritableSecretBackend {
       if (fs.existsSync(metaPath)) {
         const meta: StoreMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
         delete meta.entries[key];
-        fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), { mode: 0o600 });
+        const tmpMetaPath = metaPath + '.tmp';
+        fs.writeFileSync(tmpMetaPath, JSON.stringify(meta, null, 2), { mode: 0o600 });
+        fs.renameSync(tmpMetaPath, metaPath);
       }
     } catch { /* ignore */ }
 

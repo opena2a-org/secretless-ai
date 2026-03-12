@@ -178,6 +178,7 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
   if (!settings.permissions.deny) settings.permissions.deny = [];
 
   const denyRules = [
+    // Block Read access to secret files
     'Read(.env*)',
     'Read(*.key)',
     'Read(*.pem)',
@@ -187,11 +188,59 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     'Read(*.tfvars)',
     'Read(.aws/credentials)',
     'Read(.ssh/*)',
+    // Block Read access to secretless data directory
+    'Read(~/.secretless-ai/*)',
+    // Block Grep from searching secret files (Issue #1)
+    'Grep(*.env*)',
+    'Grep(*.key)',
+    'Grep(*.pem)',
+    'Grep(*.p12)',
+    'Grep(*.pfx)',
+    'Grep(credentials*)',
+    'Grep(*.tfstate)',
+    'Grep(*.tfvars)',
+    // Block Bash commands that read secret files (Issue #2 - expanded)
     'Bash(cat .env*)',
     'Bash(cat *.key)',
+    'Bash(cat *.pem)',
+    'Bash(grep * .env*)',
+    'Bash(grep * *.key)',
+    'Bash(grep * *.pem)',
+    'Bash(awk * .env*)',
+    'Bash(awk * *.key)',
+    'Bash(sed * .env*)',
+    'Bash(sed * *.key)',
+    'Bash(strings .env*)',
+    'Bash(strings *.key)',
+    'Bash(strings *.pem)',
+    'Bash(xxd .env*)',
+    'Bash(xxd *.key)',
+    'Bash(xxd *.pem)',
+    'Bash(python3 -c*open*.env*)',
+    'Bash(python3 -c*open*.key*)',
+    'Bash(python3 -c*open*.pem*)',
+    'Bash(node -e*readFile*.env*)',
+    'Bash(node -e*readFile*.key*)',
+    'Bash(node -e*readFile*.pem*)',
+    // Block echoing/printing secret env vars (Issue #4 - expanded)
     'Bash(echo $*SECRET*)',
     'Bash(echo $*PASSWORD*)',
     'Bash(echo $*API_KEY*)',
+    'Bash(echo $*TOKEN*)',
+    'Bash(echo $*VAULT*)',
+    'Bash(echo $*CREDENTIAL*)',
+    'Bash(printenv *TOKEN*)',
+    'Bash(printenv *SECRET*)',
+    'Bash(printenv *KEY*)',
+    // Block secretless-ai secret extraction (Issue #3)
+    'Bash(*secretless-ai secret get*--force*)',
+    // Block secretless-ai run with env dumping (Issue #6)
+    'Bash(*secretless-ai run*-- env*)',
+    'Bash(*secretless-ai run*-- printenv*)',
+    // Block access to secretless data directory (Issue #5)
+    'Bash(cat *secretless-ai*)',
+    'Bash(*secretless-ai/store*)',
+    'Bash(*secretless-ai/mcp-backups*)',
   ];
 
   for (const rule of denyRules) {
@@ -363,6 +412,7 @@ function generateClaudeHookScript(): string {
     '.npmrc', '.pypirc',
     '.tfstate', '.tfvars',
     'secrets/', '.opena2a/secretless-ai/',
+    '.secretless-ai/',
   ];
 
   return `#!/bin/bash
@@ -384,14 +434,34 @@ fi
 # For Bash tool, check the command for secret access patterns
 if [ "$TOOL_NAME" = "Bash" ]; then
   COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4)
-  # Block commands that dump secret files
-  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type)\\s+.*\\.(env|key|pem|p12|pfx)'; then
+  # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
+  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*\\.(env|key|pem|p12|pfx)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files"}}'
     exit 0
   fi
-  # Block commands that echo secret env vars
-  if echo "$COMMAND" | grep -qiE 'echo\\s+.*\\$(SECRET|PASSWORD|API_KEY|TOKEN|PRIVATE_KEY)'; then
+  # Block python/node one-liners that read secret files
+  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*\\.(env|key|pem|p12|pfx)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files"}}'
+    exit 0
+  fi
+  # Block commands that echo secret env vars (expanded with TOKEN, VAULT, CREDENTIAL)
+  if echo "$COMMAND" | grep -qiE '(echo|printenv)\\s+.*\\$(SECRET|PASSWORD|API_KEY|TOKEN|PRIVATE_KEY|VAULT|CREDENTIAL)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
+    exit 0
+  fi
+  # Block secretless-ai secret extraction with --force
+  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+secret\\s+get.*--force'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked forced secret extraction"}}'
+    exit 0
+  fi
+  # Block secretless-ai run with env/printenv to dump injected secrets
+  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+run.*--\\s*(env|printenv)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai run"}}'
+    exit 0
+  fi
+  # Block direct access to secretless data directory
+  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|grep|awk|sed|strings|xxd|ls)\\s+.*\\.secretless-ai'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to secretless data directory"}}'
     exit 0
   fi
   exit 0

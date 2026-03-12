@@ -20,7 +20,7 @@ export interface McpServerEntry {
   command: string;
   args: string[];
   env: Record<string, string>;
-  /** true if command is 'secretless-mcp' or ends with '/secretless-mcp' */
+  /** true if command is the secretless-mcp binary or the mcp-wrapper.js script */
   alreadyProtected: boolean;
 }
 
@@ -102,6 +102,13 @@ function getClientConfigPaths(): ClientConfigPath[] {
 function isProtectedCommand(command: string): boolean {
   if (command === 'secretless-mcp') return true;
   if (command.endsWith('/secretless-mcp')) return true;
+
+  // The protect-mcp command rewrites configs to use the full path to mcp-wrapper.js
+  // (e.g., /Users/.../dist/mcp-wrapper.js). Detect that as protected too.
+  const wrapperPath = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
+  if (command === wrapperPath) return true;
+  if (command.endsWith('/mcp-wrapper.js') && command.includes('secretless')) return true;
+
   return false;
 }
 
