@@ -14,6 +14,7 @@ import {
   customRulesToHookBlocks,
   customRulesToFilePatterns,
   loadCustomRules,
+  loadCustomRulesDetailed,
   mergeRules,
   generateTemplate,
   RULES_FILENAME,
@@ -271,6 +272,34 @@ env:
   # - NOTHING
 `);
     expect(loadCustomRules(dir)).toBeNull();
+  });
+
+  it('returns empty status for empty rules via detailed', () => {
+    fs.writeFileSync(path.join(dir, RULES_FILENAME), `
+# All commented out
+env:
+  # - NOTHING
+`);
+    const result = loadCustomRulesDetailed(dir);
+    expect(result.status).toBe('empty');
+    expect(result.rules).toBeNull();
+  });
+
+  it('returns missing status when no file exists via detailed', () => {
+    const result = loadCustomRulesDetailed(dir);
+    expect(result.status).toBe('missing');
+    expect(result.rules).toBeNull();
+  });
+
+  it('returns loaded status with rules via detailed', () => {
+    fs.writeFileSync(path.join(dir, RULES_FILENAME), `
+env:
+  - CORP_*
+`);
+    const result = loadCustomRulesDetailed(dir);
+    expect(result.status).toBe('loaded');
+    expect(result.rules).not.toBeNull();
+    expect(result.rules!.env).toEqual(['CORP_*']);
   });
 
   it('throws on invalid patterns', () => {

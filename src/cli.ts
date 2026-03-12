@@ -414,7 +414,7 @@ function runVerify(projectDir: string): void {
 
 function runRules(args: string[]): void {
   const {
-    loadCustomRules,
+    loadCustomRulesDetailed,
     customRulesToDenyRules,
     generateTemplate,
     RULES_FILENAME,
@@ -425,12 +425,18 @@ function runRules(args: string[]): void {
 
   switch (subcommand) {
     case 'list': {
-      const rules = loadCustomRules(projectDir);
-      if (!rules) {
+      const result = loadCustomRulesDetailed(projectDir);
+      if (result.status === 'missing') {
         console.log(`\n  No ${RULES_FILENAME} found in this directory.`);
         console.log(`  Create one: npx secretless-ai rules init\n`);
         return;
       }
+      if (result.status === 'empty') {
+        console.log(`\n  ${RULES_FILENAME} exists but has no active rules.`);
+        console.log('  Uncomment or add patterns, then run: npx secretless-ai init\n');
+        return;
+      }
+      const rules = result.rules!;
 
       console.log(`\n  Custom Rules (${RULES_FILENAME})\n`);
 
@@ -475,11 +481,16 @@ function runRules(args: string[]): void {
     }
 
     case 'test': {
-      const pattern = args[1];
+      // Support: rules test <pattern> [--env|--file|--bash]
+      const nonFlags = args.slice(1).filter(a => !a.startsWith('--'));
+      const flags = args.slice(1).filter(a => a.startsWith('--'));
+      const pattern = nonFlags[0];
       if (!pattern) {
-        console.error('\n  Usage: secretless-ai rules test <pattern>\n');
-        console.error('  Example: secretless-ai rules test "ACME_*"');
-        console.error('  Example: secretless-ai rules test "*.corp-secret"\n');
+        console.error('\n  Usage: secretless-ai rules test <pattern> [--env|--file|--bash]\n');
+        console.error('  Examples:');
+        console.error('    secretless-ai rules test "ACME_*"              (auto-detects env)');
+        console.error('    secretless-ai rules test "*.corp-secret"       (auto-detects file)');
+        console.error('    secretless-ai rules test "curl*corp*" --bash   (force bash type)\n');
         process.exit(1);
       }
 
@@ -494,23 +505,33 @@ function runRules(args: string[]): void {
 
       console.log(`\n  Testing pattern: ${pattern}\n`);
 
-      // Determine if it looks like an env var or file pattern
-      const isEnvLike = /^[A-Z_*]+$/.test(pattern);
-      if (isEnvLike) {
-        console.log('  Detected: environment variable pattern');
+      // Determine type: explicit flag > auto-detect
+      const explicitType = flags.includes('--env') ? 'env'
+        : flags.includes('--file') ? 'file'
+        : flags.includes('--bash') ? 'bash'
+        : null;
+
+      const patternType = explicitType
+        ?? (/^[A-Z_*]+$/.test(pattern) ? 'env' : 'file');
+
+      if (patternType === 'env') {
+        console.log('  Type: environment variable pattern');
         console.log('  Deny rules generated:');
         for (const rule of envPatternToDenyRules(pattern)) {
           console.log(`    ${rule}`);
         }
-        console.log(`  Shell regex: ${globToShellRegex(pattern)}`);
+      } else if (patternType === 'bash') {
+        console.log('  Type: bash command pattern');
+        console.log('  Deny rule generated:');
+        console.log(`    Bash(${pattern})`);
       } else {
-        console.log('  Detected: file pattern');
+        console.log('  Type: file pattern');
         console.log('  Deny rules generated:');
         for (const rule of filePatternToDenyRules(pattern)) {
           console.log(`    ${rule}`);
         }
-        console.log(`  Shell regex: ${globToShellRegex(pattern)}`);
       }
+      console.log(`  Shell regex: ${globToShellRegex(pattern)}`);
       console.log();
       break;
     }
@@ -1436,6 +1457,12 @@ function runImport(args: string[]): void {
   }
 
   const resolvedPath = path.resolve(filePath);
+  const nodeFs = require('fs') as typeof import('fs');
+  if (!nodeFs.existsSync(resolvedPath)) {
+    console.error(`  File not found: ${filePath}`);
+    console.error('  Check the path and try again.\n');
+    process.exit(1);
+  }
   importEnvFile(resolvedPath).then((result) => {
     if (result.imported === 0) {
       console.log('  No secrets found in file.');

@@ -239,9 +239,22 @@ export function customRulesToFilePatterns(rules: CustomRules): string[] {
  * Returns null if no rules file exists.
  * Throws on invalid patterns (shell injection prevention).
  */
+/**
+ * Result of loading custom rules, distinguishing "no file" from "file is empty".
+ */
+export interface LoadResult {
+  rules: CustomRules | null;
+  /** 'missing' = no file, 'empty' = file exists but no active rules, 'loaded' = has rules */
+  status: 'missing' | 'empty' | 'loaded';
+}
+
 export function loadCustomRules(dir: string): CustomRules | null {
+  return loadCustomRulesDetailed(dir).rules;
+}
+
+export function loadCustomRulesDetailed(dir: string): LoadResult {
   const rulesPath = path.join(dir, RULES_FILENAME);
-  if (!fs.existsSync(rulesPath)) return null;
+  if (!fs.existsSync(rulesPath)) return { rules: null, status: 'missing' };
 
   const content = fs.readFileSync(rulesPath, 'utf-8');
   const rules = parseRulesYaml(content);
@@ -255,12 +268,12 @@ export function loadCustomRules(dir: string): CustomRules | null {
     );
   }
 
-  // Return null if all sections are empty
+  // Return empty status if all sections are empty
   if (rules.env.length === 0 && rules.files.length === 0 && rules.bash.length === 0) {
-    return null;
+    return { rules: null, status: 'empty' };
   }
 
-  return rules;
+  return { rules, status: 'loaded' };
 }
 
 /**
