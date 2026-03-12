@@ -1159,7 +1159,8 @@ function runSecret(args: string[]): void {
     }
 
     case 'get': {
-      const name = args[1];
+      const positional = args.slice(1).filter(a => !a.startsWith('--'));
+      const name = positional[0];
       if (!name) {
         console.error('\n  Usage: secretless-ai secret get <NAME>\n');
         process.exit(1);
