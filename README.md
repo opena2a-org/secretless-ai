@@ -32,7 +32,7 @@ Detects which AI coding tools you use, installs the right protections for each, 
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Secretless v0.12.3                              │
+│  Secretless v0.12.4                              │
 │  Keeping secrets out of AI                       │
 │                                                  │
 │  Detected:                                       │
