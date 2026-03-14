@@ -72,15 +72,16 @@ export class SecretStore {
     return this.backend.delete(key);
   }
 
-  /** Load all secrets as key-value pairs. Optionally filter by name list. */
+  /** Load all secrets as key-value pairs. Optionally filter by name list (case-insensitive). */
   async loadSecrets(only?: string[]): Promise<Record<string, string>> {
     const all = await this.backend.resolve(SECRET_PREFIX);
     const result: Record<string, string> = {};
+    const normalizedOnly = only?.map((k) => k.toUpperCase());
 
     for (const [fullKey, value] of Object.entries(all)) {
       const name = fullKey.slice(SECRET_PREFIX.length + 1);
       if (!name) continue;
-      if (only && !only.includes(name)) continue;
+      if (normalizedOnly && !normalizedOnly.includes(name.toUpperCase())) continue;
       result[name] = value;
     }
     return result;
