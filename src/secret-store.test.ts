@@ -78,6 +78,14 @@ describe('SecretStore', () => {
     expect(secrets).toEqual({ A: '1', C: '3' });
   });
 
+  it('loads filtered secrets case-insensitively', async () => {
+    await store.setSecret('SHODAN_KEY', 'sk-123');
+    await store.setSecret('ANTHROPIC_API_KEY', 'ant-456');
+    await store.setSecret('OTHER_KEY', 'other');
+    const secrets = await store.loadSecrets(['shodan_key', 'anthropic_api_key']);
+    expect(secrets).toEqual({ SHODAN_KEY: 'sk-123', ANTHROPIC_API_KEY: 'ant-456' });
+  });
+
   it('rejects invalid secret names', async () => {
     await expect(store.setSecret('my secret', 'val')).rejects.toThrow('Invalid secret name');
     await expect(store.setSecret('../traversal', 'val')).rejects.toThrow('Invalid secret name');
