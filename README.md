@@ -4,7 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-791-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-792-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
 
@@ -461,7 +461,7 @@ All encryption uses Node.js built-in `crypto` module. No external crypto depende
 
 ```bash
 npm run build      # Compile TypeScript to dist/
-npm test           # Run tests (vitest, 791 tests)
+npm test           # Run tests (vitest, 792 tests)
 npm run dev        # Watch mode
 npm run clean      # Remove dist/
 ```
