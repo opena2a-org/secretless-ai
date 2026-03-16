@@ -1,128 +1,116 @@
 > **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · **Secretless AI** · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent) · Registry (coming soon)
 
-# Secretless AI
+# secretless-ai
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://img.shields.io/badge/tests-791-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
-AI coding tools can read `~/.aws/credentials`, `echo $OPENAI_API_KEY`, and access any secret on your machine. Secretless makes secrets invisible to AI context without changing your workflow.
+Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
 
-Works with Claude Code, Cursor, Copilot, Windsurf, Cline, and Aider.
-
-[Website](https://opena2a.org) | [Demos](https://opena2a.org/demos) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a) | [Discord](https://discord.gg/opena2a)
-
-## Get Started in 30 Seconds
-
-The recommended way to use Secretless AI is through [opena2a-cli](https://github.com/opena2a-org/opena2a) — the unified CLI for all OpenA2A security tools. It runs Secretless under the hood along with security scanning, config integrity, and more.
+## Quick Start
 
 ```bash
-# Recommended: full security review via opena2a-cli
-npx opena2a-cli review
-
-# Or use Secretless AI directly
 npx secretless-ai init
 ```
 
-That's it. No config files, no setup, no flags needed.
-
-**What happens when you run it?**
-
-Detects which AI coding tools you use, installs the right protections for each, and blocks secrets from ever entering an AI context window.
-
 ```
-┌──────────────────────────────────────────────────┐
-│  Secretless v0.12.4                              │
-│  Keeping secrets out of AI                       │
-│                                                  │
-│  Detected:                                       │
-│    + Claude Code                                 │
-│    + Cursor                                      │
-│                                                  │
-│  Configured:                                     │
-│    * Claude Code                                 │
-│    * Cursor                                      │
-│                                                  │
-│  Created:                                        │
-│    + .claude/hooks/secretless-guard.sh           │
-│    + CLAUDE.md                                   │
-│                                                  │
-│  Modified:                                       │
-│    ~ .claude/settings.json                       │
-│    ~ .cursorrules                                │
-│                                                  │
-│  Done. Secrets are now blocked from AI context.  │
-└──────────────────────────────────────────────────┘
+  Detected:  Claude Code, Cursor
+  Protected: .env, .aws/credentials, *.key, *.pem (21 file patterns)
+  Blocked:   49 credential patterns from AI context
+  Done.      Secrets are now invisible to AI tools.
 ```
 
-![Secretless AI Demo](docs/secretless-ai-demo.gif)
+## MCP Server Protection
 
-> See all demos at [opena2a.org/demos](https://opena2a.org/demos)
-
-## Installation
+Every MCP server config has plaintext API keys in JSON files on your machine. The LLM sees them. Secretless encrypts them.
 
 ```bash
-# Run without installing (recommended to start)
-npx secretless-ai init
-
-# Install globally
-npm install -g secretless-ai
-
-# Add to your project
-npm install --save-dev secretless-ai
+npx secretless-ai protect-mcp
 ```
 
-Requirements: Node.js 18+. Zero runtime dependencies.
+```
+  Scanned 1 client(s)
 
-## Using with opena2a-cli (Recommended)
+  + claude-desktop/browserbase
+      BROWSERBASE_API_KEY (encrypted)
+  + claude-desktop/github
+      GITHUB_PERSONAL_ACCESS_TOKEN (encrypted)
+  + claude-desktop/stripe
+      STRIPE_SECRET_KEY (encrypted)
 
-[opena2a-cli](https://github.com/opena2a-org/opena2a) is the main CLI that unifies all OpenA2A security tools. Secretless AI powers the credential management commands:
+  3 secret(s) encrypted across 3 server(s).
+  MCP servers start normally -- no workflow changes needed.
+```
 
-| opena2a-cli command | What it runs | Description |
-|---------------------|-------------|-------------|
-| `opena2a review` | All tools | Full security dashboard (HTML) |
-| `opena2a protect` | HackMyAgent + Secretless | Auto-fix findings + credential protection |
-| `opena2a secrets init` | Secretless AI | Initialize secretless protection |
-| `opena2a secrets verify` | Secretless AI | Verify secrets are hidden from AI |
-| `opena2a broker start` | Secretless AI | Identity-aware credential brokering |
-| `opena2a dlp scan` | Secretless AI | Scan transcripts for leaked credentials |
-| `opena2a shield init` | All tools | Full security setup in one command |
+Scans configs across Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf. Secrets move to your configured backend. Non-secret env vars (URLs, regions) stay untouched.
 
 ```bash
-npm install -g opena2a-cli
-opena2a review    # best place to start
+npx secretless-ai protect-mcp --backend 1password  # Store MCP secrets in 1Password
+npx secretless-ai mcp-status                       # Show which servers are protected
+npx secretless-ai mcp-unprotect                    # Restore original configs from backup
 ```
 
 ## How It Works
 
-Secretless auto-detects which AI tools you use and installs the right protections for each one:
+1. **Scans** your project for hardcoded credentials (49 patterns)
+2. **Migrates** them to secure storage (OS keychain, 1Password, Vault, GCP Secret Manager)
+3. **Blocks** AI tools from reading credential files (21 file patterns)
+4. **Brokers** access through environment variables -- secrets never enter AI context
+
+## Supported Tools
 
 | Tool | Protection Method |
 |------|------------------|
-| **Claude Code** | PreToolUse hook (blocks file reads before they happen) + deny rules + CLAUDE.md instructions |
-| **Cursor** | `.cursorrules` instructions |
-| **GitHub Copilot** | `.github/copilot-instructions.md` instructions |
-| **Windsurf** | `.windsurfrules` instructions |
-| **Cline** | `.clinerules` instructions |
-| **Aider** | `.aiderignore` file patterns |
+| Claude Code | PreToolUse hook (blocks reads before they happen) + deny rules + CLAUDE.md |
+| Cursor | `.cursorrules` instructions |
+| GitHub Copilot | `.github/copilot-instructions.md` instructions |
+| Windsurf | `.windsurfrules` instructions |
+| Cline | `.clinerules` instructions |
+| Aider | `.aiderignore` file patterns |
 
-Claude Code gets the strongest protection because it supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) — a shell script runs *before* every file read and blocks access to secret files at the tool level. Other tools get instruction-based protection.
+Claude Code gets the strongest protection because it supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) -- a shell script runs *before* every file read and blocks access at the tool level.
 
-## Commands
+## Storage Backends
 
-### Core
+| Backend | Storage | Best For |
+|---------|---------|----------|
+| `local` | AES-256-GCM encrypted file | Quick start, single machine |
+| `keychain` | macOS Keychain / Linux Secret Service | Native OS integration |
+| `1password` | 1Password vault | Teams, CI/CD, multi-device |
+| `vault` | HashiCorp Vault KV v2 | Enterprise, self-hosted |
+| `gcp-sm` | GCP Secret Manager | GCP-native workloads |
 
-| Command | What It Does |
-|---------|-------------|
-| `init` | Set up protections for your AI tools |
-| `scan` | Scan for hardcoded secrets (49 patterns) |
-| `status` | Show protection status (session, broker, transcripts) |
-| `verify` | Verify keys are usable but hidden from AI |
-| `doctor [--fix]` | Diagnose and auto-fix shell profile issues |
-| `clean [--dry-run] [--path P]` | Scan and redact credentials in transcripts |
-| `watch start` | Start real-time transcript monitoring |
-| `watch stop` | Stop the transcript watcher |
-| `watch status` | Show watcher status |
+```bash
+npx secretless-ai backend set 1password              # Switch backend
+npx secretless-ai migrate --from local --to 1password # Migrate existing secrets
+```
+
+## Installation
+
+```bash
+npx secretless-ai init                # Run without installing
+npm install -g secretless-ai          # Install globally
+npm install --save-dev secretless-ai  # Add to project
+```
+
+Requirements: Node.js 18+. Zero runtime dependencies.
+
+## Using with opena2a-cli
+
+[opena2a-cli](https://github.com/opena2a-org/opena2a) unifies all OpenA2A security tools. Secretless powers the credential management commands:
+
+```bash
+npm install -g opena2a-cli
+opena2a review          # Full security dashboard (HTML)
+opena2a secrets init    # Initialize secretless protection
+opena2a secrets verify  # Verify secrets are hidden from AI
+opena2a broker start    # Identity-aware credential brokering
+```
+
+---
+
+## Detailed Reference
 
 ### Secret Management
 
@@ -157,8 +145,6 @@ $ npx secretless-ai secret get STRIPE_KEY    # (run by AI tool)
     npx secretless-ai run -- <command>
 ```
 
-Direct terminal access (human) works normally. The guard detects non-interactive execution (how AI tools run commands) and refuses to output.
-
 #### Import from .env Files
 
 ```bash
@@ -183,9 +169,7 @@ npx secretless-ai setup --check               # CI: fail if required secrets are
 
 ### Custom Rules
 
-Organizations can define their own deny patterns to block company-specific secrets from AI context. Custom rules extend the built-in protections with patterns tailored to your environment.
-
-**Quick start:**
+Organizations can define deny patterns for company-specific secrets. Custom rules extend built-in protections.
 
 ```bash
 npx secretless-ai rules init           # Create a .secretless-rules.yaml template
@@ -207,205 +191,31 @@ bash:
   - "vault read*"
 ```
 
-Each section maps to a deny rule type:
-
 | Section | Blocks |
 |---------|--------|
 | `env` | Environment variable references matching the pattern |
 | `files` | File reads matching the pattern |
 | `bash` | Bash commands matching the pattern |
 
-Patterns use glob syntax (`*` matches any characters).
-
-**Managing rules:**
-
 ```bash
 npx secretless-ai rules list           # Show active rules and deny rule count
-npx secretless-ai rules test "ACME_*"  # Preview generated deny rules for a pattern
-npx secretless-ai rules test "curl*internal.corp.com*" --bash  # Force bash type detection
+npx secretless-ai rules test "ACME_*"  # Preview generated deny rules
+npx secretless-ai init                 # Re-generate protections with custom rules
 ```
-
-After editing `.secretless-rules.yaml`, apply changes:
-
-```bash
-npx secretless-ai init                 # Re-generates protections with custom rules included
-```
-
-The rules file is safe to commit to version control -- it contains patterns, not secrets.
-
-### Secret Storage Backends
-
-Secrets are never in environment variables, shell profiles, or config files — they exist only in the backend and get injected into process memory at runtime.
-
-| Backend | Storage | Sync | Auth | Best For |
-|---------|---------|------|------|----------|
-| `local` | AES-256-GCM encrypted file | None (single machine) | Filesystem | Quick start, simple setups |
-| `keychain` | macOS Keychain / Linux Secret Service | Device-local | OS login | Native OS integration |
-| `1password` | 1Password vault | Cross-device | Biometric (Touch ID) / Service Account | Teams, CI/CD, multi-device |
-| `vault` | HashiCorp Vault KV v2 | Cross-device / cluster | Vault token | Enterprise, self-hosted, team secrets |
-| `gcp-sm` | GCP Secret Manager | Cross-device / cloud | ADC / Service Account | GCP-native, Cloud Run, GKE |
-
-```bash
-npx secretless-ai backend                     # Show available backends
-npx secretless-ai backend set 1password       # Switch to 1Password
-npx secretless-ai backend set keychain        # Switch to OS keychain
-npx secretless-ai backend set gcp-sm          # Switch to GCP Secret Manager
-npx secretless-ai migrate --from local --to 1password  # Migrate existing secrets
-```
-
-#### 1Password Backend
-
-Stores secrets in a dedicated "Secretless" vault using the [`op` CLI](https://developer.1password.com/docs/cli). Secrets never touch disk.
-
-**Setup:**
-
-```bash
-brew install --cask 1password                 # Install 1Password desktop app
-brew install --cask 1password-cli             # Install op CLI
-```
-
-Then enable CLI integration: **1Password > Settings > Developer > "Integrate with 1Password CLI"**. This allows the CLI to authenticate through the desktop app with biometric unlock (Touch ID / Windows Hello).
-
-```bash
-npx secretless-ai backend set 1password       # Switch backend
-```
-
-**Prevent repeated popups:** Run `npx secretless-ai warm --ttl 1h` before starting an AI coding session. This pre-loads all secrets into the encrypted cache so no `op` CLI calls (and no biometric popups) happen during the session. See [Session Management](#session-management).
-
-**CI/CD:** Set `OP_SERVICE_ACCOUNT_TOKEN` — same secrets, no code changes. No desktop app needed.
-
-#### HashiCorp Vault Backend
-
-Stores secrets in a Vault KV v2 engine using the HTTP API. Zero SDK dependency — raw `fetch` calls.
-
-**Setup:**
-
-```bash
-brew install vault                            # Install Vault CLI
-vault server -dev                             # Start dev server (for testing)
-```
-
-```bash
-export VAULT_ADDR=http://127.0.0.1:8200
-export VAULT_TOKEN=<your-token>
-npx secretless-ai backend set vault           # Switch backend
-npx secretless-ai secret set DB_PASSWORD=...  # Stored in Vault KV v2
-```
-
-Supports custom mount paths via backend config. Default mount: `secret`.
-
-#### Backend Inspection
-
-```bash
-npx secretless-ai backend list                # Show all entries grouped by prefix
-npx secretless-ai backend purge               # Dry-run: show what would be deleted
-npx secretless-ai backend purge --yes         # Delete all entries
-npx secretless-ai backend purge --prefix mcp --yes  # Delete only mcp/ entries
-```
-
-### MCP Secret Protection
-
-Every MCP server config has plaintext API keys sitting in JSON files on your laptop. The LLM sees them. Secretless encrypts them.
-
-```bash
-npx secretless-ai protect-mcp
-```
-
-```
-  Secretless MCP Protection
-
-  Scanned 1 client(s)
-
-  + claude-desktop/browserbase
-      BROWSERBASE_API_KEY (encrypted)
-  + claude-desktop/github
-      GITHUB_PERSONAL_ACCESS_TOKEN (encrypted)
-  + claude-desktop/stripe
-      STRIPE_SECRET_KEY (encrypted)
-
-  3 secret(s) encrypted across 3 server(s).
-
-  MCP servers will start normally — no workflow changes needed.
-```
-
-**What happens:**
-
-1. Scans MCP configs across Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf
-2. Identifies which env vars are secrets (key name patterns + value regex matching)
-3. Stores secrets in your configured backend (local, keychain, 1Password, Vault, or GCP Secret Manager)
-4. Rewrites configs to use the `secretless-mcp` wrapper — decrypts at runtime, injects as env vars
-5. Non-secret env vars (URLs, org names, regions) stay in the config untouched
-
-```bash
-npx secretless-ai protect-mcp --backend 1password  # Store MCP secrets in 1Password
-npx secretless-ai mcp-status                       # Show which servers are protected/exposed
-npx secretless-ai mcp-unprotect                    # Restore original configs from backup
-```
-
-### Credential Scope Discovery
-
-Credentials are not static — their effective permissions change when platforms evolve. Secretless detects when a credential's scope expands beyond its baseline, catching privilege escalation before it becomes a breach.
-
-```bash
-npx secretless-ai scope discover MY_CREDENTIAL   # Discover current permissions, save baseline
-npx secretless-ai scope check MY_CREDENTIAL      # Compare to baseline, report drift
-npx secretless-ai scope list                      # Show all baselines
-npx secretless-ai scope reset MY_CREDENTIAL      # Clear baseline
-```
-
-#### Supported Providers
-
-| Provider | Detection | API Used | Permissions Needed |
-|----------|-----------|----------|-------------------|
-| **GCP** | Service account key JSON | `testIamPermissions` (Cloud Resource Manager) | None (self-inspection) |
-| **Vault** | Token prefix (`hvs.`, `s.`) | `capabilities-self` (Sys) | None (self-inspection) |
-| **AWS** | Access key prefix (`AKIA`) | STS `GetCallerIdentity` + IAM policy introspection | None (self-inspection) |
-
-#### Broker Integration
-
-Add `scopeCheck: true` to any broker policy rule. The broker will block credential access if the credential's scope has expanded beyond its baseline.
 
 ### Session Management
 
-If you use 1Password or OS keychain as your backend, every secret access triggers a biometric prompt (Touch ID, 1Password popup). During an AI coding session, these fire repeatedly and interrupt your workflow.
-
-The `warm` command front-loads all authentication into one intentional moment:
+If you use 1Password or OS keychain, every secret access triggers a biometric prompt. The `warm` command front-loads all authentication into one moment:
 
 ```bash
-npx secretless-ai warm               # Authenticate once, pre-load all secrets into cache
-npx secretless-ai warm --ttl 1h      # Set session length (default: 5m, accepts 300, 10m, 1h, 1d)
+npx secretless-ai warm               # Authenticate once, pre-load all secrets
+npx secretless-ai warm --ttl 1h      # Set session length (default: 5m)
 npx secretless-ai warm --no-broker   # Skip auto-starting the broker daemon
 ```
 
-**What happens during warm:**
-
-1. Touch ID authenticates your biometric session (macOS)
-2. All secrets are resolved from your backend (1Password, keychain, vault) and cached in an AES-256-GCM encrypted file at `~/.secretless-ai/store/.secret-cache`
-3. Cache TTL is synced with your session TTL so entries don't expire mid-session
-4. The broker daemon starts if not already running
-
-**After warm, for the entire session:** every `resolve()` call hits the encrypted file cache. Zero `op` CLI calls, zero keychain prompts, zero popups.
-
-```
-$ npx secretless-ai warm --ttl 1h
-
-  Secretless Session
-
-  Warming session...
-  Session is warm.
-
-  TTL:          3600s (1h 0m)
-  Expires at:   2026-03-04T17:30:00.000Z
-  Touch ID:     used
-  Cache:        12 secrets preloaded
-  Broker:       running
-
-  You can now use AI tools without repeated auth prompts.
-```
+After warming, every `resolve()` call hits the encrypted file cache. Zero `op` CLI calls, zero keychain prompts.
 
 #### Auto-Start on Login (macOS)
-
-Install as a macOS LaunchAgent so the broker starts automatically:
 
 ```bash
 npx secretless-ai install            # Install LaunchAgent
@@ -413,9 +223,9 @@ npx secretless-ai install status     # Check installation status
 npx secretless-ai install uninstall  # Remove LaunchAgent
 ```
 
-#### Claude Code Integration
+#### Claude Code Session Gate
 
-Add a session gate to Claude Code so it blocks tool calls when your session has expired:
+Add to `.claude/settings.json` to block tool calls when your session has expired:
 
 ```json
 {
@@ -435,17 +245,9 @@ Add a session gate to Claude Code so it blocks tool calls when your session has 
 }
 ```
 
-When the session is warm, the hook passes silently (exit 0, ~57ms). When expired, it blocks with an actionable message:
-
-```
-Secretless session expired. Run: secretless-ai warm
-```
-
-If secretless has never been set up (no session file exists), the hook passes — it won't block users who haven't opted in.
+When warm, the hook passes silently (~57ms). When expired, it blocks with: `Secretless session expired. Run: secretless-ai warm`
 
 #### Secret Cache
-
-The cache reduces OS authentication prompts for keychain and 1Password backends by storing resolved secrets in an AES-256-GCM encrypted file. The `warm` command pre-populates the cache automatically.
 
 ```bash
 npx secretless-ai cache              # Show cache status
@@ -453,25 +255,34 @@ npx secretless-ai cache ttl 1h       # Set cache TTL (5m, 1h, 1d, off)
 npx secretless-ai cache clear        # Clear cached secrets
 ```
 
+### Credential Scope Discovery
+
+Detect when a credential's permissions expand beyond its baseline -- catching privilege escalation before it becomes a breach.
+
+```bash
+npx secretless-ai scope discover MY_CREDENTIAL   # Discover permissions, save baseline
+npx secretless-ai scope check MY_CREDENTIAL      # Compare to baseline, report drift
+npx secretless-ai scope list                      # Show all baselines
+npx secretless-ai scope reset MY_CREDENTIAL      # Clear baseline
+```
+
+| Provider | Detection | API Used |
+|----------|-----------|----------|
+| GCP | Service account key JSON | `testIamPermissions` |
+| Vault | Token prefix (`hvs.`, `s.`) | `capabilities-self` |
+| AWS | Access key prefix (`AKIA`) | STS `GetCallerIdentity` + IAM introspection |
+
 ### Identity-Aware Credential Broker
 
-The broker is a daemon that provides identity-aware credential brokering for AI agents. Instead of giving agents direct access to secrets, the broker requires agents to authenticate (via AIM identity tokens) before credentials are injected into their process environment.
+The broker provides identity-aware credential brokering for AI agents. Agents authenticate via AIM identity tokens before credentials are injected.
 
 ```bash
 npx secretless-ai broker start       # Start the credential broker daemon
 npx secretless-ai broker stop        # Stop the broker daemon
-npx secretless-ai broker status      # Show broker status, uptime, and request count
+npx secretless-ai broker status      # Show broker status and request count
 ```
 
-**Broker start flags:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--aim-url URL` | None | AIM server URL for agent identity verification |
-| `--port N` | Auto | Port for the broker daemon |
-| `--policy-file PATH` | `~/.secretless-ai/broker-policies.json` | Path to policy rules file |
-
-**Policy example** — define rules in `~/.secretless-ai/broker-policies.json`:
+**Policy example** (`~/.secretless-ai/broker-policies.json`):
 
 ```json
 {
@@ -491,37 +302,25 @@ npx secretless-ai broker status      # Show broker status, uptime, and request c
       "id": "deny-all-production-keys",
       "agentSelector": "*",
       "credentialSelector": "PROD_*",
-      "effect": "deny",
-      "constraints": {}
+      "effect": "deny"
     }
   ]
 }
 ```
 
-The policy engine is default-deny: deny rules are evaluated first, then allow rules. All constraints must pass for an allow rule to grant access. Supported constraints include `minTrustScore` (AIM trust score), `rateLimit`, `timeWindow`, `requireCapability`, and `scopeCheck` (blocks access if a credential's scope has expanded beyond its baseline).
+Default-deny policy engine. Supported constraints: `minTrustScore`, `rateLimit`, `timeWindow`, `requireCapability`, `scopeCheck`.
 
-**Request flow:**
+### Data Loss Prevention
 
-1. `broker start` — starts the broker daemon on a local socket
-2. An agent requests a credential (e.g., `GITHUB_TOKEN`)
-3. The broker verifies the agent's AIM identity token
-4. The policy engine evaluates the request against loaded rules
-5. If allowed, the broker resolves the secret from the configured backend and returns it
-6. If denied, the broker returns an error and logs the attempt to the audit log
-
-### Data Loss Prevention (DLP)
-
-DLP commands scan AI tool transcripts (conversation logs, shell history, tool output) for accidentally leaked credentials. If an API key, token, or connection string appears in a transcript, DLP flags it so you can rotate the exposed credential.
+Scan AI tool transcripts for accidentally leaked credentials:
 
 ```bash
-npx secretless-ai scan --history         # Scan shell history for credentials
+npx secretless-ai scan --history         # Scan shell history
 npx secretless-ai clean-history          # Redact credentials in shell history
 npx secretless-ai clean-history --dry-run  # Preview without modifying
 ```
 
 ### Git Protection
-
-Prevent secrets from being committed:
 
 ```bash
 npx secretless-ai hook install       # Install pre-commit secret scanner
@@ -529,61 +328,38 @@ npx secretless-ai hook status        # Check hook installation status
 npx secretless-ai hook uninstall     # Remove pre-commit hook
 ```
 
-### Moving Keys from AI Context to Env Vars
+### Backend Configuration
 
-The safest setup: keys live in environment variables, AI tools reference them by name.
+#### 1Password
 
-**Step 1: Move keys to the correct shell profile**
-
-Non-interactive subprocesses (Claude Code's Bash tool, CI/CD, Docker) don't source interactive-only profiles. Use the right file for your platform:
-
-| Platform | Shell | Correct File | Why |
-|----------|-------|-------------|-----|
-| macOS | zsh | `~/.zshenv` | Sourced by ALL shells (interactive + non-interactive) |
-| Linux | bash | `~/.bashrc` | Sourced by interactive bash; most tools source it explicitly |
-| Windows | — | System Environment Variables | Use `setx` or Settings > System > Environment Variables |
-
-**Step 2: Run secretless init**
+Stores secrets in a dedicated "Secretless" vault using the [`op` CLI](https://developer.1password.com/docs/cli).
 
 ```bash
-npx secretless-ai init
+brew install --cask 1password 1password-cli
+# Enable: 1Password > Settings > Developer > "Integrate with 1Password CLI"
+npx secretless-ai backend set 1password
 ```
 
-**Step 3: Verify**
+**CI/CD:** Set `OP_SERVICE_ACCOUNT_TOKEN` -- same secrets, no desktop app needed.
+
+#### HashiCorp Vault
 
 ```bash
-npx secretless-ai verify
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=<your-token>
+npx secretless-ai backend set vault
 ```
 
+#### Backend Inspection
+
+```bash
+npx secretless-ai backend list                # Show all entries grouped by prefix
+npx secretless-ai backend purge               # Dry-run: show what would be deleted
+npx secretless-ai backend purge --yes         # Delete all entries
+npx secretless-ai backend purge --prefix mcp --yes  # Delete only mcp/ entries
 ```
-  Env vars available (usable by tools):
-    + ANTHROPIC_API_KEY
-    + OPENAI_API_KEY
 
-  AI context files: clean (no credentials found)
-
-  PASS: Secrets are accessible via env vars but hidden from AI context.
-```
-
-## What Gets Blocked
-
-### File patterns (21)
-
-`.env`, `.env.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.crt`, `.aws/credentials`, `.ssh/*`, `.docker/config.json`, `.git-credentials`, `.npmrc`, `.pypirc`, `*.tfstate`, `*.tfvars`, `secrets/`, `credentials/`
-
-### Credential patterns (49)
-
-Anthropic API keys, OpenAI keys, AWS access keys, GitHub PATs, Slack tokens, Google API keys, Stripe keys, SendGrid keys, Supabase keys, Azure keys, GitLab tokens, Twilio keys, Mailgun keys, MongoDB URIs, JWTs, and more
-
-### Bash commands
-
-Commands that dump secret files (`cat .env`, `head *.key`) and commands that echo secret environment variables (`echo $API_KEY`, `echo $SECRET`)
-
-## Claude Code Hook
-
-For Claude Code, Secretless installs a PreToolUse hook that intercepts every `Read`, `Grep`, `Glob`, `Bash`, `Write`, and `Edit` tool call. The hook runs *before* the tool executes, so secrets never enter the AI context window.
-
-## CI/CD Integration
+### CI/CD Integration
 
 All commands support `--json` and `--ci` flags.
 
@@ -602,119 +378,88 @@ jobs:
       - run: npx secretless-ai setup --check
 ```
 
-## All Commands
+### What Gets Blocked
+
+**File patterns (21):** `.env`, `.env.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.crt`, `.aws/credentials`, `.ssh/*`, `.docker/config.json`, `.git-credentials`, `.npmrc`, `.pypirc`, `*.tfstate`, `*.tfvars`, `secrets/`, `credentials/`
+
+**Credential patterns (49):** Anthropic, OpenAI, AWS, GitHub, Slack, Google, Stripe, SendGrid, Supabase, Azure, GitLab, Twilio, Mailgun, MongoDB, JWTs, and more
+
+**Bash commands:** Commands that dump secret files (`cat .env`, `head *.key`) and commands that echo secret environment variables (`echo $API_KEY`)
+
+### Security Architecture
+
+| Layer | Algorithm | Purpose |
+|-------|-----------|---------|
+| Secret encryption | AES-256-GCM | Encrypt secrets at rest |
+| Key derivation | scrypt (N=16384, r=8, p=1) | Derive keys from machine identity + random salt |
+| Session integrity | HMAC-SHA256 | Tamper detection on session state |
+| Broker auth | crypto.randomBytes(32) | Bearer token for credential broker |
+| Cloud signing | HMAC-SHA256 / RS256 | Authenticate to cloud secret managers |
+
+All encryption uses Node.js built-in `crypto` module. No external crypto dependencies. Key material zeroed after use. File permissions 0o600/0o700.
+
+### All Commands
 
 | Command | Description |
 |---------|-------------|
 | **Core** | |
 | `init` | Set up protections for your AI tools |
 | `scan` | Scan for hardcoded secrets (49 patterns) |
-| `status` | Show protection status (session, broker, transcripts) |
+| `status` | Show protection status |
 | `verify` | Verify keys are usable but hidden from AI |
 | `doctor [--fix]` | Diagnose and auto-fix shell profile issues |
 | `clean [--dry-run] [--path P]` | Scan and redact credentials in transcripts |
-| `watch start` | Start real-time transcript monitoring |
-| `watch stop` | Stop the transcript watcher |
-| `watch status` | Show watcher status |
-| `watch install` | Install watcher as a system daemon |
-| `watch uninstall` | Remove watcher daemon |
-| `scan-history` | Scan shell history and transcripts for leaked credentials |
-| **Session Management** | |
-| `warm` | Warm biometric session and pre-load secrets into cache |
-| `warm --ttl 10m` | Set session TTL (accepts seconds, 5m, 1h, 1d) |
-| `warm --no-broker` | Skip auto-starting the broker daemon |
-| `install` | Install broker as macOS login daemon (LaunchAgent) |
-| `install uninstall` | Remove LaunchAgent |
-| `install status` | Check daemon installation status |
-| `hook --check-only` | Session gate for Claude Code PreToolUse hooks |
-| **Secret Management** | |
-| `secret set <NAME[=VALUE]>` | Store a secret |
-| `secret list` | List stored secret names |
-| `secret get <NAME>` | Retrieve a secret value (blocked in non-interactive contexts) |
-| `secret rm <NAME>` | Remove a secret |
-| `run [--only K1,K2] -- <cmd>` | Run command with secrets injected as env vars |
-| `import <file>` | Import secrets from .env file |
-| `import --detect` | Auto-find and import .env files |
-| **Project Setup** | |
-| `setup` | Interactive setup from `.secretless` manifest |
-| `setup --check` | CI: fail if required secrets are missing |
-| **Git Protection** | |
-| `hook install` | Install pre-commit secret scanner |
-| `hook uninstall` | Remove pre-commit hook |
-| `hook status` | Check hook installation status |
-| **Shell History** | |
-| `scan --history` | Scan shell history for credentials |
-| `clean-history` | Redact credentials in shell history |
-| `clean-history --dry-run` | Preview redaction without modifying |
-| **MCP Protection** | |
+| `watch start\|stop\|status\|install\|uninstall` | Real-time transcript monitoring |
+| `scan-history` | Scan shell history for leaked credentials |
+| **Session** | |
+| `warm [--ttl T] [--no-broker]` | Warm biometric session, pre-load secrets |
+| `install [status\|uninstall]` | macOS LaunchAgent management |
+| `hook --check-only` | Session gate for Claude Code hooks |
+| **Secrets** | |
+| `secret set\|list\|get\|rm` | Manage stored secrets |
+| `run [--only K1,K2] -- <cmd>` | Run command with secrets injected |
+| `import <file>\|--detect` | Import from .env files |
+| `setup [--check]` | Interactive setup from `.secretless` manifest |
+| **MCP** | |
 | `protect-mcp [--backend TYPE]` | Encrypt MCP server secrets |
 | `mcp-status` | Show MCP protection status |
 | `mcp-unprotect` | Restore original MCP configs |
-| **Backend Management** | |
-| `backend` | Show current backend status |
-| `backend set <TYPE>` | Set backend (local, keychain, 1password, vault, gcp-sm) |
-| `backend list` | List all stored entries |
-| `backend purge [--prefix] [--yes]` | Delete entries from backend |
+| **Backend** | |
+| `backend [set\|list\|purge]` | Manage storage backends |
 | `migrate --from TYPE --to TYPE` | Migrate secrets between backends |
-| **Scope Discovery** | |
-| `scope discover <NAME>` | Discover credential permissions and save baseline |
-| `scope check <NAME>` | Compare current permissions to baseline |
-| `scope list` | Show all scope baselines |
-| `scope reset <NAME>` | Clear a scope baseline |
-| **Shell Integration** | |
-| `env [--only K1,K2]` | Output export statements for stored secrets (use with `eval`) |
-| `scan-staged` | Scan git staged files for secrets (used by pre-commit hook) |
-| **Cache Management** | |
-| `cache` | Show cache status (backend, TTL, entries) |
-| `cache clear` | Clear the encrypted secret cache |
-| `cache ttl [DURATION]` | Show or set cache TTL (e.g., `5m`, `1h`, `off`) |
-| **Credential Broker** | |
-| `broker start [--aim-url URL] [--port N] [--policy-file PATH]` | Start the credential broker daemon |
-| `broker stop` | Stop the broker daemon |
-| `broker status` | Show broker status, uptime, and request count |
-| **Custom Rules** | |
-| `rules init` | Create a `.secretless-rules.yaml` template |
-| `rules list` | Show active custom rules and deny rule count |
-| `rules test "PATTERN" [--bash]` | Preview generated deny rules for a pattern |
-
-## Security Architecture
-
-| Layer | Algorithm | Purpose |
-|-------|-----------|---------|
-| Secret encryption | AES-256-GCM | Encrypt secrets at rest (local store, cache, MCP backups) |
-| Key derivation | scrypt (N=16384, r=8, p=1) | Derive encryption keys from machine identity + random salt |
-| Session integrity | HMAC-SHA256 | Tamper detection on session state files |
-| Broker auth | crypto.randomBytes(32) | Bearer token for localhost credential broker |
-| Cloud signing | HMAC-SHA256 (AWS SigV4), RS256 (GCP JWT) | Authenticate to cloud secret managers |
-
-**Design principles:**
-- All encryption uses symmetric cryptography only (no RSA/ECDSA in core)
-- Encryption keys derived via scrypt with 16-byte random salts (not password-derived)
-- Constant-time comparison (`timingSafeEqual`) for all token and HMAC verification
-- Crypto agility: encryption isolated behind backend interfaces for algorithm portability
-- Key material zeroed after use (`Buffer.fill(0)`)
-- Restrictive file permissions (0o600 files, 0o700 directories)
-- No external crypto dependencies -- Node.js built-in `crypto` module only
+| **Scope** | |
+| `scope discover\|check\|list\|reset` | Credential scope discovery |
+| **Broker** | |
+| `broker start\|stop\|status` | Identity-aware credential broker |
+| **Rules** | |
+| `rules init\|list\|test` | Custom deny rules |
+| **Git** | |
+| `hook install\|uninstall\|status` | Pre-commit secret scanner |
+| **Cache** | |
+| `cache [clear\|ttl]` | Secret cache management |
+| **Shell** | |
+| `env [--only K1,K2]` | Output export statements for secrets |
+| `scan-staged` | Scan git staged files |
+| `clean-history [--dry-run]` | Redact credentials in shell history |
 
 ## Development
 
 ```bash
 npm run build      # Compile TypeScript to dist/
 npm test           # Run tests (vitest, 791 tests)
-npm run dev        # Watch mode — recompile on file changes
-npm run clean      # Remove dist/ directory
+npm run dev        # Watch mode
+npm run clean      # Remove dist/
 ```
 
 ## OpenA2A Ecosystem
 
 | Project | Description | Install |
 |---------|-------------|---------|
-| [**OpenA2A CLI**](https://github.com/opena2a-org/opena2a) | Unified security CLI -- orchestrates all OpenA2A tools | `npx opena2a` |
-| [**HackMyAgent**](https://github.com/opena2a-org/hackmyagent) | Security scanner and red-team toolkit -- checks, attack mode, benchmarks, runtime protection | `npx hackmyagent secure` |
-| [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent Identity Management -- identity, access control, and trust scoring for AI agents | Self-hosted |
-| [**AI Browser Guard**](https://github.com/opena2a-org/AI-BrowserGuard) | Browser agent detection and control -- 4-layer detection, delegation engine | Chrome Web Store |
-| [**DVAA**](https://github.com/opena2a-org/damn-vulnerable-ai-agent) | Damn Vulnerable AI Agent -- security training target | `docker pull opena2a/dvaa` |
-| **Registry** | Trust registry -- agent discovery, trust scores, supply chain verification | Coming soon |
+| [**OpenA2A CLI**](https://github.com/opena2a-org/opena2a) | Unified security CLI | `npx opena2a` |
+| [**HackMyAgent**](https://github.com/opena2a-org/hackmyagent) | Security scanner and red-team toolkit | `npx hackmyagent secure` |
+| [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent identity, access control, trust scoring | Self-hosted |
+| [**AI Browser Guard**](https://github.com/opena2a-org/AI-BrowserGuard) | Browser agent detection and control | Chrome Web Store |
+| [**DVAA**](https://github.com/opena2a-org/damn-vulnerable-ai-agent) | Security training target | `docker pull opena2a/dvaa` |
 
 ## License
 
