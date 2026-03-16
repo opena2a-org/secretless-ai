@@ -21,6 +21,12 @@ npx secretless-ai init
   Done.      Secrets are now invisible to AI tools.
 ```
 
+For a full security dashboard covering credentials, shadow AI, config integrity, and more:
+
+```bash
+npx opena2a-cli review
+```
+
 ## MCP Server Protection
 
 Every MCP server config has plaintext API keys in JSON files on your machine. The LLM sees them. Secretless encrypts them.
