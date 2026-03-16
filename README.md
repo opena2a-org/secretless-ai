@@ -64,6 +64,15 @@ npx secretless-ai mcp-unprotect                    # Restore original configs fr
 3. **Blocks** AI tools from reading credential files (21 file patterns)
 4. **Brokers** access through environment variables -- secrets never enter AI context
 
+## Use Cases
+
+Step-by-step guides for common workflows: [docs/USE-CASES.md](docs/USE-CASES.md)
+
+- [Protect My Credentials](docs/use-cases/protect-my-credentials.md) -- Keep API keys out of AI tools (2 min)
+- [Secure MCP Configs](docs/use-cases/secure-mcp-configs.md) -- Encrypt MCP server credentials (3 min)
+- [Team Setup](docs/use-cases/team-setup.md) -- Shared backend, CI/CD, onboarding (5 min)
+- [Migrate from .env](docs/use-cases/migrate-from-dotenv.md) -- Move .env files to encrypted storage (3 min)
+
 ## Supported Tools
 
 | Tool | Protection Method |
