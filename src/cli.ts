@@ -87,9 +87,11 @@ function main(): void {
       break;
     }
     case 'verify': {
-      const dirArg = args[1];
+      const showAll = args.includes('--all');
+      const positional = args.slice(1).filter(a => a !== '--all');
+      const dirArg = positional[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      runVerify(projectDir);
+      runVerify(projectDir, showAll);
       break;
     }
     case 'doctor':
@@ -347,7 +349,7 @@ function runStatus(projectDir: string): void {
   console.log();
 }
 
-function runVerify(projectDir: string): void {
+function runVerify(projectDir: string, showAll = false): void {
   console.log('\n  Secretless Verify\n');
 
   const result = verify(projectDir);
@@ -363,11 +365,13 @@ function runVerify(projectDir: string): void {
     }
   }
 
-  if (unsetVars.length > 0) {
+  if (showAll && unsetVars.length > 0) {
     console.log('  Env vars not set:');
     for (const [name] of unsetVars) {
       console.log(`    - ${name}`);
     }
+  } else if (unsetVars.length > 0) {
+    console.log(`  ${unsetVars.length} known env vars not set (use --all to list)`);
   }
   console.log();
 
@@ -382,11 +386,22 @@ function runVerify(projectDir: string): void {
     console.log('  AI context files: clean (no credentials found)\n');
   }
 
-  // Show transcript exposure
+  // Show transcript exposure (collapsed by pattern name)
   if (result.exposedInTranscripts.length > 0) {
     console.log('  EXPOSED in transcripts (credentials in conversation history):');
+    // Group by pattern name and count files
+    const grouped = new Map<string, number>();
     for (const exp of result.exposedInTranscripts) {
-      console.log(`    ! ${exp.patternName} in ${exp.file}:${exp.line}`);
+      grouped.set(exp.patternName, (grouped.get(exp.patternName) ?? 0) + 1);
+    }
+    for (const [patternName, count] of grouped) {
+      if (count === 1) {
+        // Show the single file path
+        const single = result.exposedInTranscripts.find(e => e.patternName === patternName)!;
+        console.log(`    ! ${patternName} in ${single.file}:${single.line}`);
+      } else {
+        console.log(`    ! ${patternName} found in ${count} transcript files`);
+      }
     }
     console.log('  Run `npx secretless-ai clean` to redact.\n');
   }
@@ -2207,11 +2222,16 @@ function printHelp(): void {
   Secretless v${VERSION}
   Keep secrets out of AI context.
 
+  Quick start:
+    npx secretless-ai scan       Find hardcoded credentials
+    npx secretless-ai init       Set up AI tool protections
+    npx secretless-ai verify     Confirm secrets are hidden from AI
+
   Usage:
     npx secretless-ai init      Set up protections for your AI tools
     npx secretless-ai scan      Scan for hardcoded secrets
     npx secretless-ai status    Show protection status
-    npx secretless-ai verify    Verify keys are usable but hidden from AI
+    npx secretless-ai verify    Verify keys are usable but hidden from AI (--all for full list)
     npx secretless-ai doctor    Diagnose shell profile issues (--fix to auto-fix)
     npx secretless-ai clean     Scan and redact credentials in transcripts
     npx secretless-ai watch     Monitor transcripts in real-time
