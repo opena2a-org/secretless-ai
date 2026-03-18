@@ -274,6 +274,8 @@ function runScan(projectDir: string): void {
   }
 
   console.log(`  Found ${findings.length} credential(s):\n`);
+  console.log('  AI coding tools (Claude Code, Cursor, Copilot) can read .env files in their');
+  console.log('  context window, exposing credentials to the LLM provider.\n');
   for (const finding of findings) {
     const severity = finding.severity === 'critical' ? 'CRIT' : 'HIGH';
     console.log(`  [${severity}] ${finding.patternName}`);
@@ -282,7 +284,8 @@ function runScan(projectDir: string): void {
     console.log();
   }
 
-  console.log(`  Run \`npx secretless-ai init\` to add protections.\n`);
+  console.log(`  Run \`npx secretless-ai init\` to add protections.`);
+  console.log('  For a full security scan (147+ checks): npx hackmyagent secure\n');
   process.exit(findings.length > 0 ? 1 : 0);
 }
 
