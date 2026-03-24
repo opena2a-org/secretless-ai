@@ -20,6 +20,8 @@ npx secretless-ai init
   Done.      Secrets are now invisible to AI tools.
 ```
 
+![Secretless AI Demo](docs/secretless-ai-demo.gif)
+
 For a full security dashboard covering credentials, shadow AI, config integrity, and more:
 
 ```bash
@@ -99,10 +101,6 @@ Claude Code gets the strongest protection because it supports [hooks](https://do
 npx secretless-ai backend set 1password              # Switch backend
 npx secretless-ai migrate --from local --to 1password # Migrate existing secrets
 ```
-
-![Secretless AI Demo](docs/secretless-ai-demo.gif)
-
-[All demos](https://opena2a.org/demos)
 
 ## Using with opena2a-cli
 
