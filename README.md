@@ -100,15 +100,9 @@ npx secretless-ai backend set 1password              # Switch backend
 npx secretless-ai migrate --from local --to 1password # Migrate existing secrets
 ```
 
-<details>
-<summary>See it in action</summary>
+![Secretless AI Demo](docs/secretless-ai-demo.gif)
 
-![Secretless Scan](docs/images/init-demo.png)
-*Credential scan — finds and redacts API keys, connection strings, access tokens*
-
-</details>
-
-[All demos with terminal recordings](https://opena2a.org/demos) (select Secretless AI tab)
+[All demos](https://opena2a.org/demos)
 
 ## Using with opena2a-cli
 
