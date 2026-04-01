@@ -99,8 +99,18 @@ export function runRules(args: string[]): void {
         : flags.includes('--bash') ? 'bash'
         : null;
 
+      const BASH_COMMAND_PREFIXES = [
+        'curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync',
+        'vault', 'aws', 'gcloud', 'az', 'kubectl',
+        'docker', 'npm', 'pip', 'gem', 'cargo',
+        'git', 'gh', 'openssl', 'gpg', 'mysql', 'psql',
+        'redis-cli', 'mongosh', 'mongo',
+      ];
+
       const patternType = explicitType
-        ?? (/^[A-Z_*]+$/.test(pattern) ? 'env' : 'file');
+        ?? (/^[A-Z_*]+$/.test(pattern) ? 'env'
+          : BASH_COMMAND_PREFIXES.some(cmd => pattern.startsWith(cmd)) ? 'bash'
+          : 'file');
 
       if (patternType === 'env') {
         console.log('  Type: environment variable pattern');

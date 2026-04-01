@@ -28,6 +28,11 @@ describe('runSetup', () => {
     expect(result.set).toBe(0);
   });
 
+  it('check mode fails when no manifest exists', async () => {
+    const result = await runSetup(tmpDir, { backend, check: true });
+    expect(result.complete).toBe(false);
+  });
+
   it('check mode returns complete when all secrets satisfied', async () => {
     fs.writeFileSync(path.join(tmpDir, '.secretless'), 'API_KEY\n');
     const store = new SecretStore({ backend });

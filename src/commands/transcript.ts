@@ -61,7 +61,7 @@ export function runClean(args: string[]): void {
 }
 
 export function runWatch(args: string[]): void {
-  const action = args[0] || 'start';
+  const action = args[0];
 
   switch (action) {
     case 'start':

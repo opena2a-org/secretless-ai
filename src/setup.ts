@@ -46,6 +46,10 @@ export async function runSetup(
     process.stderr.write('  Create a .secretless file with one secret name per line:\n');
     process.stderr.write('    ANTHROPIC_API_KEY\n');
     process.stderr.write('    DATABASE_URL\n');
+    // In check mode, missing manifest is a failure (nothing to verify against)
+    if (options?.check) {
+      return { set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: false };
+    }
     return { set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: true };
   }
 
