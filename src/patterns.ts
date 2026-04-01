@@ -106,6 +106,29 @@ export const CREDENTIAL_PREFIX_QUICK_CHECK = new RegExp(
   .join('|')
 );
 
+/**
+ * Known example/placeholder credentials used in documentation and tutorials.
+ * These are NOT real secrets and should be excluded from scan results.
+ */
+export const KNOWN_EXAMPLE_KEYS = new Set([
+  // AWS (official docs)
+  'AKIAIOSFODNN7EXAMPLE',
+  'AKIAI44QH8DHBEXAMPLE',
+  // OpenAI (from docs)
+  'sk-proj-abc123',
+]);
+
+/**
+ * Substrings that indicate a credential is a placeholder, not a real secret.
+ * Case-insensitive check against the matched credential value.
+ */
+export const PLACEHOLDER_INDICATORS = [
+  'example', 'placeholder', 'your_', 'your-', 'insert_', 'insert-',
+  'xxx', 'XXXX', 'test_key', 'test_secret', 'fake_', 'fake-',
+  'dummy', 'sample', 'replace_me', 'change_me', 'todo', '<your',
+  'not-a-real', 'not_a_real', 'just-for-testing', 'supabase-demo',
+];
+
 /** File patterns that should never be read by AI tools */
 export const SECRET_FILE_PATTERNS: string[] = [
   '.env',

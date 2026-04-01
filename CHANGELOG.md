@@ -9,6 +9,20 @@ npm install -g secretless-ai
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-04-01
+
+### Added
+- **False positive reduction**: Known example keys (AWS `AKIAIOSFODNN7EXAMPLE`, Stripe test keys, etc.) and placeholder patterns (`your_`, `example`, `fake_`) are now excluded from scan results
+- **Scan fix guidance**: Each finding includes actionable fix text with rotation URLs (e.g., "Move to env var ANTHROPIC_API_KEY. Rotate at console.anthropic.com")
+
+### Changed
+- Split `commands/secrets.ts` (409 lines) into `secrets.ts` (234) + `env-run.ts` (177)
+- TypeScript upgraded to 6.0.2, vitest to 4.1.2
+- tsconfig: `module` and `moduleResolution` set to `Node16`
+
+### Fixed
+- All 5 npm audit vulnerabilities resolved (esbuild/vite chain via vitest 4.x)
+
 ## [0.12.7] - 2026-04-01
 
 ### Added
