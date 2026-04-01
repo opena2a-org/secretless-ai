@@ -12,7 +12,7 @@ export function printHelp(): void {
 
   Usage:
     npx secretless-ai init      Set up protections for your AI tools
-    npx secretless-ai scan      Scan for hardcoded secrets
+    npx secretless-ai scan      Scan config and source files for hardcoded secrets
     npx secretless-ai status    Show protection status
     npx secretless-ai verify    Verify keys are usable but hidden from AI (--all for full list)
     npx secretless-ai doctor    Diagnose shell profile issues (--fix to auto-fix)
@@ -102,6 +102,9 @@ export function printHelp(): void {
     status        Check if watcher is running
     install       Install as macOS LaunchAgent (auto-start on login)
     uninstall     Remove LaunchAgent
+
+  Scan options:
+    --include-tests  Include test files in source code scan
 
   Options:
     -v, --version    Show version
