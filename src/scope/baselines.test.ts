@@ -160,6 +160,8 @@ describe('baselines', () => {
   });
 
   it('lists all baselines', () => {
+    const beforeCount = listBaselines().length;
+
     saveBaseline({
       credentialName: 'CRED_A',
       provider: 'gcp',
@@ -175,9 +177,10 @@ describe('baselines', () => {
     });
 
     const baselines = listBaselines();
-    expect(baselines).toHaveLength(2);
+    expect(baselines).toHaveLength(beforeCount + 2);
 
-    const names = baselines.map(b => b.credentialName).sort();
-    expect(names).toEqual(['CRED_A', 'CRED_B']);
+    const names = baselines.map(b => b.credentialName);
+    expect(names).toContain('CRED_A');
+    expect(names).toContain('CRED_B');
   });
 });

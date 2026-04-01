@@ -9,7 +9,24 @@ npm install -g secretless-ai
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.12.7] - 2026-04-01
+
+### Added
+- Source code scanning: `scan` now detects hardcoded credentials in `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and 10+ more file types by walking the project tree
+- Test files (`.test.*`, `.spec.*`, `__tests__/`) are excluded by default -- use `--include-tests` to opt in
+- `rules test` auto-detects bash command patterns when starting with known commands (`curl`, `wget`, `ssh`, `aws`, `docker`, etc.)
+
+### Changed
+- Split `cli.ts` (2336 lines) into 12 focused modules under `src/commands/` for maintainability
+- `watch` with no subcommand now shows usage help instead of silently starting
+- `setup --check` with no `.secretless` manifest now returns failure instead of misleading PASS
+
+### Updated
+- typescript: ^5.3.0 -> ^5.9.3
+- vitest: ^1.2.0 -> ^2.1.9
+- @types/node: ^25.2.3 -> ^25.5.0
+
+## [0.12.5] - 2026-03-18
 
 ### Changed
 - `verify` hides unset env vars by default — shows count with `--all` flag to list them

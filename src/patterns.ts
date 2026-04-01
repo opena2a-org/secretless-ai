@@ -154,3 +154,31 @@ export const CONFIG_FILES = [
   // Kubernetes
   'kubeconfig.yaml', '.kube/config',
 ];
+
+/** Source file extensions to scan for hardcoded credentials */
+export const SOURCE_FILE_EXTENSIONS = new Set([
+  '.js', '.jsx', '.mjs', '.cjs',
+  '.ts', '.tsx', '.mts', '.cts',
+  '.py',
+  '.go',
+  '.java',
+  '.rb',
+  '.rs',
+  '.cs',
+  '.php',
+  '.swift',
+  '.kt', '.kts',
+  '.scala',
+  '.sh', '.bash', '.zsh',
+]);
+
+/** Directories to skip when walking source files */
+export const SOURCE_SKIP_DIRS = new Set([
+  'node_modules', '.git', '.svn', '.hg',
+  'vendor', 'dist', 'build', 'out', '.next',
+  '__pycache__', '.venv', 'venv', 'env',
+  '.tox', '.mypy_cache', '.pytest_cache',
+  'target', 'bin', 'obj',
+  '.gradle', '.maven',
+  'coverage', '.nyc_output',
+]);

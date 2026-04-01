@@ -3,7 +3,7 @@
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-792-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-802-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
 
@@ -60,7 +60,7 @@ npx secretless-ai mcp-unprotect                    # Restore original configs fr
 
 ## How It Works
 
-1. **Scans** your project for hardcoded credentials (49 patterns)
+1. **Scans** your project for hardcoded credentials in config files *and* source code (49 patterns across .js, .ts, .py, .go, .java, .rb, and more)
 2. **Migrates** them to secure storage (OS keychain, 1Password, Vault, GCP Secret Manager)
 3. **Blocks** AI tools from reading credential files (21 file patterns)
 4. **Brokers** access through environment variables -- secrets never enter AI context
@@ -115,7 +115,7 @@ opena2a secrets init    # Initialize secretless protection
 ## Development
 
 ```bash
-npm run build && npm test    # 792 tests
+npm run build && npm test    # 802 tests
 ```
 
 ## License
