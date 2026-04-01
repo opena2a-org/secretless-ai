@@ -37,10 +37,11 @@ function main(): void {
         break;
       }
       const includeTests = args.includes('--include-tests');
+      const explain = args.includes('--explain');
       const positionalArgs = args.slice(1).filter(a => !a.startsWith('--'));
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      runScan(projectDir, { includeTests });
+      runScan(projectDir, { includeTests, explain });
       break;
     }
     case 'status': {

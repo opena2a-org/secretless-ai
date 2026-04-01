@@ -3,7 +3,7 @@
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-804-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-809-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
 
@@ -102,6 +102,19 @@ npx secretless-ai backend set 1password              # Switch backend
 npx secretless-ai migrate --from local --to 1password # Migrate existing secrets
 ```
 
+## NanoMind Integration
+
+Optional integration with [NanoMind](https://github.com/opena2a-org/nanomind) for enhanced security analysis:
+
+```bash
+npm install @nanomind/guard @nanomind/engine  # Optional
+```
+
+- **MCP injection screening**: `protect-mcp` screens env var values for prompt injection patterns and warns when suspicious content is detected
+- **Rich scan explanations**: `scan --explain` generates context-aware security explanations for each finding using NanoMind's local inference engine
+
+Both features gracefully degrade when NanoMind packages are not installed.
+
 ## Using with opena2a-cli
 
 [opena2a-cli](https://github.com/opena2a-org/opena2a) unifies all OpenA2A security tools:
@@ -115,7 +128,7 @@ opena2a secrets init    # Initialize secretless protection
 ## Development
 
 ```bash
-npm run build && npm test    # 804 tests
+npm run build && npm test    # 809 tests
 ```
 
 ## License

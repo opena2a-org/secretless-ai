@@ -10,6 +10,7 @@ import { getDaemonStatus } from '../broker/daemon';
 import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
 import { VERSION, formatUptime, formatRemainingTime } from './utils';
+import { explainFinding, isEngineAvailable } from '../nanomind';
 
 export function runInit(projectDir: string): void {
   console.log('\n  Secretless v' + VERSION);
@@ -87,7 +88,7 @@ export function runInit(projectDir: string): void {
   }
 }
 
-export function runScan(projectDir: string, options?: { includeTests?: boolean }): void {
+export function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean }): void {
   console.log('\n  Secretless Scanner\n');
 
   const nodeFs = require('fs') as typeof import('fs');
@@ -105,6 +106,17 @@ export function runScan(projectDir: string, options?: { includeTests?: boolean }
     return;
   }
 
+  // If --explain requested, use NanoMind engine for rich context
+  if (options?.explain) {
+    runScanWithExplanations(findings).then((code) => process.exit(code));
+    return;
+  }
+
+  printFindings(findings);
+  process.exit(findings.length > 0 ? 1 : 0);
+}
+
+function printFindings(findings: ReturnType<typeof scan>): void {
   console.log(`  Found ${findings.length} credential(s):\n`);
   console.log('  AI coding tools (Claude Code, Cursor, Copilot) can read .env files in their');
   console.log('  context window, exposing credentials to the LLM provider.\n');
@@ -121,7 +133,41 @@ export function runScan(projectDir: string, options?: { includeTests?: boolean }
 
   console.log(`  Run \`npx secretless-ai init\` to add protections.`);
   console.log('  For a full security scan (147+ checks): npx hackmyagent secure\n');
-  process.exit(findings.length > 0 ? 1 : 0);
+}
+
+async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promise<number> {
+  const engineReady = await isEngineAvailable();
+
+  if (!engineReady) {
+    console.log('  NanoMind engine not available. Install @nanomind/engine for rich explanations.');
+    console.log('  Falling back to standard output.\n');
+    printFindings(findings);
+    return findings.length > 0 ? 1 : 0;
+  }
+
+  console.log(`  Found ${findings.length} credential(s):\n`);
+  console.log('  AI coding tools (Claude Code, Cursor, Copilot) can read .env files in their');
+  console.log('  context window, exposing credentials to the LLM provider.\n');
+
+  for (const finding of findings) {
+    const severity = finding.severity === 'critical' ? 'CRIT' : 'HIGH';
+    console.log(`  [${severity}] ${finding.patternName}`);
+    console.log(`         ${finding.file}:${finding.line}`);
+    console.log(`         ${finding.preview}`);
+
+    // Try NanoMind explanation, fall back to static fix
+    const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
+    if (explanation) {
+      console.log(`         ${explanation}`);
+    } else if (finding.fix) {
+      console.log(`         Fix: ${finding.fix}`);
+    }
+    console.log();
+  }
+
+  console.log(`  Run \`npx secretless-ai init\` to add protections.`);
+  console.log('  For a full security scan (147+ checks): npx hackmyagent secure\n');
+  return findings.length > 0 ? 1 : 0;
 }
 
 export function runStatus(projectDir: string): void {

@@ -56,6 +56,18 @@ export function runProtectMcp(args: string[]): void {
       console.log(`  ${result.alreadyProtected} server(s) already protected.`);
     }
     console.log();
+    // Show injection warnings from NanoMind guard (if available)
+    if (result.injectionWarnings.length > 0) {
+      console.log(`  WARNING: ${result.injectionWarnings.length} potential prompt injection(s) detected:\n`);
+      for (const w of result.injectionWarnings) {
+        console.log(`    ! ${w.client}/${w.server} -> ${w.key}`);
+        console.log(`      Type: ${w.injectionType} (${w.severity})`);
+      }
+      console.log();
+      console.log('  Review these env vars. They may contain injected instructions');
+      console.log('  that could manipulate AI tool behavior.\n');
+    }
+
     console.log('  MCP servers will start normally — no workflow changes needed.');
     console.log('  Run `npx secretless-ai mcp-status` to check status anytime.');
     console.log('  Run `npx secretless-ai mcp-unprotect` to restore originals.\n');
