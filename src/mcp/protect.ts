@@ -11,11 +11,20 @@ import { discoverMcpConfigs } from './discover';
 import { classifyEnvVars } from './classify';
 import { McpVault } from './vault';
 import { rewriteConfig } from './rewrite';
+import { screenMcpEnvVars } from '../nanomind';
 import type { SelectableBackendType } from '../backends/config';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export interface InjectionWarning {
+  client: string;
+  server: string;
+  key: string;
+  injectionType: string;
+  severity: string;
+}
 
 export interface ProtectOptions {
   /** Override home directory (for testing) */
@@ -40,6 +49,8 @@ export interface ProtectResult {
   serversProtected: number;
   servers: ProtectedServer[];
   alreadyProtected: number;
+  /** Prompt injection warnings found in MCP env var values (requires @nanomind/guard) */
+  injectionWarnings: InjectionWarning[];
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +102,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     serversProtected: 0,
     servers: [],
     alreadyProtected: 0,
+    injectionWarnings: [],
   };
 
   // 2. For each config: classify, encrypt, rewrite
@@ -106,6 +118,19 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 
       // Classify env vars into secrets and non-secrets
       const classified = classifyEnvVars(server.env);
+
+      // Screen non-secret env vars for prompt injection (if @nanomind/guard available)
+      const injectionFindings = screenMcpEnvVars(classified.nonSecrets);
+      for (const finding of injectionFindings) {
+        result.injectionWarnings.push({
+          client: config.client,
+          server: server.name,
+          key: finding.key,
+          injectionType: finding.result.patterns[0]?.type ?? 'unknown',
+          severity: finding.result.patterns[0]?.severity ?? 'medium',
+        });
+      }
+
       const secretCount = Object.keys(classified.secrets).length;
 
       if (secretCount === 0) continue;

@@ -105,6 +105,7 @@ export function printHelp(): void {
 
   Scan options:
     --include-tests  Include test files in source code scan
+    --explain        Use NanoMind for rich context explanations (requires @nanomind/engine)
 
   Options:
     -v, --version    Show version
