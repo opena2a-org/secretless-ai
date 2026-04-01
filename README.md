@@ -3,7 +3,7 @@
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-802-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-804-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
 
@@ -115,7 +115,7 @@ opena2a secrets init    # Initialize secretless protection
 ## Development
 
 ```bash
-npm run build && npm test    # 802 tests
+npm run build && npm test    # 804 tests
 ```
 
 ## License

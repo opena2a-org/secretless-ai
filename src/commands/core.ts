@@ -113,6 +113,9 @@ export function runScan(projectDir: string, options?: { includeTests?: boolean }
     console.log(`  [${severity}] ${finding.patternName}`);
     console.log(`         ${finding.file}:${finding.line}`);
     console.log(`         ${finding.preview}`);
+    if (finding.fix) {
+      console.log(`         Fix: ${finding.fix}`);
+    }
     console.log();
   }
 

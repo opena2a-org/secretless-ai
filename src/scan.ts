@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS } from './patterns';
+import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
 
 export interface ScanFinding {
   file: string;
@@ -14,7 +14,28 @@ export interface ScanFinding {
   patternName: string;
   severity: 'critical' | 'high';
   preview: string;
+  /** Actionable fix guidance for this finding */
+  fix?: string;
 }
+
+/** Per-pattern fix guidance. Tells users exactly how to fix each finding. */
+const FIX_GUIDANCE: Record<string, string> = {
+  'anthropic': 'Move to env var ANTHROPIC_API_KEY. Rotate at console.anthropic.com > API Keys.',
+  'openai-proj': 'Move to env var OPENAI_API_KEY. Rotate at platform.openai.com > API Keys.',
+  'openai-legacy': 'Move to env var OPENAI_API_KEY. Rotate at platform.openai.com > API Keys.',
+  'aws-access': 'Move to env var AWS_ACCESS_KEY_ID. Rotate in AWS IAM console.',
+  'aws-sts': 'STS tokens are temporary but should not be committed. Use AWS SDK credential chain.',
+  'github-pat': 'Move to env var GITHUB_TOKEN. Rotate at github.com > Settings > Developer Settings > PATs.',
+  'github-fine': 'Move to env var GITHUB_TOKEN. Rotate at github.com > Settings > Developer Settings > Fine-grained PATs.',
+  'stripe': 'Move to env var STRIPE_SECRET_KEY. Rotate at dashboard.stripe.com > Developers > API Keys.',
+  'stripe-test': 'Move to env var STRIPE_SECRET_KEY. Even test keys should not be committed.',
+  'slack': 'Move to env var SLACK_TOKEN. Rotate at api.slack.com > Your Apps.',
+  'postgres': 'Move to env var DATABASE_URL. Rotate the database password.',
+  'mongodb': 'Move to env var MONGODB_URI. Rotate the database password.',
+  'pem-private-key': 'Never commit private keys. Use secretless-ai secret set or a secrets manager.',
+  'google': 'Move to env var GOOGLE_API_KEY. Restrict and rotate at console.cloud.google.com.',
+  'supabase': 'Move to env var SUPABASE_SERVICE_ROLE_KEY. Rotate in Supabase dashboard > Settings > API.',
+};
 
 export interface ScanOptions {
   /** Scan global config files like ~/.claude/CLAUDE.md (default: true) */
@@ -25,6 +46,25 @@ export interface ScanOptions {
   includeTests?: boolean;
   /** Max source files to scan before stopping (default: 5000) */
   maxSourceFiles?: number;
+}
+
+/**
+ * Check if a matched credential is a known example or placeholder.
+ * Returns true if the match should be excluded from results.
+ */
+function isKnownExample(line: string, match: RegExpMatchArray): boolean {
+  const value = match[0];
+  // Check exact known example keys
+  if (KNOWN_EXAMPLE_KEYS.has(value)) return true;
+  // Check placeholder indicators (case-insensitive)
+  const lower = value.toLowerCase();
+  if (PLACEHOLDER_INDICATORS.some(p => lower.includes(p))) return true;
+  // Check if the line contains a comment marking it as an example
+  const lineLC = line.toLowerCase();
+  if (lineLC.includes('example') && lineLC.includes('//') || lineLC.includes('#')) {
+    if (lineLC.includes('example') || lineLC.includes('placeholder') || lineLC.includes('fake')) return true;
+  }
+  return false;
 }
 
 /** Global config files that may contain secrets (outside project dir) */
@@ -56,7 +96,9 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         if (line.length > 4096) continue;
         if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
         for (const pattern of CREDENTIAL_PATTERNS) {
-          if (pattern.regex.test(line)) {
+          const match = line.match(pattern.regex);
+          if (match) {
+            if (isKnownExample(line, match)) break;
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
             findings.push({
@@ -66,6 +108,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
               patternName: pattern.name,
               severity: 'critical',
               preview: masked.trim().substring(0, 80),
+              fix: FIX_GUIDANCE[pattern.id],
             });
             break;
           }
@@ -97,7 +140,9 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         }
 
         for (const pattern of CREDENTIAL_PATTERNS) {
-          if (pattern.regex.test(line)) {
+          const match = line.match(pattern.regex);
+          if (match) {
+            if (isKnownExample(line, match)) break;
             // Mask the actual secret in the preview (replace ALL occurrences)
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
@@ -109,6 +154,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
               patternName: pattern.name,
               severity: 'critical',
               preview: masked.trim().substring(0, 80),
+              fix: FIX_GUIDANCE[pattern.id],
             });
             break; // One finding per line
           }
@@ -152,7 +198,9 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
           if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
           for (const pattern of CREDENTIAL_PATTERNS) {
-            if (pattern.regex.test(line)) {
+            const match = line.match(pattern.regex);
+            if (match) {
+              if (isKnownExample(line, match)) break;
               const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
               const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
 
@@ -163,6 +211,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
                 patternName: pattern.name,
                 severity: 'high',
                 preview: masked.trim().substring(0, 80),
+                fix: FIX_GUIDANCE[pattern.id],
               });
               break;
             }

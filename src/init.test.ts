@@ -137,7 +137,7 @@ describe('scan', () => {
   });
 
   it('finds AWS key in .env', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'AWS_KEY=AKIAIOSFODNN7EXAMPLE');
+    fs.writeFileSync(path.join(dir, '.env'), 'AWS_KEY=AKIA4MCVFLRTSQBH6Z2N');
 
     const findings = scan(dir, { scanGlobal: false });
     expect(findings.length).toBe(1);
@@ -230,6 +230,21 @@ describe('scan', () => {
   it('skips test directories by default', () => {
     fs.mkdirSync(path.join(dir, '__tests__'), { recursive: true });
     fs.writeFileSync(path.join(dir, '__tests__', 'auth.js'), 'const key = "sk-proj-abc123def456ghi789jkl012mno345";');
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBe(0);
+  });
+
+  it('excludes known AWS example key AKIAIOSFODNN7EXAMPLE', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'AWS_KEY=AKIAIOSFODNN7EXAMPLE');
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBe(0);
+  });
+
+  it('excludes credentials with placeholder indicators', () => {
+    fs.writeFileSync(path.join(dir, 'config.ts'),
+      'const key = "sk-proj-your_api_key_here_replace_me_placeholder";');
 
     const findings = scan(dir, { scanGlobal: false });
     expect(findings.length).toBe(0);
