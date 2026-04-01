@@ -87,7 +87,7 @@ export function runInit(projectDir: string): void {
   }
 }
 
-export function runScan(projectDir: string): void {
+export function runScan(projectDir: string, options?: { includeTests?: boolean }): void {
   console.log('\n  Secretless Scanner\n');
 
   const nodeFs = require('fs') as typeof import('fs');
@@ -97,7 +97,7 @@ export function runScan(projectDir: string): void {
     process.exit(1);
   }
 
-  const findings = scan(projectDir);
+  const findings = scan(projectDir, { includeTests: options?.includeTests });
 
   if (findings.length === 0) {
     console.log('  No hardcoded credentials found.');

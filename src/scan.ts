@@ -21,6 +21,8 @@ export interface ScanOptions {
   scanGlobal?: boolean;
   /** Scan source code files for hardcoded credentials (default: true) */
   scanSource?: boolean;
+  /** Include test files in source scan (default: false) */
+  includeTests?: boolean;
   /** Max source files to scan before stopping (default: 5000) */
   maxSourceFiles?: number;
 }
@@ -121,7 +123,8 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
   if (options?.scanSource !== false) {
     const configFileSet = new Set(CONFIG_FILES);
     const maxFiles = options?.maxSourceFiles ?? 5000;
-    const sourceFiles = walkSourceFiles(projectDir, maxFiles);
+    const includeTests = options?.includeTests ?? false;
+    const sourceFiles = walkSourceFiles(projectDir, maxFiles, includeTests);
 
     for (const filePath of sourceFiles) {
       const relPath = path.relative(projectDir, filePath);
@@ -180,11 +183,22 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
   return findings;
 }
 
+/** Directories that contain test fixtures and should be skipped by default */
+const TEST_DIRS = new Set(['__tests__', '__mocks__', 'test', 'tests', 'fixtures', '__fixtures__']);
+
+/** File name patterns that indicate test files */
+function isTestFile(name: string): boolean {
+  return /\.(test|spec|e2e)\.[^.]+$/.test(name)
+    || name.startsWith('test_')
+    || name.endsWith('_test.go');
+}
+
 /**
  * Walk a directory tree and return source files matching SOURCE_FILE_EXTENSIONS.
  * Skips directories in SOURCE_SKIP_DIRS. Stops after maxFiles.
+ * By default, skips test files and test directories.
  */
-function walkSourceFiles(dir: string, maxFiles: number): string[] {
+function walkSourceFiles(dir: string, maxFiles: number, includeTests: boolean): string[] {
   const results: string[] = [];
   const queue: string[] = [dir];
 
@@ -201,14 +215,14 @@ function walkSourceFiles(dir: string, maxFiles: number): string[] {
       if (results.length >= maxFiles) break;
 
       if (entry.isDirectory()) {
-        if (!SOURCE_SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-          queue.push(path.join(current, entry.name));
-        }
+        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+        if (!includeTests && TEST_DIRS.has(entry.name)) continue;
+        queue.push(path.join(current, entry.name));
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name);
-        if (SOURCE_FILE_EXTENSIONS.has(ext)) {
-          results.push(path.join(current, entry.name));
-        }
+        if (!SOURCE_FILE_EXTENSIONS.has(ext)) continue;
+        if (!includeTests && isTestFile(entry.name)) continue;
+        results.push(path.join(current, entry.name));
       }
     }
   }

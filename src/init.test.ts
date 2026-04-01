@@ -211,6 +211,30 @@ describe('scan', () => {
     expect(findings.length).toBe(0);
   });
 
+  it('skips test files by default', () => {
+    fs.writeFileSync(path.join(dir, 'auth.test.ts'), 'const key = "sk-proj-abc123def456ghi789jkl012mno345";');
+    fs.writeFileSync(path.join(dir, 'auth.spec.js'), 'const key = "sk-proj-abc123def456ghi789jkl012mno345";');
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBe(0);
+  });
+
+  it('includes test files when --include-tests is set', () => {
+    fs.writeFileSync(path.join(dir, 'auth.test.ts'), 'const key = "sk-proj-abc123def456ghi789jkl012mno345";');
+
+    const findings = scan(dir, { scanGlobal: false, includeTests: true });
+    expect(findings.length).toBe(1);
+    expect(findings[0].file).toBe('auth.test.ts');
+  });
+
+  it('skips test directories by default', () => {
+    fs.mkdirSync(path.join(dir, '__tests__'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '__tests__', 'auth.js'), 'const key = "sk-proj-abc123def456ghi789jkl012mno345";');
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBe(0);
+  });
+
   it('can disable source file scanning', () => {
     fs.writeFileSync(path.join(dir, 'app.js'), 'const key = "sk-proj-abc123def456ghi789jkl012mno345";');
 
