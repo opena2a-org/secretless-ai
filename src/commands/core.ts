@@ -11,6 +11,7 @@ import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
 import { VERSION, formatUptime, formatRemainingTime } from './utils';
 import { explainFinding, isEngineAvailable } from '../nanomind';
+import { c, divider } from './colors';
 
 export function runInit(projectDir: string): void {
   console.log('\n  Secretless v' + VERSION);
@@ -117,22 +118,38 @@ export function runScan(projectDir: string, options?: { includeTests?: boolean; 
 }
 
 function printFindings(findings: ReturnType<typeof scan>): void {
-  console.log(`  Found ${findings.length} credential(s):\n`);
-  console.log('  AI coding tools (Claude Code, Cursor, Copilot) can read .env files in their');
-  console.log('  context window, exposing credentials to the LLM provider.\n');
-  for (const finding of findings) {
-    const severity = finding.severity === 'critical' ? 'CRIT' : 'HIGH';
-    console.log(`  [${severity}] ${finding.patternName}`);
-    console.log(`         ${finding.file}:${finding.line}`);
-    console.log(`         ${finding.preview}`);
-    if (finding.fix) {
-      console.log(`         Fix: ${finding.fix}`);
-    }
-    console.log();
+  const critCount = findings.filter(f => f.severity === 'critical').length;
+  const highCount = findings.length - critCount;
+
+  if (critCount > 0) {
+    console.log(`  ${c.boldRed(`${critCount} critical credential${critCount > 1 ? 's' : ''} exposed`)}`);
+  } else {
+    console.log(`  ${c.boldYellow(`${findings.length} credential${findings.length > 1 ? 's' : ''} found`)}`);
   }
 
-  console.log(`  Run \`npx secretless-ai init\` to add protections.`);
-  console.log('  For a full security scan (147+ checks): npx hackmyagent secure\n');
+  console.log(divider('Findings'));
+
+  const summaryParts: string[] = [];
+  if (critCount > 0) summaryParts.push(c.brightRed(`${critCount} critical`));
+  if (highCount > 0) summaryParts.push(c.yellow(`${highCount} high`));
+  console.log(`  ${summaryParts.join('  ')}`);
+
+  for (const finding of findings) {
+    const sevColor = finding.severity === 'critical' ? c.brightRed : c.yellow;
+    const sevLabel = finding.severity === 'critical' ? 'CRITICAL' : 'HIGH';
+    console.log();
+    console.log(`  ${sevColor('\u2502')} ${c.bold(sevLabel)}  ${c.boldWhite(finding.patternName)}`);
+    console.log(`  ${sevColor('\u2502')} ${c.dim(`${finding.file}:${finding.line}`)}`);
+    console.log(`  ${sevColor('\u2502')} ${finding.preview}`);
+    if (finding.fix) {
+      console.log(`  ${sevColor('\u2502')} ${c.cyan('Fix:')} ${finding.fix}`);
+    }
+  }
+
+  console.log(divider('Next Steps'));
+  console.log(`  ${c.cyan('Protect now:')}        npx secretless-ai init`);
+  console.log(`  ${c.cyan('Full security scan:')} npx hackmyagent secure`);
+  console.log();
 }
 
 async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promise<number> {
@@ -234,7 +251,7 @@ export function runStatus(projectDir: string): void {
 }
 
 export function runVerify(projectDir: string, showAll = false): void {
-  console.log('\n  Secretless Verify\n');
+  console.log(`\n  ${c.boldWhite('Secretless Verify')}\n`);
 
   const result = verify(projectDir);
 
@@ -243,79 +260,77 @@ export function runVerify(projectDir: string, showAll = false): void {
   const unsetVars = Object.entries(result.envVars).filter(([, v]) => !v);
 
   if (setVars.length > 0) {
-    console.log('  Env vars available (usable by tools):');
     for (const [name] of setVars) {
-      console.log(`    + ${name}`);
+      console.log(`  ${c.green('\u2502')} ${c.green('+')} ${name}`);
     }
   }
 
   if (showAll && unsetVars.length > 0) {
-    console.log('  Env vars not set:');
     for (const [name] of unsetVars) {
-      console.log(`    - ${name}`);
+      console.log(`  ${c.dim('\u2502')} ${c.dim('-')} ${name}`);
     }
   } else if (unsetVars.length > 0) {
-    console.log(`  ${unsetVars.length} known env vars not set (use --all to list)`);
+    console.log(`  ${c.dim(`  ${unsetVars.length} known env vars not set (use --all to list)`)}`);
   }
-  console.log();
 
   // Show context exposure
   if (result.exposedInContext.length > 0) {
-    console.log('  EXPOSED in AI context (secrets the AI can see):');
+    console.log(divider('Exposed in AI Context'));
     for (const exp of result.exposedInContext) {
-      console.log(`    ! ${exp.patternName} in ${exp.file}:${exp.line}`);
+      console.log(`  ${c.brightRed('\u2502')} ${c.brightRed('!')} ${c.bold(exp.patternName)} ${c.dim(`${exp.file}:${exp.line}`)}`);
     }
-    console.log();
   } else {
-    console.log('  AI context files: clean (no credentials found)\n');
+    console.log(`\n  ${c.green('AI context: clean')} ${c.dim('(no credentials found)')}`);
   }
 
   // Show transcript exposure (collapsed by pattern name)
   if (result.exposedInTranscripts.length > 0) {
-    console.log('  EXPOSED in transcripts (credentials in conversation history):');
-    // Group by pattern name and count files
+    console.log(divider('Exposed in Transcripts'));
     const grouped = new Map<string, number>();
     for (const exp of result.exposedInTranscripts) {
       grouped.set(exp.patternName, (grouped.get(exp.patternName) ?? 0) + 1);
     }
     for (const [patternName, count] of grouped) {
       if (count === 1) {
-        // Show the single file path
         const single = result.exposedInTranscripts.find(e => e.patternName === patternName)!;
-        console.log(`    ! ${patternName} in ${single.file}:${single.line}`);
+        console.log(`  ${c.yellow('\u2502')} ${c.yellow('!')} ${c.bold(patternName)} ${c.dim(`${single.file}:${single.line}`)}`);
       } else {
-        console.log(`    ! ${patternName} found in ${count} transcript files`);
+        console.log(`  ${c.yellow('\u2502')} ${c.yellow('!')} ${c.bold(patternName)} ${c.dim(`in ${count} transcript files`)}`);
       }
     }
-    console.log('  Run `npx secretless-ai clean` to redact.\n');
   }
 
   // Verdict
+  console.log();
   if (result.passed) {
-    console.log('  PASS: Secrets are accessible via env vars but hidden from AI context.\n');
+    console.log(`  ${c.boldGreen('PASS')} ${c.green('Secrets accessible via env vars, hidden from AI context.')}`);
   } else if (result.exposedInContext.length > 0 || result.exposedInTranscripts.length > 0) {
-    console.log('  FAIL: Credentials found in AI context or transcript files.');
-    console.log('  Run `npx secretless-ai init` to protect context files.');
-    console.log('  Run `npx secretless-ai clean` to redact transcripts.\n');
+    console.log(`  ${c.boldRed('FAIL')} ${c.red('Credentials found in AI context or transcripts.')}`);
+    console.log(divider('Next Steps'));
+    if (result.exposedInContext.length > 0) {
+      console.log(`  ${c.cyan('Protect context:')}    npx secretless-ai init`);
+    }
+    if (result.exposedInTranscripts.length > 0) {
+      console.log(`  ${c.cyan('Redact transcripts:')} npx secretless-ai clean`);
+    }
+    console.log();
     process.exit(1);
   } else {
-    console.log('  WARN: No API keys found in env vars.');
+    console.log(`  ${c.boldYellow('WARN')} ${c.yellow('No API keys found in env vars.')}`);
 
-    // Quick diagnosis to give targeted advice
     const diag = quickDiagnosis();
     if (diag.wrongProfile.length > 0) {
-      console.log(`  Found ${diag.wrongProfile.length} key(s) in an interactive-only shell profile:`);
+      console.log(`  Found ${diag.wrongProfile.length} key(s) in interactive-only shell profile:`);
       for (const v of diag.wrongProfile) {
-        console.log(`    - ${v}`);
+        console.log(`  ${c.yellow('\u2502')} ${c.dim('-')} ${v}`);
       }
-      console.log('  These work in your terminal but fail in subprocesses (CI, Docker, Claude Code).');
-      console.log('  Run `npx secretless-ai doctor` for fix instructions.\n');
-    } else {
-      console.log('  Set keys in ~/.zshenv (macOS) or ~/.bashrc (Linux), then restart your terminal.');
-      console.log('  Run `npx secretless-ai doctor` to diagnose shell profile issues.\n');
     }
+    console.log(divider('Next Steps'));
+    console.log(`  ${c.cyan('Diagnose:')} npx secretless-ai doctor`);
+    console.log();
     process.exit(1);
   }
+  console.log();
 }
 
 export function runDoctor(autoFix: boolean): void {

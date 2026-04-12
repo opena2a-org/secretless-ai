@@ -129,7 +129,7 @@ function main(): void {
       break;
     case '--version':
     case '-v':
-      console.log(`Secretless v${VERSION}`);
+      console.log(`secretless-ai ${VERSION} \u2014 credential protection for AI coding tools`);
       break;
     case '--help':
     case '-h':
