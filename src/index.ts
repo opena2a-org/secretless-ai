@@ -74,6 +74,14 @@ export {
   type ResolveResult, type ResolveError,
 } from './phantom';
 
+// Identity Vault (requires @opena2a/aim-core)
+export {
+  vaultInit, vaultRegister, vaultList, vaultRotate, vaultRevoke,
+  vaultAudit, vaultScan, vaultExec, vaultTest, vaultMigrate,
+  loadAimCoreVault, loadAimCoreIdentity, getOrCreateAgent, getVaultStore,
+  PATHS as VAULT_PATHS,
+} from './vault-core';
+
 // Session management
 export {
   readSessionState, writeSessionState, getSessionStatus,
