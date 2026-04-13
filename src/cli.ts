@@ -16,6 +16,7 @@ import { runHook, runScanStaged } from './commands/git';
 import { runProtectMcp, runMcpStatus, runMcpUnprotect } from './commands/mcp';
 import { runBackend, runMigrate, runCache } from './commands/backend';
 import { runBroker } from './commands/broker';
+import { runVault } from './commands/vault';
 import { runScope } from './commands/scope';
 import { runWarm, runInstall } from './commands/session';
 import { printHelp } from './commands/help';
@@ -111,6 +112,9 @@ function main(): void {
       break;
     case 'broker':
       runBroker(args.slice(1));
+      break;
+    case 'vault':
+      runVault(args.slice(1));
       break;
     case 'scope':
       runScope(args.slice(1));

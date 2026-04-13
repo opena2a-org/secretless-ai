@@ -70,6 +70,18 @@ export function printHelp(): void {
     npx secretless-ai clean-history          Redact credentials in shell history
     npx secretless-ai clean-history --dry-run  Preview without modifying
 
+  Identity Vault (requires @opena2a/aim-core):
+    npx secretless-ai vault init                    Initialize vault with agent identity
+    npx secretless-ai vault register <ns> [opts]    Register a credential in a namespace
+    npx secretless-ai vault list                    List stored credentials (metadata only)
+    npx secretless-ai vault rotate <ns> [opts]      Rotate a credential to a new value
+    npx secretless-ai vault revoke <ns>             Revoke a namespace and delete credential
+    npx secretless-ai vault exec <ns> -- <cmd>      Run command with vault credential injected
+    npx secretless-ai vault audit                   Show vault audit log
+    npx secretless-ai vault scan [dir]              Scan for credentials to migrate
+    npx secretless-ai vault test                    Run vault self-test
+    npx secretless-ai vault migrate [opts]          Migrate from SecretStore or .env file
+
   Credential Broker:
     npx secretless-ai broker start        Start the credential broker daemon
     npx secretless-ai broker stop         Stop the running broker daemon
