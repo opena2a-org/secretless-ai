@@ -91,4 +91,28 @@ describe('scanStagedFiles', () => {
     const result = scanStagedFiles();
     expect(result.findings).toEqual([]);
   });
+
+  it('skips public AWS example key AKIAIOSFODNN7EXAMPLE (doc references should not block commits)', () => {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) {
+        return 'CHANGELOG.md\n';
+      }
+      return '- Excluded example keys (AWS `AKIAIOSFODNN7EXAMPLE`).\n';
+    });
+
+    const result = scanStagedFiles();
+    expect(result.findings).toEqual([]);
+  });
+
+  it('still flags real AWS access keys that are not known examples', () => {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) {
+        return 'config.js\n';
+      }
+      return 'const key = "AKIAREALKEY1234567890";\n';
+    });
+
+    const result = scanStagedFiles();
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
 });

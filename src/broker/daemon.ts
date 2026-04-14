@@ -25,6 +25,8 @@ export interface DaemonOptions {
   httpPort?: number;
   /** AIM server URL. */
   aimUrl?: string;
+  /** AIM bearer token. Falls back to SECRETLESS_AIM_TOKEN env var if unset. */
+  aimToken?: string;
   /** Policy file path. */
   policyFile?: string;
   /** Audit log path. */
@@ -56,6 +58,7 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
     socketPath: options?.socketPath ?? DEFAULT_SOCKET_PATH,
     httpPort: options?.httpPort ?? DEFAULT_HTTP_PORT,
     aimUrl: options?.aimUrl,
+    aimToken: options?.aimToken ?? process.env.SECRETLESS_AIM_TOKEN ?? undefined,
     policyFile: options?.policyFile ?? DEFAULT_POLICY_FILE,
     auditLog: options?.auditLog ?? DEFAULT_AUDIT_LOG,
   };
@@ -143,8 +146,13 @@ function cleanupTokenFile(): void {
 }
 
 /**
- * Get the status of the broker daemon.
+ * Get the status of the broker daemon from the PID file alone.
  * Returns null if the daemon is not running.
+ *
+ * Fast and sync, but `requestCount`, `aimConfigured`, `aimReachable`, and `policyCount`
+ * are always returned as zero/false because reading those requires
+ * an HTTP call to the live server. Use `getLiveDaemonStatus` when
+ * those fields matter.
  */
 export function getDaemonStatus(pidFile?: string): BrokerStatus | null {
   const file = pidFile ?? DEFAULT_PID_FILE;
@@ -170,13 +178,84 @@ export function getDaemonStatus(pidFile?: string): BrokerStatus | null {
     healthy: true,
     uptimeSeconds,
     requestCount: 0, // Not available without querying the server
-    aimConnected: false,
+    aimConfigured: false,
+    aimReachable: false,
     policyCount: 0,
     pid: pidInfo.pid,
     startedAt,
     socketPath: pidInfo.socketPath ?? DEFAULT_SOCKET_PATH,
     httpPort: pidInfo.httpPort ?? DEFAULT_HTTP_PORT,
   };
+}
+
+/**
+ * Get the status of the broker daemon with live fields queried from the server.
+ *
+ * Merges PID-file base info with live data from the server's /status endpoint
+ * (requestCount, aimConfigured, aimReachable, policyCount). Falls back to the PID-file-only
+ * status if the HTTP call fails, so the CLI always prints something useful.
+ *
+ * Returns null if the daemon is not running at all.
+ */
+export async function getLiveDaemonStatus(pidFile?: string): Promise<BrokerStatus | null> {
+  const base = getDaemonStatus(pidFile);
+  if (!base) return null;
+
+  const token = readBrokerToken();
+  if (!token) return base;
+
+  try {
+    const http = await import('http');
+    const live = await new Promise<Partial<BrokerStatus> | null>((resolve) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port: base.httpPort,
+          path: '/status',
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => { body += chunk; });
+          res.on('end', () => {
+            if (res.statusCode !== 200) return resolve(null);
+            try {
+              resolve(JSON.parse(body));
+            } catch {
+              resolve(null);
+            }
+          });
+        },
+      );
+      req.setTimeout(500, () => { req.destroy(); resolve(null); });
+      req.on('error', () => resolve(null));
+      req.end();
+    });
+
+    if (live && typeof live === 'object') {
+      return {
+        ...base,
+        requestCount: typeof live.requestCount === 'number' ? live.requestCount : base.requestCount,
+        aimConfigured: typeof live.aimConfigured === 'boolean' ? live.aimConfigured : base.aimConfigured,
+        aimReachable: typeof live.aimReachable === 'boolean' ? live.aimReachable : base.aimReachable,
+        policyCount: typeof live.policyCount === 'number' ? live.policyCount : base.policyCount,
+      };
+    }
+  } catch {
+    // Network/parse failure — fall through to base status
+  }
+  return base;
+}
+
+/** Read the broker auth token from disk. Returns null if absent. */
+function readBrokerToken(): string | null {
+  try {
+    const token = fs.readFileSync(TOKEN_FILE, 'utf-8').trim();
+    return token || null;
+  } catch {
+    return null;
+  }
 }
 
 /**

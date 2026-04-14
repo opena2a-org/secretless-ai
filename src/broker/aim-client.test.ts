@@ -174,3 +174,99 @@ describe('AimClient', () => {
     });
   });
 });
+
+describe('AimClient auth', () => {
+  let server: http.Server;
+  let baseUrl: string;
+  let observedAuthHeader: string | undefined;
+
+  beforeEach(async () => {
+    observedAuthHeader = undefined;
+    server = http.createServer((req, res) => {
+      observedAuthHeader = req.headers['authorization'] as string | undefined;
+
+      if (req.url === '/api/v1/agents/authed-agent') {
+        if (observedAuthHeader === 'Bearer good-token') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            agentId: 'authed-agent',
+            trustScore: 0.8,
+            capabilities: [],
+            verified: true,
+          }));
+          return;
+        }
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No authentication token provided' }));
+        return;
+      }
+
+      if (req.url === '/api/v1/agents/forbidden-agent') {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = server.address() as { port: number };
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  it('sends Authorization: Bearer when authToken is configured', async () => {
+    const c = new AimClient(baseUrl, { authToken: 'good-token' });
+    const identity = await c.getAgentIdentity('authed-agent');
+    expect(identity).toBeDefined();
+    expect(identity!.agentId).toBe('authed-agent');
+    expect(observedAuthHeader).toBe('Bearer good-token');
+  });
+
+  it('omits Authorization header when authToken is not configured', async () => {
+    const c = new AimClient(baseUrl);
+    const identity = await c.getAgentIdentity('authed-agent');
+    expect(identity).toBeUndefined(); // 401 because no auth
+    expect(observedAuthHeader).toBeUndefined();
+  });
+
+  it('invokes onAuthError for 401 responses', async () => {
+    const calls: Array<{ url: string; status: number }> = [];
+    const c = new AimClient(baseUrl, {
+      onAuthError: (info) => calls.push(info),
+    });
+    await c.getAgentIdentity('authed-agent');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].status).toBe(401);
+    expect(calls[0].url).toContain('/api/v1/agents/authed-agent');
+  });
+
+  it('invokes onAuthError for 403 responses', async () => {
+    const calls: Array<{ url: string; status: number }> = [];
+    const c = new AimClient(baseUrl, {
+      authToken: 'bad-token',
+      onAuthError: (info) => calls.push(info),
+    });
+    await c.getAgentIdentity('forbidden-agent');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].status).toBe(403);
+  });
+
+  it('does not invoke onAuthError for network errors', async () => {
+    const calls: Array<{ url: string; status: number }> = [];
+    const offlineClient = new AimClient('http://127.0.0.1:1', {
+      onAuthError: (info) => calls.push(info),
+    });
+    await offlineClient.getAgentIdentity('any-agent');
+    expect(calls).toHaveLength(0);
+  });
+});

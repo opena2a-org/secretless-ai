@@ -42,6 +42,7 @@ export class BrokerServer {
   private startedAt: Date | null = null;
   private requestCount = 0;
   private authToken: Buffer | null = null;
+  private aimReachable = false;
 
   constructor(
     config: BrokerConfig,
@@ -57,7 +58,22 @@ export class BrokerServer {
     this.resolver = deps?.resolver ?? new CredentialResolver();
     this.audit = deps?.audit ?? new AuditLogger(config.auditLog);
     this.aimClient = deps?.aimClient !== undefined ? deps.aimClient : (
-      config.aimUrl ? new AimClient(config.aimUrl) : null
+      config.aimUrl
+        ? new AimClient(config.aimUrl, {
+            authToken: config.aimToken,
+            onAuthError: ({ url, status }) => {
+              this.audit.logEvent(
+                'aim_auth_error',
+                'broker',
+                '',
+                '',
+                'denied',
+                `AIM returned ${status} for ${url}`,
+                0,
+              );
+            },
+          })
+        : null
     );
   }
 
@@ -115,6 +131,27 @@ export class BrokerServer {
       });
     });
 
+    // One-shot AIM reachability probe. Non-blocking: failures don't prevent startup,
+    // but the result is reflected in status so operators know the real state.
+    if (this.aimClient) {
+      try {
+        this.aimReachable = await this.aimClient.isAvailable();
+      } catch {
+        this.aimReachable = false;
+      }
+      if (!this.aimReachable) {
+        this.audit.logEvent(
+          'aim_unreachable',
+          'broker',
+          '',
+          '',
+          'denied',
+          'AIM configured but did not respond to reachability probe',
+          0,
+        );
+      }
+    }
+
     this.audit.logEvent('startup', 'broker', '', '', 'allowed', 'Broker started', 0);
   }
 
@@ -162,7 +199,8 @@ export class BrokerServer {
       healthy: this.socketServer !== null || this.httpServer !== null,
       uptimeSeconds,
       requestCount: this.requestCount,
-      aimConnected: this.aimClient !== null,
+      aimConfigured: this.aimClient !== null,
+      aimReachable: this.aimReachable,
       policyCount: this.policy.ruleCount,
     };
   }

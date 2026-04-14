@@ -25,15 +25,30 @@ const REQUEST_TIMEOUT_MS = 5_000;
 /** Maximum response body size (1 MB). */
 const MAX_RESPONSE_SIZE = 1024 * 1024;
 
+/** Callback invoked when AIM returns a 4xx response. */
+export type AimErrorHandler = (info: { url: string; status: number }) => void;
+
+export interface AimClientOptions {
+  cacheTtlMs?: number;
+  /** Bearer token sent as `Authorization: Bearer <token>` on every request. */
+  authToken?: string;
+  /** Called when AIM returns a 4xx response (e.g. 401, 403). For audit logging. */
+  onAuthError?: AimErrorHandler;
+}
+
 export class AimClient {
   private readonly baseUrl: string;
   private readonly cache: Map<string, CacheEntry> = new Map();
   private readonly cacheTtlMs: number;
+  private readonly authToken: string | undefined;
+  private readonly onAuthError: AimErrorHandler | undefined;
 
-  constructor(baseUrl: string, options?: { cacheTtlMs?: number }) {
+  constructor(baseUrl: string, options?: AimClientOptions) {
     // Remove trailing slash
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.cacheTtlMs = options?.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    this.authToken = options?.authToken;
+    this.onAuthError = options?.onAuthError;
   }
 
   /**
@@ -107,45 +122,76 @@ export class AimClient {
     return this.cache.size;
   }
 
-  /** Simple HTTP GET returning parsed JSON body, or undefined on error. */
+  /**
+   * HTTP GET returning parsed JSON body, or undefined on error.
+   *
+   * Sends `Authorization: Bearer <token>` when `authToken` is configured.
+   * 4xx responses invoke `onAuthError` so the broker can audit auth failures
+   * rather than silently dropping them.
+   */
   private httpGet(url: string): Promise<Record<string, unknown> | undefined> {
     return new Promise((resolve) => {
       const parsedUrl = new URL(url);
       const transport = parsedUrl.protocol === 'https:' ? https : http;
 
-      const req = transport.get(url, { timeout: REQUEST_TIMEOUT_MS }, (res) => {
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          res.resume(); // Drain response
-          resolve(undefined);
-          return;
-        }
+      const headers: Record<string, string> = {};
+      if (this.authToken) {
+        headers['Authorization'] = `Bearer ${this.authToken}`;
+      }
 
-        const chunks: Buffer[] = [];
-        let size = 0;
-        res.on('data', (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > MAX_RESPONSE_SIZE) {
-            res.destroy();
+      const req = transport.request(
+        {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+          path: parsedUrl.pathname + parsedUrl.search,
+          method: 'GET',
+          headers,
+          timeout: REQUEST_TIMEOUT_MS,
+        },
+        (res) => {
+          const status = res.statusCode ?? 0;
+
+          if (status >= 400 && status < 500) {
+            res.resume();
+            try { this.onAuthError?.({ url, status }); } catch { /* swallow */ }
             resolve(undefined);
             return;
           }
-          chunks.push(chunk);
-        });
-        res.on('end', () => {
-          try {
-            const body = Buffer.concat(chunks).toString('utf-8');
-            resolve(JSON.parse(body));
-          } catch {
+
+          if (status < 200 || status >= 300) {
+            res.resume();
             resolve(undefined);
+            return;
           }
-        });
-      });
+
+          const chunks: Buffer[] = [];
+          let size = 0;
+          res.on('data', (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > MAX_RESPONSE_SIZE) {
+              res.destroy();
+              resolve(undefined);
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on('end', () => {
+            try {
+              const body = Buffer.concat(chunks).toString('utf-8');
+              resolve(JSON.parse(body));
+            } catch {
+              resolve(undefined);
+            }
+          });
+        },
+      );
 
       req.on('error', () => resolve(undefined));
       req.on('timeout', () => {
         req.destroy();
         resolve(undefined);
       });
+      req.end();
     });
   }
 }
