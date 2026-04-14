@@ -16,6 +16,8 @@ When working on a team, each developer needs access to the same secrets without 
 
 For most teams, 1Password is the simplest starting point. Every developer already has it, and CI/CD uses service account tokens.
 
+> **1Password caveat:** On a machine where the 1Password desktop app is installed and CLI integration is enabled, the first `secretless-ai backend` run triggers a biometric / master-password prompt (used to confirm `op` availability). Cancel it if you don't want 1Password — the backend probe falls back cleanly. If you do want 1Password, unlock once and subsequent calls stay inside the cache window.
+
 ## Step 2: Configure the backend
 
 ### 1Password

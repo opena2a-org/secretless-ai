@@ -65,12 +65,38 @@ npx secretless-ai mcp-unprotect                    # Restore original configs fr
 3. **Blocks** AI tools from reading credential files (21 file patterns)
 4. **Brokers** access through environment variables -- secrets never enter AI context
 
+## Architecture
+
+Secretless has three layers. You can use one, two, or all three — each is independent and works against any supported backend.
+
+**Tier 1 — In-process SDK.** Credentials resolved in the call stack and zeroized after use. Available in the Python and TypeScript AIM SDKs. Sub-millisecond overhead.
+
+**Tier 2 — Vault Exec.** A subprocess primitive that injects a credential into a child process's environment without exposing it to the parent. The agent running under an AI assistant never sees the secret.
+
+```bash
+npx secretless-ai vault exec github -- curl https://api.github.com/user
+```
+
+The child process receives `$GITHUB`. The parent shell, the AI tool's context, and any process listing see nothing. Language-agnostic — wraps any command.
+
+**Tier 3 — Broker with identity policy.** A local daemon that mediates credential access across multiple agents. Policy rules allow or deny access by agent ID, credential name, time window, and rate limit. Optional AIM integration adds trust-score and capability constraints.
+
+```bash
+npx secretless-ai broker start
+```
+
+See [Run the Broker](docs/use-cases/run-broker.md) for when to use the daemon and how to configure it.
+
+**AIM is optional.** Tier 1 and Tier 2 work against any of the five [storage backends](#storage-backends) with no AIM involvement. Tier 3 adds identity-bound policy when an AIM server is reachable; it still enforces default-deny locally without one.
+
 ## Use Cases
 
 Step-by-step guides for common workflows: [docs/USE-CASES.md](docs/USE-CASES.md)
 
 - [Protect My Credentials](docs/use-cases/protect-my-credentials.md) -- Keep API keys out of AI tools (2 min)
 - [Secure MCP Configs](docs/use-cases/secure-mcp-configs.md) -- Encrypt MCP server credentials (3 min)
+- [Bring Your Own Vault](docs/use-cases/bring-your-own-vault.md) -- Point Secretless at HashiCorp Vault, GCP SM, or 1Password (3 min)
+- [Run the Broker](docs/use-cases/run-broker.md) -- Policy-gated credential daemon for multi-agent runtimes (3 min)
 - [Team Setup](docs/use-cases/team-setup.md) -- Shared backend, CI/CD, onboarding (5 min)
 - [Migrate from .env](docs/use-cases/migrate-from-dotenv.md) -- Move .env files to encrypted storage (3 min)
 

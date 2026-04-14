@@ -8,6 +8,8 @@ Step-by-step guides for common secretless-ai workflows. Each guide takes 2-5 min
 |-------|----------|------|
 | [Protect My Credentials](use-cases/protect-my-credentials.md) | Keep API keys out of AI tools | 2 min |
 | [Secure MCP Configs](use-cases/secure-mcp-configs.md) | Encrypt credentials in MCP server configurations | 3 min |
+| [Bring Your Own Vault](use-cases/bring-your-own-vault.md) | Point Secretless at HashiCorp Vault, GCP SM, or 1Password | 3 min |
+| [Run the Broker](use-cases/run-broker.md) | Policy-gated credential daemon for multi-agent runtimes | 3 min |
 | [Team Setup](use-cases/team-setup.md) | Set up secretless for a team with shared backend | 5 min |
 | [Migrate from .env](use-cases/migrate-from-dotenv.md) | Move from .env files to secure storage | 3 min |
 
@@ -15,6 +17,8 @@ Step-by-step guides for common secretless-ai workflows. Each guide takes 2-5 min
 
 - **Solo developer, first time:** Start with [Protect My Credentials](use-cases/protect-my-credentials.md). One command, immediate protection.
 - **Using MCP servers:** Go to [Secure MCP Configs](use-cases/secure-mcp-configs.md). MCP server configs store plaintext API keys in JSON files that AI tools can read.
+- **Already have a vault (HashiCorp / GCP / 1Password):** [Bring Your Own Vault](use-cases/bring-your-own-vault.md) shows how to point Secretless at it — no AIM required.
+- **Multiple agents, need policy enforcement:** [Run the Broker](use-cases/run-broker.md) sets up the credential daemon with per-agent rate limits and an audit log.
 - **Setting up a team:** Follow [Team Setup](use-cases/team-setup.md) to choose a shared backend and configure CI/CD.
 - **Already using .env files:** [Migrate from .env](use-cases/migrate-from-dotenv.md) moves existing secrets to encrypted storage without changing your workflow.
 
