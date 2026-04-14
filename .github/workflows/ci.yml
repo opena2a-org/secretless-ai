@@ -27,7 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        # Node 18 dropped: EOL April 2025, and vitest 4.x requires
+        # `node:util.styleText` which was added in Node 19.
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
 
