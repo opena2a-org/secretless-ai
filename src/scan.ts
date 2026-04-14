@@ -51,8 +51,12 @@ export interface ScanOptions {
 /**
  * Check if a matched credential is a known example or placeholder.
  * Returns true if the match should be excluded from results.
+ *
+ * Exported so scan-staged (and any other scanner) can apply the same
+ * allowlist. Prevents the pre-commit hook from blocking docs that
+ * legitimately reference public example keys like AKIAIOSFODNN7EXAMPLE.
  */
-function isKnownExample(line: string, match: RegExpMatchArray): boolean {
+export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
   const value = match[0];
   // Check exact known example keys
   if (KNOWN_EXAMPLE_KEYS.has(value)) return true;
