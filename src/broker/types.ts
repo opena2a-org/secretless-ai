@@ -13,6 +13,8 @@ export interface BrokerConfig {
   httpPort: number;
   /** AIM server URL for agent identity verification. Optional. */
   aimUrl?: string;
+  /** Bearer token for authenticating to AIM. Optional. */
+  aimToken?: string;
   /** Path to policy file. Default: ~/.secretless-ai/broker-policies.json */
   policyFile?: string;
   /** Path to audit log. Default: ~/.secretless-ai/broker-audit.log */
@@ -103,8 +105,10 @@ export interface BrokerHealth {
   uptimeSeconds: number;
   /** Number of requests handled since startup. */
   requestCount: number;
-  /** Whether AIM integration is available. */
-  aimConnected: boolean;
+  /** Whether AIM integration is configured (i.e. --aim-url was passed). */
+  aimConfigured: boolean;
+  /** Whether AIM responded to a reachability probe at startup. */
+  aimReachable: boolean;
   /** Loaded policy rule count. */
   policyCount: number;
 }
