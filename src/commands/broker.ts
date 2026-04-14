@@ -107,7 +107,7 @@ export function runBroker(args: string[]): void {
   }
 }
 
-function formatAimStatus(configured: boolean, reachable: boolean): string {
+export function formatAimStatus(configured: boolean, reachable: boolean): string {
   if (!configured) return 'not configured';
   if (reachable) return 'configured (reachable)';
   return 'configured (unreachable)';
