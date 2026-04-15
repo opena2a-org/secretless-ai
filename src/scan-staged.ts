@@ -7,7 +7,7 @@
 
 import { execFileSync } from 'child_process';
 import { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CREDENTIAL_PREFIX_QUICK_CHECK } from './patterns';
-import { isKnownExample } from './scan';
+import { findRealMatch } from './scan';
 
 interface StagedFinding {
   file: string;
@@ -96,14 +96,8 @@ export function scanStagedFiles(): { findings: StagedFinding[]; blockedFiles: st
       }
 
       for (const pattern of CREDENTIAL_PATTERNS) {
-        // Reset lastIndex so /g regexes don't skip matches across lines
-        pattern.regex.lastIndex = 0;
-        const match = line.match(pattern.regex);
+        const match = findRealMatch(line, pattern);
         if (!match) continue;
-
-        // Skip public example keys (e.g. AWS AKIAIOSFODNN7EXAMPLE in docs)
-        // Parity with the non-staged scanner.
-        if (isKnownExample(line, match)) break;
 
         findings.push({
           file,
