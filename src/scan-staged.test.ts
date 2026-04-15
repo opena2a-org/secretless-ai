@@ -115,4 +115,32 @@ describe('scanStagedFiles', () => {
     const result = scanStagedFiles();
     expect(result.findings.length).toBeGreaterThan(0);
   });
+
+  it('issue #51: does NOT let a known-example key shadow a real credential of another pattern on the same line', () => {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) {
+        return 'config.js\n';
+      }
+      // Same line: public AWS example + real GitHub PAT. Previously the AWS
+      // example match triggered a `break` and the real PAT was never checked.
+      return 'const old = "AKIAIOSFODNN7EXAMPLE"; const new_ = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";\n';
+    });
+
+    const result = scanStagedFiles();
+    const names = result.findings.map(f => f.patternName);
+    expect(names).toContain('GitHub Token');
+  });
+
+  it('issue #51: does NOT let a known-example AWS key shadow a real AWS key later on the same line', () => {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) {
+        return 'config.js\n';
+      }
+      return 'const keys = ["AKIAIOSFODNN7EXAMPLE", "AKIAREALKEY1234567890"];\n';
+    });
+
+    const result = scanStagedFiles();
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings[0].patternName).toBe('AWS Access Key');
+  });
 });

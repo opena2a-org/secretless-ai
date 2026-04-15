@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
+import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, type CredentialPattern } from './patterns';
 
 export interface ScanFinding {
   file: string;
@@ -65,10 +65,35 @@ export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
   if (PLACEHOLDER_INDICATORS.some(p => lower.includes(p))) return true;
   // Check if the line contains a comment marking it as an example
   const lineLC = line.toLowerCase();
-  if (lineLC.includes('example') && lineLC.includes('//') || lineLC.includes('#')) {
+  if (lineLC.includes('example') && (lineLC.includes('//') || lineLC.includes('#'))) {
     if (lineLC.includes('example') || lineLC.includes('placeholder') || lineLC.includes('fake')) return true;
   }
   return false;
+}
+
+/**
+ * Return the first match in `line` for `pattern.regex` that is NOT a known
+ * example, or null if every match is an example (or there are no matches).
+ *
+ * For /g regexes this iterates all matches via matchAll so that a known
+ * example of a given pattern on a line does not shadow a real credential
+ * of the same pattern later on that line. Non-global regexes fall back to
+ * a single match check.
+ *
+ * Exported so scan-staged and any other scanner stays in lockstep.
+ */
+export function findRealMatch(line: string, pattern: CredentialPattern): RegExpMatchArray | null {
+  // matchAll requires /g. Promote non-/g patterns so we iterate EVERY match on
+  // the line — otherwise a known-example match at position 0 would shadow a
+  // real credential of the same pattern later on the same line.
+  const globalRegex = pattern.regex.flags.includes('g')
+    ? pattern.regex
+    : new RegExp(pattern.regex.source, pattern.regex.flags + 'g');
+  globalRegex.lastIndex = 0;
+  for (const m of line.matchAll(globalRegex)) {
+    if (!isKnownExample(line, m)) return m;
+  }
+  return null;
 }
 
 /** Global config files that may contain secrets (outside project dir) */
@@ -100,9 +125,8 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         if (line.length > 4096) continue;
         if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
         for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = line.match(pattern.regex);
+          const match = findRealMatch(line, pattern);
           if (match) {
-            if (isKnownExample(line, match)) break;
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
             findings.push({
@@ -144,9 +168,8 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         }
 
         for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = line.match(pattern.regex);
+          const match = findRealMatch(line, pattern);
           if (match) {
-            if (isKnownExample(line, match)) break;
             // Mask the actual secret in the preview (replace ALL occurrences)
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
@@ -202,9 +225,8 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
           if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
           for (const pattern of CREDENTIAL_PATTERNS) {
-            const match = line.match(pattern.regex);
+            const match = findRealMatch(line, pattern);
             if (match) {
-              if (isKnownExample(line, match)) break;
               const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
               const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
 
