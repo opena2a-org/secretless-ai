@@ -25,6 +25,16 @@ function main(): void {
   const args = process.argv.slice(2);
   const command = args[0];
 
+  // Intercept `--help` / `-h` anywhere in the args BEFORE dispatching. Subcommand
+  // runners do not parse per-subcommand help, so without this guard `scan --help`
+  // would actually run the scanner, `init --help` would create a literal `--help/`
+  // directory, and `broker start --help` would launch the daemon. Print top-level
+  // help instead — a safe no-op. Regression: release-test 2026-04-14.
+  if (command && (args.includes('--help') || args.includes('-h'))) {
+    printHelp();
+    return;
+  }
+
   switch (command) {
     case 'init': {
       const dirArg = args[1];
