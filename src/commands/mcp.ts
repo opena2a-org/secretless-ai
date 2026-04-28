@@ -10,7 +10,7 @@ function getWrapperPath(): string {
   return path.resolve(__dirname, '..', 'mcp-wrapper.js');
 }
 
-export function runProtectMcp(args: string[]): void {
+export async function runProtectMcp(args: string[]): Promise<number> {
   console.log('\n  Secretless MCP Protection\n');
 
   const wrapperPath = getWrapperPath();
@@ -24,23 +24,24 @@ export function runProtectMcp(args: string[]): void {
       backendType = val;
     } else {
       console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
-      process.exit(1);
+      return 1;
     }
   }
 
-  protectMcp({ wrapperPath, backendType }).then((result) => {
+  try {
+    const result = await protectMcp({ wrapperPath, backendType });
     if (result.clientsScanned === 0) {
       console.log('  No MCP configurations found.\n');
       console.log('  Looked for configs from: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf');
       console.log('  Supported clients: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf\n');
-      return;
+      return 0;
     }
 
     console.log(`  Scanned ${result.clientsScanned} client(s)\n`);
 
     if (result.secretsFound === 0) {
       console.log('  No plaintext secrets found in MCP configs. Already clean.\n');
-      return;
+      return 0;
     }
 
     for (const server of result.servers) {
@@ -71,13 +72,14 @@ export function runProtectMcp(args: string[]): void {
     console.log('  MCP servers will start normally — no workflow changes needed.');
     console.log('  Run `npx secretless-ai mcp-status` to check status anytime.');
     console.log('  Run `npx secretless-ai mcp-unprotect` to restore originals.\n');
-  }).catch((err) => {
+    return 0;
+  } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }
 
-export function runMcpStatus(): void {
+export function runMcpStatus(): number {
   console.log('\n  Secretless MCP Status\n');
 
   const backend = resolveBackendType();
@@ -87,7 +89,7 @@ export function runMcpStatus(): void {
 
   if (configs.length === 0) {
     console.log('  No MCP configurations found.\n');
-    return;
+    return 0;
   }
 
   let protectedCount = 0;
@@ -117,9 +119,10 @@ export function runMcpStatus(): void {
   } else if (protectedCount > 0) {
     console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
   }
+  return 0;
 }
 
-export function runMcpUnprotect(): void {
+export function runMcpUnprotect(): number {
   console.log('\n  Secretless MCP Unprotect\n');
 
   const os = require('os');
@@ -141,4 +144,5 @@ export function runMcpUnprotect(): void {
   } else {
     console.log(`\n  Restored ${restored} config(s) to original state.\n`);
   }
+  return 0;
 }

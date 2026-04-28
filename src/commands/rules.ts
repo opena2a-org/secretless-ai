@@ -1,6 +1,6 @@
 import * as path from 'path';
 
-export function runRules(args: string[]): void {
+export function runRules(args: string[]): number {
   const {
     loadCustomRulesDetailed,
     customRulesToDenyRules,
@@ -17,12 +17,12 @@ export function runRules(args: string[]): void {
       if (result.status === 'missing') {
         console.log(`\n  No ${RULES_FILENAME} found in this directory.`);
         console.log(`  Create one: npx secretless-ai rules init\n`);
-        return;
+        return 0;
       }
       if (result.status === 'empty') {
         console.log(`\n  ${RULES_FILENAME} exists but has no active rules.`);
         console.log('  Uncomment or add patterns, then run: npx secretless-ai init\n');
-        return;
+        return 0;
       }
       const rules = result.rules!;
 
@@ -50,7 +50,7 @@ export function runRules(args: string[]): void {
       const denyRules = customRulesToDenyRules(rules);
       console.log(`\n  Generates ${denyRules.length} deny rules.`);
       console.log('  Run: npx secretless-ai init  (to apply)\n');
-      break;
+      return 0;
     }
 
     case 'init': {
@@ -59,13 +59,13 @@ export function runRules(args: string[]): void {
       if (nodeFs.existsSync(rulesPath)) {
         console.log(`\n  ${RULES_FILENAME} already exists.`);
         console.log('  Edit it directly or use: npx secretless-ai rules list\n');
-        return;
+        return 0;
       }
       nodeFs.writeFileSync(rulesPath, generateTemplate());
       console.log(`\n  Created ${RULES_FILENAME}`);
       console.log('  Edit it to add your organization-specific patterns.');
       console.log('  Then run: npx secretless-ai init  (to apply)\n');
-      break;
+      return 0;
     }
 
     case 'test': {
@@ -79,7 +79,7 @@ export function runRules(args: string[]): void {
         console.error('    secretless-ai rules test "ACME_*"              (auto-detects env)');
         console.error('    secretless-ai rules test "*.corp-secret"       (auto-detects file)');
         console.error('    secretless-ai rules test "curl*corp*" --bash   (force bash type)\n');
-        process.exit(1);
+        return 1;
       }
 
       const { envPatternToDenyRules, filePatternToDenyRules, validatePattern, globToShellRegex } =
@@ -88,7 +88,7 @@ export function runRules(args: string[]): void {
       if (!validatePattern(pattern)) {
         console.error(`\n  Invalid pattern: ${pattern}`);
         console.error('  Only alphanumeric, *, ., -, _, / characters allowed.\n');
-        process.exit(1);
+        return 1;
       }
 
       console.log(`\n  Testing pattern: ${pattern}\n`);
@@ -131,12 +131,12 @@ export function runRules(args: string[]): void {
       }
       console.log(`  Shell regex: ${globToShellRegex(pattern)}`);
       console.log();
-      break;
+      return 0;
     }
 
     default:
       console.error(`\n  Unknown rules subcommand: ${subcommand}`);
       console.error('  Usage: secretless-ai rules <list|init|test>\n');
-      process.exit(1);
+      return 1;
   }
 }

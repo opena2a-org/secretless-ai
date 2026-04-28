@@ -70,7 +70,7 @@ async function main(): Promise<number> {
   const startedAt = Date.now();
   let exitCode = 0;
   try {
-    exitCode = dispatch(args, command);
+    exitCode = await dispatch(args, command);
   } catch (err) {
     exitCode = 1;
     if (command) tele.error(command, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
@@ -84,124 +84,94 @@ async function main(): Promise<number> {
   return exitCode;
 }
 
-function dispatch(args: string[], command: string | undefined): number {
+async function dispatch(args: string[], command: string | undefined): Promise<number> {
   switch (command) {
     case 'init': {
       const dirArg = args[1];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      runInit(projectDir);
-      break;
+      return runInit(projectDir);
     }
     case 'scan': {
       if (args.includes('--history')) {
-        runScanHistory();
-        break;
+        return runScanHistory();
       }
       const includeTests = args.includes('--include-tests');
       const explain = args.includes('--explain');
       const positionalArgs = args.slice(1).filter(a => !a.startsWith('--'));
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      runScan(projectDir, { includeTests, explain });
-      break;
+      return runScan(projectDir, { includeTests, explain });
     }
     case 'status': {
       const dirArg = args[1];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      runStatus(projectDir);
-      break;
+      return runStatus(projectDir);
     }
     case 'verify': {
       const showAll = args.includes('--all');
       const positional = args.slice(1).filter(a => a !== '--all');
       const dirArg = positional[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      runVerify(projectDir, showAll);
-      break;
+      return runVerify(projectDir, showAll);
     }
     case 'doctor':
-      runDoctor(args.includes('--fix'));
-      break;
+      return runDoctor(args.includes('--fix'));
     case 'clean':
-      runClean(args.slice(1));
-      break;
+      return runClean(args.slice(1));
     case 'watch':
-      runWatch(args.slice(1));
-      break;
+      return runWatch(args.slice(1));
     case 'rules':
-      runRules(args.slice(1));
-      break;
+      return runRules(args.slice(1));
     case 'protect-mcp':
-      runProtectMcp(args.slice(1));
-      break;
+      return runProtectMcp(args.slice(1));
     case 'mcp-status':
-      runMcpStatus();
-      break;
+      return runMcpStatus();
     case 'mcp-unprotect':
-      runMcpUnprotect();
-      break;
+      return runMcpUnprotect();
     case 'backend':
-      runBackend(args.slice(1));
-      break;
+      return runBackend(args.slice(1));
     case 'migrate':
-      runMigrate(args.slice(1));
-      break;
+      return runMigrate(args.slice(1));
     case 'secret':
-      runSecret(args.slice(1));
-      break;
+      return runSecret(args.slice(1));
     case 'run':
-      runRun(args.slice(1));
-      break;
+      return runRun(args.slice(1));
     case 'env':
-      runEnv(args.slice(1));
-      break;
+      return runEnv(args.slice(1));
     case 'import':
-      runImport(args.slice(1));
-      break;
+      return runImport(args.slice(1));
     case 'setup':
-      runSetupCommand(args.slice(1));
-      break;
+      return runSetupCommand(args.slice(1));
     case 'hook':
-      runHook(args.slice(1));
-      break;
+      return runHook(args.slice(1));
     case 'scan-staged':
-      runScanStaged();
-      break;
+      return runScanStaged();
     case 'cache':
-      runCache(args.slice(1));
-      break;
+      return runCache(args.slice(1));
     case 'broker':
-      runBroker(args.slice(1));
-      break;
+      return runBroker(args.slice(1));
     case 'vault':
-      runVault(args.slice(1));
-      break;
+      return runVault(args.slice(1));
     case 'scope':
-      runScope(args.slice(1));
-      break;
+      return runScope(args.slice(1));
     case 'scan-history':
-      runScanHistory();
-      break;
+      return runScanHistory();
     case 'clean-history':
-      runCleanHistory(args.includes('--dry-run'));
-      break;
+      return runCleanHistory(args.includes('--dry-run'));
     case 'warm':
-      runWarm(args.slice(1));
-      break;
+      return runWarm(args.slice(1));
     case 'install':
-      runInstall(args.slice(1));
-      break;
+      return runInstall(args.slice(1));
     case '--help':
     case '-h':
     case undefined:
       printHelp();
-      break;
+      return 0;
     default:
       console.error(`Unknown command: ${command}`);
       printHelp();
       return 1;
   }
-  return 0;
 }
 
 main().then(

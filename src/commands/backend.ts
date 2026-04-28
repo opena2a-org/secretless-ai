@@ -6,17 +6,18 @@ import { clearCacheFile } from '../backends/cache';
 import { migrateSecrets } from '../backends/migrate';
 import type { SelectableBackendType } from '../backends/config';
 
-export function runBackend(args: string[]): void {
+export async function runBackend(args: string[]): Promise<number> {
   const subcommand = args[0];
 
   if (subcommand === 'list') {
     const backendType = resolveBackendType();
     const backend = createBackend(backendType);
 
-    Promise.all([
-      backend.resolve('mcp'),
-      backend.resolve('secret'),
-    ]).then(([mcpEntries, secretEntries]) => {
+    try {
+      const [mcpEntries, secretEntries] = await Promise.all([
+        backend.resolve('mcp'),
+        backend.resolve('secret'),
+      ]);
       const mcpKeys = Object.keys(mcpEntries).sort();
       const secretKeys = Object.keys(secretEntries).sort();
       const total = mcpKeys.length + secretKeys.length;
@@ -25,7 +26,7 @@ export function runBackend(args: string[]): void {
 
       if (total === 0) {
         console.log('  No entries found.\n');
-        return;
+        return 0;
       }
 
       if (mcpKeys.length > 0) {
@@ -45,11 +46,11 @@ export function runBackend(args: string[]): void {
       }
 
       console.log(`  Total: ${total} ${total === 1 ? 'entry' : 'entries'}\n`);
-    }).catch((err) => {
+      return 0;
+    } catch (err) {
       console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
-    });
-    return;
+      return 1;
+    }
   }
 
   if (subcommand === 'purge') {
@@ -60,7 +61,7 @@ export function runBackend(args: string[]): void {
       const val = args[prefixIdx + 1];
       if (val !== 'mcp' && val !== 'secret') {
         console.error(`\n  Unknown prefix: ${val}. Use 'mcp' or 'secret'.\n`);
-        process.exit(1);
+        return 1;
       }
       prefixFilter = val;
     }
@@ -69,7 +70,8 @@ export function runBackend(args: string[]): void {
     const backend = createBackend(backendType);
     const prefixes = prefixFilter ? [prefixFilter] : ['mcp', 'secret'];
 
-    Promise.all(prefixes.map(p => backend.resolve(p))).then(async (results) => {
+    try {
+      const results = await Promise.all(prefixes.map(p => backend.resolve(p)));
       const keysByPrefix: Record<string, string[]> = {};
       for (let i = 0; i < prefixes.length; i++) {
         const keys = Object.keys(results[i]);
@@ -81,7 +83,7 @@ export function runBackend(args: string[]): void {
       const allKeys = Object.values(keysByPrefix).flat();
       if (allKeys.length === 0) {
         console.log('\n  No entries to purge.\n');
-        return;
+        return 0;
       }
 
       if (!hasYes) {
@@ -90,7 +92,7 @@ export function runBackend(args: string[]): void {
           console.log(`  ${prefix}/:  ${keys.length}`);
         }
         console.log(`\n  To confirm, run: secretless-ai backend purge${prefixFilter ? ` --prefix ${prefixFilter}` : ''} --yes\n`);
-        return;
+        return 0;
       }
 
       let deleted = 0;
@@ -114,25 +116,25 @@ export function runBackend(args: string[]): void {
       }
       console.log('  Re-import secrets: npx secretless-ai import .env');
       console.log();
-    }).catch((err) => {
+      return 0;
+    } catch (err) {
       console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
-    });
-    return;
+      return 1;
+    }
   }
 
   if (subcommand === 'set') {
     const type = args[1];
     if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault' && type !== 'gcp-sm') {
       console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
-      process.exit(1);
+      return 1;
     }
 
     if (type === 'keychain') {
       const kc = isKeychainAvailable();
       if (!kc.available) {
         console.error(`\n  Cannot use keychain backend: ${kc.message}\n`);
-        process.exit(1);
+        return 1;
       }
     }
 
@@ -140,7 +142,7 @@ export function runBackend(args: string[]): void {
       const op = isOnePasswordAvailable();
       if (!op.available) {
         console.error(`\n  Cannot use 1Password backend: ${op.message}\n`);
-        process.exit(1);
+        return 1;
       }
     }
 
@@ -150,7 +152,7 @@ export function runBackend(args: string[]): void {
         console.error('  Set them in your shell profile:');
         console.error('    export VAULT_ADDR=http://127.0.0.1:8200');
         console.error('    export VAULT_TOKEN=<your-token>\n');
-        process.exit(1);
+        return 1;
       }
     }
 
@@ -158,7 +160,7 @@ export function runBackend(args: string[]): void {
       const gcp = isGCPAvailable();
       if (!gcp.available) {
         console.error(`\n  Cannot use GCP Secret Manager backend: ${gcp.message}\n`);
-        process.exit(1);
+        return 1;
       }
     }
 
@@ -166,7 +168,7 @@ export function runBackend(args: string[]): void {
     console.log(`\n  Backend set to: ${type}\n`);
     console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
     console.log('  Or use `npx secretless-ai migrate` to migrate existing secrets.\n');
-    return;
+    return 0;
   }
 
   // Default: show current backend status
@@ -196,9 +198,10 @@ export function runBackend(args: string[]): void {
   console.log('    npx secretless-ai backend list             List all stored entries');
   console.log('    npx secretless-ai backend purge            Delete all entries (--yes to confirm)');
   console.log();
+  return 0;
 }
 
-export function runMigrate(args: string[]): void {
+export async function runMigrate(args: string[]): Promise<number> {
   let fromType: SelectableBackendType | undefined;
   let toType: SelectableBackendType | undefined;
 
@@ -210,7 +213,7 @@ export function runMigrate(args: string[]): void {
         fromType = val as SelectableBackendType;
       } else {
         console.error(`\n  Unknown backend type: ${val}. Valid: ${validBackends.join(', ')}\n`);
-        process.exit(1);
+        return 1;
       }
     }
     if (args[i] === '--to' && args[i + 1]) {
@@ -219,19 +222,19 @@ export function runMigrate(args: string[]): void {
         toType = val as SelectableBackendType;
       } else {
         console.error(`\n  Unknown backend type: ${val}. Valid: ${validBackends.join(', ')}\n`);
-        process.exit(1);
+        return 1;
       }
     }
   }
 
   if (!fromType || !toType) {
     console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password|vault|gcp-sm> --to <local|keychain|1password|vault|gcp-sm>\n');
-    process.exit(1);
+    return 1;
   }
 
   if (fromType === toType) {
     console.error(`\n  Source and destination backends are the same: ${fromType}\n`);
-    process.exit(1);
+    return 1;
   }
 
   // Validate vault env vars before attempting migration
@@ -241,7 +244,7 @@ export function runMigrate(args: string[]): void {
     console.error('  Set them in your shell:');
     console.error('    export VAULT_ADDR=http://127.0.0.1:8200');
     console.error('    export VAULT_TOKEN=<your-token>\n');
-    process.exit(1);
+    return 1;
   }
 
   // Validate GCP credentials before attempting migration
@@ -250,7 +253,7 @@ export function runMigrate(args: string[]): void {
     const gcp = isGCPAvailable();
     if (!gcp.available) {
       console.error(`\n  GCP Secret Manager backend requires credentials: ${gcp.message}\n`);
-      process.exit(1);
+      return 1;
     }
   }
 
@@ -265,10 +268,11 @@ export function runMigrate(args: string[]): void {
   // for empty prefix -- we need to resolve each prefix explicitly.
   const PREFIXES = ['secret', 'mcp'];
 
-  Promise.all(
-    PREFIXES.map(p => migrateSecrets(source, destination, { deleteFromSource: false, prefix: p }))
-  ).then((results) => {
-    return results.reduce(
+  try {
+    const perPrefix = await Promise.all(
+      PREFIXES.map(p => migrateSecrets(source, destination, { deleteFromSource: false, prefix: p }))
+    );
+    const result = perPrefix.reduce(
       (acc, r) => ({
         migrated: acc.migrated + r.migrated,
         failed: acc.failed + r.failed,
@@ -276,10 +280,10 @@ export function runMigrate(args: string[]): void {
       }),
       { migrated: 0, failed: 0, errors: [] as Array<{ key: string; message: string }> },
     );
-  }).then((result) => {
+
     if (result.migrated === 0 && result.failed === 0) {
       console.log('  No secrets found to migrate.\n');
-      return;
+      return 0;
     }
 
     console.log(`  Migrated: ${result.migrated} secret(s)`);
@@ -295,13 +299,14 @@ export function runMigrate(args: string[]): void {
     writeBackendConfig(toType!);
     console.log(`  Backend config updated to: ${toType}`);
     console.log('  Run `npx secretless-ai protect-mcp` to update MCP wrapper configs.\n');
-  }).catch((err) => {
+    return result.failed > 0 ? 1 : 0;
+  } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }
 
-export function runCache(args: string[]): void {
+export function runCache(args: string[]): number {
   const subcommand = args[0];
 
   if (subcommand === 'clear') {
@@ -311,7 +316,7 @@ export function runCache(args: string[]): void {
     } else {
       console.log('\n  No cache file found.\n');
     }
-    return;
+    return 0;
   }
 
   if (subcommand === 'ttl') {
@@ -321,13 +326,13 @@ export function runCache(args: string[]): void {
       // Show current TTL
       const current = readCacheTtl();
       console.log(`\n  Cache TTL: ${formatTtl(current)}${current <= 0 ? ' (disabled)' : ''}\n`);
-      return;
+      return 0;
     }
 
     const seconds = parseDuration(value);
     if (seconds < 0) {
       console.error(`\n  Invalid duration: "${value}". Use: 5m, 1h, 1d, 300, or off\n`);
-      process.exit(1);
+      return 1;
     }
 
     writeCacheTtl(seconds);
@@ -338,7 +343,7 @@ export function runCache(args: string[]): void {
     } else {
       console.log(`\n  Cache TTL set to ${formatTtl(seconds)}.\n`);
     }
-    return;
+    return 0;
   }
 
   // Default: show cache status
@@ -362,4 +367,5 @@ export function runCache(args: string[]): void {
   console.log('    secretless-ai cache ttl <duration>  Set cache TTL (5m, 1h, 1d, off)');
   console.log('    secretless-ai cache clear           Clear cached secrets');
   console.log();
+  return 0;
 }

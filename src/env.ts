@@ -10,7 +10,7 @@
  * export lines.
  *
  * Security:
- *   - Only outputs to TTY or when stdout is piped to eval (no AI tool capture)
+ *   - Output goes only to a TTY or to a shell `eval` consumer; AI tools never capture it.
  *   - Values are single-quoted to prevent shell expansion
  *   - The eval pattern means secrets never touch disk as plaintext
  */

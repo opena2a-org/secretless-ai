@@ -17,65 +17,59 @@ import {
   vaultMigrate,
 } from '../vault-core';
 
-export function runVault(args: string[]): void {
+export async function runVault(args: string[]): Promise<number> {
   const subcommand = args[0];
 
   switch (subcommand) {
     case 'init':
-      handleInit(args.slice(1));
-      break;
+      return handleInit(args.slice(1));
     case 'register':
-      handleRegister(args.slice(1));
-      break;
+      return handleRegister(args.slice(1));
     case 'list':
     case 'ls':
-      handleList();
-      break;
+      return handleList();
     case 'rotate':
-      handleRotate(args.slice(1));
-      break;
+      return handleRotate(args.slice(1));
     case 'revoke':
-      handleRevoke(args.slice(1));
-      break;
+      return handleRevoke(args.slice(1));
     case 'audit':
-      handleAudit(args.slice(1));
-      break;
+      return handleAudit(args.slice(1));
     case 'scan':
-      handleScan(args.slice(1));
-      break;
+      return handleScan(args.slice(1));
     case 'exec':
-      handleExec(args.slice(1));
-      break;
+      return handleExec(args.slice(1));
     case 'test':
-      handleTest();
-      break;
+      return handleTest();
     case 'migrate':
-      handleMigrate(args.slice(1));
-      break;
+      return handleMigrate(args.slice(1));
     case '--help':
     case '-h':
       printVaultHelp();
-      break;
+      return 0;
     default: {
       const isUnknown = subcommand && subcommand !== '--help' && subcommand !== '-h';
       if (isUnknown) {
         console.error(`\n  Unknown vault command: ${subcommand}`);
       }
       printVaultHelp();
-      if (isUnknown) process.exit(1);
-      break;
+      return isUnknown ? 1 : 0;
     }
   }
 }
 
 // ── Subcommand handlers ────────────────────────────────────────────
 
-function handleInit(args: string[]): void {
+async function handleInit(args: string[]): Promise<number> {
   const agentName = parseFlag(args, '--name');
-  vaultInit(agentName ?? undefined).catch(handleError);
+  try {
+    await vaultInit(agentName ?? undefined);
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleRegister(args: string[]): void {
+async function handleRegister(args: string[]): Promise<number> {
   const namespace = args[0];
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Usage: secretless-ai vault register <namespace> [options]\n');
@@ -85,8 +79,7 @@ function handleRegister(args: string[]): void {
     console.error('    --description <desc>  Namespace description');
     console.error('    --operations <ops>    Comma-separated: read,write,delete,admin');
     console.error('    --url-patterns <pats> Comma-separated URL patterns\n');
-    process.exit(1);
-    return;
+    return 1;
   }
 
   const value = parseFlag(args, '--value');
@@ -100,65 +93,93 @@ function handleRegister(args: string[]): void {
     : undefined;
   const urlPatterns = urlStr ? urlStr.split(',').map(u => u.trim()) : undefined;
 
-  vaultRegister(namespace, {
-    value: value ?? undefined,
-    envVar: envVar ?? undefined,
-    description: description ?? undefined,
-    operations,
-    urlPatterns,
-  }).catch(handleError);
+  try {
+    await vaultRegister(namespace, {
+      value: value ?? undefined,
+      envVar: envVar ?? undefined,
+      description: description ?? undefined,
+      operations,
+      urlPatterns,
+    });
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleList(): void {
-  vaultList().catch(handleError);
+async function handleList(): Promise<number> {
+  try {
+    await vaultList();
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleRotate(args: string[]): void {
+async function handleRotate(args: string[]): Promise<number> {
   const namespace = args[0];
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Usage: secretless-ai vault rotate <namespace> [--value <value>] [--env <VAR>]\n');
-    process.exit(1);
-    return;
+    return 1;
   }
 
   const value = parseFlag(args, '--value');
   const envVar = parseFlag(args, '--env');
 
-  vaultRotate(namespace, {
-    value: value ?? undefined,
-    envVar: envVar ?? undefined,
-  }).catch(handleError);
+  try {
+    await vaultRotate(namespace, {
+      value: value ?? undefined,
+      envVar: envVar ?? undefined,
+    });
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleRevoke(args: string[]): void {
+async function handleRevoke(args: string[]): Promise<number> {
   const namespace = args[0];
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Usage: secretless-ai vault revoke <namespace>\n');
-    process.exit(1);
-    return;
+    return 1;
   }
 
-  vaultRevoke(namespace).catch(handleError);
+  try {
+    await vaultRevoke(namespace);
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleAudit(args: string[]): void {
+async function handleAudit(args: string[]): Promise<number> {
   const limitStr = parseFlag(args, '--limit');
   const since = parseFlag(args, '--since');
   const namespace = parseFlag(args, '--namespace');
 
-  vaultAudit({
-    limit: limitStr ? parseInt(limitStr, 10) : undefined,
-    since: since ?? undefined,
-    namespace: namespace ?? undefined,
-  }).catch(handleError);
+  try {
+    await vaultAudit({
+      limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      since: since ?? undefined,
+      namespace: namespace ?? undefined,
+    });
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleScan(args: string[]): void {
+async function handleScan(args: string[]): Promise<number> {
   const dir = args.find(a => !a.startsWith('-'));
-  vaultScan(dir).catch(handleError);
+  try {
+    await vaultScan(dir);
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleExec(args: string[]): void {
+async function handleExec(args: string[]): Promise<number> {
   // Parse: vault exec <namespace> [--env-name VAR] -- <command...>
   const dashDashIdx = args.indexOf('--');
   if (dashDashIdx === -1) {
@@ -166,8 +187,7 @@ function handleExec(args: string[]): void {
     console.error('  Example:');
     console.error('    secretless-ai vault exec github -- curl https://api.github.com/user');
     console.error('    secretless-ai vault exec aws-prod --env-name AWS_SECRET_ACCESS_KEY -- aws s3 ls\n');
-    process.exit(1);
-    return;
+    return 1;
   }
 
   const preArgs = args.slice(0, dashDashIdx);
@@ -176,31 +196,42 @@ function handleExec(args: string[]): void {
   const namespace = preArgs[0];
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Error: namespace is required before --\n');
-    process.exit(1);
-    return;
+    return 1;
   }
 
   const envName = parseFlag(preArgs, '--env-name');
 
-  vaultExec(namespace, command, {
-    envName: envName ?? undefined,
-  }).then((code) => {
-    process.exit(code);
-  }).catch(handleError);
+  try {
+    return await vaultExec(namespace, command, {
+      envName: envName ?? undefined,
+    });
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleTest(): void {
-  vaultTest().catch(handleError);
+async function handleTest(): Promise<number> {
+  try {
+    await vaultTest();
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
-function handleMigrate(args: string[]): void {
+async function handleMigrate(args: string[]): Promise<number> {
   const dryRun = args.includes('--dry-run');
   const envFile = parseFlag(args, '--env-file');
 
-  vaultMigrate({
-    dryRun,
-    envFile: envFile ?? undefined,
-  }).catch(handleError);
+  try {
+    await vaultMigrate({
+      dryRun,
+      envFile: envFile ?? undefined,
+    });
+    return 0;
+  } catch (err) {
+    return handleError(err);
+  }
 }
 
 // ── Help ───────────────────────────────────────────────────────────
@@ -262,8 +293,8 @@ function parseFlag(args: string[], flag: string): string | null {
   return args[idx + 1];
 }
 
-function handleError(err: unknown): void {
+function handleError(err: unknown): number {
   const message = err instanceof Error ? err.message : String(err);
   console.error(`\n  Error: ${message}\n`);
-  process.exit(1);
+  return 1;
 }
