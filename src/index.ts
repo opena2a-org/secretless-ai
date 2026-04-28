@@ -19,7 +19,7 @@ export {
 
 // Backend management
 export {
-  createBackend, isKeychainAvailable,
+  createBackend, isKeychainAvailable, isKeychainLikely, isOnePasswordAvailable, isOnePasswordLikely,
   resolveBackendType, readBackendConfig, writeBackendConfig,
   migrateSecrets,
   LocalBackend, MacOSKeychainBackend, LinuxKeychainBackend, VaultBackend,

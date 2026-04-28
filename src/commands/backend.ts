@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { isKeychainAvailable, isOnePasswordAvailable, createBackend } from '../backends/factory';
+import { isKeychainAvailable, isKeychainLikely, isOnePasswordAvailable, isOnePasswordLikely, createBackend } from '../backends/factory';
 import { isGCPAvailable } from '../backends/gcp-sm';
 import { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl, writeCacheTtl, parseDuration, formatTtl } from '../backends/config';
 import { clearCacheFile } from '../backends/cache';
@@ -171,17 +171,21 @@ export async function runBackend(args: string[]): Promise<number> {
     return 0;
   }
 
-  // Default: show current backend status
+  // Default: show current backend status.
+  // Use the prompt-free *Likely() probes so listing the available backends
+  // never triggers Touch ID or a "1Password Access Requested" dialog. Run
+  // `npx secretless-ai backend set <type>` to invoke the active probe when
+  // the user actually wants to switch.
   const current = resolveBackendType();
   const configFile = readBackendConfig();
-  const kc = isKeychainAvailable();
-  const op = isOnePasswordAvailable();
+  const kc = isKeychainLikely();
+  const op = isOnePasswordLikely();
 
   console.log('\n  Secretless Backend\n');
   console.log(`  Current:      ${current}${configFile ? '' : ' (default)'}`);
   console.log(`  Config file:  ${configFile ?? '(not set)'}`);
-  console.log(`  Keychain:     ${kc.available ? 'available' : 'unavailable'} (${kc.message})`);
-  console.log(`  1Password:    ${op.available ? 'available' : 'unavailable'} (${op.message})`);
+  console.log(`  Keychain:     ${kc.available ? 'likely available' : 'unavailable'} (${kc.message})`);
+  console.log(`  1Password:    ${op.available ? 'likely available' : 'unavailable'} (${op.message})`);
   const vaultAddr = process.env.VAULT_ADDR;
   const vaultConfigured = !!(vaultAddr && process.env.VAULT_TOKEN);
   console.log(`  Vault:        ${vaultConfigured ? 'configured' : 'not configured'} (${vaultConfigured ? vaultAddr : 'set VAULT_ADDR + VAULT_TOKEN'})`);
