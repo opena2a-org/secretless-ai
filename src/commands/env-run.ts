@@ -4,7 +4,7 @@ import { importEnvFile, detectEnvFiles } from '../env-import';
 import { runSetup } from '../setup';
 import { generateEnvExports } from '../env';
 
-export function runRun(args: string[]): void {
+export async function runRun(args: string[]): Promise<number> {
   // Parse --only flag before --
   let only: string[] | undefined;
   const separatorIdx = args.indexOf('--');
@@ -21,28 +21,28 @@ export function runRun(args: string[]): void {
   // Everything after -- is the child command
   if (separatorIdx === -1 || separatorIdx >= args.length - 1) {
     console.error('\n  Usage: secretless-ai run [--only KEY1,KEY2] -- <command> [args...]\n');
-    process.exit(1);
+    return 1;
   }
 
   const childCommand = args[separatorIdx + 1];
   const childArgs = args.slice(separatorIdx + 2);
 
-  runWithSecrets(childCommand, childArgs, { only }).then((code) => {
-    process.exit(code);
-  }).catch((err) => {
+  try {
+    return await runWithSecrets(childCommand, childArgs, { only });
+  } catch (err) {
     console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }
 
-export function runEnv(args: string[]): void {
+export async function runEnv(args: string[]): Promise<number> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('\n  Usage: eval $(secretless-ai env [--only KEY1,KEY2])');
     console.log('\n  Export secrets as shell environment variables.');
     console.log('  Designed for use with eval in shell profiles.\n');
     console.log('  Options:');
     console.log('    --only KEY1,KEY2   Export only the specified secrets\n');
-    return;
+    return 0;
   }
 
   // Parse --only flag
@@ -60,18 +60,20 @@ export function runEnv(args: string[]): void {
     process.stderr.write('  Intended usage: eval $(secretless-ai env)\n\n');
   }
 
-  generateEnvExports({ only }).then((output) => {
+  try {
+    const output = await generateEnvExports({ only });
     if (output) {
       process.stdout.write(output + '\n');
     }
-  }).catch((err) => {
+    return 0;
+  } catch (err) {
     // Silently fail — this runs inside eval in shell profiles.
     process.stderr.write(`secretless: env: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }
 
-export function runImport(args: string[]): void {
+export async function runImport(args: string[]): Promise<number> {
   console.log('\n  Secretless Import\n');
 
   if (args.includes('--detect')) {
@@ -79,36 +81,30 @@ export function runImport(args: string[]): void {
     const files = detectEnvFiles(dir);
     if (files.length === 0) {
       console.log('  No .env files found in current directory.\n');
-      return;
+      return 0;
     }
 
     let totalImported = 0;
-    const importNext = (idx: number): void => {
-      if (idx >= files.length) {
-        console.log(`\n  Total: ${totalImported} secret(s) imported.\n`);
-        return;
-      }
-      const file = files[idx];
-      importEnvFile(file).then((result) => {
+    for (const file of files) {
+      try {
+        const result = await importEnvFile(file);
         console.log(`  ${path.basename(file)}: ${result.imported} imported`);
         if (result.skipped > 0) {
           console.log(`    (${result.skipped} skipped — invalid names)`);
         }
         totalImported += result.imported;
-        importNext(idx + 1);
-      }).catch((err) => {
+      } catch (err) {
         console.error(`  Error importing ${file}: ${err instanceof Error ? err.message : String(err)}`);
-        importNext(idx + 1);
-      });
-    };
-    importNext(0);
-    return;
+      }
+    }
+    console.log(`\n  Total: ${totalImported} secret(s) imported.\n`);
+    return 0;
   }
 
   const filePath = args[0];
   if (!filePath) {
     console.error('  Usage: secretless-ai import <file> or secretless-ai import --detect\n');
-    process.exit(1);
+    return 1;
   }
 
   const resolvedPath = path.resolve(filePath);
@@ -116,13 +112,14 @@ export function runImport(args: string[]): void {
   if (!nodeFs.existsSync(resolvedPath)) {
     console.error(`  File not found: ${filePath}`);
     console.error('  Check the path and try again.\n');
-    process.exit(1);
+    return 1;
   }
-  importEnvFile(resolvedPath).then((result) => {
+  try {
+    const result = await importEnvFile(resolvedPath);
     if (result.imported === 0) {
       console.log('  No secrets found in file.');
       console.log('  Expected format: KEY=value (one per line)\n');
-      return;
+      return 0;
     }
 
     console.log(`  Imported ${result.imported} secret(s) from ${path.basename(resolvedPath)}:\n`);
@@ -133,19 +130,21 @@ export function runImport(args: string[]): void {
       console.log(`\n  Skipped: ${result.skipped} (invalid names)`);
     }
     console.log();
-  }).catch((err) => {
+    return 0;
+  } catch (err) {
     console.error(`  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }
 
-export function runSetupCommand(args: string[]): void {
+export async function runSetupCommand(args: string[]): Promise<number> {
   const checkOnly = args.includes('--check');
   const dir = process.cwd();
 
   console.log('\n  Secretless Setup\n');
 
-  runSetup(dir, { check: checkOnly }).then((result) => {
+  try {
+    const result = await runSetup(dir, { check: checkOnly });
     if (checkOnly) {
       console.log(`  Satisfied: ${result.existing} secret(s)`);
       console.log(`  Missing:   ${result.missing} required`);
@@ -158,11 +157,10 @@ export function runSetupCommand(args: string[]): void {
         }
         console.log();
         console.log('  FAIL: Run `secretless-ai setup` to configure missing secrets.\n');
-        process.exit(1);
-      } else {
-        console.log('  PASS: All required secrets are configured.\n');
+        return 1;
       }
-      return;
+      console.log('  PASS: All required secrets are configured.\n');
+      return 0;
     }
 
     if (result.set > 0 || result.existing > 0) {
@@ -170,8 +168,9 @@ export function runSetupCommand(args: string[]): void {
       console.log(`  Existing: ${result.existing}`);
       console.log(`  Skipped:  ${result.skipped} (optional)\n`);
     }
-  }).catch((err) => {
+    return 0;
+  } catch (err) {
     console.error(`  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }

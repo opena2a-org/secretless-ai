@@ -3,7 +3,7 @@ import { cleanTranscripts } from '../transcript';
 import { startWatch, stopWatch, isWatchRunning, installLaunchAgent, uninstallLaunchAgent } from '../watch';
 import { scanHistory, cleanHistory } from '../history';
 
-export function runClean(args: string[]): void {
+export function runClean(args: string[]): number {
   const dryRun = args.includes('--dry-run');
   const lastSession = args.includes('--last');
   let targetPath: string | undefined;
@@ -31,7 +31,7 @@ export function runClean(args: string[]): void {
   if (result.totalFindings === 0) {
     console.log(`  Scanned: ${result.filesScanned} files`);
     console.log('  No credentials found. Transcripts are clean.\n');
-    return;
+    return 0;
   }
 
   // Group findings by file
@@ -58,21 +58,22 @@ export function runClean(args: string[]): void {
   } else {
     console.log(`  Redacted: ${result.totalRedacted}\n`);
   }
+  return 0;
 }
 
-export function runWatch(args: string[]): void {
+export function runWatch(args: string[]): number {
   const action = args[0];
 
   switch (action) {
     case 'start':
       if (isWatchRunning()) {
         console.log('\n  Watcher is already running.\n');
-        return;
+        return 0;
       }
       console.log('\n  Starting Secretless transcript watcher...');
       console.log('  Press Ctrl+C to stop.\n');
       startWatch();
-      break;
+      return 0;
 
     case 'stop':
       if (stopWatch()) {
@@ -80,7 +81,7 @@ export function runWatch(args: string[]): void {
       } else {
         console.log('\n  No watcher is running.\n');
       }
-      break;
+      return 0;
 
     case 'status':
       if (isWatchRunning()) {
@@ -89,7 +90,7 @@ export function runWatch(args: string[]): void {
         console.log('\n  Watcher: not running');
         console.log('  Start: npx secretless-ai watch start\n');
       }
-      break;
+      return 0;
 
     case 'install':
       if (installLaunchAgent()) {
@@ -99,7 +100,7 @@ export function runWatch(args: string[]): void {
       } else {
         console.log('\n  LaunchAgent installation is only supported on macOS.\n');
       }
-      break;
+      return 0;
 
     case 'uninstall':
       if (uninstallLaunchAgent()) {
@@ -108,12 +109,13 @@ export function runWatch(args: string[]): void {
       } else {
         console.log('\n  No LaunchAgent found to remove.\n');
       }
-      break;
+      return 0;
 
     case '--help':
     case '-h':
-    default:
-      if (action && action !== '--help' && action !== '-h') {
+    default: {
+      const isUnknown = !!action && action !== '--help' && action !== '-h';
+      if (isUnknown) {
         console.error(`\n  Unknown watch action: ${action}`);
       }
       console.log('\n  Usage: secretless-ai watch <start|stop|status|install|uninstall>\n');
@@ -123,20 +125,21 @@ export function runWatch(args: string[]): void {
       console.log('    status     Show watcher status');
       console.log('    install    Install as macOS LaunchAgent');
       console.log('    uninstall  Remove LaunchAgent\n');
-      if (action && action !== '--help' && action !== '-h') process.exit(1);
-      break;
+      return isUnknown ? 1 : 0;
+    }
   }
 }
 
-export function runScanHistory(): void {
+export async function runScanHistory(): Promise<number> {
   console.log('\n  Shell History Scanner\n');
 
-  scanHistory().then((result) => {
+  try {
+    const result = await scanHistory();
     console.log(`  Files scanned: ${result.filesScanned}`);
 
     if (result.findingCount === 0) {
       console.log('  No credentials found in shell history.\n');
-      return;
+      return 0;
     }
 
     console.log(`  Found ${result.findingCount} credential(s):\n`);
@@ -149,21 +152,22 @@ export function runScanHistory(): void {
 
     console.log('  Run `npx secretless-ai clean-history` to redact credentials.');
     console.log('  Run `npx secretless-ai clean-history --dry-run` to preview changes.\n');
-    process.exit(1);
-  }).catch((err) => {
+    return 1;
+  } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }
 
-export function runCleanHistory(dryRun: boolean): void {
+export async function runCleanHistory(dryRun: boolean): Promise<number> {
   if (dryRun) {
     console.log('\n  Shell History Cleaner (dry run)\n');
   } else {
     console.log('\n  Shell History Cleaner\n');
   }
 
-  cleanHistory(dryRun).then((result) => {
+  try {
+    const result = await cleanHistory(dryRun);
     console.log(`  Files scanned:  ${result.filesScanned}`);
     console.log(`  Files modified: ${result.filesModified}`);
     console.log(`  Lines redacted: ${result.linesRedacted}`);
@@ -182,8 +186,9 @@ export function runCleanHistory(dryRun: boolean): void {
     } else {
       console.log('\n  History cleaned. Backups saved with .bak extension.\n');
     }
-  }).catch((err) => {
+    return 0;
+  } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }

@@ -13,7 +13,7 @@ import { VERSION, formatUptime, formatRemainingTime } from './utils';
 import { explainFinding, isEngineAvailable } from '../nanomind';
 import { c, divider } from './colors';
 
-export function runInit(projectDir: string): void {
+export function runInit(projectDir: string): number {
   console.log('\n  Secretless v' + VERSION);
   console.log('  Keeping secrets out of AI\n');
 
@@ -87,16 +87,18 @@ export function runInit(projectDir: string): void {
   if (process.stdout.isTTY) {
     console.log('  Helpful? Star the project: https://github.com/opena2a-org/secretless-ai\n');
   }
+
+  return 0;
 }
 
-export function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean }): void {
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean }): Promise<number> {
   console.log('\n  Secretless Scanner\n');
 
   const nodeFs = require('fs') as typeof import('fs');
   if (!nodeFs.existsSync(projectDir)) {
     console.error(`  Directory not found: ${projectDir}`);
     console.error('  Check the path and try again.\n');
-    process.exit(1);
+    return 1;
   }
 
   const findings = scan(projectDir, { includeTests: options?.includeTests });
@@ -104,17 +106,16 @@ export function runScan(projectDir: string, options?: { includeTests?: boolean; 
   if (findings.length === 0) {
     console.log('  No hardcoded credentials found.');
     console.log('  Verify keys are working: npx secretless-ai verify\n');
-    return;
+    return 0;
   }
 
   // If --explain requested, use NanoMind engine for rich context
   if (options?.explain) {
-    runScanWithExplanations(findings).then((code) => process.exit(code));
-    return;
+    return runScanWithExplanations(findings);
   }
 
   printFindings(findings);
-  process.exit(findings.length > 0 ? 1 : 0);
+  return findings.length > 0 ? 1 : 0;
 }
 
 function printFindings(findings: ReturnType<typeof scan>): void {
@@ -187,7 +188,7 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
   return findings.length > 0 ? 1 : 0;
 }
 
-export function runStatus(projectDir: string): void {
+export function runStatus(projectDir: string): number {
   console.log('\n  Secretless Status\n');
 
   const s = status(projectDir);
@@ -248,9 +249,10 @@ export function runStatus(projectDir: string): void {
   }
 
   console.log();
+  return 0;
 }
 
-export function runVerify(projectDir: string, showAll = false): void {
+export function runVerify(projectDir: string, showAll = false): number {
   console.log(`\n  ${c.boldWhite('Secretless Verify')}\n`);
 
   const result = verify(projectDir);
@@ -314,7 +316,7 @@ export function runVerify(projectDir: string, showAll = false): void {
       console.log(`  ${c.cyan('Redact transcripts:')} npx secretless-ai clean`);
     }
     console.log();
-    process.exit(1);
+    return 1;
   } else {
     console.log(`  ${c.boldYellow('WARN')} ${c.yellow('No API keys found in env vars.')}`);
 
@@ -328,12 +330,13 @@ export function runVerify(projectDir: string, showAll = false): void {
     console.log(divider('Next Steps'));
     console.log(`  ${c.cyan('Diagnose:')} npx secretless-ai doctor`);
     console.log();
-    process.exit(1);
+    return 1;
   }
   console.log();
+  return 0;
 }
 
-export function runDoctor(autoFix: boolean): void {
+export function runDoctor(autoFix: boolean): number {
   console.log('\n  Secretless Doctor\n');
 
   const result = doctor();
@@ -388,7 +391,7 @@ export function runDoctor(autoFix: boolean): void {
         console.log(`    Created ~/${fix.targetProfile}`);
       }
       console.log('    Restart your terminal for changes to take effect.\n');
-      return;
+      return 0;
     }
   }
 
@@ -402,6 +405,7 @@ export function runDoctor(autoFix: boolean): void {
 
   if (result.health !== 'healthy') {
     console.log('  Run `npx secretless-ai doctor --fix` to auto-fix.\n');
-    process.exit(1);
+    return 1;
   }
+  return 0;
 }

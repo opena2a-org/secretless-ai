@@ -4,7 +4,7 @@ import { getSessionStatus } from '../session/session-state';
 import { installDaemon, uninstallDaemon, isDaemonInstalled } from '../session/install';
 import { formatRemainingTime } from './utils';
 
-export function runWarm(args: string[]): void {
+export async function runWarm(args: string[]): Promise<number> {
   // Parse --ttl flag (accepts seconds or duration strings like 5m, 1h, 1d)
   let ttlSeconds: number | undefined;
   for (let i = 0; i < args.length; i++) {
@@ -15,7 +15,7 @@ export function runWarm(args: string[]): void {
         ttlSeconds = parsed;
       } else {
         console.error(`\n  Invalid TTL: ${raw}. Examples: 300, 5m, 1h, 1d\n`);
-        process.exit(1);
+        return 1;
       }
     }
   }
@@ -31,17 +31,17 @@ export function runWarm(args: string[]): void {
     console.log(`  Expires in:   ${formatRemainingTime(current.remainingSeconds)}`);
     console.log(`  Expires at:   ${current.expiresAt}`);
     console.log();
-    return;
+    return 0;
   }
 
   console.log('  Warming session...');
 
-  warm(ttlSeconds, !noBroker).then((result) => {
+  try {
+    const result = await warm(ttlSeconds, !noBroker);
     if (!result.sessionWarm) {
       console.error(`  Session warming failed.${result.error ? ` ${result.error}` : ''}`);
       console.log('  Try again or check system authentication settings.\n');
-      process.exit(1);
-      return;
+      return 1;
     }
 
     console.log('  Session is warm.\n');
@@ -64,20 +64,20 @@ export function runWarm(args: string[]): void {
     }
 
     console.log('\n  You can now use AI tools without repeated auth prompts.\n');
-  }).catch((err) => {
+    return 0;
+  } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+    return 1;
+  }
 }
 
-export function runInstall(args: string[]): void {
+export function runInstall(args: string[]): number {
   const subcommand = args[0];
 
   if (subcommand === 'uninstall' || subcommand === 'remove') {
     const result = uninstallDaemon();
     console.log(`\n  ${result.message}\n`);
-    if (!result.removed) process.exit(1);
-    return;
+    return result.removed ? 0 : 1;
   }
 
   if (subcommand === 'status' || subcommand === 'check') {
@@ -87,7 +87,7 @@ export function runInstall(args: string[]): void {
       console.log('  Install: npx secretless-ai install');
     }
     console.log();
-    return;
+    return 0;
   }
 
   // Reject unknown subcommands
@@ -97,7 +97,7 @@ export function runInstall(args: string[]): void {
     console.log('    secretless-ai install              Install broker as login daemon');
     console.log('    secretless-ai install uninstall     Remove login daemon');
     console.log('    secretless-ai install status        Check installation status\n');
-    process.exit(1);
+    return 1;
   }
 
   // Default: install
@@ -115,8 +115,8 @@ export function runInstall(args: string[]): void {
       console.log('  Broker daemon will start automatically on login.');
       console.log('  Warm your session: npx secretless-ai warm\n');
     }
-  } else {
-    console.log(`  ${result.message}\n`);
-    process.exit(1);
+    return 0;
   }
+  console.log(`  ${result.message}\n`);
+  return 1;
 }

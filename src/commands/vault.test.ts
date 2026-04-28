@@ -82,9 +82,8 @@ describe('runVault CLI dispatch', () => {
     });
   });
 
-  it('dispatches "register" without namespace shows usage and exits', () => {
-    runVault(['register']);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+  it('dispatches "register" without namespace shows usage and exits', async () => {
+    expect(await runVault(['register'])).toBe(1);
     expect(vaultRegister).not.toHaveBeenCalled();
   });
 
@@ -106,9 +105,8 @@ describe('runVault CLI dispatch', () => {
     });
   });
 
-  it('dispatches "rotate" without namespace shows usage and exits', () => {
-    runVault(['rotate']);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+  it('dispatches "rotate" without namespace shows usage and exits', async () => {
+    expect(await runVault(['rotate'])).toBe(1);
     expect(vaultRotate).not.toHaveBeenCalled();
   });
 
@@ -117,9 +115,8 @@ describe('runVault CLI dispatch', () => {
     expect(vaultRevoke).toHaveBeenCalledWith('github');
   });
 
-  it('dispatches "revoke" without namespace shows usage and exits', () => {
-    runVault(['revoke']);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+  it('dispatches "revoke" without namespace shows usage and exits', async () => {
+    expect(await runVault(['revoke'])).toBe(1);
     expect(vaultRevoke).not.toHaveBeenCalled();
   });
 
@@ -155,9 +152,8 @@ describe('runVault CLI dispatch', () => {
     );
   });
 
-  it('dispatches "exec" without -- shows usage and exits', () => {
-    runVault(['exec', 'github', 'curl']);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+  it('dispatches "exec" without -- shows usage and exits', async () => {
+    expect(await runVault(['exec', 'github', 'curl'])).toBe(1);
     expect(vaultExec).not.toHaveBeenCalled();
   });
 
@@ -181,9 +177,8 @@ describe('runVault CLI dispatch', () => {
     expect(output).toContain('vault exec');
   });
 
-  it('shows error and help for unknown subcommand', () => {
-    runVault(['unknown-cmd']);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+  it('shows error and help for unknown subcommand', async () => {
+    expect(await runVault(['unknown-cmd'])).toBe(1);
     const errorOutput = consoleErrorSpy.mock.calls.flat().join(' ');
     expect(errorOutput).toContain('Unknown vault command: unknown-cmd');
   });

@@ -2,7 +2,7 @@ import * as path from 'path';
 import { startDaemon, stopDaemon, getLiveDaemonStatus } from '../broker/daemon';
 import { formatUptime } from './utils';
 
-export function runBroker(args: string[]): void {
+export async function runBroker(args: string[]): Promise<number> {
   const subcommand = args[0];
 
   switch (subcommand) {
@@ -24,7 +24,7 @@ export function runBroker(args: string[]): void {
             port = parsed;
           } else {
             console.error(`\n  Invalid port: ${args[i]}. Must be 1-65535.\n`);
-            process.exit(1);
+            return 1;
           }
         } else if (args[i] === '--policy-file' && args[i + 1]) {
           policyFile = path.resolve(args[++i]);
@@ -34,7 +34,8 @@ export function runBroker(args: string[]): void {
       console.log('\n  Secretless Broker\n');
       console.log('  Starting credential broker daemon...');
 
-      startDaemon({ aimUrl, aimToken, httpPort: port, policyFile }).then((server) => {
+      try {
+        const server = await startDaemon({ aimUrl, aimToken, httpPort: port, policyFile });
         const info = server.getStatus();
         console.log('  Broker is running.\n');
         console.log(`  PID:          ${info.pid}`);
@@ -43,11 +44,11 @@ export function runBroker(args: string[]): void {
         console.log(`  AIM:          ${formatAimStatus(info.aimConfigured, info.aimReachable)}${aimUrl ? ` — ${aimUrl}` : ''}`);
         console.log(`  Policy file:  ${policyFile ?? '(default)'}`);
         console.log('\n  Press Ctrl+C to stop.\n');
-      }).catch((err) => {
+        return 0;
+      } catch (err) {
         console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
-        process.exit(1);
-      });
-      break;
+        return 1;
+      }
     }
 
     case 'stop': {
@@ -57,31 +58,30 @@ export function runBroker(args: string[]): void {
       } else {
         console.log('\n  Broker daemon is not running.\n');
       }
-      break;
+      return 0;
     }
 
     case 'status': {
-      getLiveDaemonStatus().then((brokerStatus) => {
-        if (!brokerStatus) {
-          console.log('\n  Broker daemon is not running.\n');
-          return;
-        }
+      const brokerStatus = await getLiveDaemonStatus();
+      if (!brokerStatus) {
+        console.log('\n  Broker daemon is not running.\n');
+        return 0;
+      }
 
-        const uptime = formatUptime(brokerStatus.uptimeSeconds);
+      const uptime = formatUptime(brokerStatus.uptimeSeconds);
 
-        console.log('\n  Secretless Broker Status\n');
-        console.log(`  Status:       running`);
-        console.log(`  PID:          ${brokerStatus.pid}`);
-        console.log(`  Uptime:       ${uptime}`);
-        console.log(`  Started at:   ${brokerStatus.startedAt}`);
-        console.log(`  HTTP port:    ${brokerStatus.httpPort}`);
-        console.log(`  Socket:       ${brokerStatus.socketPath}`);
-        console.log(`  AIM:          ${formatAimStatus(brokerStatus.aimConfigured, brokerStatus.aimReachable)}`);
-        console.log(`  Policies:     ${brokerStatus.policyCount}`);
-        console.log(`  Requests:     ${brokerStatus.requestCount}`);
-        console.log();
-      });
-      break;
+      console.log('\n  Secretless Broker Status\n');
+      console.log(`  Status:       running`);
+      console.log(`  PID:          ${brokerStatus.pid}`);
+      console.log(`  Uptime:       ${uptime}`);
+      console.log(`  Started at:   ${brokerStatus.startedAt}`);
+      console.log(`  HTTP port:    ${brokerStatus.httpPort}`);
+      console.log(`  Socket:       ${brokerStatus.socketPath}`);
+      console.log(`  AIM:          ${formatAimStatus(brokerStatus.aimConfigured, brokerStatus.aimReachable)}`);
+      console.log(`  Policies:     ${brokerStatus.policyCount}`);
+      console.log(`  Requests:     ${brokerStatus.requestCount}`);
+      console.log();
+      return 0;
     }
 
     case '--help':
@@ -101,8 +101,7 @@ export function runBroker(args: string[]): void {
       console.log('    --aim-token <token>    Bearer token for AIM auth (or env SECRETLESS_AIM_TOKEN)');
       console.log('    --port <port>          HTTP port (default: 19421)');
       console.log('    --policy-file <path>   Policy file path\n');
-      if (isUnknown) process.exit(1);
-      break;
+      return isUnknown ? 1 : 0;
     }
   }
 }
