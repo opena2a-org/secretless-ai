@@ -1,6 +1,6 @@
 {
   "name": "secretless-ai",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "One command to keep secrets out of AI. Works with Claude Code, Cursor, Copilot, Windsurf, and any AI coding tool.",
   "license": "Apache-2.0",
   "type": "commonjs",
@@ -52,5 +52,9 @@
     "@nanomind/engine": "^0.1.1",
     "@nanomind/guard": "^0.1.1",
     "@opena2a/aim-core": ">=0.2.0"
+  },
+  "dependencies": {
+    "@opena2a/cli-ui": "0.4.0",
+    "@opena2a/telemetry": "0.1.2"
   }
 }

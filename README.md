@@ -157,6 +157,18 @@ opena2a secrets init    # Initialize secretless protection
 npm run build && npm test    # 809 tests
 ```
 
+## Telemetry
+
+Secretless sends anonymous tier-1 usage data to the OpenA2A Registry: tool name (`secretless-ai`), version, command name (`scan`, `protect`, etc.), success, duration, platform, Node major version, and a stable per-machine `install_id`. **No content is collected** — no scanned secrets, no file paths, no env-var values, no rule contents, no IPs.
+
+- **Policy:** [opena2a.org/telemetry](https://opena2a.org/telemetry).
+- **Status:** `secretless-ai telemetry status`.
+- **Disable per-invocation:** `OPENA2A_TELEMETRY=off secretless-ai <anything>`.
+- **Disable persistently:** `secretless-ai telemetry off`.
+- **Audit every payload:** `OPENA2A_TELEMETRY_DEBUG=print secretless-ai <anything>` echoes each event to stderr in JSON.
+
+Fire-and-forget with a 2-second timeout — telemetry never blocks Secretless.
+
 ## License
 
 Apache-2.0

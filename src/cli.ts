@@ -6,7 +6,10 @@
  */
 
 import * as path from 'path';
+import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode': 'import' };
 import { VERSION } from './commands/utils';
+// @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
+// so they're loaded via dynamic import() inside the async main().
 import { runInit, runScan, runStatus, runVerify, runDoctor } from './commands/core';
 import { runClean, runWatch, runScanHistory, runCleanHistory } from './commands/transcript';
 import { runSecret } from './commands/secrets';
@@ -21,9 +24,22 @@ import { runScope } from './commands/scope';
 import { runWarm, runInstall } from './commands/session';
 import { printHelp } from './commands/help';
 
-function main(): void {
+const TOOL = 'secretless-ai';
+// Subcommands we don't track: pure-help / pure-config calls don't represent
+// the user actually using the tool, and tracking 'telemetry' itself creates
+// confusing self-referential events.
+const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '--help', '-h']);
+
+async function main(): Promise<number> {
   const args = process.argv.slice(2);
   const command = args[0];
+
+  // Tier-1 anonymous usage telemetry — default ON; opt-out via OPENA2A_TELEMETRY=off
+  // or `secretless-ai telemetry off`. See README §Telemetry. Disclosure surfaces:
+  // README, --version line, telemetry subcommand, opena2a.org/telemetry.
+  const tele = await import('@opena2a/telemetry');
+  const { versionLine, runTelemetryCommand } = await import('@opena2a/cli-ui');
+  await tele.init({ tool: TOOL, version: VERSION });
 
   // Intercept `--help` / `-h` anywhere in the args BEFORE dispatching. Subcommand
   // runners do not parse per-subcommand help, so without this guard `scan --help`
@@ -32,9 +48,43 @@ function main(): void {
   // help instead — a safe no-op. Regression: release-test 2026-04-14.
   if (command && (args.includes('--help') || args.includes('-h'))) {
     printHelp();
-    return;
+    return 0;
   }
 
+  // --version: cli-ui versionLine helper appends the standard telemetry line.
+  if (command === '--version' || command === '-v') {
+    console.log(versionLine({ tool: TOOL, version: VERSION, telemetry: tele.status() }));
+    return 0;
+  }
+
+  // telemetry subcommand
+  if (command === 'telemetry') {
+    console.log(runTelemetryCommand(args[1] as TelemetryAction, {
+      tool: TOOL,
+      getStatus: tele.status,
+      setOptOut: tele.setOptOut,
+    }));
+    return 0;
+  }
+
+  const startedAt = Date.now();
+  let exitCode = 0;
+  try {
+    exitCode = dispatch(args, command);
+  } catch (err) {
+    exitCode = 1;
+    if (command) tele.error(command, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
+    throw err;
+  } finally {
+    if (command && !NON_TRACKED.has(command)) {
+      await tele.track(command, { success: exitCode === 0, durationMs: Date.now() - startedAt });
+    }
+    await tele.flush();
+  }
+  return exitCode;
+}
+
+function dispatch(args: string[], command: string | undefined): number {
   switch (command) {
     case 'init': {
       const dirArg = args[1];
@@ -141,10 +191,6 @@ function main(): void {
     case 'install':
       runInstall(args.slice(1));
       break;
-    case '--version':
-    case '-v':
-      console.log(`secretless-ai ${VERSION} \u2014 credential protection for AI coding tools`);
-      break;
     case '--help':
     case '-h':
     case undefined:
@@ -153,8 +199,15 @@ function main(): void {
     default:
       console.error(`Unknown command: ${command}`);
       printHelp();
-      process.exit(1);
+      return 1;
   }
+  return 0;
 }
 
-main();
+main().then(
+  (code) => process.exit(code),
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  },
+);
