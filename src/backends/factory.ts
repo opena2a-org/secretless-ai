@@ -6,6 +6,9 @@
  * Falls back to 'local' on unsupported platforms with a console message.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+import { execFileSync } from 'child_process';
 import { LocalBackend } from './local';
 import { MacOSKeychainBackend } from './keychain-macos';
 import { LinuxKeychainBackend } from './keychain-linux';
@@ -35,9 +38,12 @@ export function createBackend(
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
 
-  // When callers request 'local', prefer keychain if the platform supports it
+  // When callers request 'local', prefer keychain if the platform supports it.
+  // Use the prompt-free Likely check here — this path runs from MCP wrappers,
+  // brokers, and resolvers that must not trigger Touch ID. Real auth happens
+  // lazily on the first secret read/write.
   if (type === 'local' && !config?.key) {
-    const keychainStatus = isKeychainAvailable();
+    const keychainStatus = isKeychainLikely();
     if (keychainStatus.available) {
       try {
         backend = createKeychainBackend(config);
@@ -110,15 +116,89 @@ export function createBackend(
 }
 
 /**
+ * Cheap, prompt-free signal that the OS keychain is likely usable.
+ *
+ * Safe for read-only commands (`backend` with no subcommand, `status`,
+ * `--version`) and for the local-to-keychain upgrade in `createBackend`.
+ * NEVER shells out to a binary that could prompt for biometrics — on macOS
+ * even `security default-keychain` can trigger Touch ID under certain configs.
+ */
+export function isKeychainLikely(): { available: boolean; platform: string; message: string } {
+  const platform = process.platform;
+
+  if (platform === 'darwin') {
+    return { available: true, platform: 'macOS', message: 'macOS Keychain assumed available (not probed)' };
+  }
+
+  if (platform === 'linux') {
+    if (binaryOnPath('secret-tool')) {
+      return { available: true, platform: 'Linux', message: 'secret-tool found on PATH (not probed)' };
+    }
+    return {
+      available: false,
+      platform: 'Linux',
+      message: 'secret-tool not found. Install libsecret-tools (Debian/Ubuntu) or libsecret (Fedora/RHEL).',
+    };
+  }
+
+  return {
+    available: false,
+    platform: platform,
+    message: `OS keychain is not supported on ${platform}. Using local encrypted backend.`,
+  };
+}
+
+/**
+ * Cheap, prompt-free signal that the 1Password CLI is likely usable.
+ *
+ * Checks PATH for the `op` binary without invoking it. Safe for read-only
+ * commands. The active probe (`op account get`) triggers the
+ * "1Password Access Requested" dialog on Macs with the desktop app — only
+ * call `isOnePasswordAvailable()` from genuine pre-flight paths.
+ */
+export function isOnePasswordLikely(): { available: boolean; message: string } {
+  if (binaryOnPath('op')) {
+    return { available: true, message: '1Password CLI (op) found on PATH (auth not probed)' };
+  }
+  return {
+    available: false,
+    message: '1Password CLI (op) not found. Install from https://developer.1password.com/docs/cli',
+  };
+}
+
+function binaryOnPath(name: string): boolean {
+  const PATH = process.env.PATH || '';
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const exts = process.platform === 'win32' ? (process.env.PATHEXT || '.EXE').split(';') : [''];
+  for (const dir of PATH.split(sep)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      try {
+        const candidate = path.join(dir, name + ext);
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      } catch {
+        // not here, keep looking
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Check if the OS keychain is available on the current platform.
  * Returns a description of the keychain status.
+ *
+ * Note: on macOS this shells out to `security default-keychain`, which can
+ * trigger Touch ID under some configurations. Prefer `isKeychainLikely()`
+ * for read-only display paths; reserve this for genuine pre-flight checks
+ * (e.g. `backend set keychain`).
  */
 export function isKeychainAvailable(): { available: boolean; platform: string; message: string } {
   const platform = process.platform;
 
   if (platform === 'darwin') {
     try {
-      const { execFileSync } = require('child_process');
       execFileSync('security', ['default-keychain'], { stdio: 'pipe' });
       return { available: true, platform: 'macOS', message: 'macOS Keychain is available' };
     } catch {
@@ -128,7 +208,6 @@ export function isKeychainAvailable(): { available: boolean; platform: string; m
 
   if (platform === 'linux') {
     try {
-      const { execFileSync } = require('child_process');
       execFileSync('which', ['secret-tool'], { stdio: 'pipe' });
       return { available: true, platform: 'Linux', message: 'secret-tool is available (Linux Secret Service)' };
     } catch {
@@ -150,10 +229,14 @@ export function isKeychainAvailable(): { available: boolean; platform: string; m
 /**
  * Check if the 1Password CLI (`op`) is available and authenticated.
  * Returns availability status and an actionable message.
+ *
+ * Note: this calls `op account get`, which triggers a "1Password Access
+ * Requested" dialog on Macs with the 1Password desktop app integration
+ * enabled. Reserve for genuine pre-flight checks (e.g. `backend set
+ * 1password`); use `isOnePasswordLikely()` for read-only display paths.
  */
 export function isOnePasswordAvailable(): { available: boolean; message: string } {
   try {
-    const { execFileSync } = require('child_process');
     execFileSync('op', ['--version'], { stdio: 'pipe' });
   } catch {
     return {
@@ -163,7 +246,6 @@ export function isOnePasswordAvailable(): { available: boolean; message: string 
   }
 
   try {
-    const { execFileSync } = require('child_process');
     execFileSync('op', ['account', 'get', '--format', 'json'], { stdio: 'pipe' });
     return {
       available: true,

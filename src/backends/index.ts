@@ -4,7 +4,7 @@ export { MacOSKeychainBackend } from './keychain-macos';
 export { LinuxKeychainBackend } from './keychain-linux';
 export { VaultBackend, type VaultBackendConfig } from './vault';
 export { GCPSecretManagerBackend, isGCPAvailable, type GCPSecretManagerConfig } from './gcp-sm';
-export { createBackend, isKeychainAvailable } from './factory';
+export { createBackend, isKeychainAvailable, isKeychainLikely, isOnePasswordAvailable, isOnePasswordLikely } from './factory';
 export { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl, writeCacheTtl, parseDuration, formatTtl, DEFAULT_CACHE_TTL_SECONDS, type SelectableBackendType } from './config';
 export { CachedBackend, clearCacheFile } from './cache';
 export { migrateSecrets, type MigrateOptions, type MigrateResult } from './migrate';
