@@ -124,7 +124,7 @@ export const KNOWN_EXAMPLE_KEYS = new Set([
  */
 export const PLACEHOLDER_INDICATORS = [
   'example', 'placeholder', 'your_', 'your-', 'insert_', 'insert-',
-  'xxx', 'XXXX', 'test_key', 'test_secret', 'fake_', 'fake-',
+  'xxx', 'XXXX', 'test_key', 'test_secret', 'fake',
   'dummy', 'sample', 'replace_me', 'change_me', 'todo', '<your',
   'not-a-real', 'not_a_real', 'just-for-testing', 'supabase-demo',
 ];
