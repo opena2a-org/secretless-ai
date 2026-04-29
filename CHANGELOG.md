@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.3] - 2026-04-29
+
+### Added
+- Runtime dependency on `@opena2a/credential-patterns@0.1.0` (exact pin). PR 1 of the credential-pattern consolidation lifted the local pattern catalog into a shared, SLSA-attested package so secretless-ai and hackmyagent stop maintaining duplicate regex copies. This release brings the package in as a peer of the local catalog and asserts they stay in lockstep.
+- `src/lockstep.test.ts` — equivalence test that fails CI on any drift between local `src/patterns.ts` and the package: pattern count, per-pattern (`id`, `name`, `regex.source`, `regex.flags`, `envPrefix`, `category`), `CREDENTIAL_PREFIX_QUICK_CHECK`, `KNOWN_EXAMPLE_KEYS`, `PLACEHOLDER_INDICATORS`, `SECRET_FILE_PATTERNS`, `CONFIG_FILES`, `SOURCE_FILE_EXTENSIONS`, `SOURCE_SKIP_DIRS`, plus functional parity of `isKnownExample` / `findRealMatch` on a panel of allowlist-branch oracle inputs. Mutation-tested: a regex change or allowlist addition on either side fails this test with a precise per-pattern diagnostic.
+
+### Changed
+- No behavior change. No public API change. `import { CREDENTIAL_PATTERNS } from 'secretless-ai'` still resolves to the local CommonJS-friendly catalog. `scan` / `verify` / `init` / `transcript` / `mcp` / `doctor` / `history` / `scan-staged` paths continue to read from `src/patterns.ts`. The full migration that moves consumer code onto the package directly requires converting secretless-ai from CommonJS to ESM (the package is ESM-only) and is tracked separately for a future major version.
+
 ## [0.16.2] - 2026-04-28
 
 ### Fixed
