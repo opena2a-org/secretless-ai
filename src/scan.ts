@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, type CredentialPattern } from './patterns';
+import { loadSecretlessIgnore, type IgnoreMatcher } from './secretlessignore';
 
 export interface ScanFinding {
   file: string;
@@ -46,6 +47,65 @@ export interface ScanOptions {
   includeTests?: boolean;
   /** Max source files to scan before stopping (default: 5000) */
   maxSourceFiles?: number;
+  /**
+   * Skip files matched by `.secretlessignore` and the default-ignore list.
+   * Default: true. Pass `false` to scan everything (includes fixture dirs).
+   *
+   * If `ignore` is provided as an `IgnoreMatcher`, that matcher is used
+   * verbatim (callers wiring through `scan-staged` etc). If `true` (default)
+   * and `projectDir` exists, `loadSecretlessIgnore(projectDir)` is called.
+   */
+  ignore?: boolean | IgnoreMatcher;
+}
+
+/**
+ * Demo-tier passwords that combine with localhost-bound DB connection strings
+ * to mark a value as a tutorial fixture, not a real credential. Local mirror
+ * of the catalog @opena2a/credential-patterns 0.1.1 set — lockstep test gates.
+ */
+const DEMO_PASSWORDS = new Set([
+  'password',
+  'password123',
+  'secret',
+  'admin',
+  'root',
+  'demo',
+  'test',
+  'changeme',
+]);
+
+function isLocalhostDemoConnectionString(value: string): boolean {
+  const protoEnd = value.indexOf('://');
+  if (protoEnd === -1) return false;
+  const atIdx = value.lastIndexOf('@');
+  if (atIdx === -1 || atIdx <= protoEnd + 3) return false;
+  const userInfo = value.slice(protoEnd + 3, atIdx);
+  const host = value.slice(atIdx + 1);
+  // Anchored host check defeats `localhost.evil.com` bypass. IPv4 loopback
+  // `127.0.0.1`, IPv6 loopback `[::1]`, and the `localhost` literal accepted.
+  if (!/^(\[::1\]|localhost|127\.0\.0\.1)(:|\/|$)/i.test(host)) return false;
+  const colonIdx = userInfo.indexOf(':');
+  if (colonIdx === -1) return false;
+  // Password lookup is case-insensitive — capitalized demo passwords are
+  // functionally the same fixture (`Password123` vs `password123`).
+  const password = userInfo.slice(colonIdx + 1).toLowerCase();
+  return DEMO_PASSWORDS.has(password);
+}
+
+function isExampleInComment(line: string): boolean {
+  const lineLC = line.toLowerCase();
+  if (!lineLC.includes('example')) return false;
+  if (lineLC.includes('//')) return true;
+  if (lineLC.includes('#')) return true;
+  if (lineLC.includes('/*')) return true;
+  if (lineLC.includes('<!--')) return true;
+  if (lineLC.includes('-->')) return true;
+  if (lineLC.includes("'''")) return true;
+  if (lineLC.includes('"""')) return true;
+  // JSDoc continuation: line starts with optional whitespace then `*`.
+  // Anchored so `x * y` (multiplication) does NOT match.
+  if (/^\s*\*/.test(line)) return true;
+  return false;
 }
 
 /**
@@ -58,16 +118,11 @@ export interface ScanOptions {
  */
 export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
   const value = match[0];
-  // Check exact known example keys
   if (KNOWN_EXAMPLE_KEYS.has(value)) return true;
-  // Check placeholder indicators (case-insensitive)
   const lower = value.toLowerCase();
   if (PLACEHOLDER_INDICATORS.some(p => lower.includes(p))) return true;
-  // Check if the line contains a comment marking it as an example
-  const lineLC = line.toLowerCase();
-  if (lineLC.includes('example') && (lineLC.includes('//') || lineLC.includes('#'))) {
-    if (lineLC.includes('example') || lineLC.includes('placeholder') || lineLC.includes('fake')) return true;
-  }
+  if (isLocalhostDemoConnectionString(value)) return true;
+  if (isExampleInComment(line)) return true;
   return false;
 }
 
@@ -111,6 +166,18 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
   const findings: ScanFinding[] = [];
   const scanGlobal = options?.scanGlobal !== false;
 
+  // Resolve the ignore matcher. Default: load `<projectDir>/.secretlessignore`
+  // plus the default-ignore list. `ignore: false` disables both.
+  const ignore: IgnoreMatcher | null = (() => {
+    if (options?.ignore === false) return null;
+    if (options?.ignore && typeof options.ignore === 'object') return options.ignore;
+    try {
+      return loadSecretlessIgnore(projectDir);
+    } catch {
+      return null;
+    }
+  })();
+
   // Scan global config files (keys in ~/.claude/CLAUDE.md are in every session's context)
   for (const global of (scanGlobal ? GLOBAL_CONFIG_FILES : [])) {
     const fullPath = path.join(global.dir, global.file);
@@ -147,6 +214,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
 
   // Scan project-level config files
   for (const configFile of CONFIG_FILES) {
+    if (ignore && ignore.matches(configFile)) continue;
     const fullPath = path.join(projectDir, configFile);
     if (!fs.existsSync(fullPath)) continue;
 
@@ -197,12 +265,15 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
     const configFileSet = new Set(CONFIG_FILES);
     const maxFiles = options?.maxSourceFiles ?? 5000;
     const includeTests = options?.includeTests ?? false;
-    const sourceFiles = walkSourceFiles(projectDir, maxFiles, includeTests);
+    const sourceFiles = walkSourceFiles(projectDir, maxFiles, includeTests, ignore);
 
     for (const filePath of sourceFiles) {
       const relPath = path.relative(projectDir, filePath);
       // Skip files already covered by config scan
       if (configFileSet.has(relPath)) continue;
+      // Apply user/default ignore filter at file level too — defends
+      // against entries inside an otherwise-walked directory.
+      if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
 
       try {
         const stat = fs.statSync(filePath);
@@ -272,8 +343,17 @@ function isTestFile(name: string): boolean {
  * Walk a directory tree and return source files matching SOURCE_FILE_EXTENSIONS.
  * Skips directories in SOURCE_SKIP_DIRS. Stops after maxFiles.
  * By default, skips test files and test directories.
+ *
+ * Also honors an `IgnoreMatcher` (from `.secretlessignore` + defaults). The
+ * matcher is consulted at the directory level (cheaper, prunes whole subtrees)
+ * and again at the file level (in case the user uses a file-name glob).
  */
-function walkSourceFiles(dir: string, maxFiles: number, includeTests: boolean): string[] {
+function walkSourceFiles(
+  dir: string,
+  maxFiles: number,
+  includeTests: boolean,
+  ignore: IgnoreMatcher | null,
+): string[] {
   const results: string[] = [];
   const queue: string[] = [dir];
 
@@ -289,15 +369,23 @@ function walkSourceFiles(dir: string, maxFiles: number, includeTests: boolean): 
     for (const entry of entries) {
       if (results.length >= maxFiles) break;
 
+      const entryPath = path.join(current, entry.name);
+      const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
+
       if (entry.isDirectory()) {
         if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
         if (!includeTests && TEST_DIRS.has(entry.name)) continue;
-        queue.push(path.join(current, entry.name));
+        // Prune whole-tree ignored directories. The matcher's directory
+        // patterns end with `/`, so we test the dir path with a trailing
+        // segment; equivalently, append `/dummy`.
+        if (ignore && ignore.matches(relFromRoot + '/.')) continue;
+        queue.push(entryPath);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name);
         if (!SOURCE_FILE_EXTENSIONS.has(ext)) continue;
         if (!includeTests && isTestFile(entry.name)) continue;
-        results.push(path.join(current, entry.name));
+        if (ignore && ignore.matches(relFromRoot)) continue;
+        results.push(entryPath);
       }
     }
   }

@@ -48,8 +48,9 @@ export function runHook(args: string[]): number {
   }
 }
 
-export function runScanStaged(): number {
-  const { findings, blockedFiles } = scanStagedFiles();
+export function runScanStaged(args: string[] = []): number {
+  const noIgnore = args.includes('--no-ignore');
+  const { findings, blockedFiles } = scanStagedFiles({ noIgnore });
   const total = findings.length + blockedFiles.length;
 
   if (total === 0) {

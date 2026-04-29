@@ -19,79 +19,97 @@ export function runInit(projectDir: string): number {
 
   const result = init(projectDir);
 
-  // Report detected tools
-  if (result.toolsDetected.length > 0) {
-    console.log('  Detected:');
-    for (const tool of result.toolsDetected) {
-      console.log(`    + ${toolDisplayName(tool)}`);
+  // Configured line: collapse Detected + Configured into one row that tells
+  // the user what's now active and how it compares to what we found.
+  const configuredCount = result.toolsConfigured.length;
+  const detectedCount = result.toolsDetected.length;
+  if (configuredCount > 0) {
+    const names = result.toolsConfigured.map(toolDisplayName).join(', ');
+    if (detectedCount === 0) {
+      console.log(`  Configured: ${names} (no AI tools detected — defaulted to Claude Code)`);
+    } else {
+      console.log(`  Configured: ${names} (${configuredCount} of ${detectedCount} detected)`);
     }
   } else {
-    console.log('  No AI tools detected, defaulting to Claude Code');
+    console.log('  Configured: none');
   }
-  console.log();
 
-  // Report configured tools
-  console.log('  Configured:');
-  for (const tool of result.toolsConfigured) {
-    console.log(`    * ${toolDisplayName(tool)}`);
-  }
-  console.log();
+  // Files: keep the breakdown but with a specific deny-rule count when
+  // settings.json was modified. The count is the load-bearing fact (not just
+  // "modified") — users want to know what changed, not that it changed.
+  const settingsModified = result.filesModified.includes('.claude/settings.json');
+  const otherModified = result.filesModified.filter(f => f !== '.claude/settings.json');
 
-  // Report files
   if (result.filesCreated.length > 0) {
+    console.log();
     console.log('  Created:');
     for (const f of result.filesCreated) {
       console.log(`    + ${f}`);
     }
-    console.log();
   }
 
-  if (result.filesModified.length > 0) {
+  if (settingsModified || otherModified.length > 0) {
+    console.log();
     console.log('  Modified:');
-    for (const f of result.filesModified) {
+    if (settingsModified) {
+      if (result.denyRulesAdded > 0) {
+        console.log(`    ~ .claude/settings.json (added ${result.denyRulesAdded} deny pattern${result.denyRulesAdded === 1 ? '' : 's'})`);
+      } else {
+        console.log(`    ~ .claude/settings.json`);
+      }
+    }
+    for (const f of otherModified) {
       console.log(`    ~ ${f}`);
     }
+  }
+
+  // No-op case: nothing created, nothing modified — already up to date.
+  if (result.filesCreated.length === 0 && !settingsModified && otherModified.length === 0) {
     console.log();
+    console.log('  Already up to date. No files changed.');
   }
 
-  // Report secrets found
+  // Surface inline observations: secrets found + shell profile fix. Each
+  // observation ends in a runnable verb (no dead ends).
   if (result.secretsFound > 0) {
-    console.log(`  Warning: found ${result.secretsFound} hardcoded credential(s)`);
-    console.log('  Run `npx secretless-ai scan` to see details\n');
+    console.log();
+    console.log(`  Warning: ${result.secretsFound} hardcoded credential${result.secretsFound === 1 ? '' : 's'} in config files  → secretless-ai scan`);
   }
 
-  // Auto-fix shell profile issues
   const fix = fixProfiles();
   if (fix) {
-    console.log('  Shell profile fix:');
-    console.log(`    Copied ${fix.fixed.length} export(s) from ~/${fix.sourceProfile} to ~/${fix.targetProfile}`);
+    console.log();
+    console.log(`  Shell profile fix: copied ${fix.fixed.length} export${fix.fixed.length === 1 ? '' : 's'} from ~/${fix.sourceProfile} to ~/${fix.targetProfile}`);
     for (const v of fix.fixed) {
-      console.log(`      + ${v}`);
+      console.log(`    + ${v}`);
     }
     if (fix.created) {
       console.log(`    Created ~/${fix.targetProfile}`);
     }
-    console.log('    Restart your terminal for changes to take effect.\n');
+    console.log('    Restart your terminal for changes to take effect.');
   }
 
-  console.log('  Done. Secrets are now blocked from AI context.\n');
-
-  // Suggest warm for backends that trigger OS auth prompts
+  // Suggest warm for backends that trigger OS auth prompts.
   const configuredBackend = readBackendConfig();
   if (configuredBackend === '1password' || configuredBackend === 'keychain') {
-    console.log(`  Tip: Run 'npx secretless-ai warm' before starting an AI session`);
-    console.log(`  to avoid repeated ${configuredBackend === '1password' ? '1Password' : 'keychain'} auth prompts.\n`);
+    const backendName = configuredBackend === '1password' ? '1Password' : 'keychain';
+    console.log();
+    console.log(`  Tip: Run \`secretless-ai warm\` before starting an AI session to avoid`);
+    console.log(`  repeated ${backendName} auth prompts.`);
   }
 
-  // Star prompt (interactive TTY only)
-  if (process.stdout.isTTY) {
-    console.log('  Helpful? Star the project: https://github.com/opena2a-org/secretless-ai\n');
-  }
+  // Next steps block — every action ends in a runnable verb.
+  console.log();
+  console.log('  Next steps:');
+  console.log('    Verify: secretless-ai verify');
+  console.log('    Scan:   secretless-ai scan');
+  console.log('    Status: secretless-ai status');
+  console.log();
 
   return 0;
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean }): Promise<number> {
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean }): Promise<number> {
   console.log('\n  Secretless Scanner\n');
 
   const nodeFs = require('fs') as typeof import('fs');
@@ -101,7 +119,13 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return 1;
   }
 
-  const findings = scan(projectDir, { includeTests: options?.includeTests });
+  const findings = scan(projectDir, {
+    includeTests: options?.includeTests,
+    // `noIgnore` disables BOTH the user `.secretlessignore` and the
+    // default-ignore list. Used when a user wants to see every finding,
+    // including known-fixture noise.
+    ignore: options?.noIgnore ? false : undefined,
+  });
 
   if (findings.length === 0) {
     console.log('  No hardcoded credentials found.');
@@ -192,60 +216,114 @@ export function runStatus(projectDir: string): number {
   console.log('\n  Secretless Status\n');
 
   const s = status(projectDir);
-
-  console.log(`  Protected:  ${s.isProtected ? 'Yes' : 'No'}`);
-  console.log(`  Tools:      ${s.configuredTools.map(toolDisplayName).join(', ') || 'None'}`);
-  console.log(`  Hook:       ${s.hookInstalled ? 'Installed' : 'Not installed'}`);
-  console.log(`  Deny rules: ${s.denyRuleCount}`);
-  console.log(`  Secrets:    ${s.secretsFound} found in config files`);
-
-  // Session status
   const session = getSessionStatus();
-  console.log();
-  console.log('  Session:');
-  if (session.warm) {
-    console.log(`    Status:    warm`);
-    console.log(`    Expires:   ${formatRemainingTime(session.remainingSeconds)} (${session.expiresAt})`);
-  } else if (session.authenticatedAt) {
-    console.log(`    Status:    expired`);
-    console.log(`    Last auth: ${session.authenticatedAt}`);
-    console.log('    Warm it:   npx secretless-ai warm');
-  } else {
-    console.log(`    Status:    not initialized`);
-    console.log('    Set up:    npx secretless-ai warm');
-  }
-
-  // Broker status
   const brokerStatus = getDaemonStatus();
-  console.log();
-  console.log('  Broker:');
-  if (brokerStatus) {
-    console.log(`    Status:    running (PID ${brokerStatus.pid})`);
-    console.log(`    Uptime:    ${formatUptime(brokerStatus.uptimeSeconds)}`);
-    console.log(`    Socket:    ${brokerStatus.socketPath}`);
-    console.log(`    Policies:  ${brokerStatus.policyCount}`);
+  const brokerInstalled = isDaemonInstalled();
+  const tp = s.transcriptProtection;
+  const configuredBackend = readBackendConfig();
+
+  // Build observation rows. Each row: glyph + label + optional → command.
+  // Satisfied observations use ✓; needs-action use ⚠. Every ⚠ ends in a
+  // runnable verb so the user has no dead end (CISO Rule 11).
+  type Row = { glyph: '✓' | '⚠'; label: string; action?: string };
+  const rows: Row[] = [];
+  const addRow = (row: Row): void => { rows[rows.length] = row; };
+
+  // Protection / hook.
+  if (s.hookInstalled) {
+    const denyText = s.denyRuleCount > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
+    addRow({ glyph: '✓', label: `Claude Code hook installed (.claude/settings.json${denyText})` });
   } else {
-    console.log(`    Status:    not running`);
-    const installed = isDaemonInstalled();
-    if (!installed) {
-      console.log('    Install:   npx secretless-ai install');
+    addRow({ glyph: '⚠', label: 'Claude Code hook not installed', action: 'secretless-ai init' });
+  }
+
+  // Stop hook (transcript redaction).
+  if (tp.stopHookInstalled) {
+    addRow({ glyph: '✓', label: 'Stop hook installed (transcript redaction)' });
+  } else {
+    addRow({ glyph: '⚠', label: 'Stop hook not installed (transcripts unredacted)', action: 'secretless-ai init' });
+  }
+
+  // Configured tools (instructions present in tool config files).
+  if (s.configuredTools.length > 0) {
+    addRow({ glyph: '✓', label: `Tool instructions: ${s.configuredTools.map(toolDisplayName).join(', ')}` });
+  }
+
+  // Secrets in config files.
+  if (s.secretsFound > 0) {
+    addRow({ glyph: '⚠', label: `${s.secretsFound} credential${s.secretsFound === 1 ? '' : 's'} detected in config files`, action: 'secretless-ai scan' });
+  } else {
+    addRow({ glyph: '✓', label: 'No credentials in config files' });
+  }
+
+  // Session warmth (only relevant when a backend that prompts is configured).
+  const sessionRelevant = configuredBackend === '1password' || configuredBackend === 'keychain';
+  if (sessionRelevant) {
+    if (session.warm) {
+      addRow({ glyph: '✓', label: `Biometric session warm (expires ${formatRemainingTime(session.remainingSeconds)})` });
+    } else if (session.authenticatedAt) {
+      addRow({ glyph: '⚠', label: `Biometric session expired (last auth ${session.authenticatedAt})`, action: 'secretless-ai warm' });
     } else {
-      console.log('    Start:     npx secretless-ai broker start');
+      addRow({ glyph: '⚠', label: 'Biometric session not initialized', action: 'secretless-ai warm' });
     }
   }
 
-  // Transcript protection status
-  if (s.transcriptProtection) {
-    console.log();
-    console.log('  Transcript Protection:');
-    console.log(`    Stop hook: ${s.transcriptProtection.stopHookInstalled ? 'Installed' : 'Not installed'}`);
-    console.log(`    Watcher:   ${s.transcriptProtection.watcherRunning ? 'Running' : 'Not running'}`);
-    console.log(`    Files:     ${s.transcriptProtection.transcriptFiles} transcript files`);
-    if (s.transcriptProtection.transcriptSecretsFound > 0) {
-      console.log(`    Secrets:   ${s.transcriptProtection.transcriptSecretsFound} found in recent transcripts`);
+  // Watcher running (transcript file monitoring).
+  if (tp.watcherRunning) {
+    addRow({ glyph: '✓', label: 'Transcript watcher running' });
+  } else {
+    addRow({ glyph: '⚠', label: 'Transcript watcher not running', action: 'secretless-ai watch' });
+  }
+
+  // Transcript files + secrets within them.
+  if (tp.transcriptSecretsFound > 0) {
+    addRow({ glyph: '⚠', label: `${tp.transcriptSecretsFound} credential${tp.transcriptSecretsFound === 1 ? '' : 's'} in recent transcripts`, action: 'secretless-ai clean' });
+  } else if (tp.transcriptFiles > 0) {
+    addRow({ glyph: '✓', label: `Transcripts clean (${tp.transcriptFiles} file${tp.transcriptFiles === 1 ? '' : 's'} scanned)` });
+  }
+
+  // Broker daemon.
+  if (brokerStatus) {
+    addRow({ glyph: '✓', label: `Broker running (PID ${brokerStatus.pid}, ${formatUptime(brokerStatus.uptimeSeconds)})` });
+  } else if (brokerInstalled) {
+    addRow({ glyph: '⚠', label: 'Broker daemon not running', action: 'secretless-ai broker start' });
+  } else {
+    addRow({ glyph: '⚠', label: 'Broker daemon not installed', action: 'secretless-ai install' });
+  }
+
+  // Render the Observations block. We measure the visible width (glyph +
+  // label) so the `→ command` column lines up tidily across rows.
+  const headerLine = '──────────────────────────────────────────────────────────';
+  console.log(`  ── Observations ${headerLine.slice(0, Math.max(0, 44))}`);
+  let leftWidth = 0;
+  for (const row of rows) {
+    const visible = row.glyph + ' ' + row.label;
+    if (visible.length > leftWidth) leftWidth = visible.length;
+  }
+  for (const row of rows) {
+    const left = `${row.glyph} ${row.label}`;
+    if (row.action) {
+      const padded = left.padEnd(leftWidth, ' ');
+      console.log(`  ${padded}  → ${row.action}`);
     } else {
-      console.log(`    Secrets:   Clean`);
+      console.log(`  ${left}`);
     }
+  }
+
+  // Verdict — reflects warnings (count of ⚠ rows). "Protected" requires
+  // the hook installed; "Clean" requires zero warnings.
+  console.log();
+  console.log(`  ── Verdict ${headerLine.slice(0, Math.max(0, 49))}`);
+  const warningCount = rows.filter(r => r.glyph === '⚠').length;
+  if (!s.isProtected) {
+    console.log('  Not protected. Run `secretless-ai init` to install hooks.');
+  } else if (warningCount === 0) {
+    console.log('  Protected — Clean');
+  } else {
+    const credSuffix = s.secretsFound > 0
+      ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need review)`
+      : ` (${warningCount} observation${warningCount === 1 ? '' : 's'} need attention)`;
+    console.log(`  Protected${credSuffix}`);
   }
 
   console.log();

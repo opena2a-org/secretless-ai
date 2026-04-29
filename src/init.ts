@@ -9,6 +9,7 @@ import { detectAITools, toolDisplayName, type AITool } from './detect';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
 import { loadCustomRules, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, mergeRules } from './custom-rules';
 import type { CustomRules } from './custom-rules';
+import { loadSecretlessIgnore } from './secretlessignore';
 
 /** Known API services with their auth header formats */
 const SERVICE_HINTS: Record<string, { service: string; authHeader: string }> = {
@@ -57,6 +58,17 @@ interface InitResult {
   filesCreated: string[];
   filesModified: string[];
   secretsFound: number;
+  /**
+   * Total deny rules now in `.claude/settings.json` after merge. Useful for
+   * rendering "21 deny patterns" in the configured-tools line.
+   */
+  denyRulesTotal: number;
+  /**
+   * Deny rules added during this `init` invocation. Zero when re-running
+   * over an already-configured project. Used by `runInit` to tell the user
+   * "Added 21 deny patterns" vs "Already up to date".
+   */
+  denyRulesAdded: number;
 }
 
 /**
@@ -70,6 +82,8 @@ export function init(projectDir: string): InitResult {
     filesCreated: [],
     filesModified: [],
     secretsFound: 0,
+    denyRulesTotal: 0,
+    denyRulesAdded: 0,
   };
 
   // Detect AI tools
@@ -272,11 +286,15 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     ? mergeRules(denyRules, customRulesToDenyRules(projectCustomRules))
     : denyRules;
 
+  let added = 0;
   for (const rule of allDenyRules) {
     if (!settings.permissions.deny.includes(rule)) {
       settings.permissions.deny.push(rule);
+      added++;
     }
   }
+  result.denyRulesAdded += added;
+  result.denyRulesTotal = settings.permissions.deny.length;
 
   writeJsonFile(settingsPath, settings);
 
@@ -548,7 +566,16 @@ exit 0
 
 function quickScan(projectDir: string): number {
   let count = 0;
+  // Honor `.secretlessignore` + defaults so the count rendered after
+  // `init` matches what `secretless-ai scan` would report.
+  let ignore: ReturnType<typeof loadSecretlessIgnore> | null = null;
+  try {
+    ignore = loadSecretlessIgnore(projectDir);
+  } catch {
+    // Best-effort — fall through.
+  }
   for (const configFile of CONFIG_FILES) {
+    if (ignore && ignore.matches(configFile)) continue;
     const fullPath = path.join(projectDir, configFile);
     if (!fs.existsSync(fullPath)) continue;
 

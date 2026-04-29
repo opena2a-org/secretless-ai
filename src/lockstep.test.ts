@@ -120,6 +120,22 @@ describe('lockstep: isKnownExample / findRealMatch parity on oracle inputs', () 
     'const real = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"', // real-looking GitHub PAT
     'old="AKIAIOSFODNN7EXAMPLE"; new_="ghp_abcdefghijklmnopqrstuvwxyz1234567890"', // issue #51 shadowing
     'plain text with no credential',                    // no match at all
+    // 0.1.1 — block-comment marker branches
+    ' * example: AKIAEXAMPLEKEY1234567 in JSDoc',       // JSDoc continuation
+    '/* example AKIAEXAMPLEKEY1234567 */',              // /* block-open
+    '<!-- example AKIAEXAMPLEKEY1234567 -->',           // HTML comment
+    '"""example AKIAEXAMPLEKEY1234567"""',              // Python docstring
+    "'''example AKIAEXAMPLEKEY1234567'''",              // Python single-quote docstring
+    'const computed = AKIAREALKEY1234567890 * factor;', // multiplication is NOT a comment
+    // 0.1.1 — localhost+demo-password DB allowlist
+    'DATABASE_URL=postgres://admin:password123@localhost:5432/mydb',     // localhost+demo
+    'DATABASE_URL=postgres://admin:Password123@localhost:5432/mydb',     // capitalized demo password (Phase 4.5)
+    'DATABASE_URL=postgres://admin:password@[::1]:5432/db',              // IPv6 loopback (Phase 4.5)
+    'DATABASE_URL=postgres://app:H4Wj8z9KqMpL2nXr7sBv5tNc@localhost:5432/dev', // localhost + REAL password — must NOT allowlist
+    'DATABASE_URL=postgres://admin:password@localhost.evil.com:5432/db', // localhost-prefix bypass attempt
+    // 0.1.1 — bare 'fake' substring on bodies that allow it
+    'GITLAB_TOKEN=glpat-fake_1234567890abcdefghij',     // legacy fake_ form, body permits underscore
+    'GITLAB_TOKEN=glpat-fake-1234567890abcdefghij',     // legacy fake- form, body permits hyphen
   ];
 
   it('isKnownExample returns identical results across local vs package on every oracle line × every regex match', async () => {
