@@ -118,6 +118,12 @@ export function printHelp(): void {
   Scan options:
     --include-tests  Include test files in source code scan
     --explain        Use NanoMind for rich context explanations (requires @nanomind/engine)
+    --no-ignore      Disable .secretlessignore + default-ignore (scan everything)
+
+  Other:
+    npx secretless-ai feedback   Star, file an issue, or join the discussion
+    .secretlessignore            gitignore-style file at repo root; default-ignore
+                                 covers test/, __tests__/, examples/, e2e/, etc.
 
   Options:
     -v, --version    Show version

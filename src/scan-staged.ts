@@ -8,6 +8,16 @@
 import { execFileSync } from 'child_process';
 import { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CREDENTIAL_PREFIX_QUICK_CHECK } from './patterns';
 import { findRealMatch } from './scan';
+import { loadSecretlessIgnore, type IgnoreMatcher } from './secretlessignore';
+
+export interface ScanStagedOptions {
+  /** Repo root used to load `.secretlessignore`. Defaults to `git rev-parse --show-toplevel`. */
+  rootDir?: string;
+  /** Skip the default-ignore list + user `.secretlessignore`. Default: false. */
+  noIgnore?: boolean;
+  /** Inject a pre-built matcher (tests, callers wiring in from `runScanStaged`). */
+  ignore?: IgnoreMatcher;
+}
 
 interface StagedFinding {
   file: string;
@@ -18,7 +28,7 @@ interface StagedFinding {
 /**
  * Scan staged files for secrets. Returns findings and exit code.
  */
-export function scanStagedFiles(): { findings: StagedFinding[]; blockedFiles: string[] } {
+export function scanStagedFiles(options?: ScanStagedOptions): { findings: StagedFinding[]; blockedFiles: string[] } {
   const findings: StagedFinding[] = [];
   const blockedFiles: string[] = [];
 
@@ -37,6 +47,39 @@ export function scanStagedFiles(): { findings: StagedFinding[]; blockedFiles: st
 
   if (stagedFiles.length === 0) {
     return { findings, blockedFiles };
+  }
+
+  // Resolve ignore matcher. Priority:
+  //   1. options.ignore (caller-provided),
+  //   2. options.noIgnore=true → null (defaults disabled, user file disabled),
+  //   3. otherwise: loadSecretlessIgnore from rootDir or git toplevel.
+  let ignore: IgnoreMatcher | null = null;
+  if (options?.ignore) {
+    ignore = options.ignore;
+  } else if (!options?.noIgnore) {
+    let rootDir = options?.rootDir;
+    if (!rootDir) {
+      try {
+        rootDir = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      } catch {
+        // Fall through — no ignore filter applied.
+      }
+    }
+    if (rootDir) {
+      try {
+        ignore = loadSecretlessIgnore(rootDir);
+      } catch {
+        ignore = null;
+      }
+    }
+  }
+
+  // Filter out ignored staged files BEFORE filename + content scan.
+  if (ignore) {
+    stagedFiles = stagedFiles.filter(f => !ignore!.matches(f.replace(/\\/g, '/')));
   }
 
   // Check filenames against secret file patterns

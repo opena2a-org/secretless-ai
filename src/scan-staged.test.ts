@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { scanStagedFiles } from './scan-staged';
+import { buildMatcher } from './secretlessignore';
 
 // Mock child_process to avoid requiring a real git repo
 vi.mock('child_process', () => ({
@@ -129,6 +130,33 @@ describe('scanStagedFiles', () => {
     const result = scanStagedFiles();
     const names = result.findings.map(f => f.patternName);
     expect(names).toContain('GitHub Token');
+  });
+
+  it('respects an injected ignore matcher (default-ignore for fixture dirs)', () => {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) {
+        return 'docs/vhs/setup-lab.sh\nsrc/cli.ts\n';
+      }
+      // Both files: a real-shape GitHub PAT.
+      return 'const t = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";\n';
+    });
+    // Inject a matcher that ignores docs/vhs only — same as the default list.
+    const ignore = buildMatcher(['docs/vhs/']);
+    const result = scanStagedFiles({ ignore });
+    // src/cli.ts still flagged; docs/vhs/setup-lab.sh suppressed.
+    expect(result.findings.map(f => f.file)).toEqual(['src/cli.ts']);
+  });
+
+  it('--no-ignore (noIgnore: true) bypasses both defaults and user file', () => {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) {
+        return 'docs/vhs/setup-lab.sh\n';
+      }
+      return 'const t = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";\n';
+    });
+    const result = scanStagedFiles({ noIgnore: true });
+    // No filtering — the docs/vhs file is still scanned.
+    expect(result.findings.map(f => f.file)).toEqual(['docs/vhs/setup-lab.sh']);
   });
 
   it('issue #51: does NOT let a known-example AWS key shadow a real AWS key later on the same line', () => {

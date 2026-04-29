@@ -22,6 +22,7 @@ import { runBroker } from './commands/broker';
 import { runVault } from './commands/vault';
 import { runScope } from './commands/scope';
 import { runWarm, runInstall } from './commands/session';
+import { runFeedback } from './commands/feedback';
 import { printHelp } from './commands/help';
 
 const TOOL = 'secretless-ai';
@@ -97,10 +98,11 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       const includeTests = args.includes('--include-tests');
       const explain = args.includes('--explain');
+      const noIgnore = args.includes('--no-ignore');
       const positionalArgs = args.slice(1).filter(a => !a.startsWith('--'));
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, explain });
+      return runScan(projectDir, { includeTests, explain, noIgnore });
     }
     case 'status': {
       const dirArg = args[1];
@@ -145,7 +147,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
     case 'hook':
       return runHook(args.slice(1));
     case 'scan-staged':
-      return runScanStaged();
+      return runScanStaged(args.slice(1));
     case 'cache':
       return runCache(args.slice(1));
     case 'broker':
@@ -162,6 +164,8 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       return runWarm(args.slice(1));
     case 'install':
       return runInstall(args.slice(1));
+    case 'feedback':
+      return runFeedback();
     case '--help':
     case '-h':
     case undefined:

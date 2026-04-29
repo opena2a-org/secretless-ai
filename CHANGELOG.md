@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.4] - 2026-04-29
+
+### Added
+- `.secretlessignore` — gitignore-style file at the project root that suppresses scan findings for paths the user has marked as fixtures or examples. The default-ignore list is applied automatically on top of the user file and covers `__tests__/`, `__fixtures__/`, `test/`, `tests/`, `test-server/`, `docs/vhs/`, `examples/`, `e2e/`, `.golden/`, `node_modules/`, `dist/`, `build/`. Each default path is justified by a real-world false positive observed during dogfooding (e.g. `docs/vhs/setup-lab.sh` fixture credentials, `test-server/agents.js` adversarial system prompts). Negative patterns (`!docs/vhs/`) re-enable scanning for a default-ignored path. New CLI flag `--no-ignore` on `scan` and `scan-staged` disables both the user file and the defaults. Public API: `loadSecretlessIgnore`, `buildMatcher`, `DEFAULT_IGNORE_PATTERNS`, `IgnoreMatcher`.
+- `secretless-ai feedback` — opt-in subcommand that prints the star/issue/discussion links. Replaces the unconditional "Helpful? Star the project" line that previously trailed every `init` invocation.
+
+### Changed
+- **`init` output redesigned** per CISO Rule 11. Collapsed the redundant Detected + Configured pair into one line (`Configured: Claude Code (1 of 1 detected)`); the previous `+` / `*` glyph distinction was confusing. The `Modified:` line now says exactly what changed (`.claude/settings.json (added 21 deny patterns)`) instead of just naming the file. Dropped the misleading `Done. Secrets are now blocked from AI context.` line — `init` configures hooks, the actual blocking happens at AI-tool invocation. Added a `Next steps:` block (Verify / Scan / Status) so every run ends in a runnable verb. Removed the unconditional star-prompt line from `init` output (now lives in `secretless-ai feedback`). `init` re-runs over an already-configured project now print `Already up to date. No files changed.` instead of an empty Created/Modified pair.
+- **`status` output redesigned** per CISO Rule 11. The previous five sub-blocks (top-level metrics, Session, Broker, Transcript Protection, transcript line counts) collapsed into one Observations table. Every warning row ends in `→ <runnable command>` so the user has no dead end. Glyphs differentiate satisfied (`✓`) from needs-action (`⚠`). The Verdict line now reflects the warning count instead of a bare `Protected: Yes` — `Protected — Clean`, `Protected (4 unblocked credentials need review)`, `Not protected. Run secretless-ai init to install hooks.`
+- **Catalog re-pin to `@opena2a/credential-patterns@0.1.1`** with three new false-positive suppression branches (mirrored locally to keep the lockstep test green): block-comment marker recognition for line-level `'''`/`"""`/`<!--`/`-->`/`*` (JSDoc continuation lines now allowlisted when paired with the substring `example`), bare `'fake'` in `PLACEHOLDER_INDICATORS` (replaces `'fake_'` and `'fake-'` — case-insensitive substring match accepts `sk-proj-fake1234567890abcdefghijklmnop`), and a localhost-bound demo-password allowlist for connection strings (`postgres://admin:password123@localhost`/`@127.0.0.1`/`@[::1]` recognized as tutorial fixtures).
+- `init` `InitResult` interface gained `denyRulesAdded` (delta this run) and `denyRulesTotal` (full count after merge). The existing `denyRuleCount` on `StatusResult` is unchanged.
+
+### Internal
+- New `src/secretlessignore.ts` parser (gitignore-subset glob → regex) plus 18-test `secretlessignore.test.ts` covering defaults, user file, negation, glob semantics, anchor rules, Windows path normalization, and path-traversal rejection. New `scan()` integration tests assert default-ignore suppression of fixture paths and `--no-ignore` round-trip.
+- `walkSourceFiles` now consults the ignore matcher at directory level (prunes whole subtrees) and again at file level (file-name globs).
+
 ## [0.16.3] - 2026-04-29
 
 ### Added
