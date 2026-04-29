@@ -222,85 +222,86 @@ export function runStatus(projectDir: string): number {
   const tp = s.transcriptProtection;
   const configuredBackend = readBackendConfig();
 
-  // Build observation rows. Each row: glyph + message + optional → command.
+  // Build observation rows. Each row: glyph + label + optional → command.
   // Satisfied observations use ✓; needs-action use ⚠. Every ⚠ ends in a
   // runnable verb so the user has no dead end (CISO Rule 11).
-  type Row = { glyph: '✓' | '⚠'; message: string; action?: string };
+  type Row = { glyph: '✓' | '⚠'; label: string; action?: string };
   const rows: Row[] = [];
+  const addRow = (row: Row): void => { rows[rows.length] = row; };
 
   // Protection / hook.
   if (s.hookInstalled) {
     const denyText = s.denyRuleCount > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
-    rows.push({ glyph: '✓', message: `Claude Code hook installed (.claude/settings.json${denyText})` });
+    addRow({ glyph: '✓', label: `Claude Code hook installed (.claude/settings.json${denyText})` });
   } else {
-    rows.push({ glyph: '⚠', message: 'Claude Code hook not installed', action: 'secretless-ai init' });
+    addRow({ glyph: '⚠', label: 'Claude Code hook not installed', action: 'secretless-ai init' });
   }
 
   // Stop hook (transcript redaction).
   if (tp.stopHookInstalled) {
-    rows.push({ glyph: '✓', message: 'Stop hook installed (transcript redaction)' });
+    addRow({ glyph: '✓', label: 'Stop hook installed (transcript redaction)' });
   } else {
-    rows.push({ glyph: '⚠', message: 'Stop hook not installed (transcripts unredacted)', action: 'secretless-ai init' });
+    addRow({ glyph: '⚠', label: 'Stop hook not installed (transcripts unredacted)', action: 'secretless-ai init' });
   }
 
   // Configured tools (instructions present in tool config files).
   if (s.configuredTools.length > 0) {
-    rows.push({ glyph: '✓', message: `Tool instructions: ${s.configuredTools.map(toolDisplayName).join(', ')}` });
+    addRow({ glyph: '✓', label: `Tool instructions: ${s.configuredTools.map(toolDisplayName).join(', ')}` });
   }
 
   // Secrets in config files.
   if (s.secretsFound > 0) {
-    rows.push({ glyph: '⚠', message: `${s.secretsFound} credential${s.secretsFound === 1 ? '' : 's'} detected in config files`, action: 'secretless-ai scan' });
+    addRow({ glyph: '⚠', label: `${s.secretsFound} credential${s.secretsFound === 1 ? '' : 's'} detected in config files`, action: 'secretless-ai scan' });
   } else {
-    rows.push({ glyph: '✓', message: 'No credentials in config files' });
+    addRow({ glyph: '✓', label: 'No credentials in config files' });
   }
 
   // Session warmth (only relevant when a backend that prompts is configured).
   const sessionRelevant = configuredBackend === '1password' || configuredBackend === 'keychain';
   if (sessionRelevant) {
     if (session.warm) {
-      rows.push({ glyph: '✓', message: `Biometric session warm (expires ${formatRemainingTime(session.remainingSeconds)})` });
+      addRow({ glyph: '✓', label: `Biometric session warm (expires ${formatRemainingTime(session.remainingSeconds)})` });
     } else if (session.authenticatedAt) {
-      rows.push({ glyph: '⚠', message: `Biometric session expired (last auth ${session.authenticatedAt})`, action: 'secretless-ai warm' });
+      addRow({ glyph: '⚠', label: `Biometric session expired (last auth ${session.authenticatedAt})`, action: 'secretless-ai warm' });
     } else {
-      rows.push({ glyph: '⚠', message: 'Biometric session not initialized', action: 'secretless-ai warm' });
+      addRow({ glyph: '⚠', label: 'Biometric session not initialized', action: 'secretless-ai warm' });
     }
   }
 
   // Watcher running (transcript file monitoring).
   if (tp.watcherRunning) {
-    rows.push({ glyph: '✓', message: 'Transcript watcher running' });
+    addRow({ glyph: '✓', label: 'Transcript watcher running' });
   } else {
-    rows.push({ glyph: '⚠', message: 'Transcript watcher not running', action: 'secretless-ai watch' });
+    addRow({ glyph: '⚠', label: 'Transcript watcher not running', action: 'secretless-ai watch' });
   }
 
   // Transcript files + secrets within them.
   if (tp.transcriptSecretsFound > 0) {
-    rows.push({ glyph: '⚠', message: `${tp.transcriptSecretsFound} credential${tp.transcriptSecretsFound === 1 ? '' : 's'} in recent transcripts`, action: 'secretless-ai clean' });
+    addRow({ glyph: '⚠', label: `${tp.transcriptSecretsFound} credential${tp.transcriptSecretsFound === 1 ? '' : 's'} in recent transcripts`, action: 'secretless-ai clean' });
   } else if (tp.transcriptFiles > 0) {
-    rows.push({ glyph: '✓', message: `Transcripts clean (${tp.transcriptFiles} file${tp.transcriptFiles === 1 ? '' : 's'} scanned)` });
+    addRow({ glyph: '✓', label: `Transcripts clean (${tp.transcriptFiles} file${tp.transcriptFiles === 1 ? '' : 's'} scanned)` });
   }
 
   // Broker daemon.
   if (brokerStatus) {
-    rows.push({ glyph: '✓', message: `Broker running (PID ${brokerStatus.pid}, ${formatUptime(brokerStatus.uptimeSeconds)})` });
+    addRow({ glyph: '✓', label: `Broker running (PID ${brokerStatus.pid}, ${formatUptime(brokerStatus.uptimeSeconds)})` });
   } else if (brokerInstalled) {
-    rows.push({ glyph: '⚠', message: 'Broker daemon not running', action: 'secretless-ai broker start' });
+    addRow({ glyph: '⚠', label: 'Broker daemon not running', action: 'secretless-ai broker start' });
   } else {
-    rows.push({ glyph: '⚠', message: 'Broker daemon not installed', action: 'secretless-ai install' });
+    addRow({ glyph: '⚠', label: 'Broker daemon not installed', action: 'secretless-ai install' });
   }
 
   // Render the Observations block. We measure the visible width (glyph +
-  // message) so the `→ command` column lines up tidily across rows.
+  // label) so the `→ command` column lines up tidily across rows.
   const headerLine = '──────────────────────────────────────────────────────────';
   console.log(`  ── Observations ${headerLine.slice(0, Math.max(0, 44))}`);
   let leftWidth = 0;
   for (const row of rows) {
-    const visible = row.glyph + ' ' + row.message;
+    const visible = row.glyph + ' ' + row.label;
     if (visible.length > leftWidth) leftWidth = visible.length;
   }
   for (const row of rows) {
-    const left = `${row.glyph} ${row.message}`;
+    const left = `${row.glyph} ${row.label}`;
     if (row.action) {
       const padded = left.padEnd(leftWidth, ' ');
       console.log(`  ${padded}  → ${row.action}`);

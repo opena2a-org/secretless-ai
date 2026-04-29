@@ -3,7 +3,7 @@
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-809-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-915-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
 
@@ -14,10 +14,22 @@ npx secretless-ai init
 ```
 
 ```
-  Detected:  Claude Code, Cursor
-  Protected: .env, .aws/credentials, *.key, *.pem (21 file patterns)
-  Blocked:   49 credential patterns from AI context
-  Done.      Secrets are now invisible to AI tools.
+  Secretless v0.16.4
+  Keeping secrets out of AI
+
+  Configured: Claude Code (1 of 1 detected)
+
+  Created:
+    + .claude/hooks/secretless-guard.sh
+    + CLAUDE.md
+
+  Modified:
+    ~ .claude/settings.json (added 69 deny patterns)
+
+  Next steps:
+    Verify: secretless-ai verify
+    Scan:   secretless-ai scan
+    Status: secretless-ai status
 ```
 
 ![Secretless AI Demo](docs/secretless-ai-demo.gif)
@@ -60,7 +72,7 @@ npx secretless-ai mcp-unprotect                    # Restore original configs fr
 
 ## How It Works
 
-1. **Scans** your project for hardcoded credentials in config files *and* source code (49 patterns across .js, .ts, .py, .go, .java, .rb, and more)
+1. **Scans** your project for hardcoded credentials in config files *and* source code (56 patterns from `@opena2a/credential-patterns@0.1.1`, lockstep-asserted, across .js, .ts, .py, .go, .java, .rb, and more). Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/` ...)
 2. **Migrates** them to secure storage (OS keychain, 1Password, Vault, GCP Secret Manager)
 3. **Blocks** AI tools from reading credential files (21 file patterns)
 4. **Brokers** access through environment variables -- secrets never enter AI context
