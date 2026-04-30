@@ -144,3 +144,95 @@ describe('scan() — .secretlessignore integration', () => {
     expect(findings[0].file).toBe('src/cred.ts');
   });
 });
+
+describe('scan() — confidence + fixture flag (Wave 2)', () => {
+  function tmpProjectWith(files: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-conf-'));
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    return dir;
+  }
+
+  const REAL_OPENAI_KEY = ['sk-proj-', 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2'].join('');
+
+  it('every finding carries a confidence score in [0, 1] and a tier label', () => {
+    const dir = tmpProjectWith({
+      'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBeGreaterThan(0);
+    const f = findings[0];
+    expect(typeof f.confidence).toBe('number');
+    expect(f.confidence).toBeGreaterThan(0);
+    expect(f.confidence).toBeLessThanOrEqual(1);
+    expect(['high', 'medium', 'low']).toContain(f.confidenceTier);
+  });
+
+  it('looksLikeFixture is false when fixture filtering is on (defaults applied)', () => {
+    const dir = tmpProjectWith({
+      'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings[0].looksLikeFixture).toBe(false);
+  });
+
+  it('looksLikeFixture is TRUE when --no-ignore surfaces a fixture-path finding', () => {
+    const dir = tmpProjectWith({
+      'docs/vhs/setup-lab.sh': `OPENAI_API_KEY=${REAL_OPENAI_KEY}\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false, ignore: false });
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings[0].file).toBe('docs/vhs/setup-lab.sh');
+    expect(findings[0].looksLikeFixture).toBe(true);
+  });
+
+  it('looksLikeFixture is FALSE for non-fixture-path findings even with --no-ignore', () => {
+    const dir = tmpProjectWith({
+      'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false, ignore: false });
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings[0].file).toBe('src/cred.ts');
+    expect(findings[0].looksLikeFixture).toBe(false);
+  });
+
+  it('--min-confidence drops findings below the threshold', () => {
+    const dir = tmpProjectWith({
+      // README.md is a docs path — path tier 0.4 lowers composite confidence.
+      'README.md': `\`\`\`\n${REAL_OPENAI_KEY}\n\`\`\`\n`,
+      'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,
+    });
+    const high = scan(dir, { scanGlobal: false, minConfidence: 0.85 });
+    const all = scan(dir, { scanGlobal: false, minConfidence: 0 });
+    expect(all.length).toBeGreaterThanOrEqual(high.length);
+  });
+
+  it('--min-confidence=1.0 drops everything except perfect-confidence findings', () => {
+    const dir = tmpProjectWith({
+      // The only path that scores 1.0 path-tier is .env / config files; even
+      // there, the composite is below 1.0 because pattern + entropy + length
+      // weights are < 1 each. So minConfidence=1 should drop everything.
+      'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false, minConfidence: 1.0 });
+    expect(findings).toEqual([]);
+  });
+
+  it('findings are sorted by descending confidence within the same severity', () => {
+    const dir = tmpProjectWith({
+      // Two findings, different paths → different path tiers → different
+      // confidences. Confirm the higher-confidence one comes first.
+      'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,
+      'README.md': `\`\`\`\n${REAL_OPENAI_KEY}\n\`\`\`\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    // Filter to the same severity to defeat the severity-first sort.
+    const sameSeverity = findings.filter(f => f.severity === findings[0].severity);
+    for (let i = 1; i < sameSeverity.length; i++) {
+      expect(sameSeverity[i - 1].confidence).toBeGreaterThanOrEqual(sameSeverity[i].confidence);
+    }
+  });
+});

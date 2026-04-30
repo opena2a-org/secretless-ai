@@ -109,7 +109,7 @@ export function runInit(projectDir: string): number {
   return 0;
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean }): Promise<number> {
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number }): Promise<number> {
   console.log('\n  Secretless Scanner\n');
 
   const nodeFs = require('fs') as typeof import('fs');
@@ -125,6 +125,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // default-ignore list. Used when a user wants to see every finding,
     // including known-fixture noise.
     ignore: options?.noIgnore ? false : undefined,
+    minConfidence: options?.minConfidence,
   });
 
   if (findings.length === 0) {
@@ -162,10 +163,23 @@ function printFindings(findings: ReturnType<typeof scan>): void {
   for (const finding of findings) {
     const sevColor = finding.severity === 'critical' ? c.brightRed : c.yellow;
     const sevLabel = finding.severity === 'critical' ? 'CRITICAL' : 'HIGH';
+    // Confidence rendering: `confidence: high (0.92)`. Tier colour mirrors the
+    // severity colour ramp \u2014 high green, medium yellow, low dim \u2014 so a low-
+    // confidence high-severity finding still looks lower than a high-
+    // confidence one without the user squinting at the number.
+    const tierColor = finding.confidenceTier === 'high'
+      ? c.green
+      : finding.confidenceTier === 'medium'
+        ? c.yellow
+        : c.dim;
+    const fixtureSuffix = finding.looksLikeFixture
+      ? c.dim(' (looks like a test fixture)')
+      : '';
     console.log();
     console.log(`  ${sevColor('\u2502')} ${c.bold(sevLabel)}  ${c.boldWhite(finding.patternName)}`);
-    console.log(`  ${sevColor('\u2502')} ${c.dim(`${finding.file}:${finding.line}`)}`);
+    console.log(`  ${sevColor('\u2502')} ${c.dim(`${finding.file}:${finding.line}`)}${fixtureSuffix}`);
     console.log(`  ${sevColor('\u2502')} ${finding.preview}`);
+    console.log(`  ${sevColor('\u2502')} ${c.cyan('Confidence:')} ${tierColor(`${finding.confidenceTier} (${finding.confidence.toFixed(2)})`)}`);
     if (finding.fix) {
       console.log(`  ${sevColor('\u2502')} ${c.cyan('Fix:')} ${finding.fix}`);
     }

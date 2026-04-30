@@ -6,7 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, type CredentialPattern } from './patterns';
-import { loadSecretlessIgnore, type IgnoreMatcher } from './secretlessignore';
+import { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
+import { scoreFinding, type ConfidenceTier } from './confidence';
 
 export interface ScanFinding {
   file: string;
@@ -17,6 +18,17 @@ export interface ScanFinding {
   preview: string;
   /** Actionable fix guidance for this finding */
   fix?: string;
+  /** Composite confidence score in [0, 1]. Higher = more likely a real credential. */
+  confidence: number;
+  /** Display tier derived from `confidence`: high / medium / low. */
+  confidenceTier: ConfidenceTier;
+  /**
+   * True when `--no-ignore` surfaced a finding whose path matches the
+   * default-ignore list. Used to render an inline "looks like a test fixture"
+   * hint without re-suppressing the finding. False otherwise (so JSON
+   * consumers can rely on the field being present).
+   */
+  looksLikeFixture: boolean;
 }
 
 /** Per-pattern fix guidance. Tells users exactly how to fix each finding. */
@@ -56,6 +68,12 @@ export interface ScanOptions {
    * and `projectDir` exists, `loadSecretlessIgnore(projectDir)` is called.
    */
   ignore?: boolean | IgnoreMatcher;
+  /**
+   * Drop findings whose composite confidence score is below this threshold.
+   * Range [0, 1]. Default: 0 (no filtering). Useful for `--min-confidence`
+   * CLI prioritisation on a noisy repo.
+   */
+  minConfidence?: number;
 }
 
 /**
@@ -178,6 +196,45 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
     }
   })();
 
+  // Defaults-only matcher used to flag `--no-ignore` findings whose path is
+  // in the default-ignore list. Built lazily because it's only useful when
+  // `ignore === null` (otherwise the path is already filtered out).
+  const fixtureMatcher: IgnoreMatcher | null = ignore === null
+    ? buildMatcher(DEFAULT_IGNORE_PATTERNS as readonly string[])
+    : null;
+
+  const minConfidence = Math.max(0, Math.min(1, options?.minConfidence ?? 0));
+
+  // Helper: classify a match into a `ScanFinding` with confidence + fixture flag.
+  function buildFinding(
+    file: string,
+    line: number,
+    pattern: CredentialPattern,
+    match: RegExpMatchArray,
+    severity: 'critical' | 'high',
+    masked: string,
+  ): ScanFinding | null {
+    const breakdown = scoreFinding({
+      pattern: { id: pattern.id, regex: pattern.regex },
+      value: match[0],
+      filePath: file,
+    });
+    if (breakdown.score < minConfidence) return null;
+    const looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(file.replace(/\\/g, '/')));
+    return {
+      file,
+      line,
+      patternId: pattern.id,
+      patternName: pattern.name,
+      severity,
+      preview: masked.trim().substring(0, 80),
+      fix: FIX_GUIDANCE[pattern.id],
+      confidence: breakdown.score,
+      confidenceTier: breakdown.tier,
+      looksLikeFixture,
+    };
+  }
+
   // Scan global config files (keys in ~/.claude/CLAUDE.md are in every session's context)
   for (const global of (scanGlobal ? GLOBAL_CONFIG_FILES : [])) {
     const fullPath = path.join(global.dir, global.file);
@@ -196,15 +253,8 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
           if (match) {
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
-            findings.push({
-              file: global.label,
-              line: i + 1,
-              patternId: pattern.id,
-              patternName: pattern.name,
-              severity: 'critical',
-              preview: masked.trim().substring(0, 80),
-              fix: FIX_GUIDANCE[pattern.id],
-            });
+            const finding = buildFinding(global.label, i + 1, pattern, match, 'critical', masked);
+            if (finding) findings.push(finding);
             break;
           }
         }
@@ -242,15 +292,8 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
 
-            findings.push({
-              file: configFile,
-              line: i + 1,
-              patternId: pattern.id,
-              patternName: pattern.name,
-              severity: 'critical',
-              preview: masked.trim().substring(0, 80),
-              fix: FIX_GUIDANCE[pattern.id],
-            });
+            const finding = buildFinding(configFile, i + 1, pattern, match, 'critical', masked);
+            if (finding) findings.push(finding);
             break; // One finding per line
           }
         }
@@ -301,15 +344,8 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
               const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
               const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
 
-              findings.push({
-                file: relPath,
-                line: i + 1,
-                patternId: pattern.id,
-                patternName: pattern.name,
-                severity: 'high',
-                preview: masked.trim().substring(0, 80),
-                fix: FIX_GUIDANCE[pattern.id],
-              });
+              const finding = buildFinding(relPath, i + 1, pattern, match, 'high', masked);
+              if (finding) findings.push(finding);
               break;
             }
           }
@@ -320,9 +356,12 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
     }
   }
 
-  // Sort: critical first, then by file
+  // Sort: critical first, then by descending confidence (highest first), then by file
+  // for stable ties. Surfacing high-confidence findings ahead of low-confidence
+  // ones helps users prioritise on a noisy repo.
   findings.sort((a, b) => {
     if (a.severity !== b.severity) return a.severity === 'critical' ? -1 : 1;
+    if (a.confidence !== b.confidence) return b.confidence - a.confidence;
     return a.file.localeCompare(b.file);
   });
 

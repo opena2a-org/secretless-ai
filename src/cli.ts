@@ -23,6 +23,8 @@ import { runVault } from './commands/vault';
 import { runScope } from './commands/scope';
 import { runWarm, runInstall } from './commands/session';
 import { runFeedback } from './commands/feedback';
+import { runIgnore } from './commands/ignore';
+import { runDiff } from './commands/diff';
 import { printHelp } from './commands/help';
 
 const TOOL = 'secretless-ai';
@@ -99,10 +101,35 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       const includeTests = args.includes('--include-tests');
       const explain = args.includes('--explain');
       const noIgnore = args.includes('--no-ignore');
-      const positionalArgs = args.slice(1).filter(a => !a.startsWith('--'));
+      // --min-confidence <n>  (n in [0, 1]). Drops findings whose composite
+      // confidence score is below the threshold. Useful on noisy repos to
+      // surface only high-confidence credentials. Invalid values fall back to
+      // 0 (no filtering) and the runner prints a warning.
+      let minConfidence = 0;
+      const mcIdx = args.indexOf('--min-confidence');
+      if (mcIdx !== -1 && mcIdx + 1 < args.length) {
+        const raw = args[mcIdx + 1];
+        const parsed = Number.parseFloat(raw);
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
+          minConfidence = parsed;
+        } else {
+          console.error(`  Warning: ignoring invalid --min-confidence value "${raw}" (must be in [0, 1]).`);
+        }
+      }
+      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--min-confidence']);
+      const positionalArgs: string[] = [];
+      for (let k = 1; k < args.length; k++) {
+        const a = args[k];
+        if (flagFlag.has(a)) {
+          if (a === '--min-confidence') k++;
+          continue;
+        }
+        if (a.startsWith('--')) continue;
+        positionalArgs.push(a);
+      }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, explain, noIgnore });
+      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence });
     }
     case 'status': {
       const dirArg = args[1];
@@ -166,6 +193,10 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       return runInstall(args.slice(1));
     case 'feedback':
       return runFeedback();
+    case 'ignore':
+      return runIgnore(args.slice(1));
+    case 'diff':
+      return runDiff(args.slice(1));
     case '--help':
     case '-h':
     case undefined:
