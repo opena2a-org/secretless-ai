@@ -3,7 +3,7 @@
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-915-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-988-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
 
@@ -14,7 +14,7 @@ npx secretless-ai init
 ```
 
 ```
-  Secretless v0.16.4
+  Secretless v0.17.0
   Keeping secrets out of AI
 
   Configured: Claude Code (1 of 1 detected)
@@ -69,6 +69,17 @@ npx secretless-ai protect-mcp --backend 1password  # Store MCP secrets in 1Passw
 npx secretless-ai mcp-status                       # Show which servers are protected
 npx secretless-ai mcp-unprotect                    # Restore original configs from backup
 ```
+
+## Triage Helpers
+
+```bash
+npx secretless-ai scan --min-confidence 0.85   # Show only high-confidence findings
+npx secretless-ai ignore docs/migration.md     # Append a path to .secretlessignore
+npx secretless-ai ignore --pattern '*.golden.txt'
+npx secretless-ai diff main                    # Audit secretless-managed file changes vs a git ref
+```
+
+`scan` now renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so users can keep them in view without re-suppressing them.
 
 ## How It Works
 

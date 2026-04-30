@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-04-30
+
+### Added
+- **Per-finding confidence score on `ScanFinding`.** Every finding now carries a deterministic composite score in `[0, 1]` plus a tier label (`high` / `medium` / `low`). Inputs are pattern specificity (length of literal regex prefix), value entropy (Shannon over the matched value), value length tier, and path tier (live source / config files outrank docs and fixture paths). Renders inline as `Confidence: high (0.92)` so users can prioritise on noisy repos. Findings within the same severity are now sorted by descending confidence. Public API: `scoreFinding`, `formatConfidence`, `patternSpecificity`, `valueEntropy`, `lengthTier`, `pathTier`, `ConfidenceTier`, `ConfidenceBreakdown`. New CLI flag `scan --min-confidence <n>` (`n` in `[0, 1]`) drops findings below the threshold.
+- **`secretless-ai ignore <path>` subcommand.** Convenience wrapper that appends a gitignore-style glob to `.secretlessignore`. Idempotent — re-running with the same pattern is a no-op. Creates the file with a header comment if it doesn't exist; otherwise appends and ensures a trailing newline. Validates input against path traversal (`..`), absolute paths, and symlinks at the target. Accepts an explicit `--pattern` form for non-path globs (`*.golden.txt`, `**/__fixtures__/**`).
+- **`secretless-ai diff <ref>` subcommand.** Concrete change-set audit of secretless-managed files (`.claude/settings.json`, `.secretlessignore`, `.secretless-rules.yaml`) versus a git ref. Default ref is `HEAD`. Output is a unified-diff-like report with per-file `INTRODUCED` / `MODIFIED` / `REMOVED` / `UNCHANGED` tags. Missing or invalid refs return distinct exit codes (1 for malformed input, 2 for git errors). Refs are validated against `[A-Za-z0-9._/^@~+-]` only — shell metacharacters and refs starting with `-` are rejected; `execFileSync` is invoked with an argv array, never a shell string.
+- **"Looks like a test fixture" inline hint** on `scan --no-ignore` findings whose path matches the default-ignore list. Helps users distinguish real-vs-fake findings without re-suppressing them. The hint is also exposed on the public `ScanFinding` interface as `looksLikeFixture: boolean`.
+
+### Changed
+- `ScanFinding` interface gained three required fields: `confidence: number`, `confidenceTier: 'high' | 'medium' | 'low'`, `looksLikeFixture: boolean`. Library consumers that destructure `ScanFinding` will need to handle the new fields (additive, not breaking — JSON consumers see strictly more keys).
+- `printFindings` (CLI) renders the confidence tier under each finding. Tier colour mirrors the severity ramp — `high` green, `medium` yellow, `low` dim — so a low-confidence high-severity finding visually de-emphasises without disappearing.
+
+### Internal
+- New `src/confidence.ts` module + 32-test `confidence.test.ts` covering pattern-specificity escape handling, entropy noise floor, length-tier monotonicity, path-tier classification (Windows path normalisation, mixed-case, `*.test.ts` suffix), composite determinism, monotonicity-on-every-axis, and tier-rendering.
+- New `src/commands/ignore.ts` + 20-test `ignore.test.ts` covering file creation, append behaviour, idempotence (whitespace and `./` normalisation), traversal rejection (Unix absolute, Windows drive prefix, parent traversal, nested `..`), symlink rejection, 1MB size cap, and non-file refusal.
+- New `src/commands/diff.ts` + 14-test `diff.test.ts` exercising real `git init` repos in tmpdirs: clean diff, additions-only (synthesised diff for untracked files), mixed adds/mods, missing ref, malformed ref (shell metacharacter rejection, `-` prefix rejection, `..` rejection, length cap), not-a-git-repo handling.
+- Test count: 915 → 988 (+73 new). Build is `tsc` clean. No public API removals.
+
 ## [0.16.4] - 2026-04-29
 
 ### Added

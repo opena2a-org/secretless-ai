@@ -115,15 +115,20 @@ export function printHelp(): void {
     install       Install as macOS LaunchAgent (auto-start on login)
     uninstall     Remove LaunchAgent
 
-  Scan options:
-    --include-tests  Include test files in source code scan
-    --explain        Use NanoMind for rich context explanations (requires @nanomind/engine)
-    --no-ignore      Disable .secretlessignore + default-ignore (scan everything)
-
   Other:
-    npx secretless-ai feedback   Star, file an issue, or join the discussion
-    .secretlessignore            gitignore-style file at repo root; default-ignore
-                                 covers test/, __tests__/, examples/, e2e/, etc.
+    npx secretless-ai feedback        Star, file an issue, or join the discussion
+    npx secretless-ai ignore <path>   Append a path or glob to .secretlessignore
+    npx secretless-ai ignore --pattern '*.golden.txt'
+    npx secretless-ai diff [<ref>]    Show how secretless-managed files have changed
+                                       vs a git ref (default HEAD)
+    .secretlessignore                  gitignore-style file at repo root; default-ignore
+                                       covers test/, __tests__/, examples/, e2e/, etc.
+
+  Scan options:
+    --include-tests          Include test files in source code scan
+    --explain                Use NanoMind for rich context explanations
+    --no-ignore              Disable .secretlessignore + default-ignore
+    --min-confidence <n>     Drop findings with composite confidence below n (0-1)
 
   Options:
     -v, --version    Show version
