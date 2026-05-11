@@ -1,13 +1,16 @@
-> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
 # secretless-ai
 
+> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
+
+Keep API keys and other secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider. Apache 2.0.
+
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-988-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-988%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
-Keep API keys and secrets invisible to AI coding tools. Works with Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, and Aider.
+[Website](https://opena2a.org/secretless) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
 
-## Quick Start
+## Quick start
 
 ```bash
 npx secretless-ai init
@@ -34,13 +37,52 @@ npx secretless-ai init
 
 ![Secretless AI Demo](docs/secretless-ai-demo.gif)
 
-For a full security dashboard covering credentials, shadow AI, config integrity, and more:
+## Install
+
+### npm
 
 ```bash
-npx opena2a-cli review
+npx secretless-ai init          # run once, no install
+npm install -g secretless-ai    # install globally
 ```
 
-## MCP Server Protection
+Requires Node.js 18 or later.
+
+### Homebrew
+
+```bash
+brew install opena2a-org/tap/secretless-ai
+```
+
+### From source
+
+```bash
+git clone https://github.com/opena2a-org/secretless-ai.git
+cd secretless-ai
+npm install
+npm run build && npm test
+node dist/cli.js verify
+```
+
+### Verifying what was installed
+
+Every release publishes via npm Trusted Publishing with SLSA v1 provenance. No long-lived `NPM_TOKEN`. GitHub Actions exchanges its OIDC token with npm at publish time.
+
+```bash
+npm view secretless-ai dist.attestations --json
+# Expects non-empty result with predicateType "https://slsa.dev/provenance/v1"
+```
+
+Secretless never reads or transmits credential values it manages. Backends (OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, AES-256-GCM encrypted file) decrypt on demand at subprocess spawn time. `secretless-ai verify` runs an integrity check of your local install.
+
+## How it works
+
+1. **Scans** your project for hardcoded credentials in config files and source code. 56 credential patterns from [`@opena2a/credential-patterns@0.1.1`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
+2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
+3. **Blocks** AI tools from reading credential files. 21 file patterns enforced at the AI-tool hook layer.
+4. **Brokers** access through environment variables. Secrets never enter AI context.
+
+## MCP server protection
 
 Every MCP server config has plaintext API keys in JSON files on your machine. The LLM sees them. Secretless encrypts them.
 
@@ -59,50 +101,43 @@ npx secretless-ai protect-mcp
       STRIPE_SECRET_KEY (encrypted)
 
   3 secret(s) encrypted across 3 server(s).
-  MCP servers start normally -- no workflow changes needed.
+  MCP servers start normally. No workflow changes needed.
 ```
 
 Scans configs across Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf. Secrets move to your configured backend. Non-secret env vars (URLs, regions) stay untouched.
 
 ```bash
-npx secretless-ai protect-mcp --backend 1password  # Store MCP secrets in 1Password
-npx secretless-ai mcp-status                       # Show which servers are protected
-npx secretless-ai mcp-unprotect                    # Restore original configs from backup
+npx secretless-ai protect-mcp --backend 1password   # store MCP secrets in 1Password
+npx secretless-ai mcp-status                        # show which servers are protected
+npx secretless-ai mcp-unprotect                     # restore original configs from backup
 ```
 
-## Triage Helpers
+## Triage helpers
 
 ```bash
-npx secretless-ai scan --min-confidence 0.85   # Show only high-confidence findings
-npx secretless-ai ignore docs/migration.md     # Append a path to .secretlessignore
+npx secretless-ai scan --min-confidence 0.85   # high-confidence findings only
+npx secretless-ai ignore docs/migration.md     # append a path to .secretlessignore
 npx secretless-ai ignore --pattern '*.golden.txt'
-npx secretless-ai diff main                    # Audit secretless-managed file changes vs a git ref
+npx secretless-ai diff main                    # audit secretless-managed file changes vs a git ref
 ```
 
-`scan` now renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so users can keep them in view without re-suppressing them.
-
-## How It Works
-
-1. **Scans** your project for hardcoded credentials in config files *and* source code (56 patterns from `@opena2a/credential-patterns@0.1.1`, lockstep-asserted, across .js, .ts, .py, .go, .java, .rb, and more). Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/` ...)
-2. **Migrates** them to secure storage (OS keychain, 1Password, Vault, GCP Secret Manager)
-3. **Blocks** AI tools from reading credential files (21 file patterns)
-4. **Brokers** access through environment variables -- secrets never enter AI context
+`scan` renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so they stay visible without being re-suppressed.
 
 ## Architecture
 
-Secretless has three layers. You can use one, two, or all three — each is independent and works against any supported backend.
+Three layers. Use one, two, or all three. Each works against any supported backend.
 
-**Tier 1 — In-process SDK.** Credentials resolved in the call stack and zeroized after use. Available in the Python and TypeScript AIM SDKs. Sub-millisecond overhead.
+**Tier 1: In-process SDK.** Credentials resolved in the call stack and zeroized after use. Available in the Python and TypeScript AIM SDKs. Sub-millisecond overhead.
 
-**Tier 2 — Vault Exec.** A subprocess primitive that injects a credential into a child process's environment without exposing it to the parent. The agent running under an AI assistant never sees the secret.
+**Tier 2: Vault Exec.** A subprocess primitive that injects a credential into a child process's environment without exposing it to the parent. The agent running under an AI assistant never sees the secret.
 
 ```bash
 npx secretless-ai vault exec github -- curl https://api.github.com/user
 ```
 
-The child process receives `$GITHUB`. The parent shell, the AI tool's context, and any process listing see nothing. Language-agnostic — wraps any command.
+The child process receives `$GITHUB`. The parent shell, the AI tool's context, and any process listing see nothing. Language-agnostic. Wraps any command.
 
-**Tier 3 — Broker with identity policy.** A local daemon that mediates credential access across multiple agents. Policy rules allow or deny access by agent ID, credential name, time window, and rate limit. Optional AIM integration adds trust-score and capability constraints.
+**Tier 3: Broker with identity policy.** A local daemon that mediates credential access across multiple agents. Policy rules allow or deny access by agent ID, credential name, time window, and rate limit. Optional AIM integration adds trust-score and capability constraints.
 
 ```bash
 npx secretless-ai broker start
@@ -110,23 +145,12 @@ npx secretless-ai broker start
 
 See [Run the Broker](docs/use-cases/run-broker.md) for when to use the daemon and how to configure it.
 
-**AIM is optional.** Tier 1 and Tier 2 work against any of the five [storage backends](#storage-backends) with no AIM involvement. Tier 3 adds identity-bound policy when an AIM server is reachable; it still enforces default-deny locally without one.
+AIM is optional. Tier 1 and Tier 2 work against any of the five [storage backends](#storage-backends) with no AIM involvement. Tier 3 adds identity-bound policy when an AIM server is reachable. Default-deny still enforces locally without one.
 
-## Use Cases
+## Supported tools
 
-Step-by-step guides for common workflows: [docs/USE-CASES.md](docs/USE-CASES.md)
-
-- [Protect My Credentials](docs/use-cases/protect-my-credentials.md) -- Keep API keys out of AI tools (2 min)
-- [Secure MCP Configs](docs/use-cases/secure-mcp-configs.md) -- Encrypt MCP server credentials (3 min)
-- [Bring Your Own Vault](docs/use-cases/bring-your-own-vault.md) -- Point Secretless at HashiCorp Vault, GCP SM, or 1Password (3 min)
-- [Run the Broker](docs/use-cases/run-broker.md) -- Policy-gated credential daemon for multi-agent runtimes (3 min)
-- [Team Setup](docs/use-cases/team-setup.md) -- Shared backend, CI/CD, onboarding (5 min)
-- [Migrate from .env](docs/use-cases/migrate-from-dotenv.md) -- Move .env files to encrypted storage (3 min)
-
-## Supported Tools
-
-| Tool | Protection Method |
-|------|------------------|
+| Tool | Protection method |
+|---|---|
 | Claude Code | PreToolUse hook (blocks reads before they happen) + deny rules + CLAUDE.md |
 | Cursor | `.cursorrules` instructions |
 | GitHub Copilot | `.github/copilot-instructions.md` instructions |
@@ -134,83 +158,92 @@ Step-by-step guides for common workflows: [docs/USE-CASES.md](docs/USE-CASES.md)
 | Cline | `.clinerules` instructions |
 | Aider | `.aiderignore` file patterns |
 
-Claude Code gets the strongest protection because it supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) -- a shell script runs *before* every file read and blocks access at the tool level.
+Claude Code gets the strongest protection because it supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks). A shell script runs before every file read and blocks access at the tool level.
 
-## Storage Backends
+## Storage backends
 
-| Backend | Storage | Best For |
-|---------|---------|----------|
+| Backend | Storage | Best for |
+|---|---|---|
 | `local` | AES-256-GCM encrypted file | Quick start, single machine |
-| `keychain` | macOS Keychain / Linux Secret Service | Native OS integration |
+| `keychain` | macOS Keychain or Linux Secret Service | Native OS integration |
 | `1password` | 1Password vault | Teams, CI/CD, multi-device |
 | `vault` | HashiCorp Vault KV v2 | Enterprise, self-hosted |
 | `gcp-sm` | GCP Secret Manager | GCP-native workloads |
 
 ```bash
-npx secretless-ai backend set 1password              # Switch backend
-npx secretless-ai migrate --from local --to 1password # Migrate existing secrets
+npx secretless-ai backend set 1password               # switch backend
+npx secretless-ai migrate --from local --to 1password # migrate existing secrets
 ```
 
-## NanoMind Integration
+## NanoMind integration
 
 Optional integration with [NanoMind](https://github.com/opena2a-org/nanomind) for enhanced security analysis:
 
 ```bash
-npm install @nanomind/guard @nanomind/engine  # Optional
+npm install @nanomind/guard @nanomind/engine  # optional
 ```
 
-- **MCP injection screening**: `protect-mcp` screens env var values for prompt injection patterns and warns when suspicious content is detected
-- **Rich scan explanations**: `scan --explain` generates context-aware security explanations for each finding using NanoMind's local inference engine
+- **MCP injection screening.** `protect-mcp` screens env-var values for prompt-injection patterns and warns when suspicious content is detected.
+- **Rich scan explanations.** `scan --explain` generates context-aware security explanations for each finding using NanoMind's local inference engine.
 
 Both features gracefully degrade when NanoMind packages are not installed.
 
 ## Using with opena2a-cli
 
-[opena2a-cli](https://github.com/opena2a-org/opena2a) unifies all OpenA2A security tools:
+[`opena2a-cli`](https://github.com/opena2a-org/opena2a) is the unified CLI for the OpenA2A security toolchain. Secretless powers `opena2a secrets`.
 
 ```bash
 npm install -g opena2a-cli
-opena2a review          # Full security dashboard
-opena2a secrets init    # Initialize secretless protection
+opena2a review          # full security dashboard
+opena2a secrets init    # initialize secretless protection
 ```
-
-## Development (from source)
-
-```bash
-git clone https://github.com/opena2a-org/secretless-ai.git
-cd secretless-ai
-npm install
-npm run build && npm test    # 988 tests
-node dist/index.js verify    # run the freshly-built binary
-```
-
-## Verifying what you installed
-
-Every release is published via npm Trusted Publishing with SLSA v1 provenance — there is no long-lived `NPM_TOKEN` in the publish workflow; the GitHub Actions runner exchanges its OIDC token with npm at publish time. To verify the package you installed was actually built from the source you can read on GitHub:
-
-```bash
-npm view secretless-ai dist.attestations --json
-# → non-empty result with predicateType "https://slsa.dev/provenance/v1"
-```
-
-Secretless itself never reads or transmits the credential values it manages — backends (OS keychain, 1Password, HashiCorp Vault, encrypted file) decrypt on demand at subprocess spawn time. See `secretless-ai verify` for an integrity check of your local install.
 
 ## Telemetry
 
-Secretless sends anonymous tier-1 usage data to the OpenA2A Registry: tool name (`secretless-ai`), version, command name (`scan`, `protect`, etc.), success, duration, platform, Node major version, and a stable per-machine `install_id`. **No content is collected** — no scanned secrets, no file paths, no env-var values, no rule contents, no IPs.
+Secretless sends anonymous tier-1 usage data to the OpenA2A Registry: tool name (`secretless-ai`), version, command name (`scan`, `protect`, etc.), success, duration, platform, Node major version, and a stable per-machine `install_id`. No content is collected. No scanned secrets, no file paths, no env-var values, no rule contents, no IPs.
 
-- **Policy:** [opena2a.org/telemetry](https://opena2a.org/telemetry).
-- **Status:** `secretless-ai telemetry status`.
-- **Disable per-invocation:** `OPENA2A_TELEMETRY=off secretless-ai <anything>`.
-- **Disable persistently:** `secretless-ai telemetry off`.
-- **Audit every payload:** `OPENA2A_TELEMETRY_DEBUG=print secretless-ai <anything>` echoes each event to stderr in JSON.
+- Policy: [opena2a.org/telemetry](https://opena2a.org/telemetry).
+- Status: `secretless-ai telemetry status`.
+- Disable per-invocation: `OPENA2A_TELEMETRY=off secretless-ai <anything>`.
+- Disable persistently: `secretless-ai telemetry off`.
+- Audit every payload: `OPENA2A_TELEMETRY_DEBUG=print secretless-ai <anything>` echoes each event to stderr as JSON.
 
-Fire-and-forget with a 2-second timeout — telemetry never blocks Secretless.
+Fire-and-forget with a 2-second timeout. Telemetry never blocks Secretless.
+
+## Use cases
+
+| Guide | Time |
+|---|---|
+| [Protect My Credentials](docs/use-cases/protect-my-credentials.md) | 2 min |
+| [Secure MCP Configs](docs/use-cases/secure-mcp-configs.md) | 3 min |
+| [Bring Your Own Vault](docs/use-cases/bring-your-own-vault.md) | 3 min |
+| [Run the Broker](docs/use-cases/run-broker.md) | 3 min |
+| [Team Setup](docs/use-cases/team-setup.md) | 5 min |
+| [Migrate from .env](docs/use-cases/migrate-from-dotenv.md) | 3 min |
+
+Full index: [docs/USE-CASES.md](docs/USE-CASES.md).
+
+## Contributing
+
+Apache 2.0. PRs from outside the org welcome.
+
+```bash
+git clone https://github.com/opena2a-org/secretless-ai.git
+cd secretless-ai && npm install && npm run build && npm test
+```
+
+Security issues: `security@opena2a.org` (coordinated disclosure, response within 24 hours).
+
+## Links
+
+- [Website](https://opena2a.org/secretless)
+- [Documentation](https://opena2a.org/docs/secretless)
+- [Demos](https://opena2a.org/demos)
+- [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
+- [Credential patterns library](https://www.npmjs.com/package/@opena2a/credential-patterns)
+
+Part of the [OpenA2A](https://opena2a.org) security platform.
 
 ## License
 
-Apache-2.0
-
----
-
-Part of the [OpenA2A](https://opena2a.org) ecosystem. Full reference: [opena2a.org/docs/secretless](https://opena2a.org/docs/secretless)
+Apache-2.0. See [LICENSE](LICENSE).
