@@ -174,11 +174,26 @@ opena2a review          # Full security dashboard
 opena2a secrets init    # Initialize secretless protection
 ```
 
-## Development
+## Development (from source)
 
 ```bash
-npm run build && npm test    # 809 tests
+git clone https://github.com/opena2a-org/secretless-ai.git
+cd secretless-ai
+npm install
+npm run build && npm test    # 988 tests
+node dist/index.js verify    # run the freshly-built binary
 ```
+
+## Verifying what you installed
+
+Every release is published via npm Trusted Publishing with SLSA v1 provenance — there is no long-lived `NPM_TOKEN` in the publish workflow; the GitHub Actions runner exchanges its OIDC token with npm at publish time. To verify the package you installed was actually built from the source you can read on GitHub:
+
+```bash
+npm view secretless-ai dist.attestations --json
+# → non-empty result with predicateType "https://slsa.dev/provenance/v1"
+```
+
+Secretless itself never reads or transmits the credential values it manages — backends (OS keychain, 1Password, HashiCorp Vault, encrypted file) decrypt on demand at subprocess spawn time. See `secretless-ai verify` for an integrity check of your local install.
 
 ## Telemetry
 
