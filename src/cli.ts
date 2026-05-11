@@ -80,7 +80,9 @@ async function main(): Promise<number> {
     throw err;
   } finally {
     if (command && !NON_TRACKED.has(command)) {
-      await tele.track(command, { success: exitCode === 0, durationMs: Date.now() - startedAt });
+      // Exit 1 = scanner found credentials (the tool's job); >=2 = real error.
+      // npm audit / eslint convention. Matches @opena2a/telemetry.successFromExitCode.
+      await tele.track(command, { success: exitCode <= 1, durationMs: Date.now() - startedAt });
     }
     await tele.flush();
   }
