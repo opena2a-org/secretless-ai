@@ -89,10 +89,29 @@ async function main(): Promise<number> {
   return exitCode;
 }
 
+/**
+ * Reject unknown `--flag` / `-flag` args that would otherwise be silently
+ * treated as a directory path by commands whose only positional is `[dir]`.
+ * Pre-fix: `secretless-ai init --ci` created a literal `--ci/` directory and
+ * scaffolded files into it (release-test 2026-05-12 P1).
+ *
+ * Returns `false` if the caller should bail with exit 2; `true` to proceed.
+ */
+function rejectUnknownFlagAsDirArg(command: string, dirArg: string | undefined): boolean {
+  if (dirArg && dirArg.startsWith('-')) {
+    console.error(`  Unknown option: ${dirArg}`);
+    console.error(`  \`${command}\` takes an optional directory path, not flags.`);
+    console.error(`  Run \`secretless-ai ${command} --help\` for usage.`);
+    return false;
+  }
+  return true;
+}
+
 async function dispatch(args: string[], command: string | undefined): Promise<number> {
   switch (command) {
     case 'init': {
       const dirArg = args[1];
+      if (!rejectUnknownFlagAsDirArg('init', dirArg)) return 2;
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
       return runInit(projectDir);
     }
@@ -135,6 +154,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
     }
     case 'status': {
       const dirArg = args[1];
+      if (!rejectUnknownFlagAsDirArg('status', dirArg)) return 2;
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
       return runStatus(projectDir);
     }
