@@ -17,7 +17,7 @@ npx secretless-ai init
 ```
 
 ```
-  Secretless v0.17.0
+  Secretless v0.17.1
   Keeping secrets out of AI
 
   Configured: Claude Code (1 of 1 detected)
