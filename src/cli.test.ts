@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -64,6 +64,76 @@ describe('cli --help handling', () => {
     try {
       const out = runCli(['scan', '-h'], { cwd: tmp });
       expect(out).toMatch(/Secretless v/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('init / status reject unknown flags as dir path (regression: release-test 2026-05-12 P1)', () => {
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  function runCliSpawn(args: string[], cwd: string) {
+    return spawnSync(process.execPath, [CLI_PATH, ...args], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd,
+    });
+  }
+
+  itIfBuilt('`init --ci` does NOT create a `--ci/` directory', () => {
+    // Pre-fix: secretless-ai init --ci scaffolded files into a literal `--ci/`
+    // dir because dispatch took args[1] as projectDir without validation.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-init-flag-'));
+    try {
+      const before = fs.readdirSync(tmp);
+      const res = runCliSpawn(['init', '--ci'], tmp);
+      const after = fs.readdirSync(tmp);
+      expect(after).toEqual(before); // nothing created
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/Unknown option: --ci/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`init --unknown` is rejected with actionable error', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-init-flag-'));
+    try {
+      const res = runCliSpawn(['init', '--unknown'], tmp);
+      expect(fs.readdirSync(tmp)).toEqual([]);
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/Unknown option: --unknown/);
+      expect(res.stderr).toMatch(/Run `secretless-ai init --help` for usage/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`status --foo` is rejected, not treated as dir', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-status-flag-'));
+    try {
+      const res = runCliSpawn(['status', '--foo'], tmp);
+      expect(fs.readdirSync(tmp)).toEqual([]);
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/Unknown option: --foo/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`init ./valid-dir` still works (positive case)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-init-pos-'));
+    try {
+      const target = path.join(tmp, 'target');
+      fs.mkdirSync(target);
+      const res = runCliSpawn(['init', target], tmp);
+      // init exits 0 on success and writes files into target.
+      // Don't pin specific files — runInit's surface evolves — just assert
+      // it created something in target.
+      expect(res.status).toBe(0);
+      expect(fs.readdirSync(target).length).toBeGreaterThan(0);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
