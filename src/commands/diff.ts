@@ -26,6 +26,32 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Git repo-discovery environment variables. When `secretless diff` runs inside a
+ * git hook (e.g. a pre-push hook), git sets GIT_DIR / GIT_WORK_TREE / etc. in the
+ * environment, and they take precedence over cwd-based discovery — so a `git`
+ * invocation scoped with `cwd` would silently operate on the HOOK's repo instead of
+ * the directory the caller asked about. We strip them so `cwd` is authoritative and
+ * `computeDiff(ref, cwd)` honors its documented contract regardless of ambient git env.
+ */
+const GIT_DISCOVERY_ENV_VARS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_PREFIX',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+] as const;
+
+/** A copy of process.env with git's repo-discovery vars removed (see above). */
+export function gitDiscoveryFreeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base };
+  for (const k of GIT_DISCOVERY_ENV_VARS) delete env[k];
+  return env;
+}
+
 /** Files secretless considers "managed" — only these are diffed. */
 const MANAGED_PATHS: readonly string[] = Object.freeze([
   '.claude/settings.json',
@@ -82,6 +108,7 @@ function gitToplevel(cwd: string): string | null {
       cwd,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: gitDiscoveryFreeEnv(),
     });
     return out.trim();
   } catch {
@@ -100,6 +127,7 @@ function diffOne(rootDir: string, ref: string, file: string): string {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     maxBuffer: 5 * 1024 * 1024,
+    env: gitDiscoveryFreeEnv(),
   });
 }
 
@@ -114,6 +142,7 @@ function resolveStatus(rootDir: string, ref: string, file: string): 'A' | 'D' | 
     execFileSync('git', ['cat-file', '-e', `${ref}:${file}`], {
       cwd: rootDir,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: gitDiscoveryFreeEnv(),
     });
     inRef = true;
   } catch {
@@ -162,6 +191,7 @@ export function computeDiff(ref: string, cwd: string = process.cwd()): DiffResul
     execFileSync('git', ['rev-parse', '--verify', ref], {
       cwd: rootDir,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: gitDiscoveryFreeEnv(),
     });
   } catch {
     return {

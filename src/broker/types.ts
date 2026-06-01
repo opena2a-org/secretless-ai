@@ -19,6 +19,12 @@ export interface BrokerConfig {
   policyFile?: string;
   /** Path to audit log. Default: ~/.secretless-ai/broker-audit.log */
   auditLog?: string;
+  /**
+   * Path to the broker authentication token file. Default: ~/.secretless-ai/broker.token.
+   * Overridable so isolated broker instances (e.g. tests) do not write to — and on stop
+   * delete — the shared machine-wide token of a real running broker.
+   */
+  tokenFile?: string;
 }
 
 /** Credential resolution request from an agent. */

@@ -80,6 +80,30 @@ export {
   type ResolveResult, type ResolveError,
 } from './phantom';
 
+// AAP grant references (grant:// scheme — abstract, no backend topology)
+export {
+  isGrantRef, parseGrantRef, buildGrantRef, GRANT_SCHEME, type GrantRef,
+} from './grant';
+
+// AAP (Agent Authorization Protocol) — verifier, grant policy, CPI providers, resolver
+export {
+  LocalAtxVerifier, canonicalPayload, normalizeRfc3339, SUPPORTED_ATX_VERSION,
+  GrantPolicy, EphemeralWorker, HttpsDownstreamCaller, GrantResolver,
+  ExchangeProvider, HttpsTokenExchangeTransport, createOktaExchangeProvider,
+  MapProviderRegistry, mintBrokerAssertion, generateBrokerSigningKey, brokerPublicJwk,
+  RetrieveProvider, AssumeProvider,
+  TOKEN_EXCHANGE_GRANT_TYPE, SUBJECT_TOKEN_TYPE_JWT, REQUESTED_TOKEN_TYPE_ACCESS,
+  type Atx, type AtxSignature, type AtxPublicKey, type AtxTrustAnchors,
+  type AtxVerifier, type AtxVerificationResult, type ResolutionContext, type RejectCategory,
+  type GrantBinding, type GrantMatch, type GrantEvaluation,
+  type AgentOperation, type OperationResult, type DownstreamCaller,
+  type GrantResolverDeps, type GrantResolveInput, type GrantResolveOutcome, type TypedDenial,
+  type CpiMode, type ResourceBinding, type ScopedCredential,
+  type CredentialProvider, type ProviderRegistry,
+  type ExchangeProviderConfig, type TokenExchangeRequest, type TokenExchangeResponse,
+  type TokenExchangeTransport, type OktaAdapterOptions, type BrokerSigningKey,
+} from './broker';
+
 // Identity Vault (requires @opena2a/aim-core)
 export {
   vaultInit, vaultRegister, vaultList, vaultRotate, vaultRevoke,
