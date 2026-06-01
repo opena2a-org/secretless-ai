@@ -25,7 +25,7 @@ import { AuditLogger } from './audit';
 import { AimClient } from './aim-client';
 import type { GrantResolver, GrantResolveInput } from './grant-resolver';
 
-/** Path to the broker authentication token file. */
+/** Default path to the broker authentication token file. */
 export const TOKEN_FILE = path.join(os.homedir(), '.secretless-ai', 'broker.token');
 
 /** Maximum request body size (64 KB — credential names should be tiny). */
@@ -94,11 +94,12 @@ export class BrokerServer {
     }
 
     // Generate and persist bearer token for caller authentication
+    const tokenFile = this.config.tokenFile ?? TOKEN_FILE;
     const tokenHex = crypto.randomBytes(32).toString('hex');
     this.authToken = Buffer.from(tokenHex, 'utf-8');
-    const tokenDir = path.dirname(TOKEN_FILE);
+    const tokenDir = path.dirname(tokenFile);
     fs.mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(TOKEN_FILE, tokenHex, { mode: 0o600 });
+    fs.writeFileSync(tokenFile, tokenHex, { mode: 0o600 });
 
     this.startedAt = new Date();
 
@@ -186,7 +187,7 @@ export class BrokerServer {
     }
 
     // Clean up token file
-    try { fs.unlinkSync(TOKEN_FILE); } catch { /* ignore */ }
+    try { fs.unlinkSync(this.config.tokenFile ?? TOKEN_FILE); } catch { /* ignore */ }
     this.authToken = null;
 
     this.socketServer = null;

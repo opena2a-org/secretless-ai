@@ -15,6 +15,18 @@
  * delegated — Node's stdlib has no ML-DSA, exactly as the Python reference verifier
  * skips it. Production wires the post-quantum half + the live trusted-issuer/CRL anchors
  * to AIM's verification path (see AtxVerifier / RegistryAtxVerifier seam below).
+ *
+ * SECURITY — signature coverage (matches the upstream canonical form, see canonicalPayload):
+ * The ATX/ATC canonical signing string covers identity, issuer, trustLevel, trustScore,
+ * contentHash, buildAttestation, and the validity window. It does NOT cover `capabilities`,
+ * `scanSummary.oasbLevel`, `issuerChain`, or `jurisdiction`. A holder of ANY validly-signed
+ * ATX can therefore edit those fields without invalidating the Ed25519 signature. Because
+ * the broker authorizes on `capabilities` (the trust-class gate) and `oasbLevel`, a
+ * production verifier MUST source those authorization attributes from the issuing
+ * Registry/AIM for the verified `agentId` — NOT trust them from the presented credential
+ * blob. The LocalAtxVerifier is faithful to the wire format for conformance; it is not a
+ * sufficient authorization oracle on its own. Tracked as an ATX-spec hardening item
+ * (bind the trust-class set into the canonical payload or a signed content hash).
  */
 
 import * as crypto from 'crypto';

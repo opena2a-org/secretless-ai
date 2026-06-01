@@ -55,10 +55,15 @@ export class GrantResolver {
 
   async resolve(input: GrantResolveInput): Promise<GrantResolveOutcome> {
     const start = Date.now();
+    // Audit keys off the agent-supplied id ONLY until the ATX is verified; thereafter it
+    // keys off the cryptographically-verified identity so a caller cannot attribute its
+    // action to, or run the AIM cross-check against, a different principal (the verified
+    // ATX is the source of truth, never the top-level `input.agentId`).
+    let auditAgentId = input.agentId;
     const audit = (result: 'allowed' | 'denied', reason: string, policyId = '') => {
       this.deps.audit?.logEvent(
         'grant',
-        input.agentId,
+        auditAgentId,
         input.grant,
         policyId,
         result,
@@ -75,10 +80,14 @@ export class GrantResolver {
         return DENIED;
       }
       const ctx = verification.context;
+      // The verified ATX identity supersedes the agent-supplied id for every downstream
+      // decision and audit record.
+      auditAgentId = ctx.agentId;
 
-      // 2. Optional AIM identity cross-check (reuse the existing AIM verification path).
+      // 2. Optional AIM identity cross-check, against the VERIFIED identity (defense in depth;
+      // advisory — an agent AIM has never seen is not denied here, but a known-unverified one is).
       if (this.deps.aimClient) {
-        const identity = await this.deps.aimClient.getAgentIdentity(input.agentId);
+        const identity = await this.deps.aimClient.getAgentIdentity(ctx.agentId);
         if (identity && identity.verified === false) {
           audit('denied', 'AIM reports agent not verified');
           return DENIED;
