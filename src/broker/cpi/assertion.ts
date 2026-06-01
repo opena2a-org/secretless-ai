@@ -1,5 +1,9 @@
 /**
- * Broker assertion minting — AAP §11 (the broker as its own identity provider).
+ * Broker assertion minting — the broker as its own identity provider (AAP Broker Profile §11).
+ *
+ * In AAP token-model terms (AAP-SPEC.md), the assertion minted here IS a Capability Grant Token
+ * (CGT) / Delegation Assertion (DA): a short-lived, scoped authorization derived from the verified
+ * ATX (which the Agent Identity Token references) and used as the RFC 8693 subject token.
  *
  * For Assume and Exchange, the broker mints a short-lived assertion whose claims derive
  * from the *verified* ATX, signed with the broker's own signing key. The downstream
