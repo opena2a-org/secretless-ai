@@ -23,6 +23,7 @@ import { PolicyEngine } from './policy';
 import { CredentialResolver } from './resolver';
 import { AuditLogger } from './audit';
 import { AimClient } from './aim-client';
+import type { GrantResolver, GrantResolveInput } from './grant-resolver';
 
 /** Path to the broker authentication token file. */
 export const TOKEN_FILE = path.join(os.homedir(), '.secretless-ai', 'broker.token');
@@ -36,6 +37,8 @@ export class BrokerServer {
   private readonly resolver: CredentialResolver;
   private readonly audit: AuditLogger;
   private readonly aimClient: AimClient | null;
+  /** AAP grant resolver (Exchange mode). Null when AAP authorization is not configured. */
+  private readonly grantResolver: GrantResolver | null;
 
   private socketServer: http.Server | null = null;
   private httpServer: http.Server | null = null;
@@ -51,12 +54,14 @@ export class BrokerServer {
       resolver?: CredentialResolver;
       audit?: AuditLogger;
       aimClient?: AimClient | null;
+      grantResolver?: GrantResolver | null;
     },
   ) {
     this.config = config;
     this.policy = deps?.policy ?? new PolicyEngine({ policyFile: config.policyFile });
     this.resolver = deps?.resolver ?? new CredentialResolver();
     this.audit = deps?.audit ?? new AuditLogger(config.auditLog);
+    this.grantResolver = deps?.grantResolver ?? null;
     this.aimClient = deps?.aimClient !== undefined ? deps.aimClient : (
       config.aimUrl
         ? new AimClient(config.aimUrl, {
@@ -245,6 +250,11 @@ export class BrokerServer {
       return;
     }
 
+    if (method === 'POST' && url === '/grant') {
+      this.handleGrant(req, res);
+      return;
+    }
+
     if (method === 'GET' && url === '/health') {
       this.sendJson(res, 200, this.getHealth());
       return;
@@ -362,6 +372,43 @@ export class BrokerServer {
     });
   }
 
+  /**
+   * Handle POST /grant — the AAP §6 resolution endpoint.
+   *
+   * The agent presents its ATX, a grant reference, and a logical operation. The broker
+   * verifies, authorizes, resolves a scoped credential, runs the operation in an ephemeral
+   * worker, and returns ONLY the result. Every failure is the same opaque denial (§6.6).
+   */
+  private handleGrant(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!this.grantResolver) {
+      // AAP authorization not configured on this broker.
+      this.sendJson(res, 404, { error: 'Not found' });
+      return;
+    }
+
+    this.readBody(req).then(async (body) => {
+      let input: GrantResolveInput;
+      try {
+        input = parseGrantResolveInput(body);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Invalid request';
+        this.sendJson(res, 400, { error: message });
+        return;
+      }
+
+      const outcome = await this.grantResolver!.resolve(input);
+      if (outcome.ok) {
+        // Only the operation result crosses back — never the token or any backend detail.
+        this.sendJson(res, 200, { result: outcome.result });
+      } else {
+        // Uniform opaque denial. Diagnostic detail is in the audit log, not here.
+        this.sendJson(res, 403, { error: 'denied' });
+      }
+    }).catch(() => {
+      this.sendJson(res, 400, { error: 'Failed to read request body' });
+    });
+  }
+
   /** Read and parse request body with size limit. */
   private readBody(req: http.IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -438,5 +485,44 @@ function parseResolveRequest(body: string): ResolveRequest {
   return {
     agentId: obj.agentId,
     credentialName: obj.credentialName,
+  };
+}
+
+/** Parse and validate a grant-resolve request body (AAP §6). */
+function parseGrantResolveInput(body: string): GrantResolveInput {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new Error('Invalid JSON');
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Request body must be a JSON object');
+  }
+  const obj = parsed as Record<string, unknown>;
+
+  if (typeof obj.agentId !== 'string' || !obj.agentId) {
+    throw new Error('Missing or invalid "agentId"');
+  }
+  if (typeof obj.grant !== 'string' || !obj.grant) {
+    throw new Error('Missing or invalid "grant"');
+  }
+  if (!obj.atx || typeof obj.atx !== 'object') {
+    throw new Error('Missing or invalid "atx"');
+  }
+  if (!obj.operation || typeof obj.operation !== 'object') {
+    throw new Error('Missing or invalid "operation"');
+  }
+  const op = obj.operation as Record<string, unknown>;
+  if (typeof op.method !== 'string' || typeof op.path !== 'string') {
+    throw new Error('"operation" requires string "method" and "path"');
+  }
+
+  return {
+    agentId: obj.agentId,
+    grant: obj.grant,
+    // Validated structurally here; cryptographic verification happens in the resolver.
+    atx: obj.atx as GrantResolveInput['atx'],
+    operation: obj.operation as GrantResolveInput['operation'],
   };
 }

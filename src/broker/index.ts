@@ -30,3 +30,40 @@ export {
   type CredentialEventType,
   type AlertLevel,
 } from './events';
+
+// AAP (Agent Authorization Protocol) — grant-based authorization layer.
+export {
+  LocalAtxVerifier,
+  canonicalPayload,
+  normalizeRfc3339,
+  SUPPORTED_ATX_VERSION,
+  type Atx,
+  type AtxSignature,
+  type AtxPublicKey,
+  type AtxTrustAnchors,
+  type AtxVerifier,
+  type AtxVerificationResult,
+  type ResolutionContext,
+  type RejectCategory,
+} from './atx';
+export {
+  GrantPolicy,
+  type GrantBinding,
+  type GrantMatch,
+  type GrantEvaluation,
+} from './grant-policy';
+export {
+  EphemeralWorker,
+  HttpsDownstreamCaller,
+  type AgentOperation,
+  type OperationResult,
+  type DownstreamCaller,
+} from './worker';
+export {
+  GrantResolver,
+  type GrantResolverDeps,
+  type GrantResolveInput,
+  type GrantResolveOutcome,
+  type TypedDenial,
+} from './grant-resolver';
+export * from './cpi';
