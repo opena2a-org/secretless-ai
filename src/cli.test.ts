@@ -193,4 +193,27 @@ describe('scan warns on unknown flags / secret usage (regression: #80, #81)', ()
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  itIfBuilt('`scope` with no subcommand prints usage cleanly, exit 0', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scope-'));
+    try {
+      const res = runCliSpawn(['scope'], tmp);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toMatch(/Usage: secretless-ai scope/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/Unknown scope command/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`scope bogus` (real unknown subcommand) still errors, exit 1', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scope-bad-'));
+    try {
+      const res = runCliSpawn(['scope', 'bogus'], tmp);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toMatch(/Unknown scope command: bogus/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });

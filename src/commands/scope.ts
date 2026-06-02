@@ -177,14 +177,25 @@ export async function runScope(args: string[]): Promise<number> {
       return 0;
     }
 
-    default:
-      console.error(`\n  Unknown scope command: ${subcommand ?? '(none)'}`);
-      console.log('  Usage: secretless-ai scope <discover|check|list|reset>\n');
-      console.log('  Commands:');
-      console.log('    discover <name>   Discover permissions and save baseline');
-      console.log('    check <name>      Re-check and compare to baseline');
-      console.log('    list              Show all stored baselines');
-      console.log('    reset <name>      Clear baseline for re-baseline\n');
+    default: {
+      // No subcommand is an exploration, not an error — show usage cleanly and succeed
+      // (mirrors the `secret` fix in #80). Reserve the error for a real unrecognized token.
+      const usage = () => {
+        console.log('  Usage: secretless-ai scope <discover|check|list|reset>\n');
+        console.log('  Commands:');
+        console.log('    discover <name>   Discover permissions and save baseline');
+        console.log('    check <name>      Re-check and compare to baseline');
+        console.log('    list              Show all stored baselines');
+        console.log('    reset <name>      Clear baseline for re-baseline\n');
+      };
+      if (subcommand === undefined) {
+        console.log('');
+        usage();
+        return 0;
+      }
+      console.error(`\n  Unknown scope command: ${subcommand}`);
+      usage();
       return 1;
+    }
   }
 }

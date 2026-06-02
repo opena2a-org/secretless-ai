@@ -11,7 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-06-01
+
 ### Fixed
+- **`scope` with no subcommand prints usage cleanly instead of an error.** Bare `secretless-ai scope` showed `Unknown scope command: (none)` and exited 1 (reads like an error for an empty invocation); it now prints the usage block and exits 0, mirroring the `secret` fix in #80. A real unrecognized subcommand (`scope bogus`) still errors with `Unknown scope command: bogus` and exits 1.
 - **`scan` warns on an unrecognized flag instead of silently ignoring it (#81).** A typo like `--show-placeholder` (for `--show-placeholders`) used to no-op with no feedback. `scan` now prints `Warning: ignoring unknown flag --x` plus the supported-flag list. The warning is non-fatal — the exit code still reflects findings.
 - **`secret` with no subcommand prints usage cleanly instead of an error (#80).** Bare `secretless-ai secret` showed `Unknown secret command: (none)` (which reads like an error for an empty invocation) and now prints the usage block and exits 0. A real unrecognized subcommand (`secret bogus`) still errors with `Unknown secret command: bogus` and exits 1.
 - **`init` no longer blocks committed env template files (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`).** These hold placeholders, not real secrets, and are meant to be read/edited/committed, but the generated config blocked them three ways: the `Read(.env*)` / `Grep(*.env*)` deny globs, the guard hook's `.env.*` dotfile arm, and the `.aiderignore` `.env.*` entry. Deny rules now enumerate real env files (`.env`, `.env.local`, `.env.*.local`, `.env.{development,production,staging,test}`, `*.env`) instead of a broad `.env*` glob — Claude Code deny rules can't negate and `deny` beats `allow`, so enumeration is the only way to let templates fall through. The guard hook exempts `*.example` / `*.sample` / `*.template` / `*.dist` basenames before any block logic, and the generated `.aiderignore` un-ignores them. Real env files and other secrets stay blocked. Matches the env-file policy shipped to the user's global config.
