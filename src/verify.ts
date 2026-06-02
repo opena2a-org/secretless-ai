@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
+import { findRealMatch } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 
 export interface VerifyResult {
@@ -26,6 +27,13 @@ export interface VerifyResult {
     jsonPath: string;
     patternName: string;
   }>;
+  /**
+   * Count of values in AI-context files suppressed as known examples / placeholders
+   * (same suppression `scan` applies). Surfaced so verify never reports a silent green
+   * pass while having hidden a value — a real key whose random body contains a token
+   * like `sample`/`xxx`, or a real key on a `# example` line, would otherwise vanish.
+   */
+  placeholdersSuppressed: number;
   /** Overall pass/fail */
   passed: boolean;
 }
@@ -60,6 +68,7 @@ export function verify(projectDir: string): VerifyResult {
   const envVars: Record<string, boolean> = {};
   const exposedInContext: VerifyResult['exposedInContext'] = [];
   const exposedInTranscripts: VerifyResult['exposedInTranscripts'] = [];
+  let placeholdersSuppressed = 0;
 
   // Deduplicate env var names across patterns
   const uniqueEnvVars = [...new Set(CREDENTIAL_PATTERNS.map((p) => p.envPrefix))];
@@ -95,7 +104,15 @@ export function verify(projectDir: string): VerifyResult {
         if (line.length > 4096) continue;
 
         for (const pattern of CREDENTIAL_PATTERNS) {
-          if (pattern.regex.test(line)) {
+          // Use the SAME detection path as `scan` (findRealMatch applies the known-example
+          // / placeholder suppression in isKnownExample). Previously verify used a raw
+          // `pattern.regex.test(line)`, so a placeholder like `sk-ant-api03-FAKE…` was
+          // flagged here but suppressed by scan — the two commands disagreed on the same
+          // file (#64). We count suppressed values so verify can SURFACE them: silently
+          // hiding a value here is dangerous because verify answers "is a real key exposed
+          // right now?" and a real key whose body contains a token like `sample`/`xxx`
+          // would otherwise vanish into a green pass.
+          if (findRealMatch(line, pattern, { onSuppressed: () => { placeholdersSuppressed += 1; } })) {
             exposedInContext.push({
               envVar: pattern.envPrefix,
               patternName: pattern.name,
@@ -111,7 +128,12 @@ export function verify(projectDir: string): VerifyResult {
     }
   }
 
-  // Scan recent transcript files (5 most recent for speed)
+  // Scan recent transcript files (5 most recent for speed). NOTE: the transcript path
+  // (scanTranscriptFile) intentionally does NOT apply placeholder suppression — a
+  // transcript is historical leak data, so we flag everything that matches rather than
+  // risk hiding a real value that was already sent to a provider. This asymmetry with the
+  // file-scan path above is deliberate: suppress-but-surface for current config files,
+  // flag-everything for what already leaked.
   try {
     const transcripts = discoverTranscripts();
     const recentTranscripts = transcripts.filter(f => f.endsWith('.jsonl')).slice(0, 5);
@@ -134,5 +156,5 @@ export function verify(projectDir: string): VerifyResult {
   const anyEnvSet = Object.values(envVars).some((v) => v);
   const passed = anyEnvSet && exposedInContext.length === 0 && exposedInTranscripts.length === 0;
 
-  return { envVars, exposedInContext, exposedInTranscripts, passed };
+  return { envVars, exposedInContext, exposedInTranscripts, placeholdersSuppressed, passed };
 }
