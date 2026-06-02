@@ -8,31 +8,46 @@
  * `opena2a-registry/pkg/atcverify/verify.go canonicalPayload()`) VERBATIM so a broker
  * accepts exactly the credentials the conformance suite accepts.
  *
- * (ATX is the current name for the credential formerly called ATC; fixtures still use
- * the `atcVersion` field and the canonical form hardcodes "1.0" — both replicated here.)
+ * (ATX is the current name for the credential formerly called ATC; fixtures use the
+ * `atcVersion` field. This verifier dual-supports both signing forms.)
  *
  * Scope: Ed25519 is verified fully. ML-DSA-65 presence is recorded but verification is
  * delegated — Node's stdlib has no ML-DSA, exactly as the Python reference verifier
  * skips it. Production wires the post-quantum half + the live trusted-issuer/CRL anchors
  * to AIM's verification path (see AtxVerifier / RegistryAtxVerifier seam below).
  *
- * SECURITY — signature coverage (matches the upstream canonical form, see canonicalPayload):
- * The ATX/ATC canonical signing string covers identity, issuer, trustLevel, trustScore,
- * contentHash, buildAttestation, and the validity window. It does NOT cover `capabilities`,
- * `scanSummary.oasbLevel`, `issuerChain`, or `jurisdiction`. A holder of ANY validly-signed
- * ATX can therefore edit those fields without invalidating the Ed25519 signature. Because
- * the broker authorizes on `capabilities` (the trust-class gate) and `oasbLevel`, a
- * production verifier MUST source those authorization attributes from the issuing
- * Registry/AIM for the verified `agentId` — NOT trust them from the presented credential
- * blob. The LocalAtxVerifier is faithful to the wire format for conformance; it is not a
- * sufficient authorization oracle on its own. Tracked as an ATX-spec hardening item
- * (bind the trust-class set into the canonical payload or a signed content hash).
+ * SECURITY — signature coverage depends on atcVersion:
+ *  - v1.0 (canonicalPayload): the pipe-delimited string covers identity, issuer,
+ *    trustLevel, trustScore, contentHash, buildAttestation, and the validity window.
+ *    It does NOT cover `capabilities`, `scanSummary.oasbLevel`, `issuerChain`, or
+ *    `jurisdiction`. A holder of any validly-signed v1.0 ATX can edit those without
+ *    invalidating the signature, so they MUST NOT be trusted for authorization.
+ *  - v1.1 (canonicalPayloadV11): the signature covers JCS(TBS), which includes
+ *    `capabilities`, `scanSummary`, `issuerChain`, and `publisher`. Those fields are
+ *    integrity-protected and safe to authorize on.
+ *
+ * The verified context exposes `signedCapabilities` (true iff v1.1) so callers can tell
+ * the two apart. Phase 3 of the ATX v1.1 rollout adds a `requireSignedCapabilities`
+ * grant-policy flag that refuses capability-gated grants whose context has
+ * `signedCapabilities === false`. Until then a production verifier still SHOULD source
+ * authorization attributes for v1.0 credentials from the issuing Registry/AIM for the
+ * verified `agentId` rather than the presented blob.
  */
 
 import * as crypto from 'crypto';
+import canonicalize from 'canonicalize';
 
-/** The hardcoded schema version in the canonical signing string (Go quirk, replicated). */
+/** Legacy schema version: signs the 11-field pipe string (Go quirk, replicated). */
 export const SUPPORTED_ATX_VERSION = '1.0';
+
+/**
+ * ATX v1.1: signs JCS(TBS) (RFC 8785) per atx-spec core.md §1.3a.2, bringing
+ * capabilities, scanSummary, issuerChain, publisher, and behavioralProfile under
+ * the signature. Verified here using the same canonicalizer (erdtman/canonicalize)
+ * and the same TBS projection the registry and conformance verifiers use; byte
+ * agreement is proven by atx-conformance/jcs-vectors.
+ */
+export const SUPPORTED_ATX_VERSION_V11 = '1.1';
 
 /** A signature reference on an ATX. */
 export interface AtxSignature {
@@ -47,6 +62,9 @@ export interface Atx {
   atcVersion?: string;
   agentId: string;
   agentDid: string;
+  /** Publisher identity. Unsigned under v1.0; covered by the v1.1 signature. */
+  publisher?: string;
+  publisherDid?: string;
   version: string;
   contentHash: string;
   buildAttestation?: string;
@@ -57,6 +75,8 @@ export interface Atx {
   issuedAt: string;
   expiresAt: string;
   capabilities?: string[];
+  /** Observed-behavior summary. Covered by the v1.1 signature. */
+  behavioralProfile?: { checksum?: string; generatedAt?: string; observationDays?: number } | null;
   scanSummary?: { oasbLevel?: string; [k: string]: unknown };
   /** Optional, optional-to-ignore jurisdiction claim (AAP §9). */
   jurisdiction?: string[];
@@ -100,6 +120,13 @@ export interface ResolutionContext {
   capabilities: string[];
   oasbLevel?: string;
   jurisdiction?: string[];
+  /**
+   * True when the credential is v1.1+, i.e. capabilities/scanSummary/issuerChain
+   * are covered by the signature and may be trusted for authorization. False for
+   * v1.0, where those fields are forgeable by the holder. Phase 3 of the ATX v1.1
+   * rollout gates capability-based grants on this.
+   */
+  signedCapabilities: boolean;
 }
 
 export interface AtxVerificationResult {
@@ -130,10 +157,12 @@ export class LocalAtxVerifier implements AtxVerifier {
   verify(atx: Atx): AtxVerificationResult {
     const now = (this.anchors.now ?? (() => new Date()))();
 
-    // Step 1: schema version.
-    if (atx.atcVersion !== SUPPORTED_ATX_VERSION) {
+    // Step 1: schema version. Dispatch on atcVersion: "1.0" verifies the legacy
+    // pipe form, "1.1" verifies JCS(TBS) (atx-spec §1.3a).
+    if (atx.atcVersion !== SUPPORTED_ATX_VERSION && atx.atcVersion !== SUPPORTED_ATX_VERSION_V11) {
       return reject('UNSUPPORTED_VERSION', `unsupported atxVersion ${String(atx.atcVersion)}`);
     }
+    const isV11 = atx.atcVersion === SUPPORTED_ATX_VERSION_V11;
 
     // Step 2: expiry.
     const expires = new Date(atx.expiresAt);
@@ -160,7 +189,18 @@ export class LocalAtxVerifier implements AtxVerifier {
     }
 
     // Step 5: signature verification (Ed25519 fully; ML-DSA-65 presence recorded).
-    const payload = canonicalPayload(atx);
+    // A v1.1 TBS that fails to canonicalize is a malformed credential, not a
+    // verifier error: reject closed rather than throwing.
+    let payload: Buffer;
+    if (isV11) {
+      try {
+        payload = canonicalPayloadV11(atx);
+      } catch (err) {
+        return reject('MALFORMED', `v1.1 canonicalization failed: ${(err as Error).message}`);
+      }
+    } else {
+      payload = canonicalPayload(atx);
+    }
     const edKeys = this.anchors.publicKeys
       .filter((k) => k.algorithm === 'Ed25519')
       .map((k) => ed25519FromRawHex(k.publicKeyHex))
@@ -211,6 +251,7 @@ export class LocalAtxVerifier implements AtxVerifier {
         capabilities: atx.capabilities ?? [],
         oasbLevel: atx.scanSummary?.oasbLevel,
         jurisdiction: atx.jurisdiction,
+        signedCapabilities: isV11,
       },
     };
   }
@@ -240,6 +281,72 @@ export function canonicalPayload(atx: Atx): Buffer {
     SUPPORTED_ATX_VERSION,
   ];
   return Buffer.from(fields.join('|'), 'utf-8');
+}
+
+/**
+ * Project an ATX into the v1.1 TBS and return JCS(TBS) (RFC 8785). Unlike
+ * canonicalPayload, this covers capabilities, scanSummary, issuerChain,
+ * publisher, and behavioralProfile. The projection (canonical empties,
+ * always-full scanSummary, %.6f string trustScore, root-first issuerChain) and
+ * the canonicalizer match opena2a-registry/pkg/atcverify and the conformance
+ * verifiers exactly; byte agreement is pinned by atx-conformance/jcs-vectors.
+ */
+export function canonicalPayloadV11(atx: Atx): Buffer {
+  const scan = (atx.scanSummary ?? {}) as Record<string, unknown>;
+  const tbs: Record<string, unknown> = {
+    atcVersion: atx.atcVersion,
+    agentId: atx.agentId,
+    agentDid: atx.agentDid,
+    publisher: atx.publisher ?? '',
+    publisherDid: atx.publisherDid ?? '',
+    version: atx.version,
+    contentHash: atx.contentHash,
+    buildAttestation: atx.buildAttestation ?? '',
+    capabilities: atx.capabilities ?? [],
+    behavioralProfile: projectBehavioralProfile(atx.behavioralProfile),
+    scanSummary: {
+      hma: asString(scan.hma),
+      criticalFindings: asInt(scan.criticalFindings),
+      highFindings: asInt(scan.highFindings),
+      secretless: asString(scan.secretless),
+      cryptoServe: asString(scan.cryptoServe),
+      oasbLevel: asString(scan.oasbLevel),
+    },
+    // trustScore is the %.6f string form so trustLevel is the only JSON number.
+    trustScore: Number(atx.trustScore).toFixed(6),
+    trustLevel: Math.trunc(atx.trustLevel),
+    issuedAt: normalizeRfc3339(atx.issuedAt),
+    expiresAt: normalizeRfc3339(atx.expiresAt),
+    issuerDid: atx.issuerDid,
+    issuerChain: atx.issuerChain ?? [],
+  };
+  const canonical = canonicalize(tbs);
+  if (typeof canonical !== 'string') {
+    throw new Error('canonicalize returned non-string');
+  }
+  return Buffer.from(canonical, 'utf-8');
+}
+
+/** behavioralProfile -> null when absent, else the canonical three-field object. */
+function projectBehavioralProfile(
+  bp: Atx['behavioralProfile'],
+): null | { checksum: string; generatedAt: string; observationDays: number } {
+  if (bp === null || bp === undefined) {
+    return null;
+  }
+  return {
+    checksum: asString(bp.checksum),
+    generatedAt: bp.generatedAt ? normalizeRfc3339(bp.generatedAt) : '',
+    observationDays: asInt(bp.observationDays),
+  };
+}
+
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+function asInt(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : 0;
 }
 
 /** Normalize an RFC 3339 timestamp to UTC "YYYY-MM-DDTHH:MM:SSZ" (Go time.RFC3339 for UTC). */
