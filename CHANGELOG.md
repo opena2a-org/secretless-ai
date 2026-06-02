@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-01
+
 ### Added
 - **`scan --json` emits a single valid JSON document (issue #63).** Previously the flag printed the human report. Output is `{ tool, version, findings[], summary: { total, critical, high, placeholdersSuppressed } }` on stdout only (errors go to stderr); the exit code still signals findings (1) vs clean (0) for CI gating.
 - **`scan --show-placeholders` and a "N values hidden" hint.** When the scanner suppresses values that look like known examples / placeholders (`AKIA…EXAMPLE`, `sk-…FAKE…`, `your_api_key`, an `example.com` connection string), it now reports how many were hidden and how to reveal them, instead of a silent "No hardcoded credentials found." This fixes the new-user trap of testing with obvious placeholder values and concluding the scanner is broken, and surfaces the over-suppression case where a real-looking value sits behind a documentation host.
