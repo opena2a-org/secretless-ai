@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Guard hook now blocks secret files by extension suffix, not only literal dotfiles (security).** The generated `.claude/hooks/secretless-guard.sh` matched secret extensions with an anchored `^\.key`-style regex, so it blocked `.key`/`.env` but silently **allowed** the far more common `server.key`, `client.pem`, `id_rsa.pem`, and `prod.env` forms, and was case-sensitive, so `.KEY`/`server.PEM` bypassed it on case-insensitive filesystems. Matching is now a case-insensitive suffix check against the lowercased basename, with `.env` families and credential dotfiles handled explicitly. Added `Read(*.env)` / `Read(*.crt)` (and `Grep` equivalents) to the deny-rule backstop, closing the `prod.env` double-gap. Regression test feeds `server.key`/`prod.env`/`.KEY` to the generated hook and asserts deny.
+- **Scanner now reads standalone private-key files (`*.pem`, `*.key`, `*.p12`, `*.pfx`).** These extensions were in the block list but were never fed to the scanner, so a private key in `server.key` or `id_rsa.pem`, the most common on-disk layout, reported clean. Text key files are scanned for a PEM `PRIVATE KEY` block (public certs in `.crt`/`.pem` do not match, so no false positive); binary PKCS#12 keystores are flagged by existence.
+- **Confidence scoring no longer under-rates fixed-structure keys.** A real AWS access-key ID (`AKIA...`) displayed as `low (0.58)` because pattern specificity counted only the literal prefix, making the `high` tier unreachable for AWS / Stripe / Slack / GitHub keys. Specificity now also credits a fixed/bounded length quantifier over a restricted character class, and structurally-definitive patterns are floored at the `high` tier in real source/config locations (fixture and docs paths are left unfloored so demo creds don't outrank production ones). A fixed-structure AWS key in a source file now scores `high (0.85)`.
+- **`diff` outside a git repository no longer dead-ends.** The "Not a git repository" message now explains what `diff` does and gives a next step (`git init`), satisfying the no-dead-ends rule.
+
 ## [0.17.0] - 2026-04-30
 
 ### Added

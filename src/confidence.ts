@@ -100,6 +100,62 @@ export function patternSpecificity(regex: RegExp): number {
 }
 
 /**
+ * Structural specificity — complements patternSpecificity, which only measures the
+ * literal PREFIX. A fixed-structure key like AWS `AKIA[0-9A-Z]{16}` has a short prefix
+ * yet near-zero collision probability because the regex pins an exact length over a
+ * restricted character class. Prefix-only scoring made the 'high' tier unreachable for
+ * AWS / Stripe / Slack / GitHub keys — the most common real-world secrets — so a genuine
+ * production AWS key displayed as "low (0.58)", which erodes trust in the scanner.
+ *
+ * Returns `{ score, definitive }`:
+ * - `score` in [0, 1]: literal-anchor strength (counted across the whole pattern, not
+ *   just the prefix, and excluding chars inside character classes) plus a bonus for a
+ *   fixed/bounded length quantifier and a restricted character class.
+ * - `definitive`: the structure alone makes a match conclusive — a strong literal anchor
+ *   (>= 6 literal chars, e.g. `sk_live_`, `github_pat_`) OR an exact-length quantifier
+ *   over a restricted class with a >= 3-char anchor (e.g. `AKIA…{16}`, `ghp_…{36}`).
+ */
+export function structuralSpecificity(regex: RegExp): { score: number; definitive: boolean } {
+  const src = regex.source;
+  let literals = 0;
+  let inClass = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '\\') {
+      // An escaped literal (`\.`, `\-`, `\/`, `\_`) anchors; a metaclass (`\d`, `\w`) does not.
+      if (!inClass && i + 1 < src.length && /[.+*?^$()|/\\\-_]/.test(src[i + 1])) literals++;
+      i++; // consume the escaped char either way
+      continue;
+    }
+    if (ch === '[') { inClass = true; continue; }
+    if (ch === ']') { inClass = false; continue; }
+    if (inClass) continue;                  // chars inside a class are not literal anchors
+    if (ch === '{') {                        // quantifier `{16}` / `{24,}` — digits are not anchors
+      while (i < src.length && src[i] !== '}') i++;
+      continue;
+    }
+    if ('.+*?^$()|'.includes(ch)) continue;  // structural metacharacter
+    literals++;                              // plain literal (alnum, '-', '_', ':', '/')
+  }
+
+  const hasExactLength = /\{\d+\}/.test(src);      // {16}
+  const hasBoundedLength = /\{\d+,\d*\}/.test(src); // {24,} or {24,40}
+  const hasRestrictedClass = /\[[^\]]+\]|\\d|\\w/.test(src);
+
+  const literalScore = Math.min(literals / 10, 1);
+  let structureBonus = 0;
+  if (hasExactLength) structureBonus += 0.4;
+  else if (hasBoundedLength) structureBonus += 0.25;
+  if (hasRestrictedClass) structureBonus += 0.15;
+
+  const score = Math.min(literalScore + structureBonus, 1);
+  const definitive =
+    literals >= 6 ||
+    (hasExactLength && literals >= 3 && hasRestrictedClass);
+  return { score, definitive };
+}
+
+/**
  * Shannon entropy of `value`, normalised against a length-aware ceiling.
  *
  * Returns [0, 1]. A 32-char value with 32 distinct chars (max entropy ~5.0
@@ -188,7 +244,11 @@ export function pathTier(filePath: string): number {
  * Pure function — same input → same output.
  */
 export function scoreFinding(input: ScoreFindingInput): ConfidenceBreakdown {
-  const patternScore = patternSpecificity(input.pattern.regex);
+  const prefix = patternSpecificity(input.pattern.regex);
+  const structural = structuralSpecificity(input.pattern.regex);
+  // The pattern axis is the stronger of prefix-anchoring and full-structure specificity,
+  // so a short-prefix-but-fixed-structure key (AWS, GitHub PAT) is no longer under-scored.
+  const patternScore = Math.max(prefix, structural.score);
   const entropyScore = valueEntropy(input.value);
   const lengthScore = lengthTier(input.value);
   const pathScore = pathTier(input.filePath);
@@ -201,7 +261,16 @@ export function scoreFinding(input: ScoreFindingInput): ConfidenceBreakdown {
 
   // Clamp defensively. The weights sum to 1.0 and each sub-score is in
   // [0, 1], so the composite is already in [0, 1] — but FP arithmetic.
-  const clamped = Math.max(0, Math.min(1, score));
+  let clamped = Math.max(0, Math.min(1, score));
+
+  // Structurally-definitive patterns are conclusive on the match alone: an `AKIA…{16}`
+  // access-key ID is short and uppercase-only (so it scores modestly on entropy/length)
+  // yet cannot realistically collide. Floor such findings at the 'high' threshold — but
+  // only in real source/config locations. Fixture and docs paths (pathScore < 0.85) are
+  // left unfloored so demo/example creds don't outrank production ones in the display.
+  if (structural.definitive && pathScore >= 0.85) {
+    clamped = Math.max(clamped, TIER_HIGH_THRESHOLD);
+  }
   const tier: ConfidenceTier =
     clamped >= TIER_HIGH_THRESHOLD ? 'high' :
     clamped >= TIER_MEDIUM_THRESHOLD ? 'medium' :

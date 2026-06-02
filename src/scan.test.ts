@@ -158,6 +158,35 @@ describe('scan() — confidence + fixture flag (Wave 2)', () => {
 
   const REAL_OPENAI_KEY = ['sk-proj-', 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2'].join('');
 
+  const PEM_KEY = [
+    '-----BEGIN RSA PRIVATE KEY-----',
+    'MIIEpAIBAAKCAQEA4f5wg5l2hKsTeNem/V41fGnJm6gOdrj8ym3rFkEU/wT8RDtn',
+    '-----END RSA PRIVATE KEY-----',
+  ].join('\n');
+
+  it('detects standalone private-key files (server.key, id_rsa.pem) — regression', () => {
+    const dir = tmpProjectWith({
+      'server.key': PEM_KEY + '\n',
+      'certs/id_rsa.pem': PEM_KEY + '\n',
+      'config/api.ts': `const x = 1;\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    const keyFiles = findings.filter(f => f.patternId === 'pem-private-key').map(f => f.file).sort();
+    expect(keyFiles).toContain('server.key');
+    expect(keyFiles).toContain(path.join('certs', 'id_rsa.pem'));
+  });
+
+  it('flags binary PKCS#12 keystores by existence, ignores public certs', () => {
+    const dir = tmpProjectWith({
+      'keystore.p12': 'binary-pkcs12-bytes',
+      'public.crt': '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.some(f => f.patternId === 'pkcs12-keystore' && f.file === 'keystore.p12')).toBe(true);
+    // A public certificate (no PRIVATE KEY block) must not be flagged.
+    expect(findings.some(f => f.file === 'public.crt')).toBe(false);
+  });
+
   it('every finding carries a confidence score in [0, 1] and a tier label', () => {
     const dir = tmpProjectWith({
       'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,

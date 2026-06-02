@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -47,6 +48,39 @@ describe('init', () => {
     const claudeMd = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
     expect(claudeMd).toContain('Secretless Mode');
     expect(claudeMd).toContain('secretless:managed');
+  });
+
+  // Regression: the generated guard hook must block secret files by their EXTENSION
+  // suffix (server.key, prod.env, id_rsa.pem), not only literal dotfiles (.key, .env).
+  // The previous `^\.key`-anchored matcher silently allowed every `name.key` form and
+  // was case-sensitive, so `.KEY` / `server.PEM` bypassed it on case-insensitive disks.
+  describe('generated guard hook blocks secret files by suffix and case', () => {
+    function runHook(hookPath: string, filePath: string): boolean {
+      const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: filePath } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    it('blocks name.ext suffix forms and case variants, allows benign files', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
+        '.env', 'prod.env', 'staging.env',
+        'server.key', 'client.pem', 'id_rsa.pem',
+        '.KEY', 'secrets.PEM', 'cert.crt',
+        'terraform.tfstate', 'main.tfvars',
+        '.npmrc', '.aws/credentials', '.ssh/id_rsa',
+      ];
+      for (const f of mustBlock) {
+        expect(runHook(hookPath, f), `expected hook to BLOCK ${f}`).toBe(true);
+      }
+
+      const mustAllow = ['app.config', 'README.md', 'index.ts', 'environment.ts'];
+      for (const f of mustAllow) {
+        expect(runHook(hookPath, f), `expected hook to ALLOW ${f}`).toBe(false);
+      }
+    });
   });
 
   it('detects existing Claude Code project', () => {

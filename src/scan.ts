@@ -356,6 +356,57 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
     }
   }
 
+  // Scan standalone private-key files (server.key, id_rsa.pem, *.p12). These extensions
+  // are in SECRET_FILE_PATTERNS (the block list) but were never fed to the scanner, so the
+  // single most common private-key layout on disk reported clean. Text key files are
+  // scanned for a PEM PRIVATE KEY block (public certs in .crt/.pem won't match); binary
+  // PKCS#12 bundles (.p12/.pfx) are flagged by existence — they always carry a private key.
+  if (options?.scanSource !== false) {
+    const includeTests = options?.includeTests ?? false;
+    const pemPattern = CREDENTIAL_PATTERNS.find(p => p.id === 'pem-private-key')!;
+    const keyFiles = walkKeyFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTests, ignore);
+    for (const filePath of keyFiles) {
+      const relPath = path.relative(projectDir, filePath);
+      if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile() || stat.size > 1 * 1024 * 1024) continue;
+        const ext = path.extname(filePath).toLowerCase();
+
+        if (ext === '.p12' || ext === '.pfx') {
+          // Binary PKCS#12 keystore — presence alone is the finding.
+          findings.push({
+            file: relPath,
+            line: 1,
+            patternId: 'pkcs12-keystore',
+            patternName: 'PKCS#12 Keystore',
+            severity: 'high',
+            preview: `${path.basename(filePath)} (binary keystore — contains a private key)`,
+            fix: 'Never commit keystores. Store in a secrets manager and reference at runtime.',
+            confidence: 0.95,
+            confidenceTier: 'high',
+            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(relPath.replace(/\\/g, '/'))),
+          });
+          continue;
+        }
+
+        const content = fs.readFileSync(filePath, 'utf-8');
+        if (!pemPattern.regex.test(content)) continue; // public cert / no private key → not a finding
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const match = findRealMatch(lines[i], pemPattern);
+          if (match) {
+            const finding = buildFinding(relPath, i + 1, pemPattern, match, 'high', '[PEM Private Key REDACTED]');
+            if (finding) findings.push(finding);
+            break;
+          }
+        }
+      } catch {
+        // Skip unreadable / non-UTF8 files
+      }
+    }
+  }
+
   // Sort: critical first, then by descending confidence (highest first), then by file
   // for stable ties. Surfacing high-confidence findings ahead of low-confidence
   // ones helps users prioritise on a noisy repo.
@@ -387,6 +438,54 @@ function isTestFile(name: string): boolean {
  * matcher is consulted at the directory level (cheaper, prunes whole subtrees)
  * and again at the file level (in case the user uses a file-name glob).
  */
+/** Private-key file extensions scanned in addition to source/config files. */
+const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx']);
+
+/**
+ * Walk a directory tree and return standalone key files (`*.pem`, `*.key`, `*.p12`, ...).
+ * Mirrors walkSourceFiles' directory pruning, test-skipping, and ignore semantics so a
+ * key file in node_modules/ or a skipped test dir behaves the same as a source file there.
+ */
+function walkKeyFiles(
+  dir: string,
+  maxFiles: number,
+  includeTests: boolean,
+  ignore: IgnoreMatcher | null,
+): string[] {
+  const results: string[] = [];
+  const queue: string[] = [dir];
+
+  while (queue.length > 0 && results.length < maxFiles) {
+    const current = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxFiles) break;
+      const entryPath = path.join(current, entry.name);
+      const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
+
+      if (entry.isDirectory()) {
+        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+        if (!includeTests && TEST_DIRS.has(entry.name)) continue;
+        if (ignore && ignore.matches(relFromRoot + '/.')) continue;
+        queue.push(entryPath);
+      } else if (entry.isFile()) {
+        if (!KEY_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+        if (!includeTests && isTestFile(entry.name)) continue;
+        if (ignore && ignore.matches(relFromRoot)) continue;
+        results.push(entryPath);
+      }
+    }
+  }
+
+  return results;
+}
+
 function walkSourceFiles(
   dir: string,
   maxFiles: number,

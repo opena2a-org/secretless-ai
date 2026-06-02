@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   patternSpecificity,
+  structuralSpecificity,
   valueEntropy,
   lengthTier,
   pathTier,
@@ -158,7 +159,53 @@ describe('pathTier', () => {
   });
 });
 
+describe('structuralSpecificity (fixed-structure keys)', () => {
+  it('rates AWS access-key shape as definitive despite a 4-char prefix', () => {
+    const s = structuralSpecificity(/AKIA[0-9A-Z]{16}/);
+    expect(s.definitive).toBe(true);
+    expect(s.score).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it('rates a long literal anchor (sk_live_) as definitive', () => {
+    const s = structuralSpecificity(/sk_live_[0-9a-zA-Z]{24,}/);
+    expect(s.definitive).toBe(true);
+  });
+
+  it('does NOT mark the FP-prone sk-+48 legacy shape as definitive', () => {
+    const s = structuralSpecificity(/sk-[a-zA-Z0-9]{48,}/);
+    expect(s.definitive).toBe(false);
+  });
+
+  it('does not count characters inside a class as literal anchors', () => {
+    // `[0-9A-Z]` contributes no literal anchors; only `AKIA` does.
+    const s = structuralSpecificity(/AKIA[0-9A-Z]{16}/);
+    const justClass = structuralSpecificity(/[0-9A-Z]{20}/);
+    expect(s.score).toBeGreaterThan(justClass.score);
+  });
+});
+
 describe('scoreFinding (composite)', () => {
+  // Regression for the "real AWS key shows low (0.58)" trust bug. A fixed-structure
+  // access-key ID in a source/config file must reach the 'high' tier.
+  it('scores a fixed-structure AWS access key HIGH in a source file', () => {
+    const r = scoreFinding({
+      pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ },
+      value: 'AKIAIOSFODNN7REALKEY9',
+      filePath: 'src/config.js',
+    });
+    expect(r.tier).toBe('high');
+    expect(r.score).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('does NOT floor a definitive pattern found in a fixture path', () => {
+    const r = scoreFinding({
+      pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ },
+      value: 'AKIAIOSFODNN7REALKEY9',
+      filePath: 'test/fixtures/keys.txt',
+    });
+    expect(r.tier).not.toBe('high');
+  });
+
   const STRONG_VALUE = ANT_PREFIX + 'aB3kP9xQ2mZvW7nY4tL6rJ8sH1cF5gD0eA';
   const STRONG_PATTERN = { id: 'anthropic', regex: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/ };
   const WEAK_PATTERN = { id: 'short-prefix', regex: /[A-Z]{4}[0-9]{8,}/ };
