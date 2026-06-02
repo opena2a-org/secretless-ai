@@ -52,14 +52,22 @@ export function runInit(projectDir: string): number {
     console.log();
     console.log('  Modified:');
     if (settingsModified) {
+      const changes: string[] = [];
       if (result.denyRulesAdded > 0) {
-        console.log(`    ~ .claude/settings.json (added ${result.denyRulesAdded} deny pattern${result.denyRulesAdded === 1 ? '' : 's'})`);
+        changes.push(`added ${result.denyRulesAdded} deny pattern${result.denyRulesAdded === 1 ? '' : 's'}`);
+      }
+      if (result.denyRulesRemoved > 0) {
+        changes.push(`removed ${result.denyRulesRemoved} deprecated pattern${result.denyRulesRemoved === 1 ? '' : 's'}`);
+      }
+      if (changes.length > 0) {
+        console.log(`    ~ .claude/settings.json (${changes.join(', ')})`);
       } else {
         console.log(`    ~ .claude/settings.json`);
       }
     }
     for (const f of otherModified) {
-      console.log(`    ~ ${f}`);
+      const suffix = (f === '.claude/hooks/secretless-guard.sh' && result.hookRefreshed) ? ' (refreshed to current version)' : '';
+      console.log(`    ~ ${f}${suffix}`);
     }
   }
 

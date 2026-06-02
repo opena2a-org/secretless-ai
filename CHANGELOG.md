@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-06-01
+
+### Fixed
+- **`init` now migrates an existing config instead of only appending to it.** Older `init` was additive-only: it appended new deny rules and wrote the guard hook only when absent, so upgrading the CLI did **not** propagate template/hook fixes to an already-initialized project — the broad `Read(.env*)` / `Grep(*.env*)` globs and a stale `secretless-guard.sh` survived, re-blocking `.env.example` while `init` reported "Already up to date". `init` now (1) prunes a known deprecated-rule list (`DEPRECATED_DENY_RULES`) after re-adding the current enumerated rules, so a real env file is never left unprotected, and (2) regenerates the managed guard hook and rewrites it in place when its content is stale. Output reports `removed N deprecated patterns` and `~ .claude/hooks/secretless-guard.sh (refreshed to current version)`; an already-current config is still a clean no-op (no churn on re-run).
+- **`secretless-ai env` skips secret names that aren't valid shell variables instead of breaking the whole shell.** Stored secret names allow `-` (e.g. `vault-name`), but a shell identifier cannot — so `export vault-name='…'` made the shell reject the entire `eval "$(secretless-ai env)"`, printing `export: not valid in this context` on **every** command in profiles that use the eval hook, and silently dropping all the other secrets too. `env` now skips names that aren't valid POSIX shell identifiers (matching the validation `import` already applies), exports the rest normally, and reports the skipped names as a leading shell comment (a no-op inside `eval`, visible on direct invocation) that names them and how to fix — no secret value is exposed. Public API: `isValidShellIdentifier`.
+
 ## [0.18.1] - 2026-06-01
 
 ### Fixed

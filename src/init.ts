@@ -69,7 +69,36 @@ interface InitResult {
    * "Added 21 deny patterns" vs "Already up to date".
    */
   denyRulesAdded: number;
+  /**
+   * Deprecated deny rules pruned during this `init` invocation (migration).
+   * Non-zero when an older config carried a broad glob (e.g. `Read(.env*)`)
+   * that newer versions replaced with enumerated rules. Lets `runInit` report
+   * "removed N deprecated pattern(s)" so a re-run isn't a silent no-op.
+   */
+  denyRulesRemoved: number;
+  /**
+   * True when the managed guard hook (`.claude/hooks/secretless-guard.sh`) was
+   * rewritten this run because its content was stale relative to the version
+   * `init` generates. Older `init` only wrote the hook when absent, so an
+   * outdated hook would persist across upgrades.
+   */
+  hookRefreshed: boolean;
 }
+
+/**
+ * Deny rules that older versions of `init` generated but newer versions no
+ * longer do — `init` prunes these on every run so an upgrade actually migrates
+ * an existing `.claude/settings.json` instead of leaving stale rules in place.
+ *
+ * `Read(.env*)` / `Grep(*.env*)`: broad globs replaced (0.18.1, #82) by an
+ * enumerated real-env-file list so committed templates (`.env.example` etc.)
+ * are no longer blocked. The enumerated replacements are re-added in the same
+ * run, so pruning here never leaves a real env file unprotected.
+ */
+export const DEPRECATED_DENY_RULES: readonly string[] = [
+  'Read(.env*)',
+  'Grep(*.env*)',
+];
 
 /**
  * Initialize Secretless protections for the project.
@@ -84,6 +113,8 @@ export function init(projectDir: string): InitResult {
     secretsFound: 0,
     denyRulesTotal: 0,
     denyRulesAdded: 0,
+    denyRulesRemoved: 0,
+    hookRefreshed: false,
   };
 
   // Detect AI tools
@@ -148,11 +179,20 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     projectCustomRules = loadCustomRules(projectDir);
   } catch { /* handled later in deny rules section */ }
 
-  // 1. Install PreToolUse hook
+  // 1. Install (or refresh) the PreToolUse guard hook. The hook is a managed
+  // file we own — older `init` only wrote it when absent, so an outdated hook
+  // (e.g. one without the template-exempt arm shipped in 0.18.1) would survive
+  // an upgrade. Regenerate and compare: write only when the content differs, so
+  // a fresh project Creates it and an upgraded project Modifies it in place.
   const hookPath = path.join(hooksDir, 'secretless-guard.sh');
+  const desiredHook = generateClaudeHookScript(projectCustomRules);
   if (!fs.existsSync(hookPath)) {
-    fs.writeFileSync(hookPath, generateClaudeHookScript(projectCustomRules), { mode: 0o755 });
+    fs.writeFileSync(hookPath, desiredHook, { mode: 0o755 });
     result.filesCreated.push('.claude/hooks/secretless-guard.sh');
+  } else if (fs.readFileSync(hookPath, 'utf-8') !== desiredHook) {
+    fs.writeFileSync(hookPath, desiredHook, { mode: 0o755 });
+    result.filesModified.push('.claude/hooks/secretless-guard.sh');
+    result.hookRefreshed = true;
   }
 
   // 2. Update settings.json with hook config and deny rules
@@ -316,7 +356,29 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
       added++;
     }
   }
+
+  // Migration: prune deprecated rules an older `init` generated but the current
+  // version no longer does (e.g. the broad `Read(.env*)` glob replaced above by
+  // the enumerated list). Done AFTER the add loop so the enumerated replacements
+  // are already present — pruning never leaves a real env file unprotected. Skip
+  // a deprecated rule if it's somehow also a current rule (none are today).
+  const deprecated = new Set(
+    DEPRECATED_DENY_RULES.filter(r => !allDenyRules.includes(r)),
+  );
+  let removed = 0;
+  if (deprecated.size > 0) {
+    const before = settings.permissions.deny.length;
+    settings.permissions.deny = settings.permissions.deny.filter(
+      (r: string) => !deprecated.has(r),
+    );
+    removed = before - settings.permissions.deny.length;
+  }
+
+  if ((added > 0 || removed > 0) && !result.filesModified.includes('.claude/settings.json')) {
+    result.filesModified.push('.claude/settings.json');
+  }
   result.denyRulesAdded += added;
+  result.denyRulesRemoved += removed;
   result.denyRulesTotal = settings.permissions.deny.length;
 
   writeJsonFile(settingsPath, settings);
