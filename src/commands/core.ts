@@ -109,27 +109,71 @@ export function runInit(projectDir: string): number {
   return 0;
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number }): Promise<number> {
-  console.log('\n  Secretless Scanner\n');
-
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
-  if (!nodeFs.existsSync(projectDir)) {
-    console.error(`  Directory not found: ${projectDir}`);
-    console.error('  Check the path and try again.\n');
-    return 1;
-  }
-
-  const findings = scan(projectDir, {
+  const scanOpts = {
     includeTests: options?.includeTests,
     // `noIgnore` disables BOTH the user `.secretlessignore` and the
     // default-ignore list. Used when a user wants to see every finding,
     // including known-fixture noise.
     ignore: options?.noIgnore ? false : undefined,
     minConfidence: options?.minConfidence,
-  });
+    showPlaceholders: options?.showPlaceholders,
+  };
+
+  // --json: emit a single valid JSON document to stdout and nothing else, so the
+  // output is machine-parseable (issue #63 — the flag previously printed the human
+  // report). Errors go to stderr; exit code still signals findings for CI gating.
+  if (options?.json) {
+    if (!nodeFs.existsSync(projectDir)) {
+      console.error(`Directory not found: ${projectDir}`);
+      return 1;
+    }
+    const stats = { placeholdersSuppressed: 0 };
+    const findings = scan(projectDir, scanOpts, stats);
+    const critical = findings.filter(f => f.severity === 'critical').length;
+    console.log(JSON.stringify({
+      tool: 'secretless-ai',
+      version: require('../../package.json').version,
+      findings,
+      summary: {
+        total: findings.length,
+        critical,
+        high: findings.length - critical,
+        placeholdersSuppressed: stats.placeholdersSuppressed,
+      },
+    }, null, 2));
+    return findings.length > 0 ? 1 : 0;
+  }
+
+  console.log('\n  Secretless Scanner\n');
+
+  if (!nodeFs.existsSync(projectDir)) {
+    console.error(`  Directory not found: ${projectDir}`);
+    console.error('  Check the path and try again.\n');
+    return 1;
+  }
+
+  const stats = { placeholdersSuppressed: 0 };
+  const findings = scan(projectDir, scanOpts, stats);
+
+  // When everything (or a real subset) was hidden as a placeholder, say so and
+  // point at the flag that reveals them. A silent "No credentials found" makes a
+  // user who tested with obvious placeholder values think the scanner is broken,
+  // and silently dropping a real-looking value whose host is `example.com` is the
+  // over-suppression the audit flagged. The hint is suppressed once the user is
+  // already showing placeholders.
+  const placeholderHint = () => {
+    if (stats.placeholdersSuppressed > 0 && !options?.showPlaceholders) {
+      const n = stats.placeholdersSuppressed;
+      console.log(`  ${c.dim(`${n} value${n > 1 ? 's' : ''} looked like a placeholder and ${n > 1 ? 'were' : 'was'} hidden.`)}`);
+      console.log(`  ${c.dim('See them: npx secretless-ai scan --show-placeholders')}\n`);
+    }
+  };
 
   if (findings.length === 0) {
     console.log('  No hardcoded credentials found.');
+    placeholderHint();
     console.log('  Verify keys are working: npx secretless-ai verify\n');
     return 0;
   }
@@ -140,6 +184,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   }
 
   printFindings(findings);
+  placeholderHint();
   return findings.length > 0 ? 1 : 0;
 }
 

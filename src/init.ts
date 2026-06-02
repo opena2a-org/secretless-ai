@@ -202,10 +202,12 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
   const denyRules = [
     // Block Read access to secret files
     'Read(.env*)',
+    'Read(*.env)', // name.env (prod.env, staging.env) — distinct from .env*
     'Read(*.key)',
     'Read(*.pem)',
     'Read(*.p12)',
     'Read(*.pfx)',
+    'Read(*.crt)',
     'Read(*.tfstate)',
     'Read(*.tfvars)',
     'Read(.aws/credentials)',
@@ -214,10 +216,12 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     'Read(~/.secretless-ai/*)',
     // Block Grep from searching secret files (Issue #1)
     'Grep(*.env*)',
+    'Grep(*.env)',
     'Grep(*.key)',
     'Grep(*.pem)',
     'Grep(*.p12)',
     'Grep(*.pfx)',
+    'Grep(*.crt)',
     'Grep(credentials*)',
     'Grep(*.tfstate)',
     'Grep(*.tfvars)',
@@ -450,26 +454,44 @@ function addSecretlessInstructions(filePath: string, tool: string, result: InitR
 }
 
 function generateClaudeHookScript(customRules?: CustomRules | null): string {
-  // Build pattern list for the shell script
-  const filePatterns = [
-    '.env', '.env.local', '.env.development', '.env.production', '.env.staging',
-    '.key', '.pem', '.p12', '.pfx', '.crt',
-    'credentials', '.aws/credentials', '.ssh/',
-    '.docker/config.json', '.git-credentials',
-    '.npmrc', '.pypirc',
-    '.tfstate', '.tfvars',
-    'secrets/', '.opena2a/secretless-ai/',
-    '.secretless-ai/',
+  // Three categories of secret-file signals. Each matches differently:
+  //  - extensions: suffix match on basename, e.g. `server.key`, `prod.env`, `id_rsa.pem`.
+  //    The previous `^\.key` anchored form only caught literal dotfiles (`.key`) and
+  //    silently allowed the far more common `name.key`/`prod.env` suffix form.
+  //  - dotfileNames: exact basename match for credential dotfiles with no suffix form.
+  //  - pathFragments: case-insensitive substring match anywhere in the path.
+  const secretExtensions = ['env', 'key', 'pem', 'p12', 'pfx', 'crt', 'tfstate', 'tfvars'];
+  const dotfileNames = ['.npmrc', '.pypirc', '.git-credentials', '.netrc'];
+  const pathFragments = [
+    'credentials', '.aws/credentials', '.ssh/', '.docker/config.json',
+    'secrets/', '.opena2a/secretless-ai/', '.secretless-ai/',
   ];
 
-  // Add custom file patterns from .secretless-rules.yaml
+  // Merge custom file patterns from .secretless-rules.yaml into the right bucket.
   if (customRules?.files) {
-    for (const pattern of customRules.files) {
-      if (!filePatterns.includes(pattern)) {
-        filePatterns.push(pattern);
+    for (const raw of customRules.files) {
+      const p = raw.trim();
+      if (!p) continue;
+      const extMatch = p.match(/^\*?\.([A-Za-z0-9]+)$/); // `*.foo` or `.foo`
+      if (extMatch && !p.includes('/')) {
+        const ext = extMatch[1].toLowerCase();
+        if (!secretExtensions.includes(ext)) secretExtensions.push(ext);
+      } else if (p.startsWith('.') && !p.includes('/') && !p.includes('*')) {
+        if (!dotfileNames.includes(p)) dotfileNames.push(p);
+      } else if (!pathFragments.includes(p)) {
+        pathFragments.push(p);
       }
     }
   }
+
+  const extAlternation = secretExtensions.join('|');
+  const dotfileCases = dotfileNames.map(n => n.toLowerCase()).join('|');
+  // Emit fragments as UNQUOTED case globs so a custom rule's `*` keeps glob semantics
+  // (`private*` must still match `private_key.txt`). Single-quoting made the `*` literal,
+  // silently neutering wildcard custom rules. Custom rules are restricted upstream by
+  // validateRules' SAFE_PATTERN (alphanumerics + `_ * . - / [ ] { } ?` only — no quotes,
+  // `)`, `;`, `|`, backtick or `$`), so an unquoted glob cannot break out of the `case`.
+  const fragmentCases = pathFragments.map(f => `*${f.toLowerCase()}*`).join('|');
 
   return `#!/bin/bash
 # Secretless Guard — PreToolUse hook for Claude Code
@@ -538,22 +560,22 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
-# Normalize path for matching
+# Normalize path for matching (case-insensitive: server.KEY and prod.ENV must match too)
 BASENAME=$(basename "$FILE_PATH")
+LOWER_BASENAME=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
 LOWER_PATH=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
 
-# Block patterns
-${filePatterns.map(p => {
-    if (p.startsWith('.') && !p.includes('/')) {
-      // Extension or dotfile match
-      if (p.includes('*')) {
-        return `# Match ${p}\nif echo "$BASENAME" | grep -qE '\\${p.replace('*', '.*')}$'; then BLOCKED=1; REASON="${p}"; fi`;
-      }
-      return `# Match ${p}\nif [ "$BASENAME" = "${p}" ] || echo "$BASENAME" | grep -qE '^\\${p}'; then BLOCKED=1; REASON="${p}"; fi`;
-    }
-    // Path fragment match
-    return `# Match ${p}\nif echo "$LOWER_PATH" | grep -qi '${p}'; then BLOCKED=1; REASON="${p}"; fi`;
-  }).join('\n')}
+# Block by secret file extension as a suffix: server.key, prod.env, id_rsa.pem, terraform.tfstate
+if echo "$LOWER_BASENAME" | grep -qE '\\.(${extAlternation})$'; then BLOCKED=1; REASON="secret file extension"; fi
+# Block .env dotfile families (.env, .env.local, .envrc, .env.production)
+case "$LOWER_BASENAME" in
+  .env|.env.*|.envrc) BLOCKED=1; REASON=".env" ;;
+  ${dotfileCases}) BLOCKED=1; REASON="$LOWER_BASENAME" ;;
+esac
+# Block by path fragment anywhere in the path (credentials, .ssh/, secrets/, ...)
+case "$LOWER_PATH" in
+  ${fragmentCases}) BLOCKED=1; REASON="secret path" ;;
+esac
 
 if [ "\${BLOCKED:-0}" = "1" ]; then
   echo "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"permissionDecision\\":\\"deny\\",\\"permissionDecisionReason\\":\\"Secretless: blocked access to secret file matching pattern '$REASON'\\"}}"

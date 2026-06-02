@@ -74,6 +74,19 @@ export interface ScanOptions {
    * CLI prioritisation on a noisy repo.
    */
   minConfidence?: number;
+  /**
+   * Surface values that would normally be suppressed as known examples /
+   * placeholders (`AKIA…EXAMPLE`, `sk-…FAKE…`, `your_api_key`). Off by default.
+   * When on, such matches are returned as findings so a user can verify what was
+   * hidden. Backs the `scan --show-placeholders` flag.
+   */
+  showPlaceholders?: boolean;
+}
+
+/** Optional out-param: counters the scan populates as a side channel. */
+export interface ScanStats {
+  /** Count of pattern matches suppressed as known examples / placeholders. */
+  placeholdersSuppressed: number;
 }
 
 /**
@@ -155,7 +168,16 @@ export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
  *
  * Exported so scan-staged and any other scanner stays in lockstep.
  */
-export function findRealMatch(line: string, pattern: CredentialPattern): RegExpMatchArray | null {
+export function findRealMatch(
+  line: string,
+  pattern: CredentialPattern,
+  opts?: {
+    /** Return matches that would normally be suppressed as known examples/placeholders. */
+    includeExamples?: boolean;
+    /** Called once per match suppressed as a known example (for "N hidden" reporting). */
+    onSuppressed?: () => void;
+  },
+): RegExpMatchArray | null {
   // matchAll requires /g. Promote non-/g patterns so we iterate EVERY match on
   // the line — otherwise a known-example match at position 0 would shadow a
   // real credential of the same pattern later on the same line.
@@ -164,7 +186,8 @@ export function findRealMatch(line: string, pattern: CredentialPattern): RegExpM
     : new RegExp(pattern.regex.source, pattern.regex.flags + 'g');
   globalRegex.lastIndex = 0;
   for (const m of line.matchAll(globalRegex)) {
-    if (!isKnownExample(line, m)) return m;
+    if (opts?.includeExamples || !isKnownExample(line, m)) return m;
+    opts?.onSuppressed?.();
   }
   return null;
 }
@@ -180,7 +203,13 @@ const GLOBAL_CONFIG_FILES = [
  * Also scans global AI tool configs (e.g. ~/.claude/CLAUDE.md).
  * Returns findings sorted by severity then file.
  */
-export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
+export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStats): ScanFinding[] {
+  // Shared per-match options for the credential-pattern call sites: reveal or count
+  // placeholder-suppressed matches so the CLI can tell the user what was hidden.
+  const matchOpts = {
+    includeExamples: options?.showPlaceholders === true,
+    onSuppressed: () => { if (stats) stats.placeholdersSuppressed += 1; },
+  };
   const findings: ScanFinding[] = [];
   const scanGlobal = options?.scanGlobal !== false;
 
@@ -249,7 +278,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         if (line.length > 4096) continue;
         if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
         for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = findRealMatch(line, pattern);
+          const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
@@ -286,7 +315,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         }
 
         for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = findRealMatch(line, pattern);
+          const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
             // Mask the actual secret in the preview (replace ALL occurrences)
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
@@ -339,7 +368,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
           if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
           for (const pattern of CREDENTIAL_PATTERNS) {
-            const match = findRealMatch(line, pattern);
+            const match = findRealMatch(line, pattern, matchOpts);
             if (match) {
               const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
               const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
@@ -352,6 +381,57 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         }
       } catch {
         // Skip unreadable files
+      }
+    }
+  }
+
+  // Scan standalone private-key files (server.key, id_rsa.pem, *.p12). These extensions
+  // are in SECRET_FILE_PATTERNS (the block list) but were never fed to the scanner, so the
+  // single most common private-key layout on disk reported clean. Text key files are
+  // scanned for a PEM PRIVATE KEY block (public certs in .crt/.pem won't match); binary
+  // PKCS#12 bundles (.p12/.pfx) are flagged by existence — they always carry a private key.
+  if (options?.scanSource !== false) {
+    const includeTests = options?.includeTests ?? false;
+    const pemPattern = CREDENTIAL_PATTERNS.find(p => p.id === 'pem-private-key')!;
+    const keyFiles = walkKeyFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTests, ignore);
+    for (const filePath of keyFiles) {
+      const relPath = path.relative(projectDir, filePath);
+      if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile() || stat.size > 1 * 1024 * 1024) continue;
+        const ext = path.extname(filePath).toLowerCase();
+
+        if (ext === '.p12' || ext === '.pfx') {
+          // Binary PKCS#12 keystore — presence alone is the finding.
+          findings.push({
+            file: relPath,
+            line: 1,
+            patternId: 'pkcs12-keystore',
+            patternName: 'PKCS#12 Keystore',
+            severity: 'high',
+            preview: `${path.basename(filePath)} (binary keystore — contains a private key)`,
+            fix: 'Never commit keystores. Store in a secrets manager and reference at runtime.',
+            confidence: 0.95,
+            confidenceTier: 'high',
+            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(relPath.replace(/\\/g, '/'))),
+          });
+          continue;
+        }
+
+        const content = fs.readFileSync(filePath, 'utf-8');
+        if (!pemPattern.regex.test(content)) continue; // public cert / no private key → not a finding
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const match = findRealMatch(lines[i], pemPattern);
+          if (match) {
+            const finding = buildFinding(relPath, i + 1, pemPattern, match, 'high', '[PEM Private Key REDACTED]');
+            if (finding) findings.push(finding);
+            break;
+          }
+        }
+      } catch {
+        // Skip unreadable / non-UTF8 files
       }
     }
   }
@@ -387,6 +467,57 @@ function isTestFile(name: string): boolean {
  * matcher is consulted at the directory level (cheaper, prunes whole subtrees)
  * and again at the file level (in case the user uses a file-name glob).
  */
+/** Private-key file extensions scanned in addition to source/config files. */
+const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx']);
+
+/**
+ * Walk a directory tree and return standalone key files (`*.pem`, `*.key`, `*.p12`, ...).
+ * Mirrors walkSourceFiles' directory pruning, test-skipping, and ignore semantics so a
+ * key file in node_modules/ or a skipped test dir behaves the same as a source file there.
+ */
+function walkKeyFiles(
+  dir: string,
+  maxFiles: number,
+  includeTests: boolean,
+  ignore: IgnoreMatcher | null,
+): string[] {
+  const results: string[] = [];
+  const queue: string[] = [dir];
+
+  while (queue.length > 0 && results.length < maxFiles) {
+    const current = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxFiles) break;
+      const entryPath = path.join(current, entry.name);
+      const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
+
+      if (entry.isDirectory()) {
+        // Unlike source files, key files commonly live in HIDDEN directories (`.ssh/`,
+        // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
+        // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
+        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name === '.git') continue;
+        if (!includeTests && TEST_DIRS.has(entry.name)) continue;
+        if (ignore && ignore.matches(relFromRoot + '/.')) continue;
+        queue.push(entryPath);
+      } else if (entry.isFile()) {
+        if (!KEY_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+        if (!includeTests && isTestFile(entry.name)) continue;
+        if (ignore && ignore.matches(relFromRoot)) continue;
+        results.push(entryPath);
+      }
+    }
+  }
+
+  return results;
+}
+
 function walkSourceFiles(
   dir: string,
   maxFiles: number,

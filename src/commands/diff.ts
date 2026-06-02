@@ -181,7 +181,9 @@ export function computeDiff(ref: string, cwd: string = process.cwd()): DiffResul
     return {
       exitCode: 2,
       changes: [],
-      message: 'Not a git repository (or any parent up to mount point).',
+      message: 'Not a git repository (or any parent up to mount point).\n'
+        + '  `diff` audits secretless-managed file changes against a git ref.\n'
+        + '  Run it inside a git repo, or initialize one first: git init',
     };
   }
 

@@ -158,6 +158,67 @@ describe('scan() — confidence + fixture flag (Wave 2)', () => {
 
   const REAL_OPENAI_KEY = ['sk-proj-', 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2'].join('');
 
+  const PEM_KEY = [
+    '-----BEGIN RSA PRIVATE KEY-----',
+    'MIIEpAIBAAKCAQEA4f5wg5l2hKsTeNem/V41fGnJm6gOdrj8ym3rFkEU/wT8RDtn',
+    '-----END RSA PRIVATE KEY-----',
+  ].join('\n');
+
+  it('detects standalone private-key files (server.key, id_rsa.pem) — regression', () => {
+    const dir = tmpProjectWith({
+      'server.key': PEM_KEY + '\n',
+      'certs/id_rsa.pem': PEM_KEY + '\n',
+      'config/api.ts': `const x = 1;\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    const keyFiles = findings.filter(f => f.patternId === 'pem-private-key').map(f => f.file).sort();
+    expect(keyFiles).toContain('server.key');
+    expect(keyFiles).toContain(path.join('certs', 'id_rsa.pem'));
+  });
+
+  it('scans private-key files inside hidden directories (.ssh/, .certs/)', () => {
+    const dir = tmpProjectWith({
+      '.ssh/id_rsa.pem': PEM_KEY + '\n',
+      '.certs/server.key': PEM_KEY + '\n',
+      'config/prod.key': PEM_KEY + '\n',
+    });
+    const found = scan(dir, { scanGlobal: false })
+      .filter(f => f.patternId === 'pem-private-key')
+      .map(f => f.file.replace(/\\/g, '/')).sort();
+    expect(found).toContain('.ssh/id_rsa.pem');
+    expect(found).toContain('.certs/server.key');
+    expect(found).toContain('config/prod.key');
+  });
+
+  it('flags binary PKCS#12 keystores by existence, ignores public certs', () => {
+    const dir = tmpProjectWith({
+      'keystore.p12': 'binary-pkcs12-bytes',
+      'public.crt': '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.some(f => f.patternId === 'pkcs12-keystore' && f.file === 'keystore.p12')).toBe(true);
+    // A public certificate (no PRIVATE KEY block) must not be flagged.
+    expect(findings.some(f => f.file === 'public.crt')).toBe(false);
+  });
+
+  it('counts placeholder-suppressed matches via the stats out-param', () => {
+    const FAKE = ['sk-ant-api03-', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE12'].join('');
+    const dir = tmpProjectWith({ 'config.js': `const k = "${FAKE}";\n` });
+    const stats = { placeholdersSuppressed: 0 };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    expect(findings.length).toBe(0);                    // suppressed from the result
+    expect(stats.placeholdersSuppressed).toBeGreaterThan(0); // but counted for the hint
+  });
+
+  it('showPlaceholders surfaces values normally hidden as placeholders', () => {
+    const FAKE = ['sk-ant-api03-', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE12'].join('');
+    const dir = tmpProjectWith({ 'config.js': `const k = "${FAKE}";\n` });
+    const hidden = scan(dir, { scanGlobal: false });
+    const shown = scan(dir, { scanGlobal: false, showPlaceholders: true });
+    expect(hidden.length).toBe(0);
+    expect(shown.length).toBeGreaterThan(0);
+  });
+
   it('every finding carries a confidence score in [0, 1] and a tier label', () => {
     const dir = tmpProjectWith({
       'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,
