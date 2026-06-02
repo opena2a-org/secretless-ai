@@ -139,3 +139,58 @@ describe('init / status reject unknown flags as dir path (regression: release-te
     }
   });
 });
+
+describe('scan warns on unknown flags / secret usage (regression: #80, #81)', () => {
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  function runCliSpawn(args: string[], cwd: string) {
+    return spawnSync(process.execPath, [CLI_PATH, ...args], {
+      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], cwd,
+    });
+  }
+
+  itIfBuilt('`scan --show-placeholder` (typo) warns instead of silently no-opping (#81)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scan-flag-'));
+    try {
+      const res = runCliSpawn(['scan', '.', '--show-placeholder'], tmp);
+      expect(res.stderr).toMatch(/ignoring unknown flag --show-placeholder/);
+      expect(res.status).toBe(0); // warning is non-fatal; clean dir still exits 0
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`scan --json` (known flag) produces NO unknown-flag warning (#81)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scan-known-'));
+    try {
+      const res = runCliSpawn(['scan', '.', '--json'], tmp);
+      expect(res.stderr).not.toMatch(/unknown flag/i);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`secret` with no subcommand prints usage cleanly, exit 0 (#80)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-secret-'));
+    try {
+      const res = runCliSpawn(['secret'], tmp);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toMatch(/Usage: secretless-ai secret/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/Unknown secret command/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`secret bogus` (real unknown subcommand) still errors, exit 1 (#80)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-secret-bad-'));
+    try {
+      const res = runCliSpawn(['secret', 'bogus'], tmp);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toMatch(/Unknown secret command: bogus/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
