@@ -200,8 +200,20 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
   if (!settings.permissions.deny) settings.permissions.deny = [];
 
   const denyRules = [
-    // Block Read access to secret files
-    'Read(.env*)',
+    // Block Read access to secret files.
+    // Enumerate REAL env files instead of a broad `.env*` glob: Claude Code deny
+    // globs can't negate and `deny` beats `allow`, so a broad `.env*` would also
+    // block committed template files (`.env.example`, `.env.sample`, `.env.template`,
+    // `.env.dist`) with no way to exempt them. Templates hold placeholders, not real
+    // secrets, and are meant to be read/edited/committed — they fall through this
+    // enumerated list. (Matches the user's global config precedent, 2026-06-01.)
+    'Read(.env)',
+    'Read(.env.local)',
+    'Read(.env.*.local)',
+    'Read(.env.development)',
+    'Read(.env.production)',
+    'Read(.env.staging)',
+    'Read(.env.test)',
     'Read(*.env)', // name.env (prod.env, staging.env) — distinct from .env*
     'Read(*.key)',
     'Read(*.pem)',
@@ -214,8 +226,15 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     'Read(.ssh/*)',
     // Block Read access to secretless data directory
     'Read(~/.secretless-ai/*)',
-    // Block Grep from searching secret files (Issue #1)
-    'Grep(*.env*)',
+    // Block Grep from searching secret files (Issue #1).
+    // Enumerated like the Read rules above so template files stay greppable.
+    'Grep(.env)',
+    'Grep(.env.local)',
+    'Grep(.env.*.local)',
+    'Grep(.env.development)',
+    'Grep(.env.production)',
+    'Grep(.env.staging)',
+    'Grep(.env.test)',
     'Grep(*.env)',
     'Grep(*.key)',
     'Grep(*.pem)',
@@ -360,6 +379,11 @@ function configureAider(projectDir: string, result: InitResult): void {
       '# Secretless: keep secrets out of AI context',
       '.env',
       '.env.*',
+      // Un-ignore committed template files — placeholders, not real secrets.
+      '!.env.example',
+      '!.env.sample',
+      '!.env.template',
+      '!.env.dist',
       '*.key',
       '*.pem',
       '*.p12',
@@ -413,7 +437,8 @@ ${SECRETLESS_MARKER}
 This project uses Secretless to protect credentials from AI context.
 ${keyTable}
 **Blocked file patterns** (never read, write, or reference):
-- \`.env\`, \`.env.*\` — environment variable files
+- \`.env\`, \`.env.local\`, \`.env.*.local\`, \`.env.{development,production,staging,test}\` — real environment variable files
+  (template files \`.env.example\`, \`.env.sample\`, \`.env.template\`, \`.env.dist\` are NOT blocked — they hold placeholders and are meant to be committed/edited)
 - \`*.key\`, \`*.pem\`, \`*.p12\`, \`*.pfx\` — private key files
 - \`.aws/credentials\`, \`.ssh/*\` — cloud/SSH credentials
 - \`*.tfstate\`, \`*.tfvars\` — Terraform state with secrets
@@ -564,6 +589,13 @@ fi
 BASENAME=$(basename "$FILE_PATH")
 LOWER_BASENAME=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
 LOWER_PATH=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
+
+# Allow committed template/example files (.env.example, config.sample, etc.) — these
+# hold placeholders, not real secrets, and are meant to be read/edited/committed.
+# Checked BEFORE any block logic so it wins over the .env extension/dotfile rules below.
+case "$LOWER_BASENAME" in
+  *.example|*.sample|*.template|*.dist) exit 0 ;;
+esac
 
 # Block by secret file extension as a suffix: server.key, prod.env, id_rsa.pem, terraform.tfstate
 if echo "$LOWER_BASENAME" | grep -qE '\\.(${extAlternation})$'; then BLOCKED=1; REASON="secret file extension"; fi
