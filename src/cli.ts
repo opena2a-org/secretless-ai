@@ -122,6 +122,8 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       const includeTests = args.includes('--include-tests');
       const explain = args.includes('--explain');
       const noIgnore = args.includes('--no-ignore');
+      const json = args.includes('--json');
+      const showPlaceholders = args.includes('--show-placeholders');
       // --min-confidence <n>  (n in [0, 1]). Drops findings whose composite
       // confidence score is below the threshold. Useful on noisy repos to
       // surface only high-confidence credentials. Invalid values fall back to
@@ -137,7 +139,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
           console.error(`  Warning: ignoring invalid --min-confidence value "${raw}" (must be in [0, 1]).`);
         }
       }
-      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--min-confidence']);
+      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence']);
       const positionalArgs: string[] = [];
       for (let k = 1; k < args.length; k++) {
         const a = args[k];
@@ -150,7 +152,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence });
+      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders });
     }
     case 'status': {
       const dirArg = args[1];

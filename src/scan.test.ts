@@ -201,6 +201,24 @@ describe('scan() — confidence + fixture flag (Wave 2)', () => {
     expect(findings.some(f => f.file === 'public.crt')).toBe(false);
   });
 
+  it('counts placeholder-suppressed matches via the stats out-param', () => {
+    const FAKE = ['sk-ant-api03-', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE12'].join('');
+    const dir = tmpProjectWith({ 'config.js': `const k = "${FAKE}";\n` });
+    const stats = { placeholdersSuppressed: 0 };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    expect(findings.length).toBe(0);                    // suppressed from the result
+    expect(stats.placeholdersSuppressed).toBeGreaterThan(0); // but counted for the hint
+  });
+
+  it('showPlaceholders surfaces values normally hidden as placeholders', () => {
+    const FAKE = ['sk-ant-api03-', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE12'].join('');
+    const dir = tmpProjectWith({ 'config.js': `const k = "${FAKE}";\n` });
+    const hidden = scan(dir, { scanGlobal: false });
+    const shown = scan(dir, { scanGlobal: false, showPlaceholders: true });
+    expect(hidden.length).toBe(0);
+    expect(shown.length).toBeGreaterThan(0);
+  });
+
   it('every finding carries a confidence score in [0, 1] and a tier label', () => {
     const dir = tmpProjectWith({
       'src/cred.ts': `const k = '${REAL_OPENAI_KEY}';\n`,

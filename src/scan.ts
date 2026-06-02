@@ -74,6 +74,19 @@ export interface ScanOptions {
    * CLI prioritisation on a noisy repo.
    */
   minConfidence?: number;
+  /**
+   * Surface values that would normally be suppressed as known examples /
+   * placeholders (`AKIA…EXAMPLE`, `sk-…FAKE…`, `your_api_key`). Off by default.
+   * When on, such matches are returned as findings so a user can verify what was
+   * hidden. Backs the `scan --show-placeholders` flag.
+   */
+  showPlaceholders?: boolean;
+}
+
+/** Optional out-param: counters the scan populates as a side channel. */
+export interface ScanStats {
+  /** Count of pattern matches suppressed as known examples / placeholders. */
+  placeholdersSuppressed: number;
 }
 
 /**
@@ -155,7 +168,16 @@ export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
  *
  * Exported so scan-staged and any other scanner stays in lockstep.
  */
-export function findRealMatch(line: string, pattern: CredentialPattern): RegExpMatchArray | null {
+export function findRealMatch(
+  line: string,
+  pattern: CredentialPattern,
+  opts?: {
+    /** Return matches that would normally be suppressed as known examples/placeholders. */
+    includeExamples?: boolean;
+    /** Called once per match suppressed as a known example (for "N hidden" reporting). */
+    onSuppressed?: () => void;
+  },
+): RegExpMatchArray | null {
   // matchAll requires /g. Promote non-/g patterns so we iterate EVERY match on
   // the line — otherwise a known-example match at position 0 would shadow a
   // real credential of the same pattern later on the same line.
@@ -164,7 +186,8 @@ export function findRealMatch(line: string, pattern: CredentialPattern): RegExpM
     : new RegExp(pattern.regex.source, pattern.regex.flags + 'g');
   globalRegex.lastIndex = 0;
   for (const m of line.matchAll(globalRegex)) {
-    if (!isKnownExample(line, m)) return m;
+    if (opts?.includeExamples || !isKnownExample(line, m)) return m;
+    opts?.onSuppressed?.();
   }
   return null;
 }
@@ -180,7 +203,13 @@ const GLOBAL_CONFIG_FILES = [
  * Also scans global AI tool configs (e.g. ~/.claude/CLAUDE.md).
  * Returns findings sorted by severity then file.
  */
-export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
+export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStats): ScanFinding[] {
+  // Shared per-match options for the credential-pattern call sites: reveal or count
+  // placeholder-suppressed matches so the CLI can tell the user what was hidden.
+  const matchOpts = {
+    includeExamples: options?.showPlaceholders === true,
+    onSuppressed: () => { if (stats) stats.placeholdersSuppressed += 1; },
+  };
   const findings: ScanFinding[] = [];
   const scanGlobal = options?.scanGlobal !== false;
 
@@ -249,7 +278,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         if (line.length > 4096) continue;
         if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
         for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = findRealMatch(line, pattern);
+          const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
             const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
@@ -286,7 +315,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
         }
 
         for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = findRealMatch(line, pattern);
+          const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
             // Mask the actual secret in the preview (replace ALL occurrences)
             const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
@@ -339,7 +368,7 @@ export function scan(projectDir: string, options?: ScanOptions): ScanFinding[] {
           if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
           for (const pattern of CREDENTIAL_PATTERNS) {
-            const match = findRealMatch(line, pattern);
+            const match = findRealMatch(line, pattern, matchOpts);
             if (match) {
               const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
               const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
