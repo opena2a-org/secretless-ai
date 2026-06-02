@@ -196,7 +196,13 @@ export async function runSecret(args: string[]): Promise<number> {
     }
 
     default:
-      console.error(`\n  Unknown secret command: ${subcommand ?? '(none)'}`);
+      // No subcommand is an exploration, not an error — show usage cleanly and succeed
+      // (#80). Reserve the "Unknown secret command" error for a real unrecognized token.
+      if (subcommand === undefined) {
+        console.log('\n  Usage: secretless-ai secret <set|list|get|rm> [args]\n');
+        return 0;
+      }
+      console.error(`\n  Unknown secret command: ${subcommand}`);
       console.log('  Usage: secretless-ai secret <set|list|get|rm> [args]\n');
       return 1;
   }

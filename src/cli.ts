@@ -141,14 +141,22 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence']);
       const positionalArgs: string[] = [];
+      const unknownFlags: string[] = [];
       for (let k = 1; k < args.length; k++) {
         const a = args[k];
         if (flagFlag.has(a)) {
           if (a === '--min-confidence') k++;
           continue;
         }
-        if (a.startsWith('--')) continue;
+        // Warn (don't fail) on an unrecognized flag so a typo like `--show-placeholder`
+        // for `--show-placeholders` doesn't silently no-op (#81). Matches the warn-not-
+        // crash behavior already used for an invalid `--min-confidence` value.
+        if (a.startsWith('--')) { unknownFlags.push(a); continue; }
         positionalArgs.push(a);
+      }
+      if (unknownFlags.length > 0) {
+        console.error(`  Warning: ignoring unknown flag${unknownFlags.length > 1 ? 's' : ''} ${unknownFlags.join(', ')}.`);
+        console.error('  Run `secretless-ai scan` for supported flags (--json, --show-placeholders, --min-confidence, --no-ignore, --include-tests, --explain).');
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
