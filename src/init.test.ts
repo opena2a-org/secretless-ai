@@ -34,9 +34,12 @@ describe('init', () => {
     const stat = fs.statSync(hookPath);
     expect(stat.mode & 0o111).toBeGreaterThan(0); // executable
 
-    // Settings file has deny rules
+    // Settings file has deny rules. Env files are enumerated (not a broad `.env*`
+    // glob) so committed template files like `.env.example` stay readable — see the
+    // dedicated "env template" describe block below.
     const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
-    expect(settings.permissions.deny).toContain('Read(.env*)');
+    expect(settings.permissions.deny).toContain('Read(.env)');
+    expect(settings.permissions.deny).toContain('Read(.env.local)');
     expect(settings.permissions.deny).toContain('Read(*.key)');
     expect(settings.permissions.deny).toContain('Read(*.pem)');
 
@@ -96,6 +99,66 @@ describe('init', () => {
       expect(runHook(hookPath, 'private_key.txt')).toBe(true);
       expect(runHook(hookPath, 'myprivatestuff')).toBe(true);
       expect(runHook(hookPath, 'normalfile.txt')).toBe(false);
+    });
+  });
+
+  // Committed template files (`.env.example`, `config.sample`, etc.) hold placeholders,
+  // not real secrets, and must stay readable/editable/committable. They were previously
+  // blocked by the broad `.env*` deny glob + the hook's `.env.*` dotfile arm. This guards
+  // all three generated layers: deny rules, the guard hook, and the .aiderignore.
+  describe('env template files (.env.example etc.) are exempt', () => {
+    function runHook(hookPath: string, filePath: string): boolean {
+      const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: filePath } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    it('generated hook allows template files but still blocks real env/secret files', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustAllow = [
+        '.env.example', '.env.sample', '.env.template', '.env.dist',
+        '.env.local.example', 'config/.env.example', 'database.yml.sample',
+        '.ENV.EXAMPLE', // case-insensitive
+      ];
+      for (const f of mustAllow) {
+        expect(runHook(hookPath, f), `expected hook to ALLOW template ${f}`).toBe(false);
+      }
+
+      const mustBlock = ['.env', '.env.local', '.env.production', 'prod.env', 'id_rsa.pem'];
+      for (const f of mustBlock) {
+        expect(runHook(hookPath, f), `expected hook to BLOCK real secret ${f}`).toBe(true);
+      }
+    });
+
+    it('generated deny rules enumerate real env files and drop the broad .env* glob', () => {
+      init(dir);
+      const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+      const deny: string[] = settings.permissions.deny;
+
+      // Broad globs that would also catch templates must be gone.
+      expect(deny).not.toContain('Read(.env*)');
+      expect(deny).not.toContain('Grep(*.env*)');
+
+      // Real env files are enumerated for both Read and Grep.
+      for (const r of [
+        'Read(.env)', 'Read(.env.local)', 'Read(.env.*.local)',
+        'Read(.env.development)', 'Read(.env.production)', 'Read(.env.staging)', 'Read(.env.test)',
+        'Grep(.env)', 'Grep(.env.production)',
+      ]) {
+        expect(deny, `expected deny rule ${r}`).toContain(r);
+      }
+    });
+
+    it('generated .aiderignore un-ignores template files so they stay committable', () => {
+      fs.writeFileSync(path.join(dir, '.aider.conf.yml'), ''); // trigger aider detection
+      init(dir);
+      const ignore = fs.readFileSync(path.join(dir, '.aiderignore'), 'utf-8');
+      expect(ignore).toContain('.env.*');
+      for (const neg of ['!.env.example', '!.env.sample', '!.env.template', '!.env.dist']) {
+        expect(ignore, `expected ${neg}`).toContain(neg);
+      }
     });
   });
 
