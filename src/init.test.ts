@@ -81,6 +81,22 @@ describe('init', () => {
         expect(runHook(hookPath, f), `expected hook to ALLOW ${f}`).toBe(false);
       }
     });
+
+    // Regression: a custom wildcard file rule (`private*`) must keep glob semantics in the
+    // generated hook. Single-quoting the fragment turned `*` literal and silently neutered
+    // the rule, so `private_key.txt` was allowed despite the user asking to block it.
+    it('honors custom wildcard file rules (private*) in the generated case glob', () => {
+      fs.writeFileSync(path.join(dir, '.secretless-rules.yaml'), 'files:\n  - "private*"\n');
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Generated hook must be syntactically valid bash (no quote/glob breakout).
+      execSync(`bash -n ${JSON.stringify(hookPath)}`);
+
+      expect(runHook(hookPath, 'private_key.txt')).toBe(true);
+      expect(runHook(hookPath, 'myprivatestuff')).toBe(true);
+      expect(runHook(hookPath, 'normalfile.txt')).toBe(false);
+    });
   });
 
   it('detects existing Claude Code project', () => {

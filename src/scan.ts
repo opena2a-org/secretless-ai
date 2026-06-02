@@ -470,7 +470,10 @@ function walkKeyFiles(
       const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
 
       if (entry.isDirectory()) {
-        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+        // Unlike source files, key files commonly live in HIDDEN directories (`.ssh/`,
+        // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
+        // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
+        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name === '.git') continue;
         if (!includeTests && TEST_DIRS.has(entry.name)) continue;
         if (ignore && ignore.matches(relFromRoot + '/.')) continue;
         queue.push(entryPath);

@@ -113,28 +113,36 @@ export function patternSpecificity(regex: RegExp): number {
  *   fixed/bounded length quantifier and a restricted character class.
  * - `definitive`: the structure alone makes a match conclusive — a strong literal anchor
  *   (>= 6 literal chars, e.g. `sk_live_`, `github_pat_`) OR an exact-length quantifier
- *   over a restricted class with a >= 3-char anchor (e.g. `AKIA…{16}`, `ghp_…{36}`).
+ *   over a restricted class with a >= 4-char anchor (e.g. `AKIA…{16}`, `ghp_…{36}`).
+ *   Characters inside `(…)` alternation groups and `[…]` classes do not count as anchors.
  */
 export function structuralSpecificity(regex: RegExp): { score: number; definitive: boolean } {
   const src = regex.source;
   let literals = 0;
   let inClass = false;
+  let groupDepth = 0;
   for (let i = 0; i < src.length; i++) {
     const ch = src[i];
     if (ch === '\\') {
       // An escaped literal (`\.`, `\-`, `\/`, `\_`) anchors; a metaclass (`\d`, `\w`) does not.
-      if (!inClass && i + 1 < src.length && /[.+*?^$()|/\\\-_]/.test(src[i + 1])) literals++;
+      if (!inClass && groupDepth === 0 && i + 1 < src.length && /[.+*?^$()|/\\\-_]/.test(src[i + 1])) literals++;
       i++; // consume the escaped char either way
       continue;
     }
     if (ch === '[') { inClass = true; continue; }
     if (ch === ']') { inClass = false; continue; }
     if (inClass) continue;                  // chars inside a class are not literal anchors
+    if (ch === '(') { groupDepth++; continue; }
+    if (ch === ')') { groupDepth = Math.max(0, groupDepth - 1); continue; }
+    // Chars inside a group `(a|b|…)` are alternatives, not a fixed anchor — don't count them.
+    // A top-level `|` means the whole pattern is an alternation; stop accumulating anchors.
+    if (groupDepth === 0 && ch === '|') break;
+    if (groupDepth > 0) continue;
     if (ch === '{') {                        // quantifier `{16}` / `{24,}` — digits are not anchors
       while (i < src.length && src[i] !== '}') i++;
       continue;
     }
-    if ('.+*?^$()|'.includes(ch)) continue;  // structural metacharacter
+    if ('.+*?^$'.includes(ch)) continue;     // structural metacharacter
     literals++;                              // plain literal (alnum, '-', '_', ':', '/')
   }
 
@@ -151,7 +159,7 @@ export function structuralSpecificity(regex: RegExp): { score: number; definitiv
   const score = Math.min(literalScore + structureBonus, 1);
   const definitive =
     literals >= 6 ||
-    (hasExactLength && literals >= 3 && hasRestrictedClass);
+    (hasExactLength && literals >= 4 && hasRestrictedClass);
   return { score, definitive };
 }
 
@@ -266,9 +274,12 @@ export function scoreFinding(input: ScoreFindingInput): ConfidenceBreakdown {
   // Structurally-definitive patterns are conclusive on the match alone: an `AKIA…{16}`
   // access-key ID is short and uppercase-only (so it scores modestly on entropy/length)
   // yet cannot realistically collide. Floor such findings at the 'high' threshold — but
-  // only in real source/config locations. Fixture and docs paths (pathScore < 0.85) are
-  // left unfloored so demo/example creds don't outrank production ones in the display.
-  if (structural.definitive && pathScore >= 0.85) {
+  // only when (a) we're in a real source/config location (fixture/docs paths stay
+  // unfloored so demo creds don't outrank production ones), AND (b) the value carries
+  // real entropy. The entropy gate stops a padded stub (an AWS-shaped prefix followed by
+  // 16 identical or sequential chars) — which the regex matches but which is plainly a
+  // placeholder — from being promoted to high; those stay at their (lower) composite score.
+  if (structural.definitive && pathScore >= 0.85 && entropyScore >= 0.5) {
     clamped = Math.max(clamped, TIER_HIGH_THRESHOLD);
   }
   const tier: ConfidenceTier =

@@ -486,7 +486,12 @@ function generateClaudeHookScript(customRules?: CustomRules | null): string {
 
   const extAlternation = secretExtensions.join('|');
   const dotfileCases = dotfileNames.map(n => n.toLowerCase()).join('|');
-  const fragmentCases = pathFragments.map(f => `*'${f.toLowerCase()}'*`).join('|');
+  // Emit fragments as UNQUOTED case globs so a custom rule's `*` keeps glob semantics
+  // (`private*` must still match `private_key.txt`). Single-quoting made the `*` literal,
+  // silently neutering wildcard custom rules. Custom rules are restricted upstream by
+  // validateRules' SAFE_PATTERN (alphanumerics + `_ * . - / [ ] { } ?` only — no quotes,
+  // `)`, `;`, `|`, backtick or `$`), so an unquoted glob cannot break out of the `case`.
+  const fragmentCases = pathFragments.map(f => `*${f.toLowerCase()}*`).join('|');
 
   return `#!/bin/bash
 # Secretless Guard — PreToolUse hook for Claude Code

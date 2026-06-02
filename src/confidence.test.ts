@@ -176,6 +176,18 @@ describe('structuralSpecificity (fixed-structure keys)', () => {
     expect(s.definitive).toBe(false);
   });
 
+  it('does NOT mark an alternation-of-short-branches as definitive', () => {
+    // `(a|b|c|d|e|f)` branch chars are alternatives, not a fixed anchor — must not count.
+    const s = structuralSpecificity(/(a|b|c|d|e|f)[0-9]{16}/);
+    expect(s.definitive).toBe(false);
+  });
+
+  it('requires a 4+ char anchor for exact-length definitiveness (rejects abc{10})', () => {
+    expect(structuralSpecificity(/abc[0-9]{10}/).definitive).toBe(false);
+    expect(structuralSpecificity(/AKIA[0-9A-Z]{16}/).definitive).toBe(true);
+    expect(structuralSpecificity(/ghp_[a-zA-Z0-9]{36}/).definitive).toBe(true);
+  });
+
   it('does not count characters inside a class as literal anchors', () => {
     // `[0-9A-Z]` contributes no literal anchors; only `AKIA` does.
     const s = structuralSpecificity(/AKIA[0-9A-Z]{16}/);
@@ -204,6 +216,19 @@ describe('scoreFinding (composite)', () => {
       filePath: 'test/fixtures/keys.txt',
     });
     expect(r.tier).not.toBe('high');
+  });
+
+  it('does NOT floor a low-entropy padded stub even on a definitive pattern', () => {
+    // `AKIAAAAAAAAAAAAAAAAA` matches the AWS regex but is plainly a placeholder; the
+    // entropy gate must keep it off the 'high' tier so stubs don't outrank real keys.
+    for (const value of ['AKIAAAAAAAAAAAAAAAAA', 'AKIA0000000000000000']) {
+      const r = scoreFinding({
+        pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ },
+        value,
+        filePath: 'src/config.js',
+      });
+      expect(r.tier, `${value} should not be floored to high`).not.toBe('high');
+    }
   });
 
   const STRONG_VALUE = ANT_PREFIX + 'aB3kP9xQ2mZvW7nY4tL6rJ8sH1cF5gD0eA';

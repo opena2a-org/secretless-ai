@@ -176,6 +176,20 @@ describe('scan() — confidence + fixture flag (Wave 2)', () => {
     expect(keyFiles).toContain(path.join('certs', 'id_rsa.pem'));
   });
 
+  it('scans private-key files inside hidden directories (.ssh/, .certs/)', () => {
+    const dir = tmpProjectWith({
+      '.ssh/id_rsa.pem': PEM_KEY + '\n',
+      '.certs/server.key': PEM_KEY + '\n',
+      'config/prod.key': PEM_KEY + '\n',
+    });
+    const found = scan(dir, { scanGlobal: false })
+      .filter(f => f.patternId === 'pem-private-key')
+      .map(f => f.file.replace(/\\/g, '/')).sort();
+    expect(found).toContain('.ssh/id_rsa.pem');
+    expect(found).toContain('.certs/server.key');
+    expect(found).toContain('config/prod.key');
+  });
+
   it('flags binary PKCS#12 keystores by existence, ignores public certs', () => {
     const dir = tmpProjectWith({
       'keystore.p12': 'binary-pkcs12-bytes',
