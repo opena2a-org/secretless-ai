@@ -3,7 +3,7 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { init } from './init';
+import { init, DEPRECATED_DENY_RULES } from './init';
 import { scan } from './scan';
 import { status } from './status';
 import { detectAITools } from './detect';
@@ -159,6 +159,92 @@ describe('init', () => {
       for (const neg of ['!.env.example', '!.env.sample', '!.env.template', '!.env.dist']) {
         expect(ignore, `expected ${neg}`).toContain(neg);
       }
+    });
+  });
+
+  // Older `init` was additive-only: it appended new deny rules and only wrote
+  // the guard hook when absent. So upgrading the CLI did NOT migrate an existing
+  // `.claude/settings.json` — the broad `.env*` glob and a stale hook survived,
+  // re-blocking `.env.example` while `init` reported "Already up to date". These
+  // tests pin the migration: prune deprecated rules + refresh the hook on re-run.
+  describe('migration: re-running init upgrades an older config', () => {
+    function runHook(hookPath: string, filePath: string): boolean {
+      const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: filePath } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    function seedStaleConfig(): void {
+      const claudeDir = path.join(dir, '.claude');
+      fs.mkdirSync(path.join(claudeDir, 'hooks'), { recursive: true });
+      fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
+        permissions: { deny: ['Read(.env*)', 'Grep(*.env*)', 'Read(*.key)'] },
+      }, null, 2));
+      // A stale managed hook: real content but missing the template-exempt arm.
+      fs.writeFileSync(path.join(claudeDir, 'hooks', 'secretless-guard.sh'),
+        '#!/usr/bin/env bash\n# old stale guard hook\nexit 0\n', { mode: 0o755 });
+    }
+
+    it('prunes deprecated broad-glob deny rules and reports the count', () => {
+      seedStaleConfig();
+      const result = init(dir);
+
+      const deny: string[] = JSON.parse(
+        fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'),
+      ).permissions.deny;
+
+      for (const dep of DEPRECATED_DENY_RULES) {
+        expect(deny, `deprecated rule ${dep} should be pruned`).not.toContain(dep);
+      }
+      // Enumerated replacements are present (prune never leaves env unprotected).
+      expect(deny).toContain('Read(.env)');
+      expect(deny).toContain('Read(*.env)');
+      expect(result.denyRulesRemoved).toBe(2);
+      expect(result.filesModified).toContain('.claude/settings.json');
+    });
+
+    it('refreshes a stale managed guard hook in place', () => {
+      seedStaleConfig();
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const before = fs.readFileSync(hookPath, 'utf-8');
+
+      const result = init(dir);
+
+      const after = fs.readFileSync(hookPath, 'utf-8');
+      expect(after).not.toBe(before);
+      expect(result.hookRefreshed).toBe(true);
+      expect(result.filesModified).toContain('.claude/hooks/secretless-guard.sh');
+      // The refreshed hook now exempts templates and still blocks real env files.
+      expect(runHook(hookPath, '.env.example')).toBe(false);
+      expect(runHook(hookPath, '.env')).toBe(true);
+    });
+
+    it('migrated config equals a config initialized fresh', () => {
+      seedStaleConfig();
+      init(dir);
+      const migrated = new Set<string>(
+        JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8')).permissions.deny,
+      );
+
+      const fresh = tmpDir();
+      try {
+        init(fresh);
+        const pristine = new Set<string>(
+          JSON.parse(fs.readFileSync(path.join(fresh, '.claude', 'settings.json'), 'utf-8')).permissions.deny,
+        );
+        expect(migrated).toEqual(pristine);
+      } finally {
+        cleanup(fresh);
+      }
+    });
+
+    it('is a no-op on an already-current config (no churn on re-run)', () => {
+      init(dir);                 // first run: now current
+      const result = init(dir);  // second run
+      expect(result.denyRulesRemoved).toBe(0);
+      expect(result.denyRulesAdded).toBe(0);
+      expect(result.hookRefreshed).toBe(false);
+      expect(result.filesModified).not.toContain('.claude/settings.json');
     });
   });
 
