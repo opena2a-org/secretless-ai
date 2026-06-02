@@ -10,6 +10,7 @@ vi.mock('./transcript', () => ({
 }));
 
 import { verify } from './verify';
+import { scan } from './scan';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-ai-verify-'));
@@ -76,6 +77,46 @@ describe('verify', () => {
     expect(result.exposedInContext.length).toBe(1);
     expect(result.exposedInContext[0].patternName).toBe('OpenAI Project Key');
     expect(result.passed).toBe(false);
+  });
+
+  // Regression for #64: verify must apply the SAME placeholder suppression as scan.
+  // A `sk-ant-api03-FAKE…` value was flagged by verify but suppressed by scan, so the
+  // two commands disagreed on the same file. They must now agree (neither flags it),
+  // AND verify must COUNT the suppression so the pass is never silent.
+  it('suppresses known-placeholder values in AI context, matching scan, and counts them (#64)', () => {
+    const fakeKey = ['sk-ant-api03-', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE99'].join('');
+    fs.writeFileSync(path.join(dir, '.env'), `ANTHROPIC_API_KEY=${fakeKey}\n`);
+
+    // verify no longer flags the placeholder...
+    const v = verify(dir);
+    expect(v.exposedInContext.length).toBe(0);
+    expect(v.placeholdersSuppressed).toBeGreaterThan(0); // ...but it is surfaced, not silent
+    // ...and scan agrees it is not a real finding.
+    expect(scan(dir, { scanGlobal: false }).length).toBe(0);
+  });
+
+  it('still flags a real (non-placeholder) key in AI context, matching scan (#64)', () => {
+    const realKey = ['sk-ant-api03-', 'aB3kP9xQ2mZvW7nY4tL6rJ8sH1cF5gD0eAbCdEfGhIjKlMnOpQr'].join('');
+    fs.writeFileSync(path.join(dir, '.env'), `ANTHROPIC_API_KEY=${realKey}\n`);
+
+    const v = verify(dir);
+    expect(v.exposedInContext.length).toBe(1);
+    expect(v.placeholdersSuppressed).toBe(0);
+    expect(scan(dir, { scanGlobal: false }).length).toBeGreaterThan(0);
+  });
+
+  // Adversarial-review regression: a REAL key whose random body contains a placeholder
+  // token (`sample`) is suppressed by the shared detection path — but verify must NOT
+  // hide it silently. It is counted so the user is told to confirm via --show-placeholders.
+  it('counts (never silently drops) a real-looking key carrying a placeholder substring', () => {
+    // Built from fragments so the contiguous live-key literal never appears in source
+    // (GitHub push protection / secret scanners flag the literal token otherwise). The
+    // value is a Stripe-live-shaped string whose body contains the placeholder token.
+    const stripeWithToken = ['sk', '_live_', 'sample', 'AbCdEfGhIjKlMnOpQrStUvWx0123'].join('');
+    fs.writeFileSync(path.join(dir, '.env'), `STRIPE=${stripeWithToken}\n`);
+    const v = verify(dir);
+    expect(v.exposedInContext.length).toBe(0);   // suppressed (consistent with scan)
+    expect(v.placeholdersSuppressed).toBe(1);    // but surfaced, not a silent pass
   });
 
   it('warns when no env vars are set at all', () => {

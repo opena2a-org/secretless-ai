@@ -439,6 +439,17 @@ export function runVerify(projectDir: string, showAll = false): number {
     }
   }
 
+  // Surface suppressed placeholders BEFORE the verdict, so a green pass is never silent
+  // over a value verify chose to hide (a real key whose body contains a token like
+  // `sample`/`xxx`, or a real key on a `# example` line, is suppressed by the shared
+  // detection path — the user must be told to confirm it, not shown a bare PASS).
+  if (result.placeholdersSuppressed > 0) {
+    const n = result.placeholdersSuppressed;
+    console.log();
+    console.log(`  ${c.dim(`${n} value${n > 1 ? 's' : ''} in AI context looked like a placeholder and ${n > 1 ? 'were' : 'was'} not counted.`)}`);
+    console.log(`  ${c.dim('Confirm none are real: npx secretless-ai scan --show-placeholders')}`);
+  }
+
   // Verdict
   console.log();
   if (result.passed) {
