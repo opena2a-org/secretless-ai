@@ -7,7 +7,7 @@
 
 import * as path from 'path';
 import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode': 'import' };
-import { VERSION } from './commands/utils';
+import { VERSION, CLI_BARE } from './commands/utils';
 // @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
 // so they're loaded via dynamic import() inside the async main().
 import { runInit, runScan, runStatus, runVerify, runDoctor } from './commands/core';
@@ -101,7 +101,7 @@ function rejectUnknownFlagAsDirArg(command: string, dirArg: string | undefined):
   if (dirArg && dirArg.startsWith('-')) {
     console.error(`  Unknown option: ${dirArg}`);
     console.error(`  \`${command}\` takes an optional directory path, not flags.`);
-    console.error(`  Run \`secretless-ai ${command} --help\` for usage.`);
+    console.error(`  Run \`${CLI_BARE} ${command} --help\` for usage.`);
     return false;
   }
   return true;
@@ -156,7 +156,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       if (unknownFlags.length > 0) {
         console.error(`  Warning: ignoring unknown flag${unknownFlags.length > 1 ? 's' : ''} ${unknownFlags.join(', ')}.`);
-        console.error('  Run `secretless-ai scan` for supported flags (--json, --show-placeholders, --min-confidence, --no-ignore, --include-tests, --explain).');
+        console.error(`  Run \`${CLI_BARE} scan\` for supported flags (--json, --show-placeholders, --min-confidence, --no-ignore, --include-tests, --explain).`);
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();

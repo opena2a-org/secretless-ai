@@ -14,11 +14,12 @@ import * as os from 'os';
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
 
-function runCli(args: string[], opts: { cwd?: string } = {}): string {
+function runCli(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): string {
   return execFileSync(process.execPath, [CLI_PATH, ...args], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: opts.cwd,
+    env: opts.env ?? process.env,
   });
 }
 
@@ -64,6 +65,54 @@ describe('cli --help handling', () => {
     try {
       const out = runCli(['scan', '-h'], { cwd: tmp });
       expect(out).toMatch(/Secretless v/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', () => {
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  itIfBuilt('UNSET: help shows native `npx secretless-ai` citations + banner', () => {
+    // Default behavior must be identical to before the env var existed.
+    const env = { ...process.env };
+    delete env.SECRETLESS_CLI_PREFIX;
+    const out = runCli(['--help'], { env });
+    expect(out).toMatch(/Secretless v/);
+    expect(out).toMatch(/npx secretless-ai scan/);
+  });
+
+  itIfBuilt('SET: help rebrands citations to the prefix and drops the banner', () => {
+    const env = { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' };
+    const out = runCli(['--help'], { env });
+    // Citations now read as the host command path.
+    expect(out).toMatch(/opena2a secrets scan/);
+    expect(out).toMatch(/opena2a secrets init/);
+    // No standalone secretless command citations leak through. The
+    // `https://opena2a.org/secretless-ai` URL is a product link, not a command
+    // citation, so we match the command forms specifically: `npx secretless-ai`
+    // and bare `secretless-ai <verb>`.
+    expect(out).not.toMatch(/npx secretless-ai/);
+    expect(out).not.toMatch(/^\s*secretless-ai\s/m);
+    // Brand+version banner is suppressed under the host umbrella; tagline stays.
+    expect(out).not.toMatch(/Secretless v/);
+    expect(out).toMatch(/Keep secrets out of AI context\./);
+  });
+
+  itIfBuilt('SET: error hint rebrands to the prefix', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-prefix-hint-'));
+    try {
+      const res = spawnSync(process.execPath, [CLI_PATH, 'init', '--unknown'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: tmp,
+        env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
+      });
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/Run `opena2a secrets init --help` for usage/);
+      expect(res.stderr).not.toMatch(/secretless-ai/);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

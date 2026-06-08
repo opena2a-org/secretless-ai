@@ -9,12 +9,17 @@ import { readBackendConfig } from '../backends/config';
 import { getDaemonStatus } from '../broker/daemon';
 import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
-import { VERSION, formatUptime, formatRemainingTime } from './utils';
+import { VERSION, IS_EMBEDDED, formatUptime, formatRemainingTime } from './utils';
 import { explainFinding, isEngineAvailable } from '../nanomind';
 import { c, divider } from './colors';
 
 export function runInit(projectDir: string): number {
-  console.log('\n  Secretless v' + VERSION);
+  // Suppress the standalone brand+version banner when embedded under a host CLI
+  // (SECRETLESS_CLI_PREFIX set) — it shows secretless's own version, which is
+  // misleading under the host's umbrella. Keep the tagline.
+  if (!IS_EMBEDDED) {
+    console.log('\n  Secretless v' + VERSION);
+  }
   console.log('  Keeping secrets out of AI\n');
 
   const result = init(projectDir);
