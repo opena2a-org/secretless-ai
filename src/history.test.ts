@@ -121,7 +121,11 @@ describe('scanHistory', () => {
 
   it('detects export commands with secrets', async () => {
     mockHistoryFiles({
-      '.bash_history': 'export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"',
+      // Exercises the generic `cmd-export` command pattern: a secret-bearing
+      // export whose value does NOT match a specific credential pattern (those
+      // are matched first by matchLine — e.g. an AWS_SECRET_ACCESS_KEY value now
+      // matches the `aws-secret` pattern, not `cmd-export`).
+      '.bash_history': 'export DB_PASSWORD="s3cretP@sswordValue1234567890"',
     });
 
     const result = await scanHistory();
