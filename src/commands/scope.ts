@@ -1,6 +1,7 @@
 import { SecretStore } from '../secret-store';
 import { resolveBackendType } from '../backends/config';
 import { discoverScope, listBaselines, resetBaseline, loadBaseline, detectProvider } from '../scope';
+import { CLI_BARE } from './utils';
 
 export async function runScope(args: string[]): Promise<number> {
   const subcommand = args[0];
@@ -9,7 +10,7 @@ export async function runScope(args: string[]): Promise<number> {
     case 'discover': {
       const credentialName = args[1];
       if (!credentialName) {
-        console.error('\n  Usage: secretless-ai scope discover <credential-name>\n');
+        console.error(`\n  Usage: ${CLI_BARE} scope discover <credential-name>\n`);
         console.log('  Reads the credential value from the secret store and discovers its scope.\n');
         return 1;
       }
@@ -84,7 +85,7 @@ export async function runScope(args: string[]): Promise<number> {
     case 'check': {
       const credentialName = args[1];
       if (!credentialName) {
-        console.error('\n  Usage: secretless-ai scope check <credential-name>\n');
+        console.error(`\n  Usage: ${CLI_BARE} scope check <credential-name>\n`);
         console.log('  Re-checks scope and compares to stored baseline.\n');
         return 1;
       }
@@ -92,7 +93,7 @@ export async function runScope(args: string[]): Promise<number> {
       const baseline = loadBaseline(credentialName);
       if (!baseline) {
         console.error(`\n  No baseline found for "${credentialName}".`);
-        console.log('  Run "secretless-ai scope discover" first to create a baseline.\n');
+        console.log(`  Run "${CLI_BARE} scope discover" first to create a baseline.\n`);
         return 1;
       }
 
@@ -124,7 +125,7 @@ export async function runScope(args: string[]): Promise<number> {
             console.log(`    + ${p}`);
           }
           console.log(`\n  WARNING: Credential scope has expanded since baseline.`);
-          console.log(`  Run 'secretless-ai scope discover ${credentialName}' to update baseline.\n`);
+          console.log(`  Run '${CLI_BARE} scope discover ${credentialName}' to update baseline.\n`);
         } else if (result.removed.length > 0) {
           console.log(`  Contracted: -${result.removed.length} removed permissions`);
           for (const p of result.removed) {
@@ -145,7 +146,7 @@ export async function runScope(args: string[]): Promise<number> {
       const baselines = listBaselines();
       if (baselines.length === 0) {
         console.log('\n  No scope baselines stored.\n');
-        console.log('  Run "secretless-ai scope discover <credential-name>" to create one.\n');
+        console.log(`  Run "${CLI_BARE} scope discover <credential-name>" to create one.\n`);
         return 0;
       }
 
@@ -163,7 +164,7 @@ export async function runScope(args: string[]): Promise<number> {
     case 'reset': {
       const credentialName = args[1];
       if (!credentialName) {
-        console.error('\n  Usage: secretless-ai scope reset <credential-name>\n');
+        console.error(`\n  Usage: ${CLI_BARE} scope reset <credential-name>\n`);
         return 1;
       }
 
@@ -181,7 +182,7 @@ export async function runScope(args: string[]): Promise<number> {
       // No subcommand is an exploration, not an error — show usage cleanly and succeed
       // (mirrors the `secret` fix in #80). Reserve the error for a real unrecognized token.
       const usage = () => {
-        console.log('  Usage: secretless-ai scope <discover|check|list|reset>\n');
+        console.log(`  Usage: ${CLI_BARE} scope <discover|check|list|reset>\n`);
         console.log('  Commands:');
         console.log('    discover <name>   Discover permissions and save baseline');
         console.log('    check <name>      Re-check and compare to baseline');

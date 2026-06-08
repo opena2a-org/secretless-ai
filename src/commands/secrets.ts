@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { SecretStore } from '../secret-store';
 import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
+import { CLI, CLI_BARE } from './utils';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -51,7 +52,7 @@ export async function runSecret(args: string[]): Promise<number> {
     case 'set': {
       const nameArg = args[1];
       if (!nameArg) {
-        console.error('\n  Usage: secretless-ai secret set <NAME[=VALUE]>\n');
+        console.error(`\n  Usage: ${CLI_BARE} secret set <NAME[=VALUE]>\n`);
         return 1;
       }
 
@@ -65,7 +66,7 @@ export async function runSecret(args: string[]): Promise<number> {
         const value = nameArg.slice(eqIdx + 1);
         if (!value) {
           console.error('  Error: no value provided.');
-          console.error('  Usage: secretless-ai secret set NAME=VALUE\n');
+          console.error(`  Usage: ${CLI_BARE} secret set NAME=VALUE\n`);
           return 1;
         }
         if (!SECRET_NAME_RE.test(name)) {
@@ -94,8 +95,8 @@ export async function runSecret(args: string[]): Promise<number> {
       const value = await readSecretFromStdin(name);
       if (value === null) {
         console.error('  Error: no value provided.');
-        console.error('  Usage: secretless-ai secret set NAME=VALUE');
-        console.error('  Or:    echo "value" | secretless-ai secret set NAME\n');
+        console.error(`  Usage: ${CLI_BARE} secret set NAME=VALUE`);
+        console.error(`  Or:    echo "value" | ${CLI_BARE} secret set NAME\n`);
         return 1;
       }
       const store = new SecretStore();
@@ -116,8 +117,8 @@ export async function runSecret(args: string[]): Promise<number> {
         const names = await store.listSecrets();
         if (names.length === 0) {
           console.log('\n  No secrets stored.');
-          console.log('  Store one:    npx secretless-ai secret set MY_KEY=my_value');
-          console.log('  Import .env:  npx secretless-ai import .env\n');
+          console.log(`  Store one:    ${CLI} secret set MY_KEY=my_value`);
+          console.log(`  Import .env:  ${CLI} import .env\n`);
           return 0;
         }
         console.log(`\n  ${names.length} secret(s):\n`);
@@ -136,7 +137,7 @@ export async function runSecret(args: string[]): Promise<number> {
       const positional = args.slice(1).filter(a => !a.startsWith('--'));
       const name = positional[0];
       if (!name) {
-        console.error('\n  Usage: secretless-ai secret get <NAME>\n');
+        console.error(`\n  Usage: ${CLI_BARE} secret get <NAME>\n`);
         return 1;
       }
 
@@ -146,10 +147,10 @@ export async function runSecret(args: string[]): Promise<number> {
         console.error('  AI tools capture stdout, which would expose the secret in their context.');
         console.error('');
         console.error('  To inject secrets into a command:');
-        console.error('    npx secretless-ai run -- <command>');
+        console.error(`    ${CLI} run -- <command>`);
         console.error('');
         console.error('  To force output (e.g. piping to clipboard):');
-        console.error('    npx secretless-ai secret get <NAME> --force');
+        console.error(`    ${CLI} secret get <NAME> --force`);
         return 1;
       }
 
@@ -177,7 +178,7 @@ export async function runSecret(args: string[]): Promise<number> {
     case 'delete': {
       const name = args[1];
       if (!name) {
-        console.error('\n  Usage: secretless-ai secret rm <NAME>\n');
+        console.error(`\n  Usage: ${CLI_BARE} secret rm <NAME>\n`);
         return 1;
       }
       const store = new SecretStore();
@@ -199,11 +200,11 @@ export async function runSecret(args: string[]): Promise<number> {
       // No subcommand is an exploration, not an error — show usage cleanly and succeed
       // (#80). Reserve the "Unknown secret command" error for a real unrecognized token.
       if (subcommand === undefined) {
-        console.log('\n  Usage: secretless-ai secret <set|list|get|rm> [args]\n');
+        console.log(`\n  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]\n`);
         return 0;
       }
       console.error(`\n  Unknown secret command: ${subcommand}`);
-      console.log('  Usage: secretless-ai secret <set|list|get|rm> [args]\n');
+      console.log(`  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]\n`);
       return 1;
   }
 }

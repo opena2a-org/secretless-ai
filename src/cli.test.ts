@@ -117,6 +117,78 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  itIfBuilt('SET: `secret` no-arg usage rebrands to the prefix, no bare citations', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-secret-prefix-'));
+    try {
+      const res = spawnSync(process.execPath, [CLI_PATH, 'secret'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: tmp,
+        env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
+      });
+      expect(res.status).toBe(0);
+      expect(res.stdout).toMatch(/Usage: opena2a secrets secret <set\|list\|get\|rm>/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('SET: `secret set` usage hint rebrands to the prefix, no bare citations', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-secret-set-prefix-'));
+    try {
+      const res = spawnSync(process.execPath, [CLI_PATH, 'secret', 'set'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: tmp,
+        env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
+      });
+      expect(res.status).toBe(1);
+      expect(`${res.stdout}${res.stderr}`).toMatch(/Usage: opena2a secrets secret set/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('SET: `scope` no-arg usage rebrands to the prefix, no bare citations', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scope-prefix-'));
+    try {
+      const res = spawnSync(process.execPath, [CLI_PATH, 'scope'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: tmp,
+        env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
+      });
+      expect(res.status).toBe(0);
+      expect(res.stdout).toMatch(/Usage: opena2a secrets scope <discover\|check\|list\|reset>/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('SET: `scope reset` usage hint rebrands to the prefix, no bare citations', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scope-reset-prefix-'));
+    try {
+      const res = spawnSync(process.execPath, [CLI_PATH, 'scope', 'reset'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: tmp,
+        env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
+      });
+      expect(res.status).toBe(1);
+      expect(`${res.stdout}${res.stderr}`).toMatch(/Usage: opena2a secrets scope reset/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
+      expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('init / status reject unknown flags as dir path (regression: release-test 2026-05-12 P1)', () => {
