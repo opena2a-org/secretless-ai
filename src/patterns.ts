@@ -30,6 +30,11 @@ export const CREDENTIAL_PATTERNS: CredentialPattern[] = [
   // ── Cloud Providers (category: cloud) ─────────────────────────────────
   { id: 'aws-access', name: 'AWS Access Key', regex: /AKIA[0-9A-Z]{16}/, envPrefix: 'AWS_ACCESS_KEY_ID', category: 'cloud' },
   { id: 'aws-sts', name: 'AWS STS Temporary Key', regex: /ASIA[0-9A-Z]{16}/, envPrefix: 'AWS_ACCESS_KEY_ID', category: 'cloud' },
+  // Name-gated AWS secret access key (lockstep with @opena2a/credential-patterns
+  // 0.1.2): 40-char prefix-less value flagged only when an aws…secret…key /
+  // secret_access_key name precedes it (value in group 1). See the package for
+  // the design rationale (forward capture group, not lookbehind — ReDoS budget).
+  { id: 'aws-secret', name: 'AWS Secret Access Key', regex: /(?:aws.{0,16}(?:secret|private).{0,16}key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])/i, envPrefix: 'AWS_SECRET_ACCESS_KEY', category: 'cloud' },
   { id: 'gcp-service-account', name: 'GCP Service Account JSON', regex: /"type"\s*:\s*"service_account"/, envPrefix: 'GOOGLE_APPLICATION_CREDENTIALS', category: 'cloud' },
   { id: 'digitalocean', name: 'DigitalOcean PAT', regex: /dop_v1_[a-f0-9]{64}/, envPrefix: 'DIGITALOCEAN_TOKEN', category: 'cloud' },
   { id: 'heroku', name: 'Heroku API Key', regex: /HRKU-[a-zA-Z0-9_-]{30,}/, envPrefix: 'HEROKU_API_KEY', category: 'cloud' },
@@ -114,6 +119,9 @@ export const KNOWN_EXAMPLE_KEYS = new Set([
   // AWS (official docs)
   'AKIAIOSFODNN7EXAMPLE',
   'AKIAI44QH8DHBEXAMPLE',
+  // AWS docs secret access key, paired with AKIAIOSFODNN7EXAMPLE in the
+  // canonical example (docs.aws.amazon.com/.../id_credentials_access-keys.html).
+  'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
   // OpenAI (from docs)
   'sk-proj-abc123',
 ]);

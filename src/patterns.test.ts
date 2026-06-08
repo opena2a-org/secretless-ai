@@ -56,6 +56,22 @@ const PATTERN_TEST_CASES: Record<string, { valid: string[]; invalid: string[] }>
     valid: ['ASIAIOSFODNN7EXAMPLE'],
     invalid: ['ASIA123', 'BSIAIOSFODNN7EXAMPLE'],
   },
+  'aws-secret': {
+    // Name-gated: a 40-char value matches only when an `aws…secret…key` /
+    // `secret_access_key` name precedes it (value in group 1).
+    valid: [
+      'AWS_SECRET_ACCESS_KEY=' + 'a'.repeat(40),
+      'aws_secret_access_key = "' + 'b'.repeat(40) + '"',
+      'secretAccessKey: "' + 'c'.repeat(40) + '"',
+      'secret_access_key = "' + 'd'.repeat(40) + '"',
+    ],
+    invalid: [
+      'e'.repeat(40),
+      'aws_secret_access_key = "tooShort"',
+      'aws secretsmanager arn: ' + 'f'.repeat(40),
+      'session_secret = "' + 'g'.repeat(40) + '"',
+    ],
+  },
   'gcp-service-account': {
     valid: ['"type": "service_account"', '"type":"service_account"'],
     invalid: ['"type": "user_account"', '"type":"oauth"'],

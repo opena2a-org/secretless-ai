@@ -148,10 +148,16 @@ function isExampleInComment(line: string): boolean {
  * legitimately reference public example keys like AKIAIOSFODNN7EXAMPLE.
  */
 export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
-  const value = match[0];
+  // Lockstep with @opena2a/credential-patterns 0.1.2: prefer the captured value
+  // (group 1) for name-gated patterns whose match[0] is "name = value", and add
+  // a low-entropy floor so name-gated sentinels are not flagged.
+  const value = match[1] ?? match[0];
   if (KNOWN_EXAMPLE_KEYS.has(value)) return true;
   const lower = value.toLowerCase();
   if (PLACEHOLDER_INDICATORS.some(p => lower.includes(p))) return true;
+  // A name-gated value >=20 chars with <=6 distinct characters (0000…,
+  // DEADBEEF…) is a placeholder; a real >=20-char secret never has so few.
+  if (value.length >= 20 && new Set(value).size <= 6) return true;
   if (isLocalhostDemoConnectionString(value)) return true;
   if (isExampleInComment(line)) return true;
   return false;
