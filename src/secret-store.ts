@@ -36,6 +36,17 @@ export class SecretStore {
     this.backend = createBackend(backendType);
   }
 
+  /**
+   * Human-readable name of the active backend (e.g. `local`, `keychain-macos`,
+   * `1password`). Surfaced so commands can disclose WHERE secrets live — the
+   * store is machine-global (one backend per machine config), not per-project.
+   */
+  get backendName(): string {
+    // Unwrap the cache decorator's `cached(<inner>)` name — the in-memory cache
+    // layer is an implementation detail, not a backend the user chose.
+    return this.backend.name.replace(/^cached\((.*)\)$/, '$1');
+  }
+
   /** Store a secret by name. */
   async setSecret(name: string, value: string): Promise<void> {
     validateSecretName(name);

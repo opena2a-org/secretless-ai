@@ -111,4 +111,22 @@ describe('SecretStore', () => {
     const mcpResolved = await backend.resolve('mcp');
     expect(Object.keys(mcpResolved)).toHaveLength(0);
   });
+
+  describe('backendName (scope disclosure)', () => {
+    it('exposes the active backend name', () => {
+      expect(store.backendName).toBe('local');
+    });
+
+    it('unwraps the cache decorator so disclosure shows the real backend', () => {
+      const cached = new SecretStore({
+        backend: {
+          name: 'cached(keychain-macos)',
+          resolve: async () => ({}),
+          store: async () => {},
+          delete: async () => false,
+        },
+      });
+      expect(cached.backendName).toBe('keychain-macos');
+    });
+  });
 });

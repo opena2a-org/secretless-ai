@@ -115,8 +115,14 @@ export async function runSecret(args: string[]): Promise<number> {
       const store = new SecretStore();
       try {
         const names = await store.listSecrets();
+        // Scope disclosure: the store is machine-global (one backend per machine
+        // config), not project-scoped — running `secret list` in any directory
+        // shows the same secrets. Say so, and name the backend, so a user is
+        // never unsure whether they are looking at project or global state.
+        const scopeNote = `  Scope: global (${store.backendName} backend) — shared across all projects on this machine`;
         if (names.length === 0) {
           console.log('\n  No secrets stored.');
+          console.log(scopeNote);
           console.log(`  Store one:    ${CLI} secret set MY_KEY=my_value`);
           console.log(`  Import .env:  ${CLI} import .env\n`);
           return 0;
@@ -125,6 +131,8 @@ export async function runSecret(args: string[]): Promise<number> {
         for (const n of names) {
           console.log(`    ${n}`);
         }
+        console.log();
+        console.log(scopeNote);
         console.log();
         return 0;
       } catch (err) {
