@@ -17,7 +17,7 @@
  */
 
 import * as crypto from 'crypto';
-import type { ResolutionContext } from '../atx';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { ResourceBinding } from './types';
 
 /**

@@ -14,7 +14,7 @@
  * about policy internals or backend topology. Diagnostic detail goes to the audit log.
  */
 
-import type { Atx, AtxVerifier } from './atx';
+import type { Atx, AtxVerifier } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { GrantPolicy } from './grant-policy';
 import type { ProviderRegistry } from './cpi/types';
 import type { AgentOperation, EphemeralWorker, OperationResult } from './worker';

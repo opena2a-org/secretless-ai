@@ -11,7 +11,7 @@
  * appearing in this file would be a bug against AAP Principle 4.
  */
 
-import type { ResolutionContext } from '../atx';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { CredentialProvider, CpiMode, ResourceBinding, ScopedCredential } from './types';
 import { mintBrokerAssertion, type BrokerSigningKey } from './assertion';
 

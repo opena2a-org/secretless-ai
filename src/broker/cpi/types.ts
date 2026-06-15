@@ -15,7 +15,7 @@
  * type here (AAP Principle 4) — vendor specifics live only in a provider adapter.
  */
 
-import type { ResolutionContext } from '../atx';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 
 export type CpiMode = 'retrieve' | 'assume' | 'exchange';
 

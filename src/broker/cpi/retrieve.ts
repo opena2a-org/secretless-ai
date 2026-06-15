@@ -13,7 +13,7 @@
  * SHOULD wrap the existing resolver/backends rather than re-fetch secrets.
  */
 
-import type { ResolutionContext } from '../atx';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { CredentialProvider, CpiMode, ResourceBinding, ScopedCredential } from './types';
 
 export class RetrieveProvider implements CredentialProvider {
