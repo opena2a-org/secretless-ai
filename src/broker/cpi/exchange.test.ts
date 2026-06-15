@@ -10,7 +10,7 @@ import {
 } from './exchange';
 import { createOktaExchangeProvider } from './okta-adapter';
 import { generateBrokerSigningKey, mintBrokerAssertion, brokerPublicJwk } from './assertion';
-import type { ResolutionContext } from '../atx';
+import type { ResolutionContext } from '@opena2a/atx-verify';
 import type { ResourceBinding } from './types';
 
 const CTX: ResolutionContext = {

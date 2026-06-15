@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { GrantPolicy, type GrantBinding } from './grant-policy';
-import type { ResolutionContext } from './atx';
+import type { ResolutionContext } from '@opena2a/atx-verify';
 
 const CTX: ResolutionContext = {
   agentId: 'aim_orders_reader',

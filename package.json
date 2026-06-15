@@ -54,9 +54,9 @@
     "@opena2a/aim-core": ">=0.2.0"
   },
   "dependencies": {
+    "@opena2a/atx-verify": "0.2.0",
     "@opena2a/cli-ui": "0.4.0",
     "@opena2a/credential-patterns": "0.1.2",
-    "@opena2a/telemetry": "0.1.2",
-    "canonicalize": "2.1.0"
+    "@opena2a/telemetry": "0.1.2"
   }
 }

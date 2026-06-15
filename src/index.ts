@@ -85,9 +85,10 @@ export {
   isGrantRef, parseGrantRef, buildGrantRef, GRANT_SCHEME, type GrantRef,
 } from './grant';
 
-// AAP (Agent Authorization Protocol) — verifier, grant policy, CPI providers, resolver
+// AAP (Agent Authorization Protocol) — grant policy, CPI providers, resolver.
+// The ATX verifier values live in @opena2a/atx-verify (import them from there);
+// only their types are re-exported here, via ./broker.
 export {
-  LocalAtxVerifier, canonicalPayload, normalizeRfc3339, SUPPORTED_ATX_VERSION,
   GrantPolicy, EphemeralWorker, HttpsDownstreamCaller, GrantResolver,
   ExchangeProvider, HttpsTokenExchangeTransport, createOktaExchangeProvider,
   MapProviderRegistry, mintBrokerAssertion, generateBrokerSigningKey, brokerPublicJwk,

@@ -12,7 +12,7 @@
  * mode, scope, and ttl. Default-deny: no matching binding ⇒ denied (AAP §3.4).
  */
 
-import type { ResolutionContext } from './atx';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { ResourceBinding } from './cpi/types';
 
 export interface GrantMatch {

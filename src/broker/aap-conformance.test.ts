@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as crypto from 'crypto';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -20,7 +21,7 @@ import * as path from 'path';
 
 import { BrokerServer } from './server';
 import { GrantResolver } from './grant-resolver';
-import { LocalAtxVerifier } from './atx';
+import { LocalAtxVerifier, canonicalPayload, type Atx, type AtxTrustAnchors } from '@opena2a/atx-verify';
 import { GrantPolicy, type GrantBinding } from './grant-policy';
 import { MapProviderRegistry } from './cpi/registry';
 import { createOktaExchangeProvider } from './cpi/okta-adapter';
@@ -29,7 +30,59 @@ import { EphemeralWorker, type DownstreamCaller, type AgentOperation, type Opera
 import { AuditLogger } from './audit';
 import type { ScopedCredential } from './cpi/types';
 import type { TokenExchangeRequest, TokenExchangeResponse, TokenExchangeTransport } from './cpi/exchange';
-import { makeSignedAtx, makeTrustAnchors } from './atx.test';
+
+// AAP test fixtures. Previously shared from broker/atx.test.ts; that file was
+// deleted when the verifier moved to @opena2a/atx-verify (which carries its own
+// tests). This conformance test is the sole remaining consumer, so the fixtures
+// live inline here. Confined to a *.test.ts file, so they never ship in dist.
+const TEST_ISSUER = 'did:opena2a:authority:opena2a.org';
+const TEST_CLOCK = new Date('2026-06-01T12:00:00Z');
+
+function makeKeypair(): { privateKey: crypto.KeyObject; pubHex: string } {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const jwk = publicKey.export({ format: 'jwk' }) as { x: string };
+  const pubHex = Buffer.from(jwk.x, 'base64url').toString('hex');
+  return { privateKey, pubHex };
+}
+
+/** Build a valid, Ed25519-signed ATX (and the matching public key hex). */
+function makeSignedAtx(overrides: Partial<Atx> = {}): { atx: Atx; pubHex: string } {
+  const { privateKey, pubHex } = makeKeypair();
+  const base: Atx = {
+    atcVersion: '1.0',
+    agentId: 'aim_orders_reader',
+    agentDid: 'did:opena2a:agent:acme/orders-reader',
+    version: '1.0.0',
+    contentHash: 'sha256:abc123',
+    buildAttestation: 'sha256:def456',
+    issuerDid: TEST_ISSUER,
+    issuerChain: [TEST_ISSUER],
+    trustLevel: 4,
+    trustScore: 0.95,
+    issuedAt: '2026-05-25T00:00:00Z',
+    expiresAt: '2026-06-08T00:00:00Z',
+    capabilities: ['orders:read'],
+    scanSummary: { oasbLevel: 'L2' },
+    signatures: [],
+    ...overrides,
+  };
+  const sig = crypto.sign(null, canonicalPayload(base), privateKey);
+  base.signatures = [{ keyId: 'test#ed25519', algorithm: 'Ed25519', value: sig.toString('base64') }];
+  return { atx: base, pubHex };
+}
+
+function makeTrustAnchors(
+  pubHex: string,
+  extra: Partial<AtxTrustAnchors> = {},
+): AtxTrustAnchors {
+  return {
+    trustedIssuers: [TEST_ISSUER],
+    publicKeys: [{ algorithm: 'Ed25519', publicKeyHex: pubHex }],
+    crl: { entries: [] },
+    now: () => TEST_CLOCK,
+    ...extra,
+  };
+}
 
 // The two things that must never reach the agent context.
 const SCOPED_TOKEN = 'SCOPED-DOWNSTREAM-TOKEN-must-not-leak';

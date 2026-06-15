@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The ATX (Agent Trust eXtension) verifier now comes from `@opena2a/atx-verify` instead of a copy bundled in the broker.** The verifier was previously maintained as `src/broker/atx.ts` here *and* in the AIM SDK — two copies of byte-sensitive canonicalization (RFC 8785 JCS) that had to stay in lockstep with the Go/Python reference verifiers. It is now the single, separately-tested, SLSA-attested `@opena2a/atx-verify` package (consumed by both), closing that drift window. The broker's behavior is unchanged: the same Ed25519 verification over the same v1.0/v1.1 canonical payloads, proven by the AAP conformance test running against the package.
+
+### Removed (breaking — library surface only; CLI unaffected)
+- **`secretless-ai` no longer re-exports the ATX verifier *values* `LocalAtxVerifier`, `canonicalPayload`, `normalizeRfc3339`, and `SUPPORTED_ATX_VERSION`.** Import them from `@opena2a/atx-verify` directly (a CommonJS package cannot statically re-export the ESM-only verifier's values). The ATX *types* (`Atx`, `AtxVerifier`, `ResolutionContext`, `AtxTrustAnchors`, etc.) are still re-exported, since they appear in secretless's own public broker types. No CLI command or behavior changes.
+
 ## [0.18.2] - 2026-06-01
 
 ### Fixed

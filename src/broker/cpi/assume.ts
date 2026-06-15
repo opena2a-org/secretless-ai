@@ -11,7 +11,7 @@
  * and calls the STS AssumeRole-with-web-identity equivalent, returning a ScopedCredential.
  */
 
-import type { ResolutionContext } from '../atx';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { CredentialProvider, CpiMode, ResourceBinding, ScopedCredential } from './types';
 
 export class AssumeProvider implements CredentialProvider {
