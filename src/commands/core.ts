@@ -405,6 +405,12 @@ export function runStatus(projectDir: string): number {
 export function runVerify(projectDir: string, showAll = false): number {
   console.log(`\n  ${c.boldWhite('Secretless Verify')}\n`);
 
+  // Scope disclosure: verify spans more than the current project — it reads the
+  // current shell's env vars (process-global) and your global AI config under
+  // ~/.claude, not just files in this directory. State that so a green PASS is
+  // never mistaken for "this project only".
+  console.log(`  ${c.dim('Scope: this project + global AI config (~/.claude) + current-shell env vars')}\n`);
+
   const result = verify(projectDir);
 
   // Show env var availability
