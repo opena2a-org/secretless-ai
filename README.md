@@ -243,6 +243,7 @@ Security issues: `security@opena2a.org` (coordinated disclosure, response within
 - [Demos](https://opena2a.org/demos)
 - [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
 - [Credential patterns library](https://www.npmjs.com/package/@opena2a/credential-patterns)
+- [aicomply](https://github.com/opena2a-org/aicomply) — inline PII and credential classification for agent I/O at runtime, the complement to protecting credentials at rest
 
 Part of the [OpenA2A](https://opena2a.org) security platform.
 
