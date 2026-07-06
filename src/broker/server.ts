@@ -388,6 +388,30 @@ export class BrokerServer {
     }
 
     this.readBody(req).then(async (body) => {
+      // Strict-parse the raw body before JSON.parse can collapse it: the grant
+      // request carries the signed ATX credential verbatim, and every member of
+      // the body (agentId, grant, atx, operation) feeds an authorization
+      // decision, so there is no layer with sanctioned RFC 8259 §4 last-wins
+      // semantics. A duplicate member at any depth — exact-name or a
+      // fold-colliding case variant — refuses the request. Dynamic import:
+      // @opena2a/atx-verify is ESM-only and this package is CJS (same pattern
+      // as the cli-ui/telemetry consumers in src/cli.ts).
+      try {
+        const { firstDuplicateMember } = await import('@opena2a/atx-verify');
+        const dup = firstDuplicateMember(body);
+        if (dup !== null) {
+          this.sendJson(res, 400, {
+            error: `Duplicate member "${dup}" in request body (duplicate JSON names are parser-divergent and refused)`,
+          });
+          return;
+        }
+      } catch {
+        // StrictParseError: body is not a single well-formed JSON value. Same
+        // rejection parseGrantResolveInput would produce — fail closed here.
+        this.sendJson(res, 400, { error: 'Invalid JSON' });
+        return;
+      }
+
       let input: GrantResolveInput;
       try {
         input = parseGrantResolveInput(body);
