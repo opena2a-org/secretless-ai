@@ -119,7 +119,13 @@ export class GrantResolver {
         audit('denied', `provider does not support mode ${binding.resolve.mode}`, binding.grant);
         return DENIED;
       }
-      const cred = await provider.resolve(ctx, binding.resolve);
+      // The trust class comes from the MATCHED policy clause: the broker assertion's
+      // trust_class claim carries the abstract ATX capability (AAP-SPEC §4.2), not the
+      // downstream scope the binding resolves to.
+      const cred = await provider.resolve(ctx, {
+        ...binding.resolve,
+        trustClass: binding.match.trustClass,
+      });
 
       // 5. Run the operation in an ephemeral worker. Only the result crosses back.
       const result = await this.deps.worker.run(binding.resolve, cred, input.operation);

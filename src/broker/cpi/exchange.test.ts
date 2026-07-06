@@ -30,6 +30,7 @@ const BINDING: ResourceBinding = {
   scope: 'orders.read',
   audience: 'https://api.orders.internal',
   ttlSeconds: 300,
+  trustClass: 'orders:read',
 };
 
 /** Records the request and returns a canned scoped token. */
@@ -55,6 +56,9 @@ describe('broker assertion (AAP §11)', () => {
       sub: CTX.agentDid,
       aud: BINDING.audience,
       scope: BINDING.scope,
+      // trust_class is the abstract ATX capability, NOT the downstream scope
+      // (AAP-SPEC §4.2; regression for the scope/trust-class conflation).
+      trust_class: 'orders:read',
       trust_level: 4,
       issuer_chain: CTX.issuerChain,
       iat: 1_000_000,
@@ -65,6 +69,25 @@ describe('broker assertion (AAP §11)', () => {
     const pub = crypto.createPublicKey(key.privateKey);
     const ok = crypto.verify(null, Buffer.from(`${h}.${p}`), pub, Buffer.from(s, 'base64url'));
     expect(ok).toBe(true);
+  });
+
+  it('falls back to the scope for direct callers that do not set trustClass', () => {
+    const key = generateBrokerSigningKey('https://broker.acme.example', 'broker-key-1');
+    const { trustClass: _omitted, ...legacyBinding } = BINDING;
+    const jwt = mintBrokerAssertion(CTX, legacyBinding, key, 1_000_000);
+    const claims = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString('utf-8'));
+    expect(claims.trust_class).toBe('orders.read');
+  });
+
+  it('accepts an injected jti for deterministic fixtures and defaults to 16 random bytes hex', () => {
+    const key = generateBrokerSigningKey('https://broker.acme.example', 'broker-key-1');
+    const fixed = '9f8e7d6c5b4a39281706f5e4d3c2b1a0';
+    const pinned = mintBrokerAssertion(CTX, BINDING, key, 1_000_000, fixed);
+    expect(JSON.parse(Buffer.from(pinned.split('.')[1], 'base64url').toString('utf-8')).jti).toBe(fixed);
+
+    const defaulted = mintBrokerAssertion(CTX, BINDING, key, 1_000_000);
+    const jti = JSON.parse(Buffer.from(defaulted.split('.')[1], 'base64url').toString('utf-8')).jti;
+    expect(jti).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('publishes a JWK with kid for the discovery document', () => {

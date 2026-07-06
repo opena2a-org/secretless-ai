@@ -48,13 +48,15 @@ function base64url(input: Buffer | string): string {
  * Mint a broker assertion (compact EdDSA JWT) from a verified-ATX context and a binding.
  *
  * Claims are derived ONLY from the verified ATX and the local binding — never from
- * agent-supplied input. `nowSeconds` is injectable for deterministic tests.
+ * agent-supplied input. `nowSeconds` and `jti` are injectable for deterministic tests
+ * and fixture generation (AAP-SPEC §9.7); the defaults are the production behavior.
  */
 export function mintBrokerAssertion(
   ctx: ResolutionContext,
   binding: ResourceBinding,
   key: BrokerSigningKey,
   nowSeconds: number = Math.floor(Date.now() / 1000),
+  jti: string = crypto.randomBytes(16).toString('hex'),
 ): string {
   const header = { alg: 'EdDSA', typ: 'JWT', kid: key.kid };
   const claims = {
@@ -63,12 +65,15 @@ export function mintBrokerAssertion(
     aud: binding.audience,
     scope: binding.scope,
     // Federation attributes carried for v2 cross-broker verification (AAP §7, §11).
-    trust_class: binding.scope,
+    // trust_class is the abstract ATX capability from the matched policy clause
+    // (AAP-SPEC §4.2), injected by the grant resolver; the scope fallback preserves
+    // behavior for direct callers that predate the trustClass field.
+    trust_class: binding.trustClass ?? binding.scope,
     issuer_chain: ctx.issuerChain,
     trust_level: ctx.trustLevel,
     iat: nowSeconds,
     exp: nowSeconds + binding.ttlSeconds,
-    jti: crypto.randomBytes(16).toString('hex'),
+    jti,
   };
   const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;
   const signature = crypto.sign(null, Buffer.from(signingInput), key.privateKey);
