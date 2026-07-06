@@ -115,7 +115,9 @@ function brokerPost(
   body: unknown,
 ): Promise<{ status: number; text: string; json: any }> {
   return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body);
+    // A string body is sent verbatim (raw-wire tests: duplicate-member smuggles
+    // must reach the broker byte-exact; JSON.stringify would collapse them).
+    const data = typeof body === 'string' ? body : JSON.stringify(body);
     const req = http.request(
       {
         socketPath,
@@ -321,6 +323,34 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     expect(res.status).toBe(403);
     expect(res.json).toEqual({ error: 'denied' });
     expect(ordersApi.sawAuthorization).toBeUndefined();
+  });
+
+  it('refuses a grant body carrying a duplicate-member smuggle inside the ATX', async () => {
+    const atx = (globalThis as any).__aapTestAtx;
+    const agentRequest = {
+      agentId: 'aim_orders_reader',
+      atx,
+      grant: 'grant://orders-db',
+      operation: { method: 'GET', path: '/orders', query: { customer: 'c-123' } },
+    };
+    // Inject a fold-colliding decoy BEFORE the signed trustLevel, byte-level:
+    // JSON.parse is last-wins, so without the raw strict parse the broker would
+    // see only the signed value and verify a credential whose bytes mean
+    // something else to a case-insensitive first-wins consumer (the RFC 8259
+    // §4 divergence the atx-conformance suite pins).
+    const rawBody = JSON.stringify(agentRequest).replace('"trustLevel":', '"TRUSTLEVEL":9,"trustLevel":');
+    expect(rawBody).toContain('"TRUSTLEVEL":9'); // the smuggle really is in the bytes
+
+    const res = await brokerPost(socketPath, '/grant', brokerToken, rawBody);
+
+    expect(res.status).toBe(400);
+    // The scan reports the SECOND colliding name (the signed trustLevel; the
+    // decoy TRUSTLEVEL came first) — same convention as the Go/Java verifiers.
+    expect(res.json.error).toContain('Duplicate member "trustLevel"');
+    // And the same request WITHOUT the smuggle still resolves, so the strict
+    // parse is the only thing standing between the two outcomes.
+    const clean = await brokerPost(socketPath, '/grant', brokerToken, agentRequest);
+    expect(clean.status).toBe(200);
   });
 
   it('rejects an unauthenticated caller', async () => {
