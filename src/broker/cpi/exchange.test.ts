@@ -71,12 +71,10 @@ describe('broker assertion (AAP §11)', () => {
     expect(ok).toBe(true);
   });
 
-  it('falls back to the scope for direct callers that do not set trustClass', () => {
+  it('refuses to mint without a trustClass (never a scope-shaped trust_class claim)', () => {
     const key = generateBrokerSigningKey('https://broker.acme.example', 'broker-key-1');
     const { trustClass: _omitted, ...legacyBinding } = BINDING;
-    const jwt = mintBrokerAssertion(CTX, legacyBinding, key, 1_000_000);
-    const claims = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString('utf-8'));
-    expect(claims.trust_class).toBe('orders.read');
+    expect(() => mintBrokerAssertion(CTX, legacyBinding, key, 1_000_000)).toThrow(/trustClass/);
   });
 
   it('accepts an injected jti for deterministic fixtures and defaults to 16 random bytes hex', () => {

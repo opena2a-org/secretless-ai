@@ -58,6 +58,16 @@ export function mintBrokerAssertion(
   nowSeconds: number = Math.floor(Date.now() / 1000),
   jti: string = crypto.randomBytes(16).toString('hex'),
 ): string {
+  // trust_class is the abstract ATX capability from the matched policy clause
+  // (AAP-SPEC §4.2), injected by the grant resolver. Refuse to mint without it:
+  // a scope-shaped trust_class fails the pinned claim schema, and silently
+  // minting a non-conformant token is worse than failing loudly here.
+  if (!binding.trustClass) {
+    throw new Error(
+      'mintBrokerAssertion: binding.trustClass is required (AAP-SPEC §4.2); ' +
+        'the grant resolver injects it from the matched policy clause',
+    );
+  }
   const header = { alg: 'EdDSA', typ: 'JWT', kid: key.kid };
   const claims = {
     iss: key.issuer,
@@ -65,10 +75,7 @@ export function mintBrokerAssertion(
     aud: binding.audience,
     scope: binding.scope,
     // Federation attributes carried for v2 cross-broker verification (AAP §7, §11).
-    // trust_class is the abstract ATX capability from the matched policy clause
-    // (AAP-SPEC §4.2), injected by the grant resolver; the scope fallback preserves
-    // behavior for direct callers that predate the trustClass field.
-    trust_class: binding.trustClass ?? binding.scope,
+    trust_class: binding.trustClass,
     issuer_chain: ctx.issuerChain,
     trust_level: ctx.trustLevel,
     iat: nowSeconds,
