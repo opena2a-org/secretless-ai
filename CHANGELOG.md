@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The broker assertion's `trust_class` claim now carries the abstract ATX trust class (e.g. `orders:read`) from the matched policy clause instead of duplicating the downstream `scope` (e.g. `orders.read`).** The two were conflated at minting, against the AAP broker profile §11 federation semantics — a v2 peer broker verifying the assertion needs the portable capability, not a deployment-local scope name. The grant resolver now injects the matched trust class into the resource binding (`ResourceBinding.trustClass`, resolver-populated, never authored in configuration); `mintBrokerAssertion` now throws if the field is missing rather than silently minting a token the pinned claim schema rejects (breaking only for direct library callers; the wired daemon path always injects). Regression-tested at the unit and end-to-end (conformance) layers. Pinned normatively by AAP-SPEC 0.3 §4.2.
+
+### Added
+- `mintBrokerAssertion` accepts an injectable `jti` (defaults to the existing 16-random-bytes-hex behavior) so conformance fixtures can be minted deterministically (AAP-SPEC §9.7).
+
 ### Changed
 - **The ATX (Agent Trust eXtension) verifier now comes from `@opena2a/atx-verify` instead of a copy bundled in the broker.** The verifier was previously maintained as `src/broker/atx.ts` here *and* in the AIM SDK — two copies of byte-sensitive canonicalization (RFC 8785 JCS) that had to stay in lockstep with the Go/Python reference verifiers. It is now the single, separately-tested, SLSA-attested `@opena2a/atx-verify` package (consumed by both), closing that drift window. The broker's behavior is unchanged: the same Ed25519 verification over the same v1.0/v1.1 canonical payloads, proven by the AAP conformance test running against the package.
 

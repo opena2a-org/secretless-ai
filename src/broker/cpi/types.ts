@@ -35,6 +35,14 @@ export interface ResourceBinding {
   audience: string;
   /** Lifetime of the minted/scoped credential in seconds. */
   ttlSeconds: number;
+  /**
+   * Trust class (ATX capability, e.g. "orders:read") the grant was matched under.
+   * Injected by the grant resolver from the policy clause's match predicate — never
+   * authored in configuration, so a binding does not duplicate its match clause. It is
+   * carried into the broker assertion's `trust_class` claim (AAP-SPEC §4.2): the claim
+   * is the abstract, portable capability, distinct from the downstream `scope`.
+   */
+  trustClass?: string;
 }
 
 /**

@@ -234,6 +234,16 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     // ...and the RFC 8693 exchange DID happen against the (configured) Okta endpoint.
     expect(idp.last?.tokenEndpoint).toBe(OKTA_ENDPOINT);
 
+    // The minted broker assertion carries the abstract ATX trust class from the matched
+    // policy clause, not the downstream scope (AAP-SPEC §4.2; end-to-end regression for
+    // the scope/trust-class conflation).
+    const subjectToken = idp.last?.params.subject_token ?? '';
+    const assertionClaims = JSON.parse(
+      Buffer.from(subjectToken.split('.')[1], 'base64url').toString('utf-8'),
+    );
+    expect(assertionClaims.trust_class).toBe('orders:read');
+    expect(assertionClaims.scope).toBe('orders.read');
+
     // THE INVARIANT: the agent-visible surface (what it sent + what it received) contains
     // neither the credential nor any backend identifier.
     const agentVisible = JSON.stringify(agentRequest) + res.text;
