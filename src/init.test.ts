@@ -267,6 +267,18 @@ describe('init', () => {
       }
     });
 
+    // Fail CLOSED: a command whose value contains a lone surrogate made the old
+    // `sys.stdout.write` raise (swallowed -> empty COMMAND -> every guard
+    // skipped). surrogatepass + a grep fallback on empty output keep the secret
+    // read visible. Works on both the python and grep paths, so not gated.
+    it('a lone surrogate in the command does not fail the guard open', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      // '\uD800' is a lone high surrogate — valid in a JSON string, unencodable
+      // as strict UTF-8.
+      expect(runHookCmd(hookPath, 'cat .env \uD800'), 'expected BLOCK despite lone surrogate').toBe(true);
+    });
+
     // `env` as a whole subcommand terminated by `)` (in `$(secretless-ai env)`),
     // `;`, `|`, or a quote — but `environment` must not match.
     it('env subcommand is caught at non-identifier boundaries, not in "environment"', () => {
@@ -288,8 +300,12 @@ describe('init', () => {
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
       expect(runHookCmd(hookPath, 'secretless-ai vault exec myns -- env')).toBe(true);
       expect(runHookCmd(hookPath, 'secretless-ai vault exec myns -- printenv')).toBe(true);
-      // Legitimate vault exec of a real program must still pass.
+      // Legitimate vault exec of a real program must still pass — including
+      // env-PREFIXED programs (the word boundary keeps `env` whole so `envsubst`
+      // and `environment-check` are not caught). Same boundary on the run arm.
       expect(runHookCmd(hookPath, 'secretless-ai vault exec myns -- curl https://api.example.com')).toBe(false);
+      expect(runHookCmd(hookPath, 'secretless-ai vault exec myns -- envsubst tpl.conf')).toBe(false);
+      expect(runHookCmd(hookPath, 'secretless-ai run --only X -- envsubst tpl.conf')).toBe(false);
     });
   });
 
