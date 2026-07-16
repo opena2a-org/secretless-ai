@@ -9,13 +9,38 @@ npm install -g secretless-ai
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.19.1] - 2026-07-16
+## [Unreleased]
+
+### Added
+- **Post-quantum broker assertions (AAP-SPEC 0.4 §8.2/§9.3/§9.4/§9.5, RFC 9964).**
+  The broker now mints ML-DSA-65 (FIPS 204) assertions on two new paths:
+  `mintBrokerAssertionMlDsa65` (compact `ML-DSA-65` JWT, the PQ-interop lane)
+  and `mintHybridBrokerAssertion` (hybrid Ed25519 + ML-DSA-65 as JWS General
+  JSON Serialization — one signature entry per suite over the same payload; a
+  conformant verifier accepts only if every declared entry verifies and both
+  suite families are present). New key surface: `generateBrokerPqcSigningKey`
+  (seed-injectable, the FIPS 204 xi / RFC 9964 AKP `priv` form) and
+  `brokerPublicAkpJwk` (RFC 9964 `AKP` public JWK for the discovery document).
+  Signing is hedged by default and deterministic on request
+  (`PqcMintOptions.deterministic`, required for byte-exact fixtures); tests
+  prove sha256 byte-parity with the AAP spec repo's published fixtures across
+  three independent FIPS 204 implementations. The existing compact EdDSA path
+  is byte-for-byte unchanged. Serialization-profile decision:
+  agent-authorization-protocol `decisions/2026-07-16-mldsa65-serialization-profile.md`.
+
+### Changed
+- **Node engine floor raised from `>=18.0.0` to `>=20.19.0`** — the ML-DSA-65
+  suite loads the ESM-only `@noble/post-quantum` via `require(esm)`, supported
+  since Node 20.19; Node 18 and 20 are both end-of-life. The dependency loads
+  lazily: classical EdDSA minting never touches it, and requesting a PQ mint on
+  an older runtime fails with an actionable error instead of `ERR_REQUIRE_ESM`.
+- New dependency: `@noble/post-quantum` 0.6.1 (exact pin).
 
 ### Security
-- **The generated guard hook now inspects the full command instead of truncating at the first quote (#99).** The hook extracted the Bash command with `grep -o '"command":"[^"]*"'`, which stops at the first `"`. Any command containing a quote — `x="" ; cat .env`, `eval "$(secretless-ai env)"`, `echo ""; secretless-ai secret get X --force` — was truncated before the dangerous part and slipped past every hook guard. The hook now parses the command with `python3`'s JSON reader when available (falling back to the old grep only where python3 is absent, so it is never worse than before). The `env` subcommand match also gained a proper word boundary, so it catches `$(secretless-ai env)` (terminated by `)`), `env;`, and `env|` while still ignoring the word `environment`. The native `permissions.deny` rules already enforced these at the Claude Code layer; this restores the guard hook as a real second layer rather than one a single quote walks through.
-- **`secretless-ai vault exec <ns> -- env` / `-- printenv` is now blocked (#99).** `vault exec` injects an identity-vault namespace credential into the child process, which `env`/`printenv` would then print — the same shape as the already-denied `run -- env`, but it had no deny rule or hook arm. Added `Bash(*secretless-ai vault exec*-- env*)` / `-- printenv*` deny rules and a matching hook arm.
+- **The generated guard hook now inspects the full command instead of truncating at the first quote (#99).** The hook extracted the Bash command with `grep -o '"command":"[^"]*"'`, which stops at the first `"`. Any command containing a quote — `x="" ; cat .env`, `eval "$(secretless-ai env)"`, `echo ""; secretless-ai secret get X --force` — was truncated before the dangerous part and slipped past every hook guard. The hook now parses the command with `python3`'s JSON reader when available, and **fails closed**: on any extraction failure or empty output it falls back to the grep extraction rather than skipping guards. The `env` subcommand match also gained a proper word boundary, so it catches `$(secretless-ai env)` (terminated by `)`), `env;`, and `env|` while still ignoring the word `environment`. The native `permissions.deny` rules already enforced these at the Claude Code layer; this restores the guard hook as a real second layer rather than one a single quote walks through.
+- **`secretless-ai vault exec <ns> -- env` / `-- printenv` is now blocked (#99).** `vault exec` injects an identity-vault namespace credential into the child process, which `env`/`printenv` would then print — the same shape as the already-denied `run -- env`, but it had no deny rule or hook arm. Added `Bash(*secretless-ai vault exec*-- env*)` / `-- printenv*` deny rules and a matching hook arm, with a word boundary so `-- envsubst` (a legit templating program) is not over-blocked.
 
-These harden the best-effort Claude Code layers that back the primary tool-level `env` gate shipped in 0.19.0. Re-run `secretless-ai init` to regenerate the hook and deny rules. Two honest notes on the heuristic hook layer, both adversarially reviewed: (1) now that the full command is inspected, a benign command that merely *mentions* a secret-file path inside a quoted string (e.g. `git commit -m "fix cat .env parsing"`) is also flagged — this is safe-direction (it blocks, never leaks) and recoverable by rephrasing, and is the deliberate trade-off of not truncating; (2) command-string matching stays heuristic (e.g. a path-prefixed `-- /usr/bin/env` is not matched). The tool-level agent-runtime gate on `env` is the enforcing layer; the hook is defense-in-depth. On extraction failure the hook fails closed (falls back to grep rather than skipping guards).
+These harden the best-effort Claude Code layers that back the primary tool-level `env` gate shipped in 0.19.0. Re-run `secretless-ai init` to regenerate the hook and deny rules. Two honest, adversarially-reviewed notes on the heuristic hook layer: (1) now that the full command is inspected, a benign command that merely *mentions* a secret-file path inside a quoted string (e.g. `git commit -m "fix cat .env parsing"`) is also flagged — safe-direction (it blocks, never leaks), recoverable by rephrasing, and the deliberate trade-off of not truncating; (2) command-string matching stays heuristic (e.g. a path-prefixed `-- /usr/bin/env` is not matched). The tool-level agent-runtime gate on `env` is the enforcing layer; the hook is defense-in-depth.
 
 ## [0.19.0] - 2026-07-16
 

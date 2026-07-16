@@ -48,7 +48,7 @@ npx secretless-ai init          # run once, no install
 npm install -g secretless-ai    # install globally
 ```
 
-Requires Node.js 18 or later.
+Requires Node.js 20.19 or later.
 
 ### Homebrew
 
