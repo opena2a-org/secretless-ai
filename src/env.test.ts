@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER, isValidShellIdentifier } from './env';
+import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER, isValidShellIdentifier, detectAgentRuntime } from './env';
 import type { WritableSecretBackend } from './backends/types';
 
 function createMockBackend(secrets: Record<string, string>): WritableSecretBackend {
@@ -116,5 +116,22 @@ describe('SHELL_HOOK_MARKER', () => {
   it('is a comment line', () => {
     expect(SHELL_HOOK_MARKER).toMatch(/^#/);
     expect(SHELL_HOOK_MARKER).toContain('secretless-ai');
+  });
+});
+
+describe('detectAgentRuntime', () => {
+  it('returns the marker name when a known agent runtime var is set', () => {
+    expect(detectAgentRuntime({ CLAUDECODE: '1' })).toBe('CLAUDECODE');
+    expect(detectAgentRuntime({ CLAUDE_CODE_ENTRYPOINT: 'cli' })).toBe('CLAUDE_CODE_ENTRYPOINT');
+    expect(detectAgentRuntime({ CURSOR_TRACE_ID: 'abc' })).toBe('CURSOR_TRACE_ID');
+    expect(detectAgentRuntime({ AIDER_MODEL: 'gpt' })).toBe('AIDER_MODEL');
+  });
+
+  it('returns null in a plain (human) shell with no agent markers', () => {
+    expect(detectAgentRuntime({ HOME: '/home/x', PATH: '/usr/bin', TERM: 'xterm' })).toBeNull();
+  });
+
+  it('treats an empty-string marker as unset (not an agent)', () => {
+    expect(detectAgentRuntime({ CLAUDECODE: '' })).toBeNull();
   });
 });

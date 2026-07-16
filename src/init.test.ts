@@ -162,6 +162,65 @@ describe('init', () => {
     });
   });
 
+  // Release-test 2026-07-16 P1: `secretless-ai env` prints every stored secret as
+  // plaintext export statements. `secret get` is TTY-guarded and `run -- env` was
+  // already denied, but the direct `env` command had neither a deny rule nor a
+  // guard-hook arm — an agent inside a "protected" project could exfiltrate the
+  // entire machine-global store with one documented command. Both generated
+  // layers must block it. (The command stays available to the user's shell
+  // profile eval hook, which never executes through the agent.)
+  describe('agent cannot dump the store via `secretless-ai env`', () => {
+    function runHookCmd(hookPath: string, command: string): boolean {
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    it('deny rules include the env store-dump rule', () => {
+      init(dir);
+      const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+      expect(settings.permissions.deny).toContain('Bash(*secretless-ai env*)');
+    });
+
+    it('generated hook blocks env dump forms and allows legitimate commands', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
+        'secretless-ai env',
+        'secretless-ai env --only STRIPE_SECRET_KEY',
+        'npx secretless-ai env',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+
+      const mustAllow = [
+        'secretless-ai run --only STRIPE_SECRET_KEY -- node app.js',
+        'secretless-ai verify',
+        'secretless-ai scan .',
+        'secretless-ai secret list',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    // The Bash branch of the hook was entirely dead before the release-test fix:
+    // every Bash command died at the FILE_PATH extraction under `set -euo
+    // pipefail` (grep found no file_path, returned non-zero) before reaching any
+    // command guard. This asserts the branch is now REACHABLE — a pre-existing
+    // guard (`cat .env`) must fire, and a benign command must exit cleanly. On the
+    // pre-fix hook, `runHookCmd` throws because the script exits non-zero.
+    it('Bash branch is reachable: pre-existing file-read guard fires, benign command exits 0', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      expect(runHookCmd(hookPath, 'cat .env'), 'expected hook to BLOCK `cat .env`').toBe(true);
+      expect(runHookCmd(hookPath, 'ls -la'), 'expected hook to ALLOW `ls -la`').toBe(false);
+    });
+  });
+
   // Older `init` was additive-only: it appended new deny rules and only wrote
   // the guard hook when absent. So upgrading the CLI did NOT migrate an existing
   // `.claude/settings.json` — the broad `.env*` glob and a stale hook survived,
