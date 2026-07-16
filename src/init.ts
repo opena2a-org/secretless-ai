@@ -338,6 +338,11 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     // Block secretless-ai run with env dumping (Issue #6)
     'Bash(*secretless-ai run*-- env*)',
     'Bash(*secretless-ai run*-- printenv*)',
+    // Block secretless-ai vault exec with env dumping — same shape as `run --
+    // env` but for the identity vault: it injects a namespace credential into
+    // the child, which `env`/`printenv` would then print (issue #99).
+    'Bash(*secretless-ai vault exec*-- env*)',
+    'Bash(*secretless-ai vault exec*-- printenv*)',
     // Block full-store plaintext dump via `secretless-ai env` (release-test
     // 2026-07-16 P1). The command exists for the user's shell-profile eval
     // hook, which never runs through the agent — no agent use is legitimate.
@@ -608,7 +613,32 @@ fi
 
 # For Bash tool, check the command for secret access patterns
 if [ "$TOOL_NAME" = "Bash" ]; then
-  COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  # Extract the command with a real JSON parser when one is available. The old
+  # grep 'command":"[^"]*"' stopped at the FIRST double quote, so any command
+  # containing a quote (\`x="" ; cat .env\`, \`eval "$(secretless-ai env)"\`) was
+  # truncated before the dangerous part and slipped past every guard below.
+  # python3's json module handles the escaping correctly; the grep is only a
+  # fallback for hosts without python3 (there the native permissions.deny rules
+  # remain the enforcing layer). Regression: adressed 2026-07-16 (issue #99).
+  COMMAND=""
+  if command -v python3 >/dev/null 2>&1; then
+    # surrogatepass so a lone surrogate in the command can't raise mid-write and
+    # leave us empty; write bytes so no encoding step can fail.
+    COMMAND=$(printf '%s' "$INPUT" | python3 -c 'import json,sys
+try:
+    ti = (json.load(sys.stdin).get("tool_input") or {})
+    sys.stdout.buffer.write((ti.get("command") or "").encode("utf-8","surrogatepass"))
+except Exception:
+    pass' 2>/dev/null || true)
+  fi
+  # Fail CLOSED: if python is absent OR its extraction produced nothing (parse
+  # error, odd input), fall back to the grep extraction rather than leaving
+  # COMMAND empty — an empty COMMAND would skip every guard below. The grep
+  # truncates at an embedded quote, but a truncated match is still better than no
+  # match, and the native permissions.deny rules remain in front.
+  if [ -z "$COMMAND" ]; then
+    COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  fi
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
   if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*\\.(env|key|pem|p12|pfx)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files"}}'
@@ -639,15 +669,26 @@ if [ "$TOOL_NAME" = "Bash" ]; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked forced secret extraction"}}'
     exit 0
   fi
-  # Block secretless-ai run with env/printenv to dump injected secrets
-  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+run.*--\\s*(env|printenv)'; then
+  # Block secretless-ai run with env/printenv to dump injected secrets. The
+  # trailing boundary keeps env/printenv a whole word so "-- envsubst" (a legit
+  # templating program) is not caught.
+  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+run.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai run"}}'
+    exit 0
+  fi
+  # Block secretless-ai vault exec with env/printenv (same shape as run -- env,
+  # for the identity vault's injected namespace credential).
+  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+vault\\s+exec.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai vault exec"}}'
     exit 0
   fi
   # Block the full-store plaintext dump: secretless-ai env prints every stored
   # secret as export statements. The shell-profile eval hook never runs through
   # the agent, so no agent invocation of it is legitimate.
-  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+env(\\s|$)'; then
+  # \`env\` as a whole subcommand: followed by any non-identifier char (space,
+  # \`)\` in \`$(secretless-ai env)\`, \`;\`, \`|\`, a quote) or end of string — but
+  # NOT a word char, so \`environment\` does not match.
+  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+env([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full secret-store dump via secretless-ai env"}}'
     exit 0
   fi
