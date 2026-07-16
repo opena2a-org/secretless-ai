@@ -16,6 +16,9 @@ export interface SetupOptions extends SecretStoreOptions {
 }
 
 export interface SetupResult {
+  /** Whether a .secretless manifest was found. When false, the counts below
+   *  are vacuous — callers must not render a satisfied/missing tally. */
+  manifestFound: boolean;
   /** Number of secrets newly set during setup. */
   set: number;
   /** Number of secrets that already existed. */
@@ -48,9 +51,9 @@ export async function runSetup(
     process.stderr.write('    DATABASE_URL\n');
     // In check mode, missing manifest is a failure (nothing to verify against)
     if (options?.check) {
-      return { set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: false };
+      return { manifestFound: false, set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: false };
     }
-    return { set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: true };
+    return { manifestFound: false, set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: true };
   }
 
   const check = await checkManifest(dir, options);
@@ -58,6 +61,7 @@ export async function runSetup(
   // Check-only mode: report and exit
   if (options?.check) {
     return {
+      manifestFound: true,
       set: 0,
       existing: check.satisfied.length,
       missing: check.missing.length,
@@ -74,6 +78,7 @@ export async function runSetup(
 
   if (check.missing.length === 0 && check.optional.length === 0) {
     return {
+      manifestFound: true,
       set: 0,
       existing: check.satisfied.length,
       missing: 0,
@@ -121,6 +126,7 @@ export async function runSetup(
   }
 
   return {
+    manifestFound: true,
     set: setCount,
     existing: check.satisfied.length,
     missing: 0,

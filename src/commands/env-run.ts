@@ -146,6 +146,13 @@ export async function runSetupCommand(args: string[]): Promise<number> {
   try {
     const result = await runSetup(dir, { check: checkOnly });
     if (checkOnly) {
+      // No manifest: runSetup already printed the create-a-manifest hint.
+      // Rendering the satisfied/missing tally here would contradict it
+      // ("Missing: 0 required" followed by FAIL — issue #97).
+      if (!result.manifestFound) {
+        console.log('  FAIL: No .secretless manifest to check against.\n');
+        return 1;
+      }
       console.log(`  Satisfied: ${result.existing} secret(s)`);
       console.log(`  Missing:   ${result.missing} required`);
       console.log(`  Optional:  ${result.skipped} not set\n`);
