@@ -221,6 +221,78 @@ describe('init', () => {
     });
   });
 
+  // Issue #99: two guard-hook / deny-rule gaps found by adversarial review of the
+  // env fix. The tool-level agent-runtime gate is the primary enforcement; these
+  // harden the best-effort Claude-layer.
+  describe('guard-hook hardening (#99)', () => {
+    const hasPython3 = (() => {
+      try { execSync('command -v python3', { stdio: 'ignore' }); return true; } catch { return false; }
+    })();
+
+    function runHookCmd(hookPath: string, command: string): boolean {
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    // The old grep `"command":"[^"]*"` truncated at the first embedded quote, so a
+    // command with a quote before the dangerous part evaded every guard. With a
+    // real JSON parser the full command is inspected. Gated on python3 (the robust
+    // path); on a host without it the hook falls back to the truncating grep and
+    // the native deny rules remain the enforcing layer.
+    (hasPython3 ? it : it.skip)('a quote before a secret-read no longer evades the hook', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Each pairs a benign quoted prefix with a real secret-read; pre-fix these
+      // were truncated at the first `"` and allowed.
+      const mustBlock = [
+        'x="" ; cat .env',
+        'eval "$(secretless-ai env)"',
+        'echo ""; secretless-ai secret get X --force',
+        'echo "starting"; cat config.pem',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+
+      // A quote in a genuinely benign command must still be allowed.
+      const mustAllow = [
+        'echo "hello world"',
+        'git commit -m "improve the env parser"',
+        'node -e "console.log(1+1)"',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    // `env` as a whole subcommand terminated by `)` (in `$(secretless-ai env)`),
+    // `;`, `|`, or a quote — but `environment` must not match.
+    it('env subcommand is caught at non-identifier boundaries, not in "environment"', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      expect(runHookCmd(hookPath, 'secretless-ai env;echo done')).toBe(true);
+      expect(runHookCmd(hookPath, 'secretless-ai env|tee dump')).toBe(true);
+      expect(runHookCmd(hookPath, 'echo improve secretless-ai environment')).toBe(false);
+    });
+
+    // vault exec injects a namespace credential into the child; `-- env`/`-- printenv`
+    // would print it. Same shape as the already-denied `run -- env`.
+    it('vault exec -- env/printenv is blocked by deny rule and hook arm', () => {
+      init(dir);
+      const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+      expect(settings.permissions.deny).toContain('Bash(*secretless-ai vault exec*-- env*)');
+      expect(settings.permissions.deny).toContain('Bash(*secretless-ai vault exec*-- printenv*)');
+
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      expect(runHookCmd(hookPath, 'secretless-ai vault exec myns -- env')).toBe(true);
+      expect(runHookCmd(hookPath, 'secretless-ai vault exec myns -- printenv')).toBe(true);
+      // Legitimate vault exec of a real program must still pass.
+      expect(runHookCmd(hookPath, 'secretless-ai vault exec myns -- curl https://api.example.com')).toBe(false);
+    });
+  });
+
   // Older `init` was additive-only: it appended new deny rules and only wrote
   // the guard hook when absent. So upgrading the CLI did NOT migrate an existing
   // `.claude/settings.json` — the broad `.env*` glob and a stale hook survived,
