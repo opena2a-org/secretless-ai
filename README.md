@@ -29,7 +29,7 @@ npx secretless-ai init
     + CLAUDE.md
 
   Modified:
-    ~ .claude/settings.json (added 85 deny patterns)
+    ~ .claude/settings.json (added 86 deny patterns)
 
   Next steps:
     Verify: secretless-ai verify
