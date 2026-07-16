@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an older runtime fails with an actionable error instead of `ERR_REQUIRE_ESM`.
 - New dependency: `@noble/post-quantum` 0.6.1 (exact pin).
 
+> Note: the ML-DSA-65 broker work above is intentionally unreleased. `0.19.1`
+> was published as a hotfix off the `v0.19.0` tag (guard-hook hardening only),
+> so the next release carrying this work must be `0.20.0` (minor), not `0.19.1`.
+
+## [0.19.1] - 2026-07-16
+
 ### Security
 - **The generated guard hook now inspects the full command instead of truncating at the first quote (#99).** The hook extracted the Bash command with `grep -o '"command":"[^"]*"'`, which stops at the first `"`. Any command containing a quote — `x="" ; cat .env`, `eval "$(secretless-ai env)"`, `echo ""; secretless-ai secret get X --force` — was truncated before the dangerous part and slipped past every hook guard. The hook now parses the command with `python3`'s JSON reader when available, and **fails closed**: on any extraction failure or empty output it falls back to the grep extraction rather than skipping guards. The `env` subcommand match also gained a proper word boundary, so it catches `$(secretless-ai env)` (terminated by `)`), `env;`, and `env|` while still ignoring the word `environment`. The native `permissions.deny` rules already enforced these at the Claude Code layer; this restores the guard hook as a real second layer rather than one a single quote walks through.
 - **`secretless-ai vault exec <ns> -- env` / `-- printenv` is now blocked (#99).** `vault exec` injects an identity-vault namespace credential into the child process, which `env`/`printenv` would then print — the same shape as the already-denied `run -- env`, but it had no deny rule or hook arm. Added `Bash(*secretless-ai vault exec*-- env*)` / `-- printenv*` deny rules and a matching hook arm, with a word boundary so `-- envsubst` (a legit templating program) is not over-blocked.
