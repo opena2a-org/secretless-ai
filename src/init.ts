@@ -338,6 +338,10 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     // Block secretless-ai run with env dumping (Issue #6)
     'Bash(*secretless-ai run*-- env*)',
     'Bash(*secretless-ai run*-- printenv*)',
+    // Block full-store plaintext dump via `secretless-ai env` (release-test
+    // 2026-07-16 P1). The command exists for the user's shell-profile eval
+    // hook, which never runs through the agent — no agent use is legitimate.
+    'Bash(*secretless-ai env*)',
     // Block access to secretless data directory (Issue #5)
     'Bash(cat *secretless-ai*)',
     'Bash(*secretless-ai/store*)',
@@ -588,17 +592,23 @@ function generateClaudeHookScript(customRules?: CustomRules | null): string {
 set -euo pipefail
 
 INPUT=$(cat)
-TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4)
+# Each field is optional depending on the tool (a Bash call has no file_path; a
+# Read call has no command), so a non-matching grep is normal, not an error. The
+# trailing \`|| true\` keeps a no-match from returning non-zero and tripping
+# \`set -euo pipefail\` — without it the whole Bash-command branch below was dead:
+# every Bash call died at the FILE_PATH line (grep found no file_path) before any
+# command guard ran. Regression: release-test 2026-07-16.
+TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 
 # Extract file path from tool input (handles Read, Grep, Glob, Edit, Write)
-FILE_PATH=$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | head -1 | cut -d'"' -f4)
+FILE_PATH=$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 if [ -z "$FILE_PATH" ]; then
-  FILE_PATH=$(echo "$INPUT" | grep -o '"path":"[^"]*"' | head -1 | cut -d'"' -f4)
+  FILE_PATH=$(echo "$INPUT" | grep -o '"path":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 fi
 
 # For Bash tool, check the command for secret access patterns
 if [ "$TOOL_NAME" = "Bash" ]; then
-  COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4)
+  COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
   if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*\\.(env|key|pem|p12|pfx)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files"}}'
@@ -632,6 +642,13 @@ if [ "$TOOL_NAME" = "Bash" ]; then
   # Block secretless-ai run with env/printenv to dump injected secrets
   if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+run.*--\\s*(env|printenv)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai run"}}'
+    exit 0
+  fi
+  # Block the full-store plaintext dump: secretless-ai env prints every stored
+  # secret as export statements. The shell-profile eval hook never runs through
+  # the agent, so no agent invocation of it is legitimate.
+  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+env(\\s|$)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full secret-store dump via secretless-ai env"}}'
     exit 0
   fi
   # Block direct access to secretless data directory
