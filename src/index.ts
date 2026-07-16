@@ -92,6 +92,8 @@ export {
   GrantPolicy, EphemeralWorker, HttpsDownstreamCaller, GrantResolver,
   ExchangeProvider, HttpsTokenExchangeTransport, createOktaExchangeProvider,
   MapProviderRegistry, mintBrokerAssertion, generateBrokerSigningKey, brokerPublicJwk,
+  mintBrokerAssertionMlDsa65, mintHybridBrokerAssertion, generateBrokerPqcSigningKey,
+  brokerPublicAkpJwk,
   RetrieveProvider, AssumeProvider,
   TOKEN_EXCHANGE_GRANT_TYPE, SUBJECT_TOKEN_TYPE_JWT, REQUESTED_TOKEN_TYPE_ACCESS,
   type Atx, type AtxSignature, type AtxPublicKey, type AtxTrustAnchors,
@@ -103,6 +105,7 @@ export {
   type CredentialProvider, type ProviderRegistry,
   type ExchangeProviderConfig, type TokenExchangeRequest, type TokenExchangeResponse,
   type TokenExchangeTransport, type OktaAdapterOptions, type BrokerSigningKey,
+  type BrokerPqcSigningKey, type PqcMintOptions, type JwsGeneralJson,
 } from './broker';
 
 // Identity Vault (requires @opena2a/aim-core)

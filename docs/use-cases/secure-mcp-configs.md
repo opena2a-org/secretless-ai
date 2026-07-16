@@ -1,7 +1,7 @@
 # I want to protect MCP server credentials
 
 **Time:** 3 minutes
-**Prerequisites:** Node.js 18+, at least one MCP client configured
+**Prerequisites:** Node.js 20.19+, at least one MCP client configured
 
 MCP (Model Context Protocol) servers are configured through JSON files that contain plaintext API keys. These configuration files are readable by the AI tool that uses them, which means your credentials are visible in the LLM context window.
 

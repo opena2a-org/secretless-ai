@@ -1,7 +1,7 @@
 # I want to set up secretless for my team
 
 **Time:** 5 minutes
-**Prerequisites:** Node.js 18+, a shared secret backend (1Password, HashiCorp Vault, or GCP Secret Manager)
+**Prerequisites:** Node.js 20.19+, a shared secret backend (1Password, HashiCorp Vault, or GCP Secret Manager)
 
 When working on a team, each developer needs access to the same secrets without storing them in `.env` files committed to the repo. Secretless connects to a shared backend so every team member resolves secrets from the same source.
 

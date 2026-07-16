@@ -30,7 +30,14 @@ export {
   mintBrokerAssertion,
   generateBrokerSigningKey,
   brokerPublicJwk,
+  mintBrokerAssertionMlDsa65,
+  mintHybridBrokerAssertion,
+  generateBrokerPqcSigningKey,
+  brokerPublicAkpJwk,
   type BrokerSigningKey,
+  type BrokerPqcSigningKey,
+  type PqcMintOptions,
+  type JwsGeneralJson,
 } from './assertion';
 
 // Declared-but-not-implemented seams (v1).
