@@ -163,10 +163,12 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders });
     }
     case 'status': {
-      const dirArg = args[1];
+      const json = args.includes('--json');
+      const positional = args.slice(1).filter(a => a !== '--json');
+      const dirArg = positional[0];
       if (!rejectUnknownFlagAsDirArg('status', dirArg)) return 2;
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runStatus(projectDir);
+      return runStatus(projectDir, { json });
     }
     case 'verify': {
       const showAll = args.includes('--all');
