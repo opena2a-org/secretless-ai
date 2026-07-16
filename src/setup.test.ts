@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -31,6 +31,15 @@ describe('runSetup', () => {
   it('check mode fails when no manifest exists', async () => {
     const result = await runSetup(tmpDir, { backend, check: true });
     expect(result.complete).toBe(false);
+  });
+
+  it('reports manifestFound=false without a manifest, true with one', async () => {
+    const without = await runSetup(tmpDir, { backend, check: true });
+    expect(without.manifestFound).toBe(false);
+
+    fs.writeFileSync(path.join(tmpDir, '.secretless'), 'API_KEY\n');
+    const withManifest = await runSetup(tmpDir, { backend, check: true });
+    expect(withManifest.manifestFound).toBe(true);
   });
 
   it('check mode returns complete when all secrets satisfied', async () => {
@@ -71,5 +80,47 @@ describe('runSetup', () => {
     const result = await runSetup(tmpDir, { backend, check: true });
     expect(result.complete).toBe(true);
     expect(result.existing).toBe(2);
+  });
+});
+
+// Issue #97: `setup --check` in a directory with no manifest printed a
+// contradictory report — "Missing: 0 required", an empty "Missing secrets:"
+// block, and a FAIL telling the user to configure secrets the same output
+// said don't exist. The no-manifest check path must stop after the
+// create-a-manifest hint with a single FAIL line (exit 1 unchanged).
+describe('runSetupCommand --check without a manifest', () => {
+  let tmpDir: string;
+  let savedCwd: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-setup-cmd-'));
+    savedCwd = process.cwd();
+    process.chdir(tmpDir);
+  });
+
+  afterEach(() => {
+    process.chdir(savedCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('prints one FAIL line, no satisfied/missing tally, exits 1', async () => {
+    const { runSetupCommand } = await import('./commands/env-run');
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      lines.push(a.map(String).join(' '));
+    });
+    try {
+      const code = await runSetupCommand(['--check']);
+      const out = lines.join('\n');
+
+      expect(code).toBe(1);
+      expect(out).toContain('FAIL: No .secretless manifest to check against.');
+      expect(out).not.toContain('Satisfied:');
+      expect(out).not.toContain('Missing:');
+      expect(out).not.toContain('Missing secrets:');
+      expect(out).not.toContain('Run `secretless-ai setup`');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
