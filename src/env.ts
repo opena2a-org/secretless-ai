@@ -38,6 +38,40 @@ export function isValidShellIdentifier(name: string): boolean {
 }
 
 /**
+ * Environment variables that a known AI coding agent sets in every subprocess
+ * it spawns. Presence means `secretless-ai` is running as a child of that agent
+ * — so its stdout is captured into the agent's context.
+ *
+ * This is the load-bearing check for `env`, which dumps every stored secret as
+ * plaintext. It is deliberately independent of the command string: an agent can
+ * spell the invocation any number of ways (`npx secretless-ai@latest env`,
+ * `secretless-ai 'env'`, `$SL env`, a tab separator), all of which defeat a
+ * deny-glob or a grep in the guard hook, but every one of them inherits these
+ * markers from the agent process. Enumeration-limited by nature — it can only
+ * name agents we know set a marker — so it backs, and is backed by, the Claude
+ * Code deny rules and guard hook rather than replacing them.
+ */
+const AGENT_RUNTIME_ENV_VARS: readonly string[] = [
+  'CLAUDECODE', // Claude Code
+  'CLAUDE_CODE_ENTRYPOINT', // Claude Code
+  'CURSOR_TRACE_ID', // Cursor
+  'AIDER_MODEL', // Aider
+];
+
+/**
+ * Returns the name of a detected AI-agent runtime env var, or null. Used to
+ * refuse bulk secret exposure (`env`) inside an agent while leaving the same
+ * command working in the user's own shell (where no marker is set).
+ */
+export function detectAgentRuntime(env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const name of AGENT_RUNTIME_ENV_VARS) {
+    const v = env[name];
+    if (v !== undefined && v !== '') return name;
+  }
+  return null;
+}
+
+/**
  * Generate shell export statements for stored secrets.
  * Returns the export script as a string.
  *

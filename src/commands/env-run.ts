@@ -2,7 +2,7 @@ import * as path from 'path';
 import { runWithSecrets } from '../run';
 import { importEnvFile, detectEnvFiles } from '../env-import';
 import { runSetup } from '../setup';
-import { generateEnvExports } from '../env';
+import { generateEnvExports, detectAgentRuntime } from '../env';
 
 export async function runRun(args: string[]): Promise<number> {
   // Parse --only flag before --
@@ -43,6 +43,23 @@ export async function runEnv(args: string[]): Promise<number> {
     console.log('  Options:');
     console.log('    --only KEY1,KEY2   Export only the specified secrets\n');
     return 0;
+  }
+
+  // Refuse inside a detected AI-agent runtime. `env` dumps every stored secret
+  // as plaintext exports; the only legitimate caller is the shell-profile eval
+  // hook, which runs in the user's own shell (no agent marker set), not the
+  // agent. This check is on the runtime, not the command string, so it holds
+  // however the agent spells the invocation (npx, quotes, a shell variable, a
+  // tab) — all of which slip past the deny-glob and guard-hook layers. Emit
+  // nothing to stdout; the eval hook's `2>/dev/null` keeps the user's shell
+  // startup silent and unbroken, while a direct agent call sees the guidance.
+  const agentRuntime = detectAgentRuntime();
+  if (agentRuntime) {
+    process.stderr.write(`\n  Refused: 'secretless-ai env' exports every stored secret as plaintext.\n`);
+    process.stderr.write(`  An AI agent runtime is set (${agentRuntime}), so this output would enter the agent's context.\n\n`);
+    process.stderr.write(`  Inject a specific secret into one command instead:\n`);
+    process.stderr.write(`    secretless-ai run --only NAME -- <command>\n\n`);
+    return 1;
   }
 
   // Parse --only flag
