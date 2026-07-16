@@ -9,6 +9,14 @@ npm install -g secretless-ai
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1] - 2026-07-16
+
+### Security
+- **The generated guard hook now inspects the full command instead of truncating at the first quote (#99).** The hook extracted the Bash command with `grep -o '"command":"[^"]*"'`, which stops at the first `"`. Any command containing a quote — `x="" ; cat .env`, `eval "$(secretless-ai env)"`, `echo ""; secretless-ai secret get X --force` — was truncated before the dangerous part and slipped past every hook guard. The hook now parses the command with `python3`'s JSON reader when available (falling back to the old grep only where python3 is absent, so it is never worse than before). The `env` subcommand match also gained a proper word boundary, so it catches `$(secretless-ai env)` (terminated by `)`), `env;`, and `env|` while still ignoring the word `environment`. The native `permissions.deny` rules already enforced these at the Claude Code layer; this restores the guard hook as a real second layer rather than one a single quote walks through.
+- **`secretless-ai vault exec <ns> -- env` / `-- printenv` is now blocked (#99).** `vault exec` injects an identity-vault namespace credential into the child process, which `env`/`printenv` would then print — the same shape as the already-denied `run -- env`, but it had no deny rule or hook arm. Added `Bash(*secretless-ai vault exec*-- env*)` / `-- printenv*` deny rules and a matching hook arm.
+
+These harden the best-effort Claude Code layers that back the primary tool-level `env` gate shipped in 0.19.0. Re-run `secretless-ai init` to regenerate the hook and deny rules. Command-string matching remains heuristic by nature (e.g. a path-prefixed `-- /usr/bin/env` is not matched); the tool-level agent-runtime gate on `env` is the enforcing layer.
+
 ## [0.19.0] - 2026-07-16
 
 ### Security
