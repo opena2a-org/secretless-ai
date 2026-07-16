@@ -9,13 +9,20 @@ npm install -g secretless-ai
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.19.0] - 2026-07-16
 
 ### Fixed
+- **`setup --check` prints a coherent report when no `.secretless` manifest exists (#97).** It used to render "Missing: 0 required", an empty "Missing secrets:" block, and a FAIL telling the user to configure secrets the same output said don't exist. The no-manifest path now stops after the create-a-manifest hint with a single `FAIL: No .secretless manifest to check against.` line. Exit codes unchanged (still 1, so CI gates keep failing on a missing manifest). Library surface: `SetupResult` gains `manifestFound`.
 - **The broker assertion's `trust_class` claim now carries the abstract ATX trust class (e.g. `orders:read`) from the matched policy clause instead of duplicating the downstream `scope` (e.g. `orders.read`).** The two were conflated at minting, against the AAP broker profile §11 federation semantics — a v2 peer broker verifying the assertion needs the portable capability, not a deployment-local scope name. The grant resolver now injects the matched trust class into the resource binding (`ResourceBinding.trustClass`, resolver-populated, never authored in configuration); `mintBrokerAssertion` now throws if the field is missing rather than silently minting a token the pinned claim schema rejects (breaking only for direct library callers; the wired daemon path always injects). Regression-tested at the unit and end-to-end (conformance) layers. Pinned normatively by AAP-SPEC 0.3 §4.2.
 
 ### Added
+- **`status --json` emits a machine-readable status document (#63).** Same envelope convention as `scan --json` (`{tool, version, ...facts, summary}`, camelCase); `summary.verdict` is one of `not-protected | protected-clean | protected-warnings` and `summary.warnings` always matches the human view's warning count (both derive from the same rows). Exit code stays 0; CI consumers gate on `summary.verdict`. `--help` now mentions `--json` on both `scan` and `status`.
+- **`secret list` and `verify` disclose their scope (#89).** `secret list` names the backend and states the store is machine-global (shared across all projects); `verify` states it spans the project, global AI config (`~/.claude`), and current-shell env vars — so a green PASS is never mistaken for "this project only".
+- **The broker strict-parses grant request bodies (#93).** `JSON.parse` is last-wins on duplicate members, so a duplicate-member smuggle inside the signed ATX credential was collapsed before the verifier could see it. `handleGrant` now runs atx-verify's fold-aware `firstDuplicateMember` over the raw body before any `JSON.parse` and refuses the request on the first colliding member at any depth (reject-side only; legitimate grants resolve unchanged). `@opena2a/atx-verify` bumped to 0.3.0, which also brings the declaredPurpose v1.1 TBS coverage fix into the broker's verify path.
 - `mintBrokerAssertion` accepts an injectable `jti` (defaults to the existing 16-random-bytes-hex behavior) so conformance fixtures can be minted deterministically (AAP-SPEC §9.7).
+
+### Docs
+- **README now documents the secret workflow**: `secret set` / `import` / `run --only`, `secret get` TTY-gating, and how to ask an AI assistant to use a stored key without exposing its value. `docs/testing/release-smoke.md` expanded to full command-surface parity (#60), with every expected output verified against the built CLI.
 
 ### Changed
 - **The ATX (Agent Trust eXtension) verifier now comes from `@opena2a/atx-verify` instead of a copy bundled in the broker.** The verifier was previously maintained as `src/broker/atx.ts` here *and* in the AIM SDK — two copies of byte-sensitive canonicalization (RFC 8785 JCS) that had to stay in lockstep with the Go/Python reference verifiers. It is now the single, separately-tested, SLSA-attested `@opena2a/atx-verify` package (consumed by both), closing that drift window. The broker's behavior is unchanged: the same Ed25519 verification over the same v1.0/v1.1 canonical payloads, proven by the AAP conformance test running against the package.
