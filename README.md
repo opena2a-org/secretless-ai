@@ -8,7 +8,7 @@ Keep API keys and other secrets invisible to AI coding tools. Works with Claude 
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-988%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-1099%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 [Website](https://opena2a.org/secretless) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
 
@@ -19,7 +19,7 @@ npx secretless-ai init
 ```
 
 ```
-  Secretless v0.17.1
+  Secretless v0.18.3
   Keeping secrets out of AI
 
   Configured: Claude Code (1 of 1 detected)
@@ -29,7 +29,7 @@ npx secretless-ai init
     + CLAUDE.md
 
   Modified:
-    ~ .claude/settings.json (added 69 deny patterns)
+    ~ .claude/settings.json (added 85 deny patterns)
 
   Next steps:
     Verify: secretless-ai verify
@@ -79,10 +79,44 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 
 ## How it works
 
-1. **Scans** your project for hardcoded credentials in config files and source code. 56 credential patterns from [`@opena2a/credential-patterns@0.1.1`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
+1. **Scans** your project for hardcoded credentials in config files and source code. 57 credential patterns from [`@opena2a/credential-patterns@0.1.2`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
 3. **Blocks** AI tools from reading credential files. 21 file patterns enforced at the AI-tool hook layer.
 4. **Brokers** access through environment variables. Secrets never enter AI context.
+
+## Store secrets and use them in AI sessions
+
+Move keys out of files and into a storage backend, then use them by name. Values never enter AI context, transcripts, or shell history.
+
+```bash
+npx secretless-ai secret set STRIPE_SECRET_KEY   # value read from stdin, never echoed
+npx secretless-ai import .env                    # or migrate an existing .env in one step
+npx secretless-ai secret list                    # names only, values are never printed
+```
+
+`secret set` also installs a shell hook (`eval "$(secretless-ai env)"` in `~/.zshenv` or `~/.bashrc`), so new terminals export stored secrets as environment variables automatically. To inject into a single command instead of the whole shell:
+
+```bash
+npx secretless-ai run --only STRIPE_SECRET_KEY -- node charge.js
+```
+
+Reading a value back is TTY-gated: `secret get NAME` prints it in an interactive terminal, but is blocked in piped or AI-driven contexts unless `--force` is passed — and `init` installs deny rules so AI tools cannot run the `--force` form or dump an injected environment (`run -- env`).
+
+### Ask your AI assistant to use a secret
+
+After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursorrules`, ...) lists which keys are available as environment variables and tells the tool to reference them as `$VAR_NAME` without reading values. So this works in Claude Code:
+
+> Call the Stripe API and list the last 5 charges.
+
+Claude writes the command with a variable reference. The shell substitutes the value inside the subprocess; nothing enters the model's context:
+
+```bash
+curl -s "https://api.stripe.com/v1/charges?limit=5" -H "Authorization: Bearer $STRIPE_SECRET_KEY"
+```
+
+For a key stored after `init`, or one `init` doesn't recognize, name the variable in your prompt ("use `$GAMMA_API_KEY` for auth") or add a row to the key table in `CLAUDE.md`. To keep the assistant away from raw values entirely, ask it to run commands under the injector:
+
+> Run the deploy script with `secretless-ai run --only DEPLOY_TOKEN -- ./deploy.sh`.
 
 ## MCP server protection
 
@@ -121,6 +155,8 @@ npx secretless-ai scan --min-confidence 0.85   # high-confidence findings only
 npx secretless-ai ignore docs/migration.md     # append a path to .secretlessignore
 npx secretless-ai ignore --pattern '*.golden.txt'
 npx secretless-ai diff main                    # audit secretless-managed file changes vs a git ref
+npx secretless-ai scan --json                  # machine-readable findings for CI
+npx secretless-ai status --json                # protection state for CI (gate on summary.verdict)
 ```
 
 `scan` renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so they stay visible without being re-suppressed.
