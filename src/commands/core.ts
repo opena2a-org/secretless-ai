@@ -284,15 +284,15 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
   return findings.length > 0 ? 1 : 0;
 }
 
-export function runStatus(projectDir: string): number {
-  console.log('\n  Secretless Status\n');
-
+export function runStatus(projectDir: string, options?: { json?: boolean }): number {
   const s = status(projectDir);
   const session = getSessionStatus();
   const brokerStatus = getDaemonStatus();
   const brokerInstalled = isDaemonInstalled();
   const tp = s.transcriptProtection;
   const configuredBackend = readBackendConfig();
+  // Session warmth only matters for backends that trigger OS auth prompts.
+  const sessionRelevant = configuredBackend === '1password' || configuredBackend === 'keychain';
 
   // Build observation rows. Each row: glyph + label + optional → command.
   // Satisfied observations use ✓; needs-action use ⚠. Every ⚠ ends in a
@@ -329,7 +329,6 @@ export function runStatus(projectDir: string): number {
   }
 
   // Session warmth (only relevant when a backend that prompts is configured).
-  const sessionRelevant = configuredBackend === '1password' || configuredBackend === 'keychain';
   if (sessionRelevant) {
     if (session.warm) {
       addRow({ glyph: '✓', label: `Biometric session warm (expires ${formatRemainingTime(session.remainingSeconds)})` });
@@ -363,6 +362,43 @@ export function runStatus(projectDir: string): number {
     addRow({ glyph: '⚠', label: 'Broker daemon not installed', action: 'secretless-ai install' });
   }
 
+  // Verdict facts — shared by the JSON and human paths so both always agree.
+  const warningCount = rows.filter(r => r.glyph === '⚠').length;
+  const verdict = !s.isProtected
+    ? 'not-protected'
+    : warningCount === 0
+      ? 'protected-clean'
+      : 'protected-warnings';
+
+  // --json: emit a single valid JSON document to stdout and nothing else, so
+  // the output is machine-parseable (issue #63 — same contract as `scan --json`).
+  // Exit code stays 0 to match the human view; CI consumers gate on
+  // `summary.verdict` / `summary.warnings`.
+  if (options?.json) {
+    console.log(JSON.stringify({
+      tool: 'secretless-ai',
+      version: VERSION,
+      isProtected: s.isProtected,
+      hookInstalled: s.hookInstalled,
+      denyRuleCount: s.denyRuleCount,
+      configuredTools: s.configuredTools,
+      secretsFound: s.secretsFound,
+      transcriptProtection: tp,
+      backend: configuredBackend ?? null,
+      session: { relevant: sessionRelevant, warm: session.warm },
+      broker: {
+        installed: brokerInstalled,
+        running: !!brokerStatus,
+        pid: brokerStatus?.pid ?? null,
+        uptimeSeconds: brokerStatus?.uptimeSeconds ?? null,
+      },
+      summary: { warnings: warningCount, verdict },
+    }, null, 2));
+    return 0;
+  }
+
+  console.log('\n  Secretless Status\n');
+
   // Render the Observations block. We measure the visible width (glyph +
   // label) so the `→ command` column lines up tidily across rows.
   const headerLine = '──────────────────────────────────────────────────────────';
@@ -386,7 +422,6 @@ export function runStatus(projectDir: string): number {
   // the hook installed; "Clean" requires zero warnings.
   console.log();
   console.log(`  ── Verdict ${headerLine.slice(0, Math.max(0, 49))}`);
-  const warningCount = rows.filter(r => r.glyph === '⚠').length;
   if (!s.isProtected) {
     console.log('  Not protected. Run `secretless-ai init` to install hooks.');
   } else if (warningCount === 0) {
