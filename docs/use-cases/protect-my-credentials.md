@@ -1,7 +1,7 @@
 # I want to keep my API keys out of AI tools
 
 **Time:** 2 minutes
-**Prerequisites:** Node.js 18+
+**Prerequisites:** Node.js 20.19+
 
 AI coding tools like Claude Code, Cursor, and Copilot can read files in your project directory. If your `.env` file or `*.key` files are accessible, the AI tool sees those credentials in its context window.
 

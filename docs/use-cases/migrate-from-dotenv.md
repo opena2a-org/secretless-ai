@@ -1,7 +1,7 @@
 # I want to migrate from .env files
 
 **Time:** 3 minutes
-**Prerequisites:** Node.js 18+
+**Prerequisites:** Node.js 20.19+
 
 `.env` files are the most common way to manage secrets locally, but they have two problems: they are plaintext files that AI tools can read, and they get accidentally committed to git. Secretless imports your `.env` contents into encrypted storage and blocks AI tools from reading the files.
 

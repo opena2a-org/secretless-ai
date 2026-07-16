@@ -9,6 +9,33 @@ npm install -g secretless-ai
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Post-quantum broker assertions (AAP-SPEC 0.4 §8.2/§9.3/§9.4/§9.5, RFC 9964).**
+  The broker now mints ML-DSA-65 (FIPS 204) assertions on two new paths:
+  `mintBrokerAssertionMlDsa65` (compact `ML-DSA-65` JWT, the PQ-interop lane)
+  and `mintHybridBrokerAssertion` (hybrid Ed25519 + ML-DSA-65 as JWS General
+  JSON Serialization — one signature entry per suite over the same payload; a
+  conformant verifier accepts only if every declared entry verifies and both
+  suite families are present). New key surface: `generateBrokerPqcSigningKey`
+  (seed-injectable, the FIPS 204 xi / RFC 9964 AKP `priv` form) and
+  `brokerPublicAkpJwk` (RFC 9964 `AKP` public JWK for the discovery document).
+  Signing is hedged by default and deterministic on request
+  (`PqcMintOptions.deterministic`, required for byte-exact fixtures); tests
+  prove sha256 byte-parity with the AAP spec repo's published fixtures across
+  three independent FIPS 204 implementations. The existing compact EdDSA path
+  is byte-for-byte unchanged. Serialization-profile decision:
+  agent-authorization-protocol `decisions/2026-07-16-mldsa65-serialization-profile.md`.
+
+### Changed
+- **Node engine floor raised from `>=18.0.0` to `>=20.19.0`** — the ML-DSA-65
+  suite loads the ESM-only `@noble/post-quantum` via `require(esm)`, supported
+  since Node 20.19; Node 18 and 20 are both end-of-life. The dependency loads
+  lazily: classical EdDSA minting never touches it, and requesting a PQ mint on
+  an older runtime fails with an actionable error instead of `ERR_REQUIRE_ESM`.
+- New dependency: `@noble/post-quantum` 0.6.1 (exact pin).
+
 ## [0.19.0] - 2026-07-16
 
 ### Security
