@@ -8,7 +8,7 @@ Keep API keys and other secrets invisible to AI coding tools. Works with Claude 
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1099%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-1101%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 [Website](https://opena2a.org/secretless) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
 
