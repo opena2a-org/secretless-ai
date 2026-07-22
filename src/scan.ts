@@ -202,6 +202,9 @@ export function findRealMatch(
 const GLOBAL_CONFIG_FILES = [
   { dir: path.join(os.homedir(), '.claude'), file: 'CLAUDE.md', label: '~/.claude/CLAUDE.md' },
   { dir: path.join(os.homedir(), '.claude'), file: 'settings.json', label: '~/.claude/settings.json' },
+  // The store `claude mcp add` writes user-scope mcpServers env into.
+  { dir: os.homedir(), file: '.claude.json', label: '~/.claude.json' },
+  { dir: path.join(os.homedir(), '.cursor'), file: 'mcp.json', label: '~/.cursor/mcp.json' },
 ];
 
 /**

@@ -242,3 +242,25 @@ describe('discoverMcpConfigs', () => {
     expect(claudeDesktop!.filePath).toBe(path.join(dir, configPath));
   });
 });
+
+describe('discoverMcpConfigs — project-scope .mcp.json (release-test P1)', () => {
+  let home: string;
+  let project: string;
+
+  beforeEach(() => { home = tmpDir(); project = tmpDir(); });
+  afterEach(() => { cleanup(home); cleanup(project); });
+
+  it('discovers project-scope .mcp.json as a claude-code config', () => {
+    writeConfig(project, '.mcp.json', makeMcpServers());
+    const results = discoverMcpConfigs(home, project);
+    const entry = results.find(r => r.filePath === path.join(project, '.mcp.json'));
+    expect(entry).toBeDefined();
+    expect(entry!.client).toBe('claude-code');
+    expect(entry!.servers.length).toBe(2);
+  });
+
+  it('does not invent a project entry when .mcp.json is absent', () => {
+    const results = discoverMcpConfigs(home, project);
+    expect(results.filter(r => r.filePath.startsWith(project)).length).toBe(0);
+  });
+});
