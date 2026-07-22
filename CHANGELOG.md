@@ -9,7 +9,7 @@ npm install -g secretless-ai
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.20.0] - 2026-07-22
 
 ### Added
 - **Post-quantum broker assertions (AAP-SPEC 0.4 §8.2/§9.3/§9.4/§9.5, RFC 9964).**
@@ -85,10 +85,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ends; a regression test asserts every database connection-string finding
   has one. Also fixes the `status` verdict grammar ("1 unblocked credential
   needs review").
-
-> Note: the ML-DSA-65 broker work above is intentionally unreleased. `0.19.1`
-> was published as a hotfix off the `v0.19.0` tag (guard-hook hardening only),
-> so the next release carrying this work must be `0.20.0` (minor), not `0.19.1`.
 
 ## [0.19.1] - 2026-07-16
 
