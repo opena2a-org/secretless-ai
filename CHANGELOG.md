@@ -36,6 +36,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an older runtime fails with an actionable error instead of `ERR_REQUIRE_ESM`.
 - New dependency: `@noble/post-quantum` 0.6.1 (exact pin).
 
+### Security
+- **`scan`, `verify`, `status`, and `mcp-status` now cover the Claude Code
+  project-scope MCP config `.mcp.json` (release-test P1).** The file sits at the
+  project root and is committed to repos, yet none of the four surfaces read it:
+  a planted Anthropic key inside `mcpServers.*.env` survived `scan` (exit 0),
+  `mcp-status` ("No MCP configurations found"), and `verify` (PASS). The scan
+  and verify file lists gain `.mcp.json` (via `@opena2a/credential-patterns`
+  0.1.3, lockstep-asserted), and MCP discovery now enumerates the project-scope
+  `.mcp.json` alongside the five per-user client configs, so `mcp-status`
+  reports its servers and `protect-mcp` can wrap them.
+- **`.cursor/mcp.json` is now actually scanned** — the config-file list carried
+  a `.curse/mcp.json` typo since the entry was introduced, so Cursor's
+  project-scope MCP config never matched (fixed in
+  `@opena2a/credential-patterns` 0.1.3).
+- **The scan list also gains `.mcp/config.json`, `.claude/settings.local.json`,
+  and `.windsurf/mcp.json`**, and the global scan (`scan` without
+  `--no-global`) now reads `~/.claude.json` (the store `claude mcp add` writes
+  user-scope MCP `env` into) and `~/.cursor/mcp.json`. Known limit, disclosed:
+  individual lines over 4096 chars are skipped by the ReDoS guard, so a fully
+  minified config can pass unscanned — structural JSON parsing for config
+  files is tracked as follow-up work.
+
+### Fixed
+- **Database connection-string patterns no longer flag credential-free URIs.**
+  `postgresql://localhost:5432/mydb` — the canonical Postgres MCP server
+  layout — produced `CRITICAL PostgreSQL Connection String` with nothing
+  secret in it. The `mongodb`/`postgres`/`mysql`/`redis` patterns (via
+  `@opena2a/credential-patterns` 0.1.3) now require an embedded secret: a
+  userinfo password (`user:pass@`, `:pass@`), a
+  `password=`/`pwd=`/`sslpassword=` query param (case-insensitive), or —
+  redis only — any single userinfo token (`redis://your-password@host`; pre-ACL
+  Redis has no usernames; the literal Redis 6+ ACL username `default@` is
+  carved out). Plain `mongodb://` URIs are now covered (the old pattern
+  matched only `mongodb+srv://`). Env-var-interpolated passwords
+  (`postgres://app:${POSTGRES_PASSWORD}@db` — the shape this tool tells you
+  to use) are no longer flagged, while a real password next to an
+  interpolated host still is; matches cannot cross JSON string boundaries on
+  minified content (no false positives, no destructive over-masking in
+  `clean-history`); and every run is length-bounded so scheme-stuffed
+  one-line files scan in linear time. Also fixes a quick-check derivation bug
+  that silently skipped plain `redis://` lines containing a `${VAR}` — a real
+  redis password on such a line was never scanned. Deliberate narrowing:
+  username-only URIs for postgres/mysql/mongodb (`postgres://user@host`) no
+  longer match — a username without a password is not a credential.
+- **`redis` and `mysql` findings now carry a `Fix:` line** — both ids were
+  missing from the per-pattern fix-guidance map, so their findings were dead
+  ends; a regression test asserts every database connection-string finding
+  has one. Also fixes the `status` verdict grammar ("1 unblocked credential
+  needs review").
+
 > Note: the ML-DSA-65 broker work above is intentionally unreleased. `0.19.1`
 > was published as a hotfix off the `v0.19.0` tag (guard-hook hardening only),
 > so the next release carrying this work must be `0.20.0` (minor), not `0.19.1`.

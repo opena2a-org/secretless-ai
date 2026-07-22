@@ -44,7 +44,9 @@ const FIX_GUIDANCE: Record<string, string> = {
   'stripe-test': 'Move to env var STRIPE_SECRET_KEY. Even test keys should not be committed.',
   'slack': 'Move to env var SLACK_TOKEN. Rotate at api.slack.com > Your Apps.',
   'postgres': 'Move to env var DATABASE_URL. Rotate the database password.',
+  'mysql': 'Move to env var DATABASE_URL. Rotate the database password.',
   'mongodb': 'Move to env var MONGODB_URI. Rotate the database password.',
+  'redis': 'Move to env var REDIS_URL. Rotate the Redis password (requirepass or ACL user).',
   'pem-private-key': 'Never commit private keys. Use secretless-ai secret set or a secrets manager.',
   'google': 'Move to env var GOOGLE_API_KEY. Restrict and rotate at console.cloud.google.com.',
   'supabase': 'Move to env var SUPABASE_SERVICE_ROLE_KEY. Rotate in Supabase dashboard > Settings > API.',
@@ -202,6 +204,9 @@ export function findRealMatch(
 const GLOBAL_CONFIG_FILES = [
   { dir: path.join(os.homedir(), '.claude'), file: 'CLAUDE.md', label: '~/.claude/CLAUDE.md' },
   { dir: path.join(os.homedir(), '.claude'), file: 'settings.json', label: '~/.claude/settings.json' },
+  // The store `claude mcp add` writes user-scope mcpServers env into.
+  { dir: os.homedir(), file: '.claude.json', label: '~/.claude.json' },
+  { dir: path.join(os.homedir(), '.cursor'), file: 'mcp.json', label: '~/.cursor/mcp.json' },
 ];
 
 /**

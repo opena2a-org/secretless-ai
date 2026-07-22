@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
+import { CREDENTIAL_PATTERNS } from './patterns';
 import { findRealMatch } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 
@@ -56,6 +56,7 @@ const PROJECT_CONTEXT_FILES = [
   '.cursor/mcp.json',
   '.vscode/mcp.json',
   'mcp.json',
+  '.mcp.json',
   '.env',
   '.env.local',
   'config.json',

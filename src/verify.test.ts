@@ -184,6 +184,27 @@ describe('verify', () => {
     expect(result.passed).toBe(true);
   });
 
+  it('detects credential in project-scope .mcp.json (Claude Code MCP config)', () => {
+    process.env.ANTHROPIC_API_KEY = 'test';
+
+    fs.writeFileSync(
+      path.join(dir, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          demo: {
+            command: 'npx',
+            args: ['-y', 'demo-mcp'],
+            env: { ANTHROPIC_API_KEY: 'sk-ant-api03-abc123def456abc123def456abc123' },
+          },
+        },
+      }),
+    );
+
+    const result = verify(dir);
+    expect(result.exposedInContext.some(e => e.file === '.mcp.json')).toBe(true);
+    expect(result.passed).toBe(false);
+  });
+
   it('detects credential in MCP config args', () => {
     process.env.ANTHROPIC_API_KEY = 'test';
 

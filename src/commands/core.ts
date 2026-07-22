@@ -428,7 +428,7 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
     console.log('  Protected — Clean');
   } else {
     const credSuffix = s.secretsFound > 0
-      ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need review)`
+      ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need${s.secretsFound === 1 ? 's' : ''} review)`
       : ` (${warningCount} observation${warningCount === 1 ? '' : 's'} need attention)`;
     console.log(`  Protected${credSuffix}`);
   }

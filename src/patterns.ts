@@ -75,10 +75,24 @@ export const CREDENTIAL_PATTERNS: CredentialPattern[] = [
   { id: 'square', name: 'Square API Key', regex: /sq0[a-z]{3}-[a-zA-Z0-9_-]{22,}/, envPrefix: 'SQUARE_ACCESS_TOKEN', category: 'payment' },
 
   // ── Database (category: database) ─────────────────────────────────────
-  { id: 'mongodb', name: 'MongoDB Connection String', regex: /mongodb\+srv:\/\/[^\s]{10,}/, envPrefix: 'MONGODB_URI', category: 'database' },
-  { id: 'postgres', name: 'PostgreSQL Connection String', regex: /postgres(?:ql)?:\/\/[^\s]{10,}/, envPrefix: 'DATABASE_URL', category: 'database' },
-  { id: 'mysql', name: 'MySQL Connection String', regex: /mysql:\/\/[^\s]{10,}/, envPrefix: 'DATABASE_URL', category: 'database' },
-  { id: 'redis', name: 'Redis Connection String', regex: /rediss?:\/\/[^\s]{10,}/, envPrefix: 'REDIS_URL', category: 'database' },
+  // Connection strings flag only when they embed a secret: a userinfo password
+  // (user:pass@ / :pass@ — and for redis, any single userinfo token, since
+  // pre-ACL Redis has no usernames) or a password=/pwd=/sslpassword= query
+  // param. A credential-free URI (postgresql://localhost/db — the canonical MCP
+  // server layout) is topology, not a credential exposure. Character classes
+  // exclude quotes and commas so a match can never cross a JSON string boundary
+  // on minified content, and every run is length-bounded so a line stuffed with
+  // scheme literals stays linear-time (both adversarially verified).
+  // The user/password classes additionally exclude $ { } | ; so an
+  // env-var-interpolated password (postgres://app:${DB_PASSWORD}@db — the
+  // recommended secure shape) and markdown-table/compound-env lines never read
+  // as literal secrets; hosts keep $ { } (an interpolated HOST next to a real
+  // password must still flag). Redis carves out the literal `default@` — the
+  // standard Redis 6+ ACL username — from its single-token rule.
+  { id: 'mongodb', name: 'MongoDB Connection String', regex: /mongodb(?:\+srv)?:\/\/(?:[^\s:@\/"',${}|;]{0,64}:[^\s@"',${}|;]{1,256}@[^\s"',]{1,512}|[^\s"']{0,512}[?&](?:password|pwd|sslpassword)=[^\s&"'${}]{1,256})/i, envPrefix: 'MONGODB_URI', category: 'database' },
+  { id: 'postgres', name: 'PostgreSQL Connection String', regex: /postgres(?:ql)?:\/\/(?:[^\s:@\/"',${}|;]{0,64}:[^\s@"',${}|;]{1,256}@[^\s"',]{1,512}|[^\s"']{0,512}[?&](?:password|pwd|sslpassword)=[^\s&"'${}]{1,256})/i, envPrefix: 'DATABASE_URL', category: 'database' },
+  { id: 'mysql', name: 'MySQL Connection String', regex: /mysql:\/\/(?:[^\s:@\/"',${}|;]{0,64}:[^\s@"',${}|;]{1,256}@[^\s"',]{1,512}|[^\s"']{0,512}[?&](?:password|pwd|sslpassword)=[^\s&"'${}]{1,256})/i, envPrefix: 'DATABASE_URL', category: 'database' },
+  { id: 'redis', name: 'Redis Connection String', regex: /rediss?:\/\/(?:(?:[^\s:@\/"',${}|;]{0,64}:)?(?!default@)[^\s@"',${}|;]{1,256}@[^\s"',]{1,512}|[^\s"']{0,512}[?&](?:password|pwd|sslpassword)=[^\s&"'${}]{1,256})/i, envPrefix: 'REDIS_URL', category: 'database' },
 
   // ── Auth & Crypto (category: auth) ────────────────────────────────────
   { id: 'google', name: 'Google API Key', regex: /AIza[0-9A-Za-z_-]{35}/, envPrefix: 'GOOGLE_API_KEY', category: 'auth' },
@@ -103,7 +117,12 @@ export const CREDENTIAL_PREFIX_QUICK_CHECK = new RegExp(
     const src = p.regex.source;
     // Extract leading literal prefix (up to first quantifier or alternation)
     const m = src.match(/^([a-zA-Z0-9_\-.+:/]{3,})/);
-    return m ? m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : null;
+    if (!m) return null;
+    // A trailing X? quantifier makes the last extracted char optional
+    // (rediss? must yield 'redis', not 'rediss') — trim it, or the
+    // quick-check would exclude lines the real pattern matches.
+    const lit = src[m[1].length] === '?' ? m[1].slice(0, -1) : m[1];
+    return lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   })
   .filter(Boolean)
   // Deduplicate prefixes (e.g. multiple sk- patterns)
@@ -166,12 +185,12 @@ export const SECRET_FILE_PATTERNS: string[] = [
 export const CONFIG_FILES = [
   'config.json', 'config.yaml', 'config.yml',
   '.env', '.env.local',
-  'package.json', 'mcp.json',
+  'package.json', 'mcp.json', '.mcp.json', '.mcp/config.json',
   'CLAUDE.md',
   '.openclaw/config.json', '.moltbot/config.json',
   'openclaw.json', 'moltbot.json',
-  '.curse/mcp.json', '.vscode/mcp.json',
-  '.claude/settings.json',
+  '.cursor/mcp.json', '.vscode/mcp.json', '.windsurf/mcp.json',
+  '.claude/settings.json', '.claude/settings.local.json',
   '.cursor/settings.json',
   '.github/copilot-instructions.md',
   // Nanobot variants

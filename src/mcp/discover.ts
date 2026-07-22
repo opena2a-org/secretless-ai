@@ -164,19 +164,26 @@ function parseServers(raw: Record<string, unknown>): McpServerEntry[] | null {
 /**
  * Discover all MCP configuration files on the developer's machine.
  *
- * Searches across 5 clients: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf.
+ * Searches across 5 clients: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf —
+ * plus the Claude Code project-scope config (.mcp.json at the project root).
  *
  * @param homeOverride - Override home directory (for testing). Defaults to os.homedir().
+ * @param projectDirOverride - Override project directory (for testing). Defaults to process.cwd().
  * @returns Array of discovered config files with parsed server entries.
  */
-export function discoverMcpConfigs(homeOverride?: string): McpConfigFile[] {
+export function discoverMcpConfigs(homeOverride?: string, projectDirOverride?: string): McpConfigFile[] {
   const home = homeOverride ?? os.homedir();
-  const clientPaths = getClientConfigPaths();
+  const projectDir = projectDirOverride ?? process.cwd();
   const results: McpConfigFile[] = [];
 
-  for (const { client, relativePath } of clientPaths) {
-    const fullPath = path.join(home, relativePath);
+  const candidates: Array<{ client: McpClient; fullPath: string }> = getClientConfigPaths().map(
+    ({ client, relativePath }) => ({ client, fullPath: path.join(home, relativePath) }),
+  );
+  // Claude Code project-scope MCP config: .mcp.json at the project root is
+  // committed to repos, so plaintext env values there leak beyond one machine.
+  candidates.push({ client: 'claude-code', fullPath: path.join(projectDir, '.mcp.json') });
 
+  for (const { client, fullPath } of candidates) {
     if (!fs.existsSync(fullPath)) continue;
 
     let raw: Record<string, unknown>;

@@ -297,3 +297,122 @@ describe('scan() — confidence + fixture flag (Wave 2)', () => {
     }
   });
 });
+
+describe('scan() — project-scope MCP configs (release-test P1: .mcp.json blind spot)', () => {
+  function tmpProjectWith(files: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-mcpjson-'));
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    return dir;
+  }
+
+  const REAL_ANTHROPIC_KEY = ['sk-ant-api03-', 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2'].join('');
+
+  function mcpConfigWith(key: string): string {
+    return JSON.stringify(
+      {
+        mcpServers: {
+          demo: { command: 'npx', args: ['-y', 'demo-mcp'], env: { ANTHROPIC_API_KEY: key } },
+        },
+      },
+      null,
+      2,
+    );
+  }
+
+  it('finds credentials in project-scope .mcp.json (Claude Code MCP config)', () => {
+    const dir = tmpProjectWith({ '.mcp.json': mcpConfigWith(REAL_ANTHROPIC_KEY) });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.some(f => f.file === '.mcp.json' && f.patternId === 'anthropic')).toBe(true);
+  });
+
+  it('finds credentials in .cursor/mcp.json (was unreachable via the ".curse" typo)', () => {
+    const dir = tmpProjectWith({ '.cursor/mcp.json': mcpConfigWith(REAL_ANTHROPIC_KEY) });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.some(f => f.file === '.cursor/mcp.json' && f.patternId === 'anthropic')).toBe(true);
+  });
+
+  it('does NOT flag a credential-free connection string in .mcp.json (canonical Postgres MCP layout)', () => {
+    const dir = tmpProjectWith({
+      '.mcp.json': JSON.stringify(
+        {
+          mcpServers: {
+            postgres: {
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://localhost:5432/mydb'],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('does NOT flag an env-var-interpolated password (the recommended secure shape)', () => {
+    const dir = tmpProjectWith({
+      'docker-compose.yml': 'services:\n  api:\n    environment:\n      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD}@db:5432/app\n',
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('DOES flag a real redis password even when the same line interpolates the host', () => {
+    // Pre-fix, the quick-check derived "rediss" from rediss?, so a plain
+    // redis:// line containing ${REDIS_HOST} was skipped before scanning.
+    const dir = tmpProjectWith({
+      'config.yaml': 'cache: redis://:s3cretRedisPw99Xy@${REDIS_HOST}:6379/0\n',
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.some(f => f.patternId === 'redis')).toBe(true);
+  });
+
+  it('does NOT flag minified JSON where a later @ sits on the same line as a credential-free URI', () => {
+    const dir = tmpProjectWith({
+      '.mcp.json': '{"mcpServers":{"cache":{"command":"npx","args":["redis-mcp","redis://localhost:6379"],"env":{"OWNER":"ops@corp.io"}}}}',
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings).toHaveLength(0);
+  });
+
+  it('DOES flag a connection string with an embedded password in .mcp.json', () => {
+    const dir = tmpProjectWith({
+      '.mcp.json': JSON.stringify(
+        {
+          mcpServers: {
+            postgres: {
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://svc:s3cretpw@db.internal:5432/mydb'],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.some(f => f.file === '.mcp.json' && f.patternId === 'postgres')).toBe(true);
+  });
+
+  it('every database connection-string finding carries a Fix line (no dead ends)', () => {
+    const dir = tmpProjectWith({
+      'config.yaml': [
+        'cache: redis://:s3cretRedisPw99Xy@cache.internal:6379/0',
+        'db: postgres://svc:s3cretpw@db.internal:5432/app',
+        'legacy: mysql://svc:s3cretpw@db.internal:3306/app',
+        'docs: mongodb://svc:s3cretpw@mongo.internal:27017/app',
+      ].join('\n'),
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    for (const id of ['redis', 'postgres', 'mysql', 'mongodb']) {
+      const f = findings.find(f => f.patternId === id);
+      expect(f, `expected a ${id} finding`).toBeDefined();
+      expect(f!.fix, `${id} finding has no fix line — dead end`).toBeTruthy();
+    }
+  });
+});

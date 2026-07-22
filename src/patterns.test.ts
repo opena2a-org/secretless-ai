@@ -207,22 +207,63 @@ const PATTERN_TEST_CASES: Record<string, { valid: string[]; invalid: string[] }>
     invalid: ['sq0csp-short', 'sq0CSP-' + 'a'.repeat(22)],
   },
 
-  // Database
+  // Database — connection strings flag only when a secret is embedded:
+  // a userinfo password (or, for redis, any single userinfo token — pre-ACL
+  // Redis has no usernames) or a password=/pwd=/sslpassword= query param.
+  // Credential-free URIs are topology, not exposures, and matches must not
+  // cross JSON string boundaries on minified content.
   'mongodb': {
-    valid: ['mongodb+srv://user:pass@cluster.mongodb.net/db'],
-    invalid: ['mongodb://lo', 'mongo+srv://x'],
+    valid: [
+      'mongodb+srv://user:pass@cluster.mongodb.net/db',
+      'mongodb://admin:hunter2@mongo1:27017,mongo2:27017/db',
+    ],
+    invalid: ['mongodb://lo', 'mongo+srv://x', 'mongodb+srv://cluster.mongodb.net/db'],
   },
   'postgres': {
-    valid: ['postgres://user:pass@localhost:5432/mydb'],
-    invalid: ['postgres://s', 'pg://user:pass@host/db'],
+    valid: [
+      'postgres://user:pass@localhost:5432/mydb',
+      'postgresql://localhost:5432/mydb?password=hunter2',
+      'postgresql://localhost:5432/mydb?Password=hunter2',
+      'postgresql://host:5432/db?sslmode=verify-full&sslpassword=keypass',
+      'postgres://user:p%40ssw0rd@host/db',
+      'postgres://u:p@[::1]:5432/db',
+      'postgres://u:p@h1:5432,h2:5432/db',
+      'postgresql:///db?host=/cloudsql/proj:region:inst&password=y',
+    ],
+    invalid: [
+      'postgres://s',
+      'pg://user:pass@host/db',
+      'postgres://localhost:5432/mydb',
+      'postgresql://localhost:5432/mydb',
+      '{"conn":"postgres://localhost:5432/db","email":"a@b.com"}',
+      '{"x":"postgres://","y":"a:b@c"}',
+      '{"a":"postgres://localhost/db","note":"?password=hunter2"}',
+      'DATABASE_URL: postgres://app:${POSTGRES_PASSWORD}@db:5432/app',
+      'db_url: postgres://app:$DB_PASSWORD@db:5432/app',
+      'notes: postgres://reporting:5432/warehouse|oncall@corp.io',
+      'DATABASE_URL=postgres://localhost:5432/db;EMAIL=admin@example.com',
+      'postgresql://h/db?password=${DB_PASS}',
+    ],
   },
   'mysql': {
     valid: ['mysql://user:pass@localhost:3306/mydb'],
-    invalid: ['mysql://sh', 'msql://user:pass@host/db'],
+    invalid: ['mysql://sh', 'msql://user:pass@host/db', 'mysql://localhost:3306/mydb'],
   },
   'redis': {
-    valid: ['redis://user:pass@localhost:6379/0', 'rediss://secure@host:6379'],
-    invalid: ['redis://sh', 'rds://host:6379'],
+    valid: [
+      'redis://user:pass@localhost:6379/0',
+      'rediss://:secure@host:6379',
+      'rediss://secure@host:6379',
+      'redis://mysecretpassword@redis-host:6379',
+      'redis://:s3cretRedisPw99Xy@${REDIS_HOST}:6379/0',
+    ],
+    invalid: [
+      'redis://sh',
+      'rds://host:6379',
+      'redis://localhost:6379',
+      '{"cache":"redis://localhost:6379","owner":"ops@corp.io"}',
+      'redis://default@cache.prod.internal:6379',
+    ],
   },
 
   // Auth & Crypto

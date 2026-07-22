@@ -79,7 +79,7 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 
 ## How it works
 
-1. **Scans** your project for hardcoded credentials in config files and source code. 57 credential patterns from [`@opena2a/credential-patterns@0.1.2`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
+1. **Scans** your project for hardcoded credentials in config files and source code. 57 credential patterns from [`@opena2a/credential-patterns@0.1.3`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
 3. **Blocks** AI tools from reading credential files. 21 file patterns enforced at the AI-tool hook layer.
 4. **Brokers** access through environment variables. Secrets never enter AI context.
