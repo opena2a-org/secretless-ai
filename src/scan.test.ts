@@ -398,4 +398,21 @@ describe('scan() — project-scope MCP configs (release-test P1: .mcp.json blind
     const findings = scan(dir, { scanGlobal: false });
     expect(findings.some(f => f.file === '.mcp.json' && f.patternId === 'postgres')).toBe(true);
   });
+
+  it('every database connection-string finding carries a Fix line (no dead ends)', () => {
+    const dir = tmpProjectWith({
+      'config.yaml': [
+        'cache: redis://:s3cretRedisPw99Xy@cache.internal:6379/0',
+        'db: postgres://svc:s3cretpw@db.internal:5432/app',
+        'legacy: mysql://svc:s3cretpw@db.internal:3306/app',
+        'docs: mongodb://svc:s3cretpw@mongo.internal:27017/app',
+      ].join('\n'),
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    for (const id of ['redis', 'postgres', 'mysql', 'mongodb']) {
+      const f = findings.find(f => f.patternId === id);
+      expect(f, `expected a ${id} finding`).toBeDefined();
+      expect(f!.fix, `${id} finding has no fix line — dead end`).toBeTruthy();
+    }
+  });
 });

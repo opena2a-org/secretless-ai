@@ -80,6 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redis password on such a line was never scanned. Deliberate narrowing:
   username-only URIs for postgres/mysql/mongodb (`postgres://user@host`) no
   longer match — a username without a password is not a credential.
+- **`redis` and `mysql` findings now carry a `Fix:` line** — both ids were
+  missing from the per-pattern fix-guidance map, so their findings were dead
+  ends; a regression test asserts every database connection-string finding
+  has one. Also fixes the `status` verdict grammar ("1 unblocked credential
+  needs review").
 
 > Note: the ML-DSA-65 broker work above is intentionally unreleased. `0.19.1`
 > was published as a hotfix off the `v0.19.0` tag (guard-hook hardening only),
