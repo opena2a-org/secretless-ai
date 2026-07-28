@@ -330,9 +330,18 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     'Bash(echo $*TOKEN*)',
     'Bash(echo $*VAULT*)',
     'Bash(echo $*CREDENTIAL*)',
+    'Bash(echo $*PRIVATE_KEY*)',
+    'Bash(echo $*ACCESS_KEY*)',
+    'Bash(echo $*DATABASE_URL*)',
     'Bash(printenv *TOKEN*)',
     'Bash(printenv *SECRET*)',
     'Bash(printenv *KEY*)',
+    'Bash(printenv *PASSWORD*)',
+    'Bash(printenv *CREDENTIAL*)',
+    'Bash(printenv *VAULT*)',
+    'Bash(printenv *DATABASE_URL*)',
+    // Bare `printenv` dumps the whole environment.
+    'Bash(printenv)',
     // Block secretless-ai secret extraction (Issue #3)
     'Bash(*secretless-ai secret get*--force*)',
     // Block secretless-ai run with env dumping (Issue #6)
@@ -549,6 +558,26 @@ function addSecretlessInstructions(filePath: string, tool: string, result: InitR
   }
 }
 
+// Words that mark an environment variable as holding a secret. Kept in one place
+// so the hook's regexes and the native deny globs above (`echo $*API_KEY*`,
+// `printenv *KEY*`) agree on what counts.
+const SECRET_VAR_WORDS = [
+  'SECRET', 'PASSWORD', 'PASSWD', 'API_?KEY', 'ACCESS_KEY', 'TOKEN',
+  'PRIVATE_KEY', 'VAULT', 'CREDENTIAL', 'DATABASE_URL', 'CONNECTION_STRING',
+].join('|');
+
+// A shell variable reference whose NAME merely CONTAINS one of those words.
+// The prefix is the whole point: real variables are named $ANTHROPIC_API_KEY,
+// $GITHUB_TOKEN, $AWS_SECRET_ACCESS_KEY, ${SENDGRID_API_KEY}. Anchoring right
+// after the `$`, as this did before, only ever caught the bare $API_KEY form,
+// so every name anyone actually uses walked past the hook. The native
+// permissions.deny globs already allowed the prefix, so the two layers
+// disagreed and the hook was the weaker one.
+const SECRET_VAR_REF = '\\$\\{?[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
+
+// Same, for commands that take a bare variable NAME with no `$` (printenv FOO).
+const SECRET_VAR_NAME = '[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
+
 function generateClaudeHookScript(customRules?: CustomRules | null): string {
   // Three categories of secret-file signals. Each matches differently:
   //  - extensions: suffix match on basename, e.g. `server.key`, `prod.env`, `id_rsa.pem`.
@@ -650,18 +679,32 @@ except Exception:
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
-  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*(os\\.environ|process\\.env).*(SECRET|PASSWORD|API_KEY|TOKEN|PRIVATE_KEY|VAULT|CREDENTIAL)'; then
+  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret environment variables"}}'
     exit 0
   fi
   # Block eval-based env var extraction
-  if echo "$COMMAND" | grep -qiE '(eval\\s+echo|\\$\\{!).*\\$(SECRET|PASSWORD|API_KEY|TOKEN|PRIVATE_KEY|VAULT|CREDENTIAL)'; then
+  if echo "$COMMAND" | grep -qiE '(eval\\s+echo|\\$\\{!).*${SECRET_VAR_REF}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked eval-based secret extraction"}}'
     exit 0
   fi
-  # Block commands that echo secret env vars (expanded with TOKEN, VAULT, CREDENTIAL)
-  if echo "$COMMAND" | grep -qiE '(echo|printenv)\\s+.*\\$(SECRET|PASSWORD|API_KEY|TOKEN|PRIVATE_KEY|VAULT|CREDENTIAL)'; then
+  # Block commands that echo secret env vars. The variable name may carry any
+  # prefix: $ANTHROPIC_API_KEY and \${GITHUB_TOKEN} count, not just $API_KEY.
+  if echo "$COMMAND" | grep -qiE '(echo|printenv)\\s+.*${SECRET_VAR_REF}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
+    exit 0
+  fi
+  # printenv takes a bare NAME with no \`$\`, so the arm above never sees it.
+  if echo "$COMMAND" | grep -qiE 'printenv\\s+(-[A-Za-z0]+\\s+)*${SECRET_VAR_NAME}'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
+    exit 0
+  fi
+  # Bare \`printenv\` prints the whole environment, which is the same disclosure as
+  # naming every secret variable at once. \`env\` is deliberately NOT matched here:
+  # it is overwhelmingly used as a prefix (\`env -u VAR cmd\`), and the full-dump
+  # form is covered by the deny rules.
+  if echo "$COMMAND" | grep -qiE '(^|[;&|]\\s*)printenv\\s*(-0\\s*)?$'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via printenv"}}'
     exit 0
   fi
   # Block secretless-ai secret extraction with --force

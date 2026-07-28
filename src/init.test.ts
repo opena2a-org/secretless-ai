@@ -279,6 +279,69 @@ describe('init', () => {
       expect(runHookCmd(hookPath, 'cat .env \uD800'), 'expected BLOCK despite lone surrogate').toBe(true);
     });
 
+    // The hook's env-var arm used to anchor the secret word immediately after the
+    // `$`, so it only ever caught the bare `$API_KEY` form. Every variable name
+    // anyone actually uses carries a prefix, and all of them walked straight past
+    // it while the native deny globs (`echo $*API_KEY*`) were already catching
+    // them. The two layers disagreed and the hook was the weaker one.
+    it('echo/printenv of a PREFIXED secret variable is blocked', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
+        // Every one of these was ALLOWED before the fix.
+        'echo $ANTHROPIC_API_KEY',
+        'echo $OPENAI_API_KEY',
+        'echo $GITHUB_TOKEN',
+        'echo $SENDGRID_API_KEY',
+        'echo $AWS_SECRET_ACCESS_KEY',
+        'echo $DATABASE_URL',
+        'echo ${GITHUB_TOKEN}',
+        'printenv ANTHROPIC_API_KEY',
+        'printenv DATABASE_URL',
+        'printenv',
+        'echo done; printenv',
+        // The unprefixed forms that already worked must keep working.
+        'echo $API_KEY',
+        'echo $SECRET',
+        'echo $TOKEN',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+
+      const mustAllow = [
+        'echo $HOME',
+        'echo $PATH',
+        'echo "building the api"',
+        'printenv PATH',
+        'printenv HOME',
+        // `env` as a prefix command is legitimate and must not be caught by the
+        // bare-printenv arm.
+        'env -u GITHUB_TOKEN git push',
+        'npm run build',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    it('deny rules cover the same prefixed variables as the hook', () => {
+      init(dir);
+      const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+      for (const rule of [
+        'Bash(echo $*API_KEY*)',
+        'Bash(echo $*PRIVATE_KEY*)',
+        'Bash(echo $*ACCESS_KEY*)',
+        'Bash(echo $*DATABASE_URL*)',
+        'Bash(printenv *PASSWORD*)',
+        'Bash(printenv *CREDENTIAL*)',
+        'Bash(printenv)',
+      ]) {
+        expect(settings.permissions.deny, `missing deny rule ${rule}`).toContain(rule);
+      }
+    });
+
     // `env` as a whole subcommand terminated by `)` (in `$(secretless-ai env)`),
     // `;`, `|`, or a quote — but `environment` must not match.
     it('env subcommand is caught at non-identifier boundaries, not in "environment"', () => {
