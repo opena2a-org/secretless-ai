@@ -216,7 +216,15 @@ export function customRulesToHookBlocks(rules: CustomRules): string {
     );
   }
 
-  return blocks.join('\n');
+  // Trailing newline is REQUIRED. The caller interpolates this directly ahead of
+  // `  exit 0`, so without it the last block's `fi` and that `exit 0` collide on
+  // one line (`  fi  exit 0`) and the generated hook is not valid bash. The hook
+  // then exits 2 on EVERY tool call, for every tool, in any project that defines
+  // `env:` or `bash:` rules. It fails closed, but a guard that blocks `ls -la`
+  // gets uninstalled. `files:`-only rules produce an empty string here and so
+  // never hit it, which is why this survived: the existing `bash -n` coverage
+  // only exercised a `files:` rule.
+  return blocks.length > 0 ? blocks.join('\n') + '\n' : '';
 }
 
 /**

@@ -88,6 +88,33 @@ describe('init', () => {
     // Regression: a custom wildcard file rule (`private*`) must keep glob semantics in the
     // generated hook. Single-quoting the fragment turned `*` literal and silently neutered
     // the rule, so `private_key.txt` was allowed despite the user asking to block it.
+    // Any project with `env:` or `bash:` rules generated a hook whose last
+    // custom block ended `  fi  exit 0` on one line — not valid bash. The hook
+    // exited 2 on every tool call, for every tool. `files:`-only rules produce
+    // an empty block string and so never hit it, which is exactly why the
+    // pre-existing `bash -n` test below never caught it.
+    it('generates valid bash for env: and bash: custom rules, not just files:', () => {
+      fs.writeFileSync(
+        path.join(dir, '.secretless-rules.yaml'),
+        'env:\n  - MY_CUSTOM_TOKEN\nbash:\n  - mytool-dump\n',
+      );
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Guard the fixture itself: if the rules were rejected by the validator
+      // they never reach the hook and this test proves nothing.
+      const script = fs.readFileSync(hookPath, 'utf-8');
+      expect(script, 'custom rules must actually reach the generated hook').toContain('MY_CUSTOM_TOKEN');
+      expect(script).toContain('mytool-dump');
+
+      execSync(`bash -n ${JSON.stringify(hookPath)}`);
+
+      // And it must actually run: a benign command exits 0, not 2.
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls -la' } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      expect(/"permissionDecision":"deny"/.test(out)).toBe(false);
+    });
+
     it('honors custom wildcard file rules (private*) in the generated case glob', () => {
       fs.writeFileSync(path.join(dir, '.secretless-rules.yaml'), 'files:\n  - "private*"\n');
       init(dir);

@@ -8,6 +8,8 @@
 
   Only non-empty strings are accepted from the parser. `str()` of a number, boolean, or object produced a non-empty WRONG value (`'123'`, `'True'`), which suppressed the grep fallback and left the guard reading a field that was not there.
 
+- **Custom `env:` or `bash:` rules no longer generate a broken hook.** `customRulesToHookBlocks` returned its blocks without a trailing newline, and the caller interpolates that directly ahead of `  exit 0`, so the last block's `fi` collided with it (`  fi  exit 0`). The generated script was not valid bash, and the hook exited 2 on every tool call, for every tool, in any project defining those rules. It failed closed, but a guard that blocks `ls -la` gets uninstalled. `files:`-only rules produce an empty block string and never hit it, which is why the existing `bash -n` coverage — written against a `files:` rule — never caught it. The new test asserts the rules actually reach the generated hook before checking it parses, so a fixture rejected by the pattern validator cannot report a false pass.
+
 - **The file guard now checks every candidate path in the payload, not just the first.** The structured parse reads the documented top-level fields, so on its own it would have narrowed the older whole-payload grep: a secret path nested below the top level (MultiEdit-style edit lists, MCP tool payloads) was no longer seen once a benign top-level path satisfied the extraction. Candidates from the structured walk and from the greps are now unioned and each one is checked, so a benign `path` cannot mask a nested secret `file_path`.
 
 ### Known limitation (deliberate, documented in the hook)
