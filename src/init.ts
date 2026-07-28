@@ -672,9 +672,13 @@ INPUT=$(cat)
 # fallback for hosts without python3.
 TOOL_NAME=""
 if command -v python3 >/dev/null 2>&1; then
+  # Emit ONLY a non-empty string. str() of a number, bool or dict would produce
+  # a non-empty WRONG value ('123', 'True', "{'a': 1}"), which suppresses the
+  # grep fallback below and leaves the guard reading a field that isn't there.
   TOOL_NAME=$(printf '%s' "$INPUT" | python3 -c 'import json,sys
 try:
-    sys.stdout.write(str(json.load(sys.stdin).get("tool_name") or ""))
+    v = json.load(sys.stdin).get("tool_name")
+    sys.stdout.write(v if isinstance(v, str) else "")
 except Exception:
     pass' 2>/dev/null || true)
 fi
@@ -686,21 +690,36 @@ fi
 # Same compact-JSON brittleness as TOOL_NAME above: a pretty-printed payload
 # leaves FILE_PATH empty and the file guard never runs. Parse properly when
 # python3 is available, keep the greps as the fallback.
-FILE_PATH=""
+# Collect EVERY candidate path, not just the first. The structured parse reads
+# the documented top-level fields; the greps additionally sweep the whole
+# payload, so a nested shape (MultiEdit-style edit lists, MCP tool payloads)
+# whose secret path is not at the top level is still seen. Checking the union
+# is what keeps the structured parse from NARROWING the older grep behaviour.
+# Only non-empty strings are emitted, for the same reason as TOOL_NAME above.
+FILE_PATH_CANDIDATES=""
 if command -v python3 >/dev/null 2>&1; then
-  FILE_PATH=$(printf '%s' "$INPUT" | python3 -c 'import json,sys
+  FILE_PATH_CANDIDATES=$(printf '%s' "$INPUT" | python3 -c 'import json,sys
+def walk(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k in ("file_path", "path") and isinstance(v, str) and v:
+                yield v
+            else:
+                yield from walk(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from walk(v)
 try:
-    ti = (json.load(sys.stdin).get("tool_input") or {})
-    sys.stdout.write(str(ti.get("file_path") or ti.get("path") or ""))
+    sys.stdout.write("\\n".join(walk(json.load(sys.stdin))))
 except Exception:
     pass' 2>/dev/null || true)
 fi
-if [ -z "$FILE_PATH" ]; then
-  FILE_PATH=$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-fi
-if [ -z "$FILE_PATH" ]; then
-  FILE_PATH=$(echo "$INPUT" | grep -o '"path":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-fi
+FILE_PATH_CANDIDATES=$(printf '%s\\n%s\\n%s\\n' \
+  "$FILE_PATH_CANDIDATES" \
+  "$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | cut -d'"' -f4 || true)" \
+  "$(echo "$INPUT" | grep -o '"path":"[^"]*"' | cut -d'"' -f4 || true)" \
+  | grep -v '^$' | sort -u || true)
+FILE_PATH=$(printf '%s' "$FILE_PATH_CANDIDATES" | head -1 || true)
 
 # For Bash tool, check the command for secret access patterns
 if [ "$TOOL_NAME" = "Bash" ]; then
@@ -730,28 +749,38 @@ except Exception:
   if [ -z "$COMMAND" ]; then
     COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   fi
-  # Committed template files (.env.example, .env.sample, .env.template, .env.dist)
-  # hold placeholders, not secrets. The file-path guard below already allows
-  # reading and editing them; without this the two layers disagree and
-  # \`cat .env.example\` is refused while \`Read(.env.example)\` succeeds.
+  # NOTE ON TEMPLATE FILES. The command guard refuses \`cat <name>.env.example\`
+  # even though the file-path guard below allows template files, so the two
+  # layers disagree about committed placeholders. That is a known, deliberate
+  # over-block, NOT an oversight.
   #
-  # Drop ONLY path tokens whose FINAL suffix is a template suffix, then run the
-  # secret-file guards on what remains. Two properties make this an exemption
-  # rather than an evasion:
-  #   - Anchored at the end of the token: \`.env.example\` is dropped, but
-  #     \`.env.example.real\` ends in \`.real\`, survives the scrub, and still blocks.
-  #   - Scrubbed per token, not per command: the token class holds only path
-  #     characters, so a token cannot span a separator. \`cat .env.example && cat .env\`
-  #     and \`cat .env;.example\` both still block on the real \`.env\`.
-  # The scrubbed copy is used only for matching, never for execution.
-  COMMAND_SANS_TEMPLATES=$(printf '%s' "$COMMAND" | sed -E 's#[A-Za-z0-9._/@+~-]*\\.(example|sample|template|dist)($|[^A-Za-z0-9._/-])# #g')
+  # The obvious fix — subtract template-suffixed tokens from the command before
+  # matching — was implemented, tested against a 50-command corpus, and then
+  # REVERTED, because it is a credential bypass. This guard is a denylist over
+  # command TEXT, and its only evidence is the literal secret path appearing
+  # after a verb. Removing that literal hands the attacker the deletion:
+  #
+  #     cat "$(basename <name>.env.example .example)"
+  #
+  # reconstructs the real path from the very token the scrub erased, needs no
+  # preconditions (basename is pure string manipulation, the template need not
+  # exist), and was measured reading a real secret. Requiring the extension
+  # match at the end of the token fails the same way, because the template token
+  # still never matches. Any textual exemption for the template NAME permits
+  # deriving the real name from it.
+  #
+  # Closing the disagreement safely needs the guard to resolve the path a
+  # command would actually open, rather than pattern-matching its text. Until
+  # then, over-blocking a placeholder file is the correct trade against leaking
+  # a real one.
+  #
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
-  if echo "$COMMAND_SANS_TEMPLATES" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
+  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files"}}'
     exit 0
   fi
   # Block python/node one-liners that read secret files
-  if echo "$COMMAND_SANS_TEMPLATES" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
+  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files"}}'
     exit 0
   fi
@@ -821,38 +850,48 @@ ${customRules ? customRulesToHookBlocks(customRules) : ''}  exit 0
 fi
 
 # Skip if no file path found
-if [ -z "$FILE_PATH" ]; then
+if [ -z "$FILE_PATH_CANDIDATES" ]; then
   exit 0
 fi
 
-# Normalize path for matching (case-insensitive: server.KEY and prod.ENV must match too)
-BASENAME=$(basename "$FILE_PATH")
-LOWER_BASENAME=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
-LOWER_PATH=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
+# Check EVERY candidate path. A payload carrying both a benign top-level path
+# and a secret one nested deeper must block on the secret one, so the loop only
+# skips a template candidate rather than exiting on it.
+while IFS= read -r CANDIDATE; do
+  [ -z "$CANDIDATE" ] && continue
 
-# Allow committed template/example files (.env.example, config.sample, etc.) — these
-# hold placeholders, not real secrets, and are meant to be read/edited/committed.
-# Checked BEFORE any block logic so it wins over the .env extension/dotfile rules below.
-case "$LOWER_BASENAME" in
-  *.example|*.sample|*.template|*.dist) exit 0 ;;
-esac
+  # Normalize path for matching (case-insensitive: server.KEY and prod.ENV must match too)
+  BASENAME=$(basename "$CANDIDATE")
+  LOWER_BASENAME=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
+  LOWER_PATH=$(echo "$CANDIDATE" | tr '[:upper:]' '[:lower:]')
 
-# Block by secret file extension as a suffix: server.key, prod.env, id_rsa.pem, terraform.tfstate
-if echo "$LOWER_BASENAME" | grep -qE '\\.(${extAlternation})$'; then BLOCKED=1; REASON="secret file extension"; fi
-# Block .env dotfile families (.env, .env.local, .envrc, .env.production)
-case "$LOWER_BASENAME" in
-  .env|.env.*|.envrc) BLOCKED=1; REASON=".env" ;;
-  ${dotfileCases}) BLOCKED=1; REASON="$LOWER_BASENAME" ;;
-esac
-# Block by path fragment anywhere in the path (credentials, .ssh/, secrets/, ...)
-case "$LOWER_PATH" in
-  ${fragmentCases}) BLOCKED=1; REASON="secret path" ;;
-esac
+  # Allow committed template/example files (.env.example, config.sample, etc.) — these
+  # hold placeholders, not real secrets, and are meant to be read/edited/committed.
+  # Checked BEFORE any block logic so it wins over the .env extension/dotfile rules below.
+  case "$LOWER_BASENAME" in
+    *.example|*.sample|*.template|*.dist) continue ;;
+  esac
 
-if [ "\${BLOCKED:-0}" = "1" ]; then
-  echo "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"permissionDecision\\":\\"deny\\",\\"permissionDecisionReason\\":\\"Secretless: blocked access to secret file matching pattern '$REASON'\\"}}"
-  exit 0
-fi
+  BLOCKED=0
+  # Block by secret file extension as a suffix: server.key, prod.env, id_rsa.pem, terraform.tfstate
+  if echo "$LOWER_BASENAME" | grep -qE '\\.(${extAlternation})$'; then BLOCKED=1; REASON="secret file extension"; fi
+  # Block .env dotfile families (.env, .env.local, .envrc, .env.production)
+  case "$LOWER_BASENAME" in
+    .env|.env.*|.envrc) BLOCKED=1; REASON=".env" ;;
+    ${dotfileCases}) BLOCKED=1; REASON="$LOWER_BASENAME" ;;
+  esac
+  # Block by path fragment anywhere in the path (credentials, .ssh/, secrets/, ...)
+  case "$LOWER_PATH" in
+    ${fragmentCases}) BLOCKED=1; REASON="secret path" ;;
+  esac
+
+  if [ "\${BLOCKED:-0}" = "1" ]; then
+    echo "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"permissionDecision\\":\\"deny\\",\\"permissionDecisionReason\\":\\"Secretless: blocked access to secret file matching pattern '$REASON'\\"}}"
+    exit 0
+  fi
+done <<EOF
+$FILE_PATH_CANDIDATES
+EOF
 
 exit 0
 `;

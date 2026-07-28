@@ -273,12 +273,27 @@ describe('init', () => {
         ).toBe(true);
       });
 
-      it('still allows a template read when the payload is pretty-printed', () => {
+      it('allows a benign command when the payload is pretty-printed', () => {
         init(dir);
         const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
         const pretty = JSON.stringify(
-          { tool_name: 'Bash', tool_input: { command: 'cat .env.example' } },
+          { tool_name: 'Bash', tool_input: { command: 'ls -la' } },
+          null,
+          2,
+        );
+        expect(runHookRaw(hookPath, pretty)).toBe(false);
+      });
+
+      it('allows a template file read through the FILE guard when pretty-printed', () => {
+        init(dir);
+        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+        // The file guard exempts templates; the COMMAND guard deliberately does
+        // not (see the revert note in init.ts). This asserts the file-guard half
+        // still works once the payload parses.
+        const pretty = JSON.stringify(
+          { tool_name: 'Read', tool_input: { file_path: '/p/.env.example' } },
           null,
           2,
         );
@@ -286,59 +301,100 @@ describe('init', () => {
       });
     });
 
-    describe('command guard agrees with the file-path guard about template files', () => {
-      it('allows reading committed template files', () => {
-        init(dir);
-        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
-
-        const mustAllow = [
-          'cat .env.example',
-          'cat .env.sample',
-          'cat .env.template',
-          'cat .env.dist',
-          'head .env.example',
-          'tail -5 .env.example',
-          'grep DATABASE_URL .env.example',
-          'sed -n 1,5p .env.example',
-          "awk '{print}' .env.example",
-          'cat ./config/.env.example',
-          'cat config.env.sample',
-          'cat app.env.template',
-          'node -e "require(\'fs\').readFileSync(\'.env.example\')"',
-          'python3 -c "open(\'.env.example\').read()"',
-        ];
-        for (const c of mustAllow) {
-          expect(runHookCmd(hookPath, c), `expected hook to ALLOW template read: ${c}`).toBe(false);
-        }
-      });
-
-      it('still blocks real secret files, and every near-miss of the template suffix', () => {
+    // A template exemption in the COMMAND guard was implemented, then reverted:
+    // subtracting template-suffixed tokens from the command text is a credential
+    // bypass, because the command can rebuild the real path from the token that
+    // was deleted. These cases lock that the guard stays closed.
+    describe('the command guard must not be weakened by template names', () => {
+      it('blocks a command that derives a real secret path from a template name', () => {
         init(dir);
         const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
         const mustBlock = [
-          // real secrets, unchanged
+          'cat "$(basename .env.example .example)"',
+          'cat "$(printf %s .env.example | cut -d. -f1-2)"',
+          'head "$(basename .env.example .example)"',
+          'cat "$(basename server.key.example .example)"',
+          'python3 -c "print(open(\'.env.example\'.replace(\'.example\',\'\')).read())"',
+        ];
+        for (const c of mustBlock) {
+          expect(
+            runHookCmd(hookPath, c),
+            `a command that reconstructs a real secret path must stay BLOCKED: ${c}`,
+          ).toBe(true);
+        }
+      });
+
+      it('still blocks direct secret reads', () => {
+        init(dir);
+        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+        for (const c of [
           'cat .env',
           'cat .env.local',
           'cat .env.production',
           'cat prod.env',
           'cat server.key',
           'cat id_rsa.pem',
-          // the suffix must be ANCHORED at the end of the token, or the
-          // exemption becomes an evasion
-          'cat .env.example.real',
-          'cat .env.example.bak',
-          'cat .env.exampleX',
-          // a template elsewhere in the command must not whitelist a real read
           'cat .env.example && cat .env',
-          'cat .env.example; cat .env',
-          'cat .env.template | cat .env',
-          // a token must not span a separator
           'cat .env;.example',
-        ];
-        for (const c of mustBlock) {
+        ]) {
           expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
         }
+      });
+    });
+
+    // The structured parse must not NARROW the older whole-payload grep: a
+    // secret path nested below the documented top-level fields (MultiEdit-style
+    // edit lists, MCP tool payloads) has to be seen too.
+    describe('every candidate path in the payload is checked', () => {
+      function runHookRaw(hookPath: string, input: string): boolean {
+        const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+        return /"permissionDecision":"deny"/.test(out);
+      }
+
+      it('blocks a secret path nested under a benign top-level path', () => {
+        init(dir);
+        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+        const nested = JSON.stringify({
+          tool_name: 'Edit',
+          tool_input: { path: 'README.md', edits: [{ file_path: '/project/.env' }] },
+        });
+        expect(
+          runHookRaw(hookPath, nested),
+          'a nested secret path must not be masked by a benign top-level path',
+        ).toBe(true);
+      });
+
+      it('does not block when every candidate is benign', () => {
+        init(dir);
+        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+        const benign = JSON.stringify({
+          tool_name: 'Edit',
+          tool_input: { path: 'README.md', edits: [{ file_path: '/project/src/index.ts' }] },
+        });
+        expect(runHookRaw(hookPath, benign)).toBe(false);
+      });
+
+      it('does not block when the only candidate is a template file', () => {
+        init(dir);
+        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+        const tpl = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/p/.env.example' } });
+        expect(runHookRaw(hookPath, tpl)).toBe(false);
+      });
+
+      it('blocks a non-string field without letting it suppress the real path', () => {
+        init(dir);
+        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+        const odd = JSON.stringify({
+          tool_name: 'Read',
+          tool_input: { path: 123, edits: [{ file_path: '/project/.env' }] },
+        });
+        expect(runHookRaw(hookPath, odd)).toBe(true);
       });
     });
   });
