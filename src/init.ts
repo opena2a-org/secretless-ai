@@ -662,10 +662,42 @@ INPUT=$(cat)
 # \`set -euo pipefail\` — without it the whole Bash-command branch below was dead:
 # every Bash call died at the FILE_PATH line (grep found no file_path) before any
 # command guard ran. Regression: release-test 2026-07-16.
-TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+# Parse tool_name with a real JSON parser when one is available, for the same
+# reason the command extraction below does. The grep form requires COMPACT JSON:
+# it matches '"tool_name":"…"' with no space after the colon, so a client that
+# pretty-prints its hook payload yields an empty TOOL_NAME, the Bash branch below
+# is skipped entirely, and every command guard silently fails OPEN. That is the
+# same dead-branch class as the 2026-07-16 FILE_PATH regression, reached through
+# formatting rather than through \`set -euo pipefail\`. The grep remains as the
+# fallback for hosts without python3.
+TOOL_NAME=""
+if command -v python3 >/dev/null 2>&1; then
+  TOOL_NAME=$(printf '%s' "$INPUT" | python3 -c 'import json,sys
+try:
+    sys.stdout.write(str(json.load(sys.stdin).get("tool_name") or ""))
+except Exception:
+    pass' 2>/dev/null || true)
+fi
+if [ -z "$TOOL_NAME" ]; then
+  TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+fi
 
-# Extract file path from tool input (handles Read, Grep, Glob, Edit, Write)
-FILE_PATH=$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+# Extract file path from tool input (handles Read, Grep, Glob, Edit, Write).
+# Same compact-JSON brittleness as TOOL_NAME above: a pretty-printed payload
+# leaves FILE_PATH empty and the file guard never runs. Parse properly when
+# python3 is available, keep the greps as the fallback.
+FILE_PATH=""
+if command -v python3 >/dev/null 2>&1; then
+  FILE_PATH=$(printf '%s' "$INPUT" | python3 -c 'import json,sys
+try:
+    ti = (json.load(sys.stdin).get("tool_input") or {})
+    sys.stdout.write(str(ti.get("file_path") or ti.get("path") or ""))
+except Exception:
+    pass' 2>/dev/null || true)
+fi
+if [ -z "$FILE_PATH" ]; then
+  FILE_PATH=$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+fi
 if [ -z "$FILE_PATH" ]; then
   FILE_PATH=$(echo "$INPUT" | grep -o '"path":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 fi
@@ -698,13 +730,28 @@ except Exception:
   if [ -z "$COMMAND" ]; then
     COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   fi
+  # Committed template files (.env.example, .env.sample, .env.template, .env.dist)
+  # hold placeholders, not secrets. The file-path guard below already allows
+  # reading and editing them; without this the two layers disagree and
+  # \`cat .env.example\` is refused while \`Read(.env.example)\` succeeds.
+  #
+  # Drop ONLY path tokens whose FINAL suffix is a template suffix, then run the
+  # secret-file guards on what remains. Two properties make this an exemption
+  # rather than an evasion:
+  #   - Anchored at the end of the token: \`.env.example\` is dropped, but
+  #     \`.env.example.real\` ends in \`.real\`, survives the scrub, and still blocks.
+  #   - Scrubbed per token, not per command: the token class holds only path
+  #     characters, so a token cannot span a separator. \`cat .env.example && cat .env\`
+  #     and \`cat .env;.example\` both still block on the real \`.env\`.
+  # The scrubbed copy is used only for matching, never for execution.
+  COMMAND_SANS_TEMPLATES=$(printf '%s' "$COMMAND" | sed -E 's#[A-Za-z0-9._/@+~-]*\\.(example|sample|template|dist)($|[^A-Za-z0-9._/-])# #g')
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
-  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
+  if echo "$COMMAND_SANS_TEMPLATES" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files"}}'
     exit 0
   fi
   # Block python/node one-liners that read secret files
-  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
+  if echo "$COMMAND_SANS_TEMPLATES" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files"}}'
     exit 0
   fi

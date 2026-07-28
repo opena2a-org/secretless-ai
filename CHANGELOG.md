@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **The guard hook no longer fails open on a pretty-printed payload.** `tool_name` and `file_path` were extracted with greps that match only compact JSON (`"tool_name":"Bash"`, no space after the colon). A client that pretty-prints its hook payload left both empty, which skipped the entire Bash-command branch and the file-path guard, so every guard silently permitted the call. This is the same dead-branch class as the 2026-07-16 `FILE_PATH` regression, reached through payload formatting rather than through `set -euo pipefail`. Both fields are now parsed with `python3`'s JSON module (as the `command` field already was), with the greps kept as the fallback for hosts without python3. Regression tests drive the hook with pretty-printed payloads and assert the deny still fires; both fail against the previous hook.
+
+### Fixed
+
+- **The command guard and the file-path guard now agree about template files.** `Read(.env.example)` was allowed while `cat .env.example` was refused, so committed placeholder files were readable by one layer and blocked by the other. The command guard now drops path tokens whose FINAL suffix is a template suffix (`.example`, `.sample`, `.template`, `.dist`) before applying the secret-file patterns.
+
+  The suffix is anchored at the end of the token, which is what keeps this an exemption rather than an evasion: `.env.example.real`, `.env.example.bak`, and `.env.exampleX` all end in something else, survive the scrub, and still block. The scrub also works per path token rather than per command, and the token character class holds only path characters, so a token cannot span a separator — `cat .env.example && cat .env`, `cat .env.template | cat .env`, and `cat .env;.example` all still block on the real secret. Verified with a 50-command differential corpus run against the old and new hooks: 17 template reads unblocked, 0 security regressions.
+
 All notable changes to [secretless-ai](https://www.npmjs.com/package/secretless-ai) are documented in this file.
 
 ```bash
