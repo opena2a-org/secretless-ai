@@ -578,6 +578,25 @@ const SECRET_VAR_REF = '\\$\\{?[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
 // Same, for commands that take a bare variable NAME with no `$` (printenv FOO).
 const SECRET_VAR_NAME = '[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
 
+// The span between `echo` and the variable must stay inside ONE command. With a
+// bare `.*` the match ran to the end of the whole line, so any compound command
+// that happened to contain an `echo` anywhere was judged by a `$SECRET` far away
+// in an unrelated command: `echo "starting"; curl -H "Bearer $API_KEY"` was
+// blocked even though passing a secret to curl is the intended way to use one.
+// Over-blocking legitimate use is not a safe default, it is how a guard gets
+// switched off. Stopping at a command separator keeps `echo $API_KEY` and
+// `echo "value:" $API_KEY` blocked while letting the next command through, and
+// a separate `echo $SECRET` later on still matches on its own.
+const SAME_COMMAND = '[^;&|\\n]*';
+
+// A secret file extension must END there. Without a boundary, `.key` matched
+// `.keys()` and `.keychain`, and `.env` matched `.envelope`, so ordinary work
+// was blocked: `python3 -c "...json.load(f).keys()"` was refused as if it were
+// reading a private key. grep -E has no lookahead, so the boundary consumes one
+// character or end-of-string. `.env.local` still matches, because the character
+// after `.env` is a dot, not an identifier character.
+const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9]|$)';
+
 function generateClaudeHookScript(customRules?: CustomRules | null): string {
   // Three categories of secret-file signals. Each matches differently:
   //  - extensions: suffix match on basename, e.g. `server.key`, `prod.env`, `id_rsa.pem`.
@@ -625,6 +644,17 @@ function generateClaudeHookScript(customRules?: CustomRules | null): string {
 
 set -euo pipefail
 
+# Match bytewise, not by the ambient locale.
+#
+# In a UTF-8 locale grep decodes each line as characters, and a line carrying an
+# invalid byte sequence cannot be decoded, so any pattern using a bracket
+# expression stops matching on that line while a plain literal pattern still
+# does. That is an evasion: appending one invalid byte to a secret-reading
+# command made the bracket-expression guards below fall silent. LC_ALL=C removes
+# the decoding step, so a command cannot change how it is matched by carrying
+# undecodable bytes, and matching no longer varies with the developer's locale.
+export LC_ALL=C
+
 INPUT=$(cat)
 # Each field is optional depending on the tool (a Bash call has no file_path; a
 # Read call has no command), so a non-matching grep is normal, not an error. The
@@ -669,12 +699,12 @@ except Exception:
     COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   fi
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
-  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*\\.(env|key|pem|p12|pfx)'; then
+  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files"}}'
     exit 0
   fi
   # Block python/node one-liners that read secret files
-  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*\\.(env|key|pem|p12|pfx)'; then
+  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files"}}'
     exit 0
   fi
@@ -690,7 +720,7 @@ except Exception:
   fi
   # Block commands that echo secret env vars. The variable name may carry any
   # prefix: $ANTHROPIC_API_KEY and \${GITHUB_TOKEN} count, not just $API_KEY.
-  if echo "$COMMAND" | grep -qiE '(echo|printenv)\\s+.*${SECRET_VAR_REF}'; then
+  if echo "$COMMAND" | grep -qiE '(echo|printenv)\\s+${SAME_COMMAND}${SECRET_VAR_REF}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
     exit 0
   fi

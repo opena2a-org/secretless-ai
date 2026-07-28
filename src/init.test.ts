@@ -297,6 +297,9 @@ describe('init', () => {
         'echo $AWS_SECRET_ACCESS_KEY',
         'echo $DATABASE_URL',
         'echo ${GITHUB_TOKEN}',
+        'echo "value:" $GITHUB_TOKEN',
+        // A separator resets the span, but a fresh echo after it still matches.
+        'echo "starting"; echo $ANTHROPIC_API_KEY',
         'printenv ANTHROPIC_API_KEY',
         'printenv DATABASE_URL',
         'printenv',
@@ -316,6 +319,11 @@ describe('init', () => {
         'echo "building the api"',
         'printenv PATH',
         'printenv HOME',
+        // Passing a secret to a program is the intended way to use one. An echo
+        // earlier in the same line must not condemn a later, unrelated command.
+        'echo "starting"; curl -H "Authorization: Bearer $ANTHROPIC_API_KEY" https://api.anthropic.com/v1/models',
+        'echo "deploying" && vercel deploy --token $VERCEL_TOKEN',
+        'echo done | tee log; psql "$DATABASE_URL" -c "select 1"',
         // `env` as a prefix command is legitimate and must not be caught by the
         // bare-printenv arm.
         'env -u GITHUB_TOKEN git push',
@@ -323,6 +331,38 @@ describe('init', () => {
       ];
       for (const c of mustAllow) {
         expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    // `.key` used to match `.keys()`, so ordinary work was refused as if it
+    // were reading a private key. A guard that blocks the day job gets switched
+    // off, which is the real security cost.
+    it('a secret file extension must end there, not merely appear', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustAllow = [
+        'python3 -c "import json; d=json.load(open(\'package.json\')); print(d.keys())"',
+        'node -e "console.log(Object.keys(process.versions))"',
+        'grep -rn "keychain" src/',
+        'cat notes.keynote',
+        'sed -n 1p envelope.txt',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+
+      // The real thing must still be caught, including the dotted suffix form.
+      const mustBlock = [
+        'cat .env',
+        'cat .env.local',
+        'cat server.key',
+        'grep -n secret id_rsa.pem',
+        'python3 -c "print(open(\'.env\').read())"',
+        'node -e "require(\'fs\').readFileSync(\'server.key\')"',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
       }
     });
 
