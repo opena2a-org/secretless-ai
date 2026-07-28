@@ -279,6 +279,109 @@ describe('init', () => {
       expect(runHookCmd(hookPath, 'cat .env \uD800'), 'expected BLOCK despite lone surrogate').toBe(true);
     });
 
+    // The hook's env-var arm used to anchor the secret word immediately after the
+    // `$`, so it only ever caught the bare `$API_KEY` form. Every variable name
+    // anyone actually uses carries a prefix, and all of them walked straight past
+    // it while the native deny globs (`echo $*API_KEY*`) were already catching
+    // them. The two layers disagreed and the hook was the weaker one.
+    it('echo/printenv of a PREFIXED secret variable is blocked', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
+        // Every one of these was ALLOWED before the fix.
+        'echo $ANTHROPIC_API_KEY',
+        'echo $OPENAI_API_KEY',
+        'echo $GITHUB_TOKEN',
+        'echo $SENDGRID_API_KEY',
+        'echo $AWS_SECRET_ACCESS_KEY',
+        'echo $DATABASE_URL',
+        'echo ${GITHUB_TOKEN}',
+        'echo "value:" $GITHUB_TOKEN',
+        // A separator resets the span, but a fresh echo after it still matches.
+        'echo "starting"; echo $ANTHROPIC_API_KEY',
+        'printenv ANTHROPIC_API_KEY',
+        'printenv DATABASE_URL',
+        'printenv',
+        'echo done; printenv',
+        // The unprefixed forms that already worked must keep working.
+        'echo $API_KEY',
+        'echo $SECRET',
+        'echo $TOKEN',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+
+      const mustAllow = [
+        'echo $HOME',
+        'echo $PATH',
+        'echo "building the api"',
+        'printenv PATH',
+        'printenv HOME',
+        // Passing a secret to a program is the intended way to use one. An echo
+        // earlier in the same line must not condemn a later, unrelated command.
+        'echo "starting"; curl -H "Authorization: Bearer $ANTHROPIC_API_KEY" https://api.anthropic.com/v1/models',
+        'echo "deploying" && vercel deploy --token $VERCEL_TOKEN',
+        'echo done | tee log; psql "$DATABASE_URL" -c "select 1"',
+        // `env` as a prefix command is legitimate and must not be caught by the
+        // bare-printenv arm.
+        'env -u GITHUB_TOKEN git push',
+        'npm run build',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    // `.key` used to match `.keys()`, so ordinary work was refused as if it
+    // were reading a private key. A guard that blocks the day job gets switched
+    // off, which is the real security cost.
+    it('a secret file extension must end there, not merely appear', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustAllow = [
+        'python3 -c "import json; d=json.load(open(\'package.json\')); print(d.keys())"',
+        'node -e "console.log(Object.keys(process.versions))"',
+        'grep -rn "keychain" src/',
+        'cat notes.keynote',
+        'sed -n 1p envelope.txt',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+
+      // The real thing must still be caught, including the dotted suffix form.
+      const mustBlock = [
+        'cat .env',
+        'cat .env.local',
+        'cat server.key',
+        'grep -n secret id_rsa.pem',
+        'python3 -c "print(open(\'.env\').read())"',
+        'node -e "require(\'fs\').readFileSync(\'server.key\')"',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+    });
+
+    it('deny rules cover the same prefixed variables as the hook', () => {
+      init(dir);
+      const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+      for (const rule of [
+        'Bash(echo $*API_KEY*)',
+        'Bash(echo $*PRIVATE_KEY*)',
+        'Bash(echo $*ACCESS_KEY*)',
+        'Bash(echo $*DATABASE_URL*)',
+        'Bash(printenv *PASSWORD*)',
+        'Bash(printenv *CREDENTIAL*)',
+        'Bash(printenv)',
+      ]) {
+        expect(settings.permissions.deny, `missing deny rule ${rule}`).toContain(rule);
+      }
+    });
+
     // `env` as a whole subcommand terminated by `)` (in `$(secretless-ai env)`),
     // `;`, `|`, or a quote — but `environment` must not match.
     it('env subcommand is caught at non-identifier boundaries, not in "environment"', () => {
