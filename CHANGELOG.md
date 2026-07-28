@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **The guard hook no longer fails open on a pretty-printed payload.** `tool_name` and `file_path` were extracted with greps that match only compact JSON (`"tool_name":"Bash"`, no space after the colon). A client that pretty-prints its hook payload left both empty, which skipped the entire Bash-command branch and the file-path guard, so every guard silently permitted the call. This is the same dead-branch class as the 2026-07-16 `FILE_PATH` regression, reached through payload formatting rather than through `set -euo pipefail`. Both fields are now parsed with `python3`'s JSON module (as the `command` field already was), with the greps kept as the fallback for hosts without python3 — where python3 is absent, the pretty-printed payload still fails open, so this closes the hole only on hosts that have it.
+
+  Only non-empty strings are accepted from the parser. `str()` of a number, boolean, or object produced a non-empty WRONG value (`'123'`, `'True'`), which suppressed the grep fallback and left the guard reading a field that was not there.
+
+- **Custom `env:` or `bash:` rules no longer generate a broken hook.** `customRulesToHookBlocks` returned its blocks without a trailing newline, and the caller interpolates that directly ahead of `  exit 0`, so the last block's `fi` collided with it (`  fi  exit 0`). The generated script was not valid bash, and the hook exited 2 on every tool call, for every tool, in any project defining those rules. It failed closed, but a guard that blocks `ls -la` gets uninstalled. `files:`-only rules produce an empty block string and never hit it, which is why the existing `bash -n` coverage — written against a `files:` rule — never caught it. The new test asserts the rules actually reach the generated hook before checking it parses, so a fixture rejected by the pattern validator cannot report a false pass.
+
+- **The file guard now checks every candidate path in the payload, not just the first.** The structured parse reads the documented top-level fields, so on its own it would have narrowed the older whole-payload grep: a secret path nested below the top level (MultiEdit-style edit lists, MCP tool payloads) was no longer seen once a benign top-level path satisfied the extraction. Candidates from the structured walk and from the greps are now unioned and each one is checked, so a benign `path` cannot mask a nested secret `file_path`.
+
+### Known limitation (deliberate, documented in the hook)
+
+- **The command guard still refuses to read committed template files**, while the file-path guard allows them. The two layers disagree on purpose.
+
+  The obvious fix — subtracting template-suffixed path tokens from the command before matching — was implemented, tested against a 50-command corpus, and then reverted, because it is a credential bypass. The guard is a denylist over command TEXT whose only evidence is the literal secret path appearing after a verb; removing that literal hands the attacker the deletion. `cat "$(basename <name>.env.example .example)"` reconstructs the real path from the very token the scrub erased, needs no preconditions, and was measured reading a real secret file that the previous hook blocked. Requiring the extension match at the end of the token fails identically, because the template token still never matches.
+
+  Closing the disagreement safely requires resolving the path a command would actually open rather than pattern-matching its text. Until then, over-blocking a placeholder file is the correct trade against leaking a real one.
+
 All notable changes to [secretless-ai](https://www.npmjs.com/package/secretless-ai) are documented in this file.
 
 ```bash
