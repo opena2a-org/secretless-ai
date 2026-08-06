@@ -19,7 +19,7 @@ cd secretless-ai
 git status                 # clean, or only the branch you intend to ship
 npm ci                     # lockfile valid
 npm run build              # zero output, zero errors
-npm test                   # all green (baseline: 1099 tests)
+npm test                   # all green (baseline: 1206 tests)
 ```
 
 Fail the release if any step is red.
@@ -268,6 +268,25 @@ Fail the release if:
   node_major)
 - a command blocks more than 2 seconds when the telemetry endpoint is
   unreachable
+
+---
+
+## 10b. Documented commands must exist (1 min)
+
+Every command the README and `docs/` tell a user to run is copied verbatim by
+readers. Reading the page cannot tell you whether the CLI accepts it — only
+running it can.
+
+```bash
+npm test -- src/docs-commands.test.ts   # derives the command list from cli.ts
+```
+
+This is covered by a unit test, so §0 already ran it. Exercise it by hand only
+when the release **tightens a parser**: a stricter validator turns previously
+silent doc errors into hard failures. Precedent (0.21.0): making `init` reject
+unknown flags (#62) meant the team-setup guide's documented postinstall hook
+(which passed `--ci` to `init`) began exiting 2, failing `npm install` for
+every developer on a team that followed it.
 
 ---
 
