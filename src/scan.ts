@@ -93,9 +93,11 @@ export function maskLine(line: string, pattern: Pick<CredentialPattern, 'name' |
     // in slot 0 means the pattern has at least one capture group.
     const value = typeof rest[0] === 'string' ? rest[0] : undefined;
     if (!value) return label;
-    const idx = full.lastIndexOf(value);
-    if (idx === -1) return label;
-    return full.slice(0, idx) + label + full.slice(idx + value.length);
+    if (!full.includes(value)) return label;
+    // EVERY occurrence, not just the first or last: a match that spans the
+    // value twice would otherwise leave a copy of the secret in the preview.
+    // No pattern does that today; redacting all of them means none can.
+    return full.split(value).join(label);
   });
 }
 
