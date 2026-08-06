@@ -20,6 +20,10 @@
 
 - **A pending 1Password approval hung the entire command.** `op` was invoked with no timeout, so an approval dialog waiting on someone who is not at the machine blocked the caller indefinitely with no output. Calls are now bounded (30s default, `SECRETLESS_OP_TIMEOUT_MS` to change it) and report what to check.
 
+- **The team-setup guide published a `postinstall` hook that fails every `npm install`.** `docs/use-cases/team-setup.md` told teams to add `"postinstall": "npx secretless-ai init --ci"`, directly under the line "Now every `npm install` configures AI tool protections automatically." `init` takes an optional directory path and no flags, so it exits 2 with `Unknown option: --ci` and npm fails the install for every developer who followed the guide.
+
+  The guide was correct when it was written. Making `init` reject unknown flags (#62 — before that, `init --dry-run` created a literal `--dry-run/` directory) is what turned a silently-wrong documented command into a loudly-broken one. A release that tightens a parser has to re-check every command its own docs publish. `src/docs-commands.test.ts` now derives the command list from the dispatch sites in `cli.ts` and fails if any documented command does not exist, or if any doc puts a flag on `init`.
+
 - **Errors were buried under a stack trace.** The top-level handler printed the raw error object, so messages carrying `Verify:` and `Fix:` lines arrived underneath our own file paths and read as a crash. It now prints the message; set `SECRETLESS_DEBUG=1` when the stack is what you need.
 
 - **Overwriting a macOS Keychain secret could destroy it.** `store()` deleted the existing entry before adding the replacement, so a write that failed afterwards — a locked Keychain, a dismissed approval — left nothing behind. The entry is now updated in place with `security add-generic-password -U`, and the legacy-named duplicate is swept only after the new value is committed. Same defect and same fix as the 1Password backend above.

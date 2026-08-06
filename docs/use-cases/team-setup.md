@@ -69,7 +69,7 @@ Add to `package.json`:
 ```json
 {
   "scripts": {
-    "postinstall": "npx secretless-ai init --ci"
+    "postinstall": "npx secretless-ai init"
   }
 }
 ```
