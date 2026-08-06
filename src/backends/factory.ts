@@ -27,14 +27,23 @@ import type { SelectableBackendType } from './config';
  * is available (macOS Keychain, Linux Secret Service, or Windows Credential
  * Manager). Falls back to 'local' only when keychain initialization fails.
  *
+ * When the caller explicitly configured a non-local backend and that backend is
+ * unavailable, this THROWS rather than substituting a different store.
+ * Substituting is never a safe degradation for a credential manager: a write
+ * lands in a store the user did not choose while reporting success, and a read
+ * reports "no secrets" from an empty store the user never populated. Both look
+ * like success. See `unavailableBackendError` for the recovery message.
+ *
  * @param type   - 'local', 'keychain', '1password', 'vault', or 'gcp-sm'
  * @param config - Backend-specific configuration (e.g. storeDir, key, vault)
- * @param strict - If true, throw instead of falling back to local. Default: false.
+ * @param strict - Default TRUE. Pass false ONLY for read-only diagnostics that
+ *                 must render something even when the backend is down, and that
+ *                 disclose which backend actually answered.
  */
 export function createBackend(
   type: SelectableBackendType,
   config?: Record<string, unknown>,
-  strict?: boolean,
+  strict: boolean = true,
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
 
@@ -66,11 +75,13 @@ export function createBackend(
     case '1password': {
       const op = isOnePasswordAvailable();
       if (!op.available) {
-        if (strict) throw new Error(`Cannot use 1Password backend: ${op.message}`);
-        console.error(`secretless: 1Password CLI not available. Using local backend instead.`);
-        console.error(`  To fix: brew install 1password-cli && op signin`);
-        console.error(`  To switch: npx secretless-ai backend set local\n`);
-        return new LocalBackend(config);
+        if (strict) {
+          throw unavailableBackendError('1password', op.message, [
+            'brew install 1password-cli && op signin',
+            'Enable "Integrate with 1Password CLI" in the 1Password app under Settings > Developer',
+          ], 'op account get');
+        }
+        return degradedFallback('1password', op.message, config);
       }
       backend = new OnePasswordBackend(config);
       break;
@@ -78,11 +89,13 @@ export function createBackend(
 
     case 'vault': {
       if (!process.env.VAULT_ADDR || !process.env.VAULT_TOKEN) {
-        if (strict) throw new Error('Cannot use Vault backend: VAULT_ADDR and VAULT_TOKEN must be set');
-        console.error(`secretless: Vault not configured. Using local backend instead.`);
-        console.error(`  To fix: export VAULT_ADDR=... VAULT_TOKEN=...`);
-        console.error(`  To switch: npx secretless-ai backend set local\n`);
-        return new LocalBackend(config);
+        const why = 'VAULT_ADDR and VAULT_TOKEN must be set';
+        if (strict) {
+          throw unavailableBackendError('vault', why, [
+            'export VAULT_ADDR=https://vault.example.com VAULT_TOKEN=<token>',
+          ], 'vault token lookup');
+        }
+        return degradedFallback('vault', why, config);
       }
       backend = new VaultBackend(config);
       break;
@@ -91,11 +104,12 @@ export function createBackend(
     case 'gcp-sm': {
       const gcp = isGCPAvailable();
       if (!gcp.available) {
-        if (strict) throw new Error(`Cannot use GCP Secret Manager backend: ${gcp.message}`);
-        console.error(`secretless: GCP credentials not available. Using local backend instead.`);
-        console.error(`  To fix: ${gcp.message}`);
-        console.error(`  To switch: npx secretless-ai backend set local\n`);
-        return new LocalBackend(config);
+        if (strict) {
+          throw unavailableBackendError('gcp-sm', gcp.message, [
+            'gcloud auth application-default login',
+          ], 'gcloud auth application-default print-access-token');
+        }
+        return degradedFallback('gcp-sm', gcp.message, config);
       }
       backend = new GCPSecretManagerBackend(config);
       break;
@@ -113,6 +127,65 @@ export function createBackend(
     return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000 });
   }
   return backend;
+}
+
+/**
+ * Build the error raised when a user-configured backend cannot be reached.
+ *
+ * The message has to do four things, because this is the moment a user decides
+ * whether the tool is trustworthy or broken:
+ *   - name the backend THEY chose, so it reads as a connection problem
+ *   - state that nothing was lost and nothing was written elsewhere
+ *   - give a command that VERIFIES the diagnosis independently
+ *   - give the command that FIXES it, and the explicit opt-out
+ * No dead ends: every line the user reads ends in something they can run.
+ */
+export function unavailableBackendError(
+  type: SelectableBackendType,
+  why: string,
+  fixes: string[],
+  verifyCmd: string,
+): Error {
+  // `why` is the `.message` of a caught error and can carry newlines. Left as
+  // is, it breaks the block apart and the Verify/Fix lines stop reading as a
+  // list — the recovery instructions are the whole point of this message.
+  const reason = why.replace(/\s+/g, ' ').trim();
+
+  const lines = [
+    `Configured backend "${type}" is not reachable: ${reason}`,
+    '',
+    `  Your secrets are safe. Nothing was read from or written to another store.`,
+    '',
+    `  Verify:  ${verifyCmd}`,
+  ];
+  for (const fix of fixes) {
+    lines.push(`  Fix:     ${fix}`);
+  }
+  lines.push(
+    '',
+    `  Secretless will not silently use a different store, because a secret`,
+    `  written to the wrong one looks like success and is found by nothing.`,
+    `  To move to a different backend deliberately:`,
+    `    secretless-ai backend migrate --from ${type} --to local`,
+  );
+  return new Error(lines.join('\n'));
+}
+
+/**
+ * Non-strict path: return the local store, but say plainly that the answer
+ * comes from a DIFFERENT store than the one configured, so a caller rendering
+ * "no entries" cannot be misread as "the configured backend is empty".
+ *
+ * Only read-only diagnostics should reach this.
+ */
+function degradedFallback(
+  type: SelectableBackendType,
+  why: string,
+  config?: Record<string, unknown>,
+): WritableSecretBackend {
+  console.error(`secretless: backend "${type}" unreachable (${why}).`);
+  console.error(`  Showing the local store instead. Entries in "${type}" are NOT listed below.\n`);
+  return new LocalBackend(config);
 }
 
 /**

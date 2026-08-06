@@ -62,8 +62,9 @@ function mockOpCli(items: Array<{ id: string; title: string; password: string }>
     }
 
     if (sub === 'item delete') {
-      const title = args[2];
-      const found = items.find(i => i.title === title);
+      // store() deletes by ID; delete() still resolves by title.
+      const ref = args[2];
+      const found = items.find(i => i.id === ref || i.title === ref);
       if (!found) throw new Error('item not found');
       return '' as unknown as Buffer;
     }
@@ -82,7 +83,75 @@ describe('OnePasswordBackend', () => {
   });
 
   describe('store()', () => {
-    it('calls op item delete then create with correct args', async () => {
+    it('creates the replacement before retiring the previous item', async () => {
+      // A previous value for this key already exists.
+      mockOpCli([{ id: 'item-old', title: 'secret/API_KEY', password: 'sk-old' }]);
+      const backend = new OnePasswordBackend();
+
+      await backend.store('secret/API_KEY', 'sk-12345');
+
+      const opCalls = mockExecFileSync.mock.calls
+        .filter(c => c[0] === 'op' && Array.isArray(c[1]))
+        .map(c => (c[1] as string[]).slice(0, 2).join(' '));
+
+      const createIdx = opCalls.indexOf('item create');
+      const deleteIdx = opCalls.indexOf('item delete');
+
+      expect(createIdx).toBeGreaterThanOrEqual(0);
+      expect(deleteIdx).toBeGreaterThanOrEqual(0);
+      // The whole point: the old credential survives until the new one exists.
+      expect(createIdx).toBeLessThan(deleteIdx);
+
+      // And the retirement targets the snapshotted ID, not the title, because
+      // two items legitimately share the title in the window between the two.
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'op',
+        ['item', 'delete', 'item-old', '--vault', VAULT_ID],
+        expect.any(Object),
+      );
+    });
+
+    it('does not destroy the stored value when create fails', async () => {
+      mockOpCli([{ id: 'item-old', title: 'secret/API_KEY', password: 'sk-old' }]);
+      // Make the write fail the way a disconnected desktop app does.
+      const base = mockExecFileSync.getMockImplementation()!;
+      mockExecFileSync.mockImplementation((cmd, args) => {
+        if (cmd === 'op' && Array.isArray(args) && args[0] === 'item' && args[1] === 'create') {
+          throw new Error('connecting to desktop app: could not connect');
+        }
+        return base(cmd as never, args as never);
+      });
+
+      const backend = new OnePasswordBackend();
+      await expect(backend.store('secret/API_KEY', 'sk-12345')).rejects.toThrow(/desktop app/);
+
+      // Pre-fix ordering deleted first, so the old value was already gone here.
+      const deleted = mockExecFileSync.mock.calls.some(
+        c => c[0] === 'op' && Array.isArray(c[1]) &&
+          (c[1] as string[])[0] === 'item' && (c[1] as string[])[1] === 'delete',
+      );
+      expect(deleted).toBe(false);
+    });
+
+    it('passes title and tag as explicit flags so reads can find the item', async () => {
+      mockOpCli([]);
+      const backend = new OnePasswordBackend();
+
+      await backend.store('secret/API_KEY', 'sk-12345');
+
+      const createCall = mockExecFileSync.mock.calls.find(
+        call => call[0] === 'op' && Array.isArray(call[1]) &&
+          call[1][0] === 'item' && call[1][1] === 'create',
+      );
+      const args = createCall![1] as string[];
+      // listItems() filters on the tag; an untagged item is invisible forever.
+      expect(args).toContain('--tags');
+      expect(args[args.indexOf('--tags') + 1]).toBe('secretless');
+      expect(args).toContain('--title');
+      expect(args[args.indexOf('--title') + 1]).toBe('secret/API_KEY');
+    });
+
+    it('stores via a template file and keeps the secret out of argv', async () => {
       mockOpCli([]);
       const backend = new OnePasswordBackend();
 
@@ -92,13 +161,6 @@ describe('OnePasswordBackend', () => {
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'op',
         ['vault', 'get', 'Secretless', '--format', 'json'],
-        expect.any(Object),
-      );
-
-      // Verify item delete was attempted (may fail — that's fine)
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'op',
-        ['item', 'delete', 'secret/API_KEY', '--vault', VAULT_ID],
         expect.any(Object),
       );
 
@@ -458,5 +520,47 @@ describe('OnePasswordBackend', () => {
       );
       expect(vaultGetCalls.length).toBe(1);
     });
+  });
+});
+
+describe('op error handling', () => {
+  beforeEach(() => { mockExecFileSync.mockReset(); });
+
+  it('reports a timeout when execFileSync signals ETIMEDOUT rather than SIGTERM', async () => {
+    mockOpCli([]);
+    const base = mockExecFileSync.getMockImplementation()!;
+    mockExecFileSync.mockImplementation((cmd, args) => {
+      if (Array.isArray(args) && args[0] === 'item' && args[1] === 'create') {
+        const e = new Error('spawnSync op ETIMEDOUT') as NodeJS.ErrnoException;
+        e.code = 'ETIMEDOUT';
+        throw e;
+      }
+      return base(cmd as never, args as never);
+    });
+
+    const backend = new OnePasswordBackend();
+    // Without the ETIMEDOUT arm this fell through and reported something that
+    // read nothing like a timeout.
+    await expect(backend.store('secret/K', 'v')).rejects.toThrow(/did not respond within/);
+  });
+
+  it('keeps what op said but drops our own argv echo on a generic failure', async () => {
+    mockOpCli([]);
+    const base = mockExecFileSync.getMockImplementation()!;
+    mockExecFileSync.mockImplementation((cmd, args) => {
+      if (Array.isArray(args) && args[0] === 'item' && args[1] === 'create') {
+        throw new Error(
+          'Command failed: op item create --vault abc --template /tmp/x.json\n' +
+          '[ERROR] 2026/08/05 vault "abc" not found',
+        );
+      }
+      return base(cmd as never, args as never);
+    });
+
+    const backend = new OnePasswordBackend();
+    const err = await backend.store('secret/K', 'v').catch((e: Error) => e);
+    expect(err.message).toContain('vault "abc" not found');
+    expect(err.message).not.toMatch(/Command failed:/);
+    expect(err.message).toMatch(/Verify: op account get/);
   });
 });

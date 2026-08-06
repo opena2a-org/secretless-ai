@@ -1,8 +1,28 @@
 # Changelog
 
-## [Unreleased]
+## [0.21.0] - 2026-08-05
 
 ### Fixed
+
+- **A configured backend that could not be reached was silently replaced by the local store.** With `backend set 1password` and the 1Password desktop app disconnected, `secret set NAME=value` wrote to the *local* store and printed `Stored: NAME`. `secret get NAME` then read 1Password and reported nothing. `run` executed the command with no credentials injected at all. Each of those reports success at the point of use, and the failure only surfaces later as an authentication error that never mentions secretless.
+
+  `createBackend()` took a `strict` flag that defaulted to false, and `SecretStore` — the code behind `secret set`, `secret get`, `secret list` and `run` — never passed it. Only `backend migrate` did. On the default path an unavailable backend printed two lines to stderr and returned a `LocalBackend`.
+
+  The state that triggers it is ordinary. With the `op` binary installed and an account configured but the desktop app not running, `op --version` and `op account list` both exit 0 (the latter answers from local config), while `op account get` exits 1. Quitting the app, rebooting, or a reset CLI-integration toggle is enough.
+
+  Substituting a store is not a safe degradation for a credential manager, so it no longer happens. An unreachable configured backend now fails closed with an error that names the backend you chose, states that nothing was read from or written to anywhere else, and carries the `Verify:` and `Fix:` commands plus the deliberate `backend migrate` path. The permissive path remains for read-only diagnostics, and now says plainly that it is listing a different store.
+
+  **Behaviour change.** Commands that previously appeared to succeed against the wrong store now exit non-zero. That is the point: if `secret set` was quietly writing somewhere you did not choose, it was never succeeding. If a script depended on the old fallback, switch it deliberately with `secretless-ai backend set local`.
+
+- **Overwriting a 1Password secret could destroy it.** `store()` deleted the existing item before creating the replacement. If `op item create` then failed for any reason — app disconnected mid-command, vault permissions, network — the old value was already gone and the new one was never written. The replacement is now created first and the superseded item retired afterwards, by ID rather than by title, because the two legitimately share a title in the window between the calls.
+
+- **1Password items could land untagged and become invisible to every later read.** The tag was set only inside the JSON template, while `listItems()` filters on it, so an item that did not pick the tag up could never be resolved again. Title and tag are now passed as explicit `--title` and `--tags` flags as well, which take precedence in `op item create`.
+
+- **A pending 1Password approval hung the entire command.** `op` was invoked with no timeout, so an approval dialog waiting on someone who is not at the machine blocked the caller indefinitely with no output. Calls are now bounded (30s default, `SECRETLESS_OP_TIMEOUT_MS` to change it) and report what to check.
+
+- **Errors were buried under a stack trace.** The top-level handler printed the raw error object, so messages carrying `Verify:` and `Fix:` lines arrived underneath our own file paths and read as a crash. It now prints the message; set `SECRETLESS_DEBUG=1` when the stack is what you need.
+
+- **Overwriting a macOS Keychain secret could destroy it.** `store()` deleted the existing entry before adding the replacement, so a write that failed afterwards — a locked Keychain, a dismissed approval — left nothing behind. The entry is now updated in place with `security add-generic-password -U`, and the legacy-named duplicate is swept only after the new value is committed. Same defect and same fix as the 1Password backend above.
 
 - **Most 32-hex-character secrets were silently corrupted on read (macOS Keychain).** A HIBP Pro API key stored with `secret set` came back from `secret get` as 16 bytes of binary, and the same corrupted value was injected by `secret run`, so every consumer of that credential authenticated with garbage. The key in the Keychain was never wrong; only the read path was, which is why nothing looked broken until an API rejected the request.
 
@@ -17,6 +37,20 @@
   One upgrade note: resolved values are cached for five minutes in `~/.secretless-ai/store/.secret-cache`, so a corrupted value read by the previous version can still be served briefly after upgrading. It expires on its own; the cache is keyed on write time, not on access, so it cannot be held alive by reads. If a credential still looks wrong immediately after upgrading, wait out the TTL rather than re-entering the secret. This is also worth knowing when diagnosing: while the old CLI is still installed alongside a new build, running either one repopulates the shared cache for the other.
 
 ### Security
+
+- **`secret set` printed the secret value in its own error message (macOS).** When the Keychain refused a write, the failure surfaced as:
+
+  ```
+  Error: Command failed: security add-generic-password -s Secretless: NUTEST -a secret/NUTEST -w hello-world-123
+  ```
+
+  `security add-generic-password` takes the password as `-w <value>`, and Node's `execFileSync` puts the whole argv into the error it throws. So the credential landed in the terminal at the exact moment a user is most likely to copy the output and paste it somewhere to ask what went wrong — including into the AI assistant this tool exists to keep it away from. Found in a fresh-user walkthrough, not in the test suite.
+
+  The argv echo is our own command line and tells the user nothing, so it is now dropped entirely, the value is scrubbed from what remains, and a final unconditional check discards the detail altogether if the value can still be found in it. A vaguer error is always better than a leaked one. The message that replaces it names the key, explains that the Keychain declined the write, and carries `Verify:` and `Fix:` lines including the fallback to the encrypted file store.
+
+  The other backends were checked for the same shape: Linux passes the value on stdin, 1Password writes it to a mode-0600 temp file specifically to keep it out of argv, and Vault and GCP send it over HTTP. macOS was the only one, and it is the default there.
+
+  Not fixed in this release: the value is still in `argv` while `security` runs, so it is briefly visible to `ps`. macOS documents this itself ("Use of the -p or -w options is insecure"). The obvious fix — `-w` with no argument, reading the password from stdin — reads a single line and would silently truncate multi-line secrets such as private keys, which this backend supports. Tracked separately rather than traded for data loss.
 
 - **The guard hook no longer fails open on a pretty-printed payload.** `tool_name` and `file_path` were extracted with greps that match only compact JSON (`"tool_name":"Bash"`, no space after the colon). A client that pretty-prints its hook payload left both empty, which skipped the entire Bash-command branch and the file-path guard, so every guard silently permitted the call. This is the same dead-branch class as the 2026-07-16 `FILE_PATH` regression, reached through payload formatting rather than through `set -euo pipefail`. Both fields are now parsed with `python3`'s JSON module (as the `command` field already was), with the greps kept as the fallback for hosts without python3 — where python3 is absent, the pretty-printed payload still fails open, so this closes the hole only on hosts that have it.
 

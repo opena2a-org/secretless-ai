@@ -95,6 +95,90 @@ export function keychainOutputIsHexEncoded(stderrAndStdout: string): boolean {
   return /^password:\s*0x[0-9A-Fa-f]+/m.test(stderrAndStdout);
 }
 
+/**
+ * Turn a failed `security` invocation into an error that cannot carry the
+ * secret.
+ *
+ * `security add-generic-password` takes the password as `-w <value>`, and its
+ * own help says so plainly: "Use of the -p or -w options is insecure." Node's
+ * `execFileSync` puts the entire argv into the thrown message, so the raw error
+ * reads:
+ *
+ *   Command failed: security add-generic-password -s Secretless: K -a secret/K -w hunter2
+ *
+ * Printing that defeats the tool. The argv echo is our own command line and
+ * tells the user nothing, so it is dropped entirely and the value is scrubbed
+ * from whatever remains. The final guard is unconditional: if the value can
+ * still be found in the message, the message is discarded rather than trimmed.
+ */
+/**
+ * True if `detail` still contains the whole value, or any individual line of a
+ * multi-line value.
+ *
+ * Defence in depth behind the scrub: `security` can echo part of a value back
+ * in a form that no longer matches it byte for byte, and a per-line check
+ * catches the fragment the whole-value comparison would miss. Lines shorter
+ * than four characters are ignored, or a secret containing a line like "1"
+ * would blank every error message the backend ever produces.
+ */
+function leaksAnyLineOf(detail: string, value: string): boolean {
+  if (detail.includes(value)) return true;
+  for (const line of value.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length >= 4 && detail.includes(trimmed)) return true;
+  }
+  return false;
+}
+
+export function redactSecurityError(err: unknown, value: string, key: string): Error {
+  const raw = err instanceof Error ? err.message : String(err);
+
+  // Scrub BEFORE any line filtering. A secret may contain newlines — that is
+  // exactly why the read path has to handle hex-encoded values — and dropping
+  // lines first can split the value across the boundary, leaving a fragment
+  // that no longer matches `value` and so survives both the replace and the
+  // containment backstop. Replace it while it is still contiguous.
+  let detail = value.length > 0
+    ? raw.split(value).join('[REDACTED]')
+    : raw;
+
+  detail = detail
+    .split('\n')
+    .filter(line => !/^\s*Command failed:/.test(line))
+    .join('\n')
+    .trim();
+
+  // Unconditional backstop, checked against every line the value could have
+  // been split across. Any path that would still expose it loses the detail
+  // instead — a vaguer error is always preferable to a leaked one.
+  if (value.length > 0 && leaksAnyLineOf(detail, value)) {
+    detail = '';
+  }
+
+  const lines = [`Could not store "${key}" in the macOS Keychain.`];
+  if (detail) lines.push(`  ${detail.split('\n').join('\n  ')}`);
+
+  if (/authorization was canceled|User interaction is not allowed|interaction not allowed/i.test(detail)) {
+    lines.push(
+      '',
+      '  The Keychain declined the write. It is usually locked, or the approval',
+      '  dialog was dismissed or could not be shown.',
+      '',
+      '  Verify:  security default-keychain',
+      '  Fix:     unlock the login keychain and retry, or run',
+      '           secretless-ai backend set local  to use the encrypted file store',
+    );
+  } else {
+    lines.push(
+      '',
+      '  Verify:  security default-keychain',
+      '  Fix:     secretless-ai doctor',
+    );
+  }
+
+  return new Error(lines.join('\n'));
+}
+
 export class MacOSKeychainBackend implements WritableSecretBackend {
   readonly name = 'keychain-macos';
   private readonly indexPath: string;
@@ -109,18 +193,29 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
   async store(key: string, value: string): Promise<void> {
     const svc = serviceNameFor(key);
 
-    // Delete existing entry (new service name)
+    // `-U` updates the entry in place if it already exists, so the previous
+    // value is never deleted ahead of a write that might fail. Deleting first
+    // and then failing to add leaves the user with no credential at all.
     try {
       execFileSync('security', [
-        'delete-generic-password',
+        'add-generic-password',
         '-s', svc,
         '-a', key,
+        '-l', `Secretless: ${key}`,
+        '-U',
+        '-w', value,
       ], { stdio: 'pipe' });
-    } catch {
-      // Entry didn't exist — that's fine
+    } catch (err) {
+      // Node puts the full argv in the error message, and the value is in it.
+      // Rethrowing verbatim prints the secret to the terminal — which in this
+      // tool's own threat model is the thing being prevented, since that output
+      // is exactly what gets pasted into an AI chat when someone asks why the
+      // command failed. Never let the raw message escape.
+      throw redactSecurityError(err, value, key);
     }
 
-    // Also delete legacy entry (old unified service name) to prevent duplicates
+    // Only once the new value is committed, retire the legacy entry (old
+    // unified service name) so reads cannot resolve to a stale duplicate.
     try {
       execFileSync('security', [
         'delete-generic-password',
@@ -130,15 +225,6 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
     } catch {
       // No legacy entry — that's fine
     }
-
-    // Add the new entry with a per-key service name (visible in macOS Passwords.app)
-    execFileSync('security', [
-      'add-generic-password',
-      '-s', svc,
-      '-a', key,
-      '-l', `Secretless: ${key}`,
-      '-w', value,
-    ], { stdio: 'pipe' });
 
     // Update index
     const index = this.readIndex();

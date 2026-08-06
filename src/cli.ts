@@ -246,7 +246,17 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
 main().then(
   (code) => process.exit(code),
   (err) => {
-    console.error(err);
+    // Print what the user can act on, not the call stack. These messages
+    // already carry Verify/Fix lines; a stack trace on top of them reads as a
+    // crash and buries the instructions under our own file paths.
+    // Set SECRETLESS_DEBUG=1 when the stack is what you actually need.
+    if (process.env.SECRETLESS_DEBUG) {
+      console.error(err);
+    } else if (err instanceof Error) {
+      console.error(`\n  ${err.message.split('\n').join('\n  ')}\n`);
+    } else {
+      console.error(`\n  ${String(err)}\n`);
+    }
     process.exit(1);
   },
 );
