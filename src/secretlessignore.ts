@@ -43,6 +43,30 @@ export const DEFAULT_IGNORE_PATTERNS: readonly string[] = Object.freeze([
   'build/',
 ]);
 
+/**
+ * The subset of the defaults that exists purely to suppress TEST paths.
+ *
+ * `scan --include-tests` drops these. It does NOT drop `node_modules/`,
+ * `dist/`, `build/` (generated artifacts), `examples/`, or `docs/vhs/` (demo
+ * code) — none of those become interesting because a user asked for tests, and
+ * re-enabling `node_modules/` would bury the report.
+ *
+ * These directory names are the ignore-list half of a pair; `scan.ts` holds the
+ * walker half (`TEST_DIRS`). Both are checked, independently, against every
+ * directory — so a name present in only one of them still gets suppressed by
+ * the other. Keep them in agreement: that disagreement is what made
+ * `--include-tests` a silent no-op for anything under `test/`.
+ */
+export const TEST_DEFAULT_IGNORE_PATTERNS: readonly string[] = Object.freeze([
+  '__tests__/',
+  '__fixtures__/',
+  'test/',
+  'tests/',
+  'test-server/',
+  'e2e/',
+  '.golden/',
+]);
+
 /** Match function for a relative POSIX path. */
 export interface IgnoreMatcher {
   /** Returns true if the relative path is ignored. */
@@ -180,6 +204,15 @@ function normalize(relativePath: string): string | null {
 export interface LoadOptions {
   /** Skip the default-ignore list (only the user file applies). */
   skipDefaults?: boolean;
+  /**
+   * Drop the test-path defaults (`TEST_DEFAULT_IGNORE_PATTERNS`) so
+   * `scan --include-tests` actually reaches files under `test/`.
+   *
+   * The user's own `.secretlessignore` lines are NOT affected — an explicit
+   * user entry stays authoritative, and `--no-ignore` remains the way to
+   * override it.
+   */
+  includeTests?: boolean;
 }
 
 /**
@@ -192,7 +225,11 @@ export interface LoadOptions {
 export function loadSecretlessIgnore(rootDir: string, options?: LoadOptions): IgnoreMatcher {
   const lines: string[] = [];
   if (!options?.skipDefaults) {
-    lines.push(...DEFAULT_IGNORE_PATTERNS);
+    const testDefaults = new Set(TEST_DEFAULT_IGNORE_PATTERNS);
+    for (const p of DEFAULT_IGNORE_PATTERNS) {
+      if (options?.includeTests && testDefaults.has(p)) continue;
+      lines.push(p);
+    }
   }
 
   const filePath = path.join(rootDir, '.secretlessignore');

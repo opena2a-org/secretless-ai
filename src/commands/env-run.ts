@@ -2,6 +2,7 @@ import * as path from 'path';
 import { runWithSecrets } from '../run';
 import { importEnvFile, detectEnvFiles } from '../env-import';
 import { runSetup } from '../setup';
+import { MANIFEST_FORMAT_HINT } from '../manifest';
 import { generateEnvExports, detectAgentRuntime } from '../env';
 
 export async function runRun(args: string[]): Promise<number> {
@@ -30,7 +31,12 @@ export async function runRun(args: string[]): Promise<number> {
   try {
     return await runWithSecrets(childCommand, childArgs, { only });
   } catch (err) {
-    console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+    // Indent every line, not just the first, matching the top-level handler in
+    // cli.ts. Today's messages happen to indent their own continuation lines,
+    // so this is not what saves the Verify/Fix block for them — it is what
+    // keeps a message that does NOT self-indent from landing at column 0.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`\n  ${message.split('\n').join('\n  ')}\n`);
     return 1;
   }
 }
@@ -155,6 +161,14 @@ export async function runImport(args: string[]): Promise<number> {
 }
 
 export async function runSetupCommand(args: string[]): Promise<number> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('\n  Usage: secretless-ai setup [--check]');
+    console.log('\n  Read .secretless and prompt for any declared secret not yet stored.');
+    console.log('  --check verifies without prompting, for CI.\n');
+    console.log('  ' + MANIFEST_FORMAT_HINT.split('\n').join('\n  ') + '\n');
+    return 0;
+  }
+
   const checkOnly = args.includes('--check');
   const dir = process.cwd();
 
@@ -162,6 +176,16 @@ export async function runSetupCommand(args: string[]): Promise<number> {
 
   try {
     const result = await runSetup(dir, { check: checkOnly });
+
+    // An unparseable manifest is not a store that is missing things. runSetup
+    // already printed the offending lines and the expected format; a tally here
+    // would be a count derived from input we could not read. Same reasoning as
+    // the no-manifest case below (issue #97), applied to issue #112.
+    if (result.manifestErrors && result.manifestErrors.length > 0) {
+      console.log('  FAIL: .secretless could not be parsed. Nothing was checked.\n');
+      return 1;
+    }
+
     if (checkOnly) {
       // No manifest: runSetup already printed the create-a-manifest hint.
       // Rendering the satisfied/missing tally here would contradict it

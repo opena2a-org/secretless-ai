@@ -123,8 +123,100 @@ export async function classifyCredentialRisk(
 }
 
 /**
+ * Build the explanation prompt. Exported so the validator can be driven with the
+ * exact prompt a given finding produced — echo detection is derived from the
+ * prompt rather than hard-coded, so it survives edits to the wording.
+ *
+ * The prompt deliberately asks for IMPACT ONLY. Remediation is owned by the
+ * deterministic `fix` field on the finding; soliciting it from the model is what
+ * produced a fabricated `require('openai-project-key')` (no such package) in the
+ * 0.21.0 release-test pass.
+ */
+export function buildExplainPrompt(patternName: string, filePath: string): string {
+  return `In one sentence, explain the security risk of a hardcoded ${patternName} found in ${filePath}. Describe only what an attacker could do with it. Do not suggest remediation, commands, package names, or URLs.`;
+}
+
+/** Normalize to a lowercase word list for overlap / repetition analysis. */
+function words(s: string): string[] {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+}
+
+/** Contiguous n-grams of a word list, as joined strings. */
+function ngrams(list: string[], n: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i + n <= list.length; i++) out.push(list.slice(i, i + n).join(' '));
+  return out;
+}
+
+/** Longest run of words the output shares verbatim with the prompt. */
+const ECHO_NGRAM = 8;
+/** A 5-gram repeated this many times marks a degenerate repetition loop. */
+const REPEAT_LIMIT = 3;
+
+/**
+ * Model output that instructs an install / import. A security tool must never
+ * emit a package name it invented, so any output reaching for one is dropped
+ * wholesale rather than partially scrubbed.
+ */
+const INSTALL_DIRECTIVE = [
+  /\b(?:npm|yarn|pnpm|pip3?|gem|go|cargo|brew|apt|composer)\s+(?:install|add|get|require)\b/i,
+  /\brequire\s*\(/,
+  /\bimport\s+[^;\n]*\bfrom\b/,
+  /\bfrom\s+['"][^'"\n]+['"]\s+import\b/,
+];
+
+/**
+ * Model output naming a host. A fabricated rotation URL is the same class of
+ * harm as a fabricated package name — it can send a user to a domain an
+ * attacker is free to register. Verified URLs live in the deterministic fix.
+ */
+const HOST_REFERENCE = [
+  /https?:\/\//i,
+  /\bwww\./i,
+  /\b[a-z0-9][a-z0-9-]*\.(?:com|net|org|io|ai|dev|co|app|cloud|sh|me|xyz)\b/i,
+];
+
+/**
+ * Validate generated explanation text before it is shown to a user.
+ * Returns the trimmed text, or null when it must be dropped.
+ *
+ * Every rule here exists because the 0.21.0 release-test pass observed the
+ * failure: prompt echo replacing the remediation, a fabricated package name,
+ * and a degenerate repetition loop.
+ */
+export function validateExplanation(raw: string | null | undefined, prompt: string): string | null {
+  if (!raw) return null;
+  const text = raw.trim();
+  if (text.length < 20 || text.length > 400) return null;
+
+  for (const re of INSTALL_DIRECTIVE) if (re.test(text)) return null;
+  for (const re of HOST_REFERENCE) if (re.test(text)) return null;
+
+  const outWords = words(text);
+  if (outWords.length < 5) return null;
+
+  // Prompt echo: the model restating its instructions back at us.
+  const promptGrams = new Set(ngrams(words(prompt), ECHO_NGRAM));
+  for (const g of ngrams(outWords, ECHO_NGRAM)) if (promptGrams.has(g)) return null;
+
+  // Degenerate repetition loop.
+  const counts = new Map<string, number>();
+  for (const g of ngrams(outWords, 5)) {
+    const n = (counts.get(g) ?? 0) + 1;
+    if (n >= REPEAT_LIMIT) return null;
+    counts.set(g, n);
+  }
+
+  return text;
+}
+
+/**
  * Generate a rich explanation for a credential finding.
- * Returns null if NanoMind engine is not installed or not ready.
+ * Returns null if NanoMind engine is not installed, not ready, or if the
+ * generated text fails validation.
+ *
+ * Callers MUST render the result as clearly-labelled generated content
+ * ALONGSIDE the deterministic fix, never in place of it.
  */
 export async function explainFinding(
   patternName: string,
@@ -133,9 +225,9 @@ export async function explainFinding(
 ): Promise<string | null> {
   if (!await loadEngine() || !engineInstance) return null;
   try {
-    const prompt = `In one sentence, explain the security risk of a hardcoded ${patternName} found in ${filePath}. Include what an attacker could do with it and the immediate action to take.`;
+    const prompt = buildExplainPrompt(patternName, filePath);
     const result = await engineInstance.infer(prompt, { maxTokens: 100, temperature: 0.1 });
-    return result?.text?.trim() || null;
+    return validateExplanation(result?.text, prompt);
   } catch {
     return null;
   }

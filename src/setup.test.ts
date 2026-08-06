@@ -124,3 +124,63 @@ describe('runSetupCommand --check without a manifest', () => {
     }
   });
 });
+
+describe('runSetup — an unparseable manifest is not a missing-secrets count (#112)', () => {
+  let tmpDir: string;
+  let storeDir: string;
+  let backend: LocalBackend;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-setup-bad-'));
+    storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-setup-bad-store-'));
+    backend = new LocalBackend({ storeDir, key: 'test-key' });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    errSpy.mockRestore();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(storeDir, { recursive: true, force: true });
+  });
+
+  it('reports manifest errors and counts nothing', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.secretless'),
+      'required:\n  - ANTHROPIC_API_KEY\n  - SOME_SECRET\n');
+
+    const result = await runSetup(tmpDir, { check: true, backend });
+
+    expect(result.manifestErrors).toBeDefined();
+    expect(result.manifestErrors!.length).toBe(3);
+    expect(result.complete).toBe(false);
+    // The whole defect: "Missing: 3 required" was a measurement of punctuation.
+    expect(result.missing).toBe(0);
+    expect(result.missingNames).toEqual([]);
+    expect(result.existing).toBe(0);
+  });
+
+  it('names the offending line and shows the expected format on stderr', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.secretless'), 'ANTHROPIC_API_KEY\nbad:line\n');
+    await runSetup(tmpDir, { check: true, backend });
+
+    const printed = errSpy.mock.calls.flat().join('');
+    expect(printed).toContain('line 2');
+    expect(printed).toContain('bad:line');
+    expect(printed).toContain('one secret name per line');
+    // Must not imply the store was consulted.
+    expect(printed).toContain('No secrets were checked');
+  });
+
+  it('CONTROL: a valid manifest still produces a real count', async () => {
+    const store = new SecretStore({ backend });
+    await store.setSecret('PRESENT_KEY', 'v');
+    fs.writeFileSync(path.join(tmpDir, '.secretless'), 'PRESENT_KEY\nABSENT_KEY\n');
+
+    const result = await runSetup(tmpDir, { check: true, backend });
+
+    expect(result.manifestErrors).toBeUndefined();
+    expect(result.existing).toBe(1);
+    expect(result.missing).toBe(1);
+    expect(result.missingNames).toEqual(['ABSENT_KEY']);
+  });
+});

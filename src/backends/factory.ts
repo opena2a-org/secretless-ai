@@ -332,6 +332,32 @@ export function isOnePasswordAvailable(): { available: boolean; message: string 
   }
 }
 
+/**
+ * Name of the backend `createBackend` would actually construct for `type`.
+ *
+ * `local` is the only type that gets remapped: it upgrades to the platform
+ * keychain when one is available (#34). `backend` reported the CONFIGURED value
+ * while `secret list` reported the CONSTRUCTED one, so on a default machine the
+ * two commands disagreed about where secrets physically go (#111).
+ *
+ * Reuses `createKeychainBackend` rather than restating the platform-to-name
+ * mapping, so this cannot drift out of agreement with the thing it describes.
+ * Prompt-free: `isKeychainLikely()` does not probe, and the keychain
+ * constructors only prepare a directory — real auth is lazy, on first read or
+ * write.
+ */
+export function effectiveBackendName(type: SelectableBackendType): string {
+  if (type !== 'local') return type;
+  if (process.platform !== 'darwin' && process.platform !== 'linux') return 'local';
+  if (!isKeychainLikely().available) return 'local';
+  try {
+    return createKeychainBackend().name;
+  } catch {
+    // Same fall-through createBackend takes when keychain init fails.
+    return 'local';
+  }
+}
+
 function createKeychainBackend(config?: Record<string, unknown>): WritableSecretBackend {
   const platform = process.platform;
 

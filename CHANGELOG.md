@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.21.1] - 2026-08-06
+
+Four defects that shipped in 0.21.0, plus issues #110, #111 and #112. Two of
+these let a command report success while doing less than it said: `--include-tests`
+reported clean on a tree it never scanned, and `run --only` ran commands with
+credentials missing. Both are reasons to upgrade promptly.
+
+### Fixed
+
+- **`run --only` never checked that the names it was given were found (#110).** One root cause, three failure modes, and only the least harmful was loud.
+
+  | store | `--only` matches | before |
+  |---|---|---|
+  | non-empty | nothing | exit 1, blamed the backend |
+  | non-empty | some, not all | exit 0, ran a credential short, silently |
+  | empty | anything | exit 0, ran with nothing injected |
+
+  `loadSecrets` filtered what the backend *returned* and never iterated what it was *asked for*, so an unmatched name left no trace and was indistinguishable downstream from a name nobody requested. `run` then saw only a count of zero and reached for the one explanation it had — the backend — which was reachable the whole time.
+
+  The third mode needs no user error at all: on a fresh machine or a CI runner whose store was never populated, `run --only DEPLOY_TOKEN -- ./deploy.sh` ran the deploy with no token and exited 0. The warning said "No secrets found", which reads as informational next to a command that then appears to work.
+
+  Requested is now compared against resolved inside `loadSecrets`, the only place both are in scope. Any name that resolved to nothing is an error naming the unmatched names — whether it is one of five or five of five — with `Verify:`/`Fix:` lines and a near-miss hint drawn from names actually in the store, since the whole class is typos. An empty `--only` list (`--only ,,`) refuses too. The count-based guard in `run` is scoped to the no-`--only` case, where it is the correct diagnosis. `env --only` shares `loadSecrets` and gets the same fix.
+
+- **`backend` reported the configured value, not the backend actually in use (#111).** On a default machine `backend` printed `Current: local` while `secret list` printed `keychain-macos`. Both were describing the same store and disagreeing about it.
+
+  `createBackend` deliberately upgrades `local` to the platform keychain (#34); the defect was that `backend` read the config value while everything else reported the constructed object. The two stores differ in ways a user acts on — the keychain is shared across every project on the machine and can prompt for authorization, the local encrypted file does neither — and "where does my value physically go" is the question this command exists to answer.
+
+  `Current:` now names the backend that will actually be constructed, and says why when it differs: `keychain-macos  (configured: local, upgraded because a platform keychain is available)`. The effective name is derived from the same factory the store uses, so the two cannot drift apart again, and it is computed without any probe that could trigger an auth prompt.
+
+- **`setup --check` misread an unrecognised manifest into names that do not exist (#112).** A YAML-shaped `.secretless` — a reasonable first guess, since the sibling rules manifest is YAML — was not rejected. It was parsed into `required:` and two bare `-` characters and reported as `Missing: 3 required`, none of which appear in the file as names. In CI, the documented use for `--check`, that is a red build whose message sends you to look at your store instead of at your file.
+
+  Each line is now validated with the same rule the store uses for secret names, rather than a second copy of it. A line that cannot be a name is a manifest error reported with its line number and the offending character, followed by the expected format; nothing is counted, because the file did not say what to count. A trailing token that is neither `optional` nor a comment is rejected too, so the defect cannot simply move one token to the right.
+
+  The format was also documented nowhere. `setup --help` now shows it. That help block — and `env`'s — existed but was unreachable, because `--help` was intercepted for every subcommand before dispatch; the interception stays for runners that would otherwise perform their action (`init --help` once created a literal `--help/` directory), with an explicit exception list for the two that answer help first.
+
+- **`scan --explain` printed model output instead of the fix, not alongside it.** When the local NanoMind engine happened to return text, that text *replaced* the deterministic `Fix:` line, so a HIGH finding arrived with no remediation at all. One run produced `Also, provide a solution to the security risk of a hardcoded OpenAI Project Key found in src/client.js.` — the model echoing its own prompt back, presented as the tool's own guidance. Other runs produced a `require('openai-project-key')` (no such npm package) and a repetition loop.
+
+  The trigger looked intermittent because the engine usually returns an empty string and the fallback branch then printed the real fix. The defect itself was not intermittent: *any* non-null explanation replaced the remediation.
+
+  The `Fix:` line now always prints. Generated text may only appear beside it, labelled `Context (generated, unverified):`, and is dropped when it fails validation — prompt echo (measured against the actual prompt, so it survives rewording), install or import directives, host references, degenerate repetition, and length. The prompt no longer asks the model for "the immediate action to take"; remediation belongs to the verified fix, and soliciting it is what invited an invented package name. A security tool must not emit a package name or a rotation URL it made up: an invented URL points at a domain an attacker is free to register.
+
+- **`--explain` no longer prints generated context at all by default.** Measuring the local engine over 30 runs while fixing the above: 30 produced text and **none produced a usable explanation**. Validation caught 27. The three that passed were instruction-tuning noise ("Your answer must contain exactly 3 bullet points"). Among those correctly rejected were confident and *wrong* security claims — a leaked OpenAI key described as "vulnerable to brute-force attacks", and as letting an attacker "inject malicious code into the client". Neither is true of an API key.
+
+  A wrong security claim from a security tool is worse than no claim, and a label does not make it true, so the generated line is now off unless `SECRETLESS_NANOMIND_EXPLAIN=1` is set. `--explain` still gives the detailed per-finding view with verified remediation, which is the part that was worth having. The help text no longer promises "rich context explanations" it could not deliver.
+
+- **`--include-tests` did not include test files.** A credential in `test/fixture.test.js` was reported clean with the flag set — a silent false all-clear on exactly the tree the user asked to check.
+
+  Two independent gates suppress test paths: the walker's `TEST_DIRS` check and the default-ignore list's `test/` entry. The flag opened only the first, so anything inside a test *directory* stayed hidden; a test-*named* file outside one (`src/fixture.test.js`) was found, which is why the flag looked like it worked. It now opens both, and reaches `tests/`, `__tests__/`, `__fixtures__/`, `test-server/` and `e2e/` as well.
+
+  Deliberately unchanged: `node_modules/`, `dist/` and `build/` stay suppressed — asking for tests is not asking to scan dependency trees — and an explicit entry in your own `.secretlessignore` still wins, with `--no-ignore` remaining the way to override that.
+
+- **40 of 57 credential patterns produced findings with no fix.** `aws-secret` was the one a release-test fixture happened to exercise; the missing guidance covered most of the catalog, including every GitHub token variant, `npm`, `gitlab`, `sendgrid`, `digitalocean`, `sentry` and `stripe-webhook`. Each rendered a HIGH or CRITICAL finding and then stopped, with nothing to act on.
+
+  `fix` is now non-optional. Patterns without a hand-written entry derive one from data the pattern already carries — the exact env var name, plus revoke-and-reissue — so a newly added pattern cannot ship a dead end. Derived text names no console URL, because we have not verified one for those providers and inventing it is the same failure as inventing a package name.
+
+- **An AWS secret-key preview hid which variable was exposed.** The name-gated pattern's match spans the variable name, so redacting the whole match rendered `AWS_SECRET_ACCESS_KEY = "…"` as a bare `"`. Patterns that capture their value now redact only the value: the preview reads `const AWS_SECRET_ACCESS_KEY = "[AWS Secret Access Key REDACTED]";`. The secret itself is still never shown.
+
+- **The `--explain` footer claimed "147+ checks" for `hackmyagent secure`.** The real figure is over 300 and moves every release. The claim is gone rather than restated — a number in user-facing output has to trace to something measured.
+
 ## [0.21.0] - 2026-08-05
 
 ### Fixed

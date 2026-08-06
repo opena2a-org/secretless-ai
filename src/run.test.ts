@@ -67,3 +67,62 @@ describe('runWithSecrets', () => {
     expect(code).toBe(0);
   });
 });
+
+describe('runWithSecrets --only (issue #110) — must not run short or empty', () => {
+  let tmpDir2: string;
+  let backend2: LocalBackend;
+  let marker: string;
+
+  beforeEach(() => {
+    tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-only-test-'));
+    backend2 = new LocalBackend({ storeDir: tmpDir2, key: 'test-key' });
+    marker = path.join(tmpDir2, 'child-ran.marker');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir2, { recursive: true, force: true });
+  });
+
+  it('does NOT execute the command when a requested name is missing', async () => {
+    const store = new SecretStore({ backend: backend2 });
+    await store.setSecret('PRESENT', 'yes');
+
+    await expect(runWithSecrets(
+      'node', ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
+      { backend: backend2, only: ['PRESENT', 'ABSENT_NAME'] },
+    )).rejects.toThrow(/ABSENT_NAME/);
+
+    expect(fs.existsSync(marker), 'child ran despite a missing credential').toBe(false);
+  });
+
+  it('does NOT execute the command on an empty store with --only', async () => {
+    // The fail-open path that needs no typo: a CI runner whose store was never
+    // populated ran the deploy with no token and reported success.
+    await expect(runWithSecrets(
+      'node', ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
+      { backend: backend2, only: ['DEPLOY_TOKEN'] },
+    )).rejects.toThrow(/DEPLOY_TOKEN/);
+
+    expect(fs.existsSync(marker), 'child ran with nothing injected').toBe(false);
+  });
+
+  it('an empty --only list (`--only ,,`) also refuses to run', async () => {
+    await expect(runWithSecrets(
+      'node', ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
+      { backend: backend2, only: [] },
+    )).rejects.toThrow(/named no secrets/);
+
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('CONTROL: a fully matched --only still runs and injects', async () => {
+    const store = new SecretStore({ backend: backend2 });
+    await store.setSecret('PRESENT', 'yes');
+
+    const code = await runWithSecrets(
+      'node', ['-e', 'process.exit(process.env.PRESENT === "yes" ? 0 : 3)'],
+      { backend: backend2, only: ['PRESENT'] },
+    );
+    expect(code).toBe(0);
+  });
+});

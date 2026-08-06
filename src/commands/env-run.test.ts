@@ -57,3 +57,46 @@ describe('runEnv agent-runtime refusal', () => {
     expect(logSpy.mock.calls.flat().join('\n')).toContain('eval');
   });
 });
+
+// Issue #110: `runRun` prints a caught precondition error. The message may span
+// several lines; a line carrying no leading whitespace of its own must still be
+// indented rather than landing at column 0. The fixture below deliberately uses
+// UNINDENTED continuation lines — with self-indented ones (which today's
+// messages happen to use) this assertion cannot distinguish the two
+// implementations and proves nothing. `runWithSecrets` is mocked so this never
+// constructs a real backend (an OS-keychain construction inside a test run pops
+// a blocking modal on the operator's machine).
+vi.mock('../run', () => ({ runWithSecrets: vi.fn() }));
+
+describe('runRun surfaces a multi-line precondition error intact', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('returns 1 and indents EVERY line of the message', async () => {
+    const { runRun } = await import('./env-run');
+    const { runWithSecrets } = await import('../run');
+
+    vi.mocked(runWithSecrets).mockRejectedValue(new Error(
+      'Requested secret not found in the store: ABSENT_NAME\n' +
+      '\n' +
+      'Nothing was injected and the command was not run.\n' +
+      '\n' +
+      'Verify:  secretless-ai secret list\n' +
+      'Fix:     secretless-ai secret set ABSENT_NAME',
+    ));
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = await runRun(['--only', 'ABSENT_NAME', '--', 'echo', 'hi']);
+    const printed = errSpy.mock.calls.flat().join('\n');
+
+    expect(code).toBe(1);
+    expect(printed).toContain('ABSENT_NAME');
+    expect(printed).toContain('Verify:');
+    expect(printed).toContain('Fix:');
+    // Every non-empty line indented, including the ones that carry none of
+    // their own. This is the assertion the old `Error: ${message}` form fails.
+    const body = printed.split('\n').filter(l => l.trim().length > 0);
+    for (const line of body) {
+      expect(line.startsWith('  '), `line not indented: ${JSON.stringify(line)}`).toBe(true);
+    }
+  });
+});

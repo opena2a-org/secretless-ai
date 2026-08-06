@@ -25,13 +25,14 @@ import { runWarm, runInstall } from './commands/session';
 import { runFeedback } from './commands/feedback';
 import { runIgnore } from './commands/ignore';
 import { runDiff } from './commands/diff';
-import { printHelp } from './commands/help';
+import { printHelp, OWN_HELP } from './commands/help';
 
 const TOOL = 'secretless-ai';
 // Subcommands we don't track: pure-help / pure-config calls don't represent
 // the user actually using the tool, and tracking 'telemetry' itself creates
 // confusing self-referential events.
 const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '--help', '-h']);
+
 
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
@@ -44,12 +45,18 @@ async function main(): Promise<number> {
   const { versionLine, runTelemetryCommand } = await import('@opena2a/cli-ui');
   await tele.init({ tool: TOOL, version: VERSION });
 
-  // Intercept `--help` / `-h` anywhere in the args BEFORE dispatching. Subcommand
-  // runners do not parse per-subcommand help, so without this guard `scan --help`
-  // would actually run the scanner, `init --help` would create a literal `--help/`
-  // directory, and `broker start --help` would launch the daemon. Print top-level
-  // help instead — a safe no-op. Regression: release-test 2026-04-14.
-  if (command && (args.includes('--help') || args.includes('-h'))) {
+  // Intercept `--help` / `-h` anywhere in the args BEFORE dispatching. Most
+  // subcommand runners do not parse per-subcommand help, so without this guard
+  // `scan --help` would actually run the scanner, `init --help` would create a
+  // literal `--help/` directory, and `broker start --help` would launch the
+  // daemon. Print top-level help instead — a safe no-op. Regression:
+  // release-test 2026-04-14.
+  //
+  // OWN_HELP lists the runners that DO handle it, as their first statement and
+  // before any side effect. Their help blocks were unreachable until now, which
+  // matters for `setup`: the manifest format is documented nowhere else, and
+  // guessing it wrong is the reported first experience (#112).
+  if (command && (args.includes('--help') || args.includes('-h')) && !OWN_HELP.has(command)) {
     printHelp();
     return 0;
   }

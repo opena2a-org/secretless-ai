@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { parseManifest, readManifest, checkManifest } from './manifest';
+import { parseManifest, parseManifestDetailed, readManifest, checkManifest } from './manifest';
 import { LocalBackend } from './backends/local';
 import { SecretStore } from './secret-store';
 
@@ -124,5 +124,132 @@ describe('checkManifest', () => {
     expect(result.missing).toEqual([]);
     expect(result.optional).toEqual([]);
     expect(result.satisfied).toEqual([]);
+  });
+});
+
+describe('parseManifestDetailed — an unrecognised manifest is an error, not names (issue #112)', () => {
+  it('rejects the YAML-shaped guess instead of inventing three names', () => {
+    // Verbatim from the issue. It used to report "Missing: 3 required" and list
+    // `required:`, `-`, `-` — not one of which appears in the file as a name.
+    const { entries, errors } = parseManifestDetailed('required:\n  - ANTHROPIC_API_KEY\n  - SOME_SECRET\n');
+
+    expect(entries).toEqual([]);
+    expect(errors).toHaveLength(3);
+    expect(errors.map(e => e.line)).toEqual([1, 2, 3]);
+    // Never present punctuation as a secret name.
+    expect(errors.map(e => e.text)).not.toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('names the offending character in the reason', () => {
+    const { errors } = parseManifestDetailed('required:\n');
+    expect(errors[0].reason).toContain('":"');
+  });
+
+  it('rejects a dotenv-shaped guess', () => {
+    // KEY=value is the other obvious wrong guess, since `import` takes it.
+    const { entries, errors } = parseManifestDetailed('ANTHROPIC_API_KEY=sk-ant-xxx\n');
+    expect(entries).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].reason).toContain('"="');
+  });
+
+  it('rejects a JSON-shaped guess', () => {
+    const { entries, errors } = parseManifestDetailed('{\n  "required": ["A"]\n}\n');
+    expect(entries).toEqual([]);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects an unexpected token after a valid name', () => {
+    // Otherwise the original defect just moves one token to the right.
+    const { entries, errors } = parseManifestDetailed('API_KEY required\n');
+    expect(entries).toEqual([]);
+    expect(errors[0].reason).toContain('required');
+  });
+
+  it('reports the line number of each bad line, counting comments and blanks', () => {
+    const { entries, errors } = parseManifestDetailed('# comment\n\nGOOD_NAME\nbad:line\n');
+    expect(entries.map(e => e.name)).toEqual(['GOOD_NAME']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].line).toBe(4);
+  });
+
+  // ---- controls: the documented format must keep parsing ----
+
+  it('CONTROL: the working format still parses', () => {
+    const { entries, errors } = parseManifestDetailed('ANTHROPIC_API_KEY\nSOME_SECRET\n');
+    expect(errors).toEqual([]);
+    expect(entries.map(e => e.name)).toEqual(['ANTHROPIC_API_KEY', 'SOME_SECRET']);
+  });
+
+  it('CONTROL: optional markers and comments still parse', () => {
+    const { entries, errors } = parseManifestDetailed(
+      '# header\nGITHUB_TOKEN     # required, API access\nSTRIPE_KEY  optional  # payments only\n',
+    );
+    expect(errors).toEqual([]);
+    expect(entries).toEqual([
+      { name: 'GITHUB_TOKEN', required: true, description: 'required, API access' },
+      { name: 'STRIPE_KEY', required: false, description: 'payments only' },
+    ]);
+  });
+
+  it('CONTROL: names with dashes and digits are valid', () => {
+    const { entries, errors } = parseManifestDetailed('MY-KEY_2\n');
+    expect(errors).toEqual([]);
+    expect(entries.map(e => e.name)).toEqual(['MY-KEY_2']);
+  });
+
+  it('CONTROL: parseManifest keeps its array shape for library consumers', () => {
+    expect(parseManifest('A\nB')).toEqual([
+      { name: 'A', required: true, description: '' },
+      { name: 'B', required: true, description: '' },
+    ]);
+  });
+});
+
+describe('checkManifest surfaces manifest errors to library consumers (#112)', () => {
+  it('does not report an unparseable manifest as all-satisfied', async () => {
+    // Without `errors`, a consumer sees missing:[] and concludes everything is
+    // present, when in fact nothing was checked. Same fail-open shape as the
+    // original defect, one layer up.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-badcheck-'));
+    fs.writeFileSync(path.join(dir, '.secretless'), 'required:\n  - A\n');
+    const backend = new LocalBackend({ storeDir: dir, key: 'k' });
+
+    const result = await checkManifest(dir, { backend });
+
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.missing).toEqual([]);
+    expect(result.satisfied).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('CONTROL: a valid manifest reports no errors', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-goodcheck-'));
+    fs.writeFileSync(path.join(dir, '.secretless'), 'SOME_KEY\n');
+    const backend = new LocalBackend({ storeDir: dir, key: 'k' });
+
+    const result = await checkManifest(dir, { backend });
+
+    expect(result.errors).toEqual([]);
+    expect(result.missing.map(e => e.name)).toEqual(['SOME_KEY']);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('near-miss hint is bounded (self-review, not from an issue)', () => {
+  it('does not walk a quadratic edit distance on very long names', async () => {
+    const long = 'A'.repeat(20000);
+    const store = new SecretStore({
+      backend: {
+        name: 'fake',
+        resolve: async () => ({ [`secret/${long}`]: 'v' }),
+        store: async () => {},
+        delete: async () => false,
+      },
+    });
+    const started = Date.now();
+    await expect(store.loadSecrets([long.slice(0, 19999)])).rejects.toThrow();
+    // Unbounded, this is ~4e8 cell updates. The guard makes it constant time.
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 });

@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { isKeychainAvailable, isKeychainLikely, isOnePasswordAvailable, isOnePasswordLikely, createBackend } from '../backends/factory';
+import { isKeychainAvailable, isKeychainLikely, isOnePasswordAvailable, isOnePasswordLikely, createBackend, effectiveBackendName } from '../backends/factory';
 import { isGCPAvailable } from '../backends/gcp-sm';
 import { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl, writeCacheTtl, parseDuration, formatTtl } from '../backends/config';
 import { clearCacheFile } from '../backends/cache';
@@ -181,8 +181,19 @@ export async function runBackend(args: string[]): Promise<number> {
   const kc = isKeychainLikely();
   const op = isOnePasswordLikely();
 
+  // Report the backend that will actually be CONSTRUCTED, not just the
+  // configured value. `local` upgrades to the platform keychain where one
+  // exists, and those two stores differ in ways a user acts on: the keychain is
+  // shared across every project on the machine and can prompt for
+  // authorization, the local encrypted file does neither (#111).
+  const effective = effectiveBackendName(current);
+
   console.log('\n  Secretless Backend\n');
-  console.log(`  Current:      ${current}${configFile ? '' : ' (default)'}`);
+  if (effective !== current) {
+    console.log(`  Current:      ${effective}  (configured: ${current}, upgraded because a platform keychain is available)`);
+  } else {
+    console.log(`  Current:      ${effective}${configFile ? '' : ' (default)'}`);
+  }
   console.log(`  Config file:  ${configFile ?? '(not set)'}`);
   console.log(`  Keychain:     ${kc.available ? 'likely available' : 'unavailable'} (${kc.message})`);
   console.log(`  1Password:    ${op.available ? 'likely available' : 'unavailable'} (${op.message})`);

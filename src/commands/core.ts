@@ -269,18 +269,35 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
     console.log(`         ${finding.file}:${finding.line}`);
     console.log(`         ${finding.preview}`);
 
-    // Try NanoMind explanation, fall back to static fix
-    const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
-    if (explanation) {
-      console.log(`         ${explanation}`);
-    } else if (finding.fix) {
+    // The deterministic fix ALWAYS prints. Generated text may only appear
+    // alongside it, explicitly labelled, never in place of it — substituting
+    // model output for the verified remediation left findings with no fix at
+    // all and presented echoed prompt text as the tool's own guidance.
+    if (finding.fix) {
       console.log(`         Fix: ${finding.fix}`);
+    }
+    // Generated context is OFF by default. Measured over 30 runs against the
+    // local engine (2026-08-06): 30/30 produced text, 0/30 produced a usable
+    // explanation. What survived validation was instruction-tuning noise
+    // ("Your answer must contain exactly 3 bullet points"); what validation
+    // caught included confident and WRONG security claims — a leaked OpenAI key
+    // described as "vulnerable to brute-force attacks" and as letting an
+    // attacker "inject malicious code into the client".
+    //
+    // A wrong security claim from a security tool is worse than no claim, and a
+    // label does not make it true. Kept behind an opt-in so the path stays
+    // exercised and can be re-enabled when a model earns it.
+    if (process.env.SECRETLESS_NANOMIND_EXPLAIN === '1') {
+      const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
+      if (explanation) {
+        console.log(`         Context (generated, unverified): ${explanation}`);
+      }
     }
     console.log();
   }
 
   console.log(`  Run \`npx secretless-ai init\` to add protections.`);
-  console.log('  For a full security scan (147+ checks): npx hackmyagent secure\n');
+  console.log('  For a full security scan: npx hackmyagent secure\n');
   return findings.length > 0 ? 1 : 0;
 }
 

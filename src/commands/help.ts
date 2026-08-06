@@ -1,5 +1,17 @@
 import { VERSION, CLI, IS_EMBEDDED } from './utils';
 
+/**
+ * Subcommands whose runner handles `--help` itself, as its first statement and
+ * before any side effect. Everything else falls through to top-level help,
+ * because those runners would otherwise perform the action rather than
+ * describe it (`init --help` once created a literal `--help/` directory).
+ *
+ * Lives here rather than in cli.ts because cli.ts runs `main()` on import,
+ * so a test importing it would exit the process.
+ */
+export const OWN_HELP = new Set<string>(['setup', 'env']);
+
+
 export function printHelp(): void {
   // When embedded under a host CLI (SECRETLESS_CLI_PREFIX set), suppress the
   // standalone `Secretless v<version>` brand+version line — it shows
@@ -130,7 +142,7 @@ ${banner}  Keep secrets out of AI context.
 
   Scan options:
     --include-tests          Include test files in source code scan
-    --explain                Use NanoMind for rich context explanations
+    --explain                Detailed per-finding view with remediation
     --no-ignore              Disable .secretlessignore + default-ignore
     --min-confidence <n>     Drop findings with composite confidence below n (0-1)
 

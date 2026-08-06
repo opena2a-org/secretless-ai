@@ -222,7 +222,7 @@ npm install @nanomind/guard @nanomind/engine  # optional
 ```
 
 - **MCP injection screening.** `protect-mcp` screens env-var values for prompt-injection patterns and warns when suspicious content is detected.
-- **Rich scan explanations.** `scan --explain` generates context-aware security explanations for each finding using NanoMind's local inference engine.
+- **Generated scan context.** `scan --explain` can add a model-written note beside each finding, off by default and enabled with `SECRETLESS_NANOMIND_EXPLAIN=1`. It is off because the local engine does not yet produce explanations worth showing: over 30 measured runs, none were usable and several asserted things about the credential that were not true. Verified remediation always comes from the finding itself, never from the model.
 
 Both features gracefully degrade when NanoMind packages are not installed.
 
