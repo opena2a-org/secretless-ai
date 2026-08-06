@@ -12,7 +12,9 @@
 
   Content cannot answer the question, so the decision no longer comes from content. `security ... -g` states the encoding explicitly — `password: "…"` for text, `password: 0x…` for encoded bytes — and that marker is now what decides. The exact bytes still come from `-w`; `-g` is consulted only when the value is ambiguously shaped, so the common case still costs one `security` call. Anything unclear (probe fails, Keychain locked, no `0x` marker) returns the raw value undecoded: handing back a secret verbatim is always safe, decoding one that was never encoded is the bug.
 
-  No re-entry is needed. Values already in the Keychain were stored correctly and read back intact once this is in.
+  No re-entry is needed. Values already in the Keychain were stored correctly and read back intact once this is in — confirmed against a real affected key, which read back byte-identical to what `security` reports.
+
+  One upgrade note: resolved values are cached for five minutes in `~/.secretless-ai/store/.secret-cache`, so a corrupted value read by the previous version can still be served briefly after upgrading. It expires on its own; the cache is keyed on write time, not on access, so it cannot be held alive by reads. If a credential still looks wrong immediately after upgrading, wait out the TTL rather than re-entering the secret. This is also worth knowing when diagnosing: while the old CLI is still installed alongside a new build, running either one repopulates the shared cache for the other.
 
 ### Security
 
