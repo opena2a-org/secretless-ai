@@ -57,3 +57,42 @@ describe('runEnv agent-runtime refusal', () => {
     expect(logSpy.mock.calls.flat().join('\n')).toContain('eval');
   });
 });
+
+// Issue #110: the unmatched-`--only` error carries a Verify/Fix block. Printing
+// only its first line indented breaks the block apart, which is the same defect
+// that had to be fixed in the #108 backend error. `runWithSecrets` is mocked so
+// this never constructs a real backend (an OS-keychain construction inside a
+// test run pops a blocking modal on the operator's machine).
+vi.mock('../run', () => ({ runWithSecrets: vi.fn() }));
+
+describe('runRun surfaces a multi-line precondition error intact', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('returns 1 and indents EVERY line of the message', async () => {
+    const { runRun } = await import('./env-run');
+    const { runWithSecrets } = await import('../run');
+
+    vi.mocked(runWithSecrets).mockRejectedValue(new Error(
+      'Requested secret not found in the store: ABSENT_NAME\n' +
+      '\n' +
+      '  Nothing was injected and the command was not run.\n' +
+      '\n' +
+      '  Verify:  secretless-ai secret list\n' +
+      '  Fix:     secretless-ai secret set ABSENT_NAME',
+    ));
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = await runRun(['--only', 'ABSENT_NAME', '--', 'echo', 'hi']);
+    const printed = errSpy.mock.calls.flat().join('\n');
+
+    expect(code).toBe(1);
+    expect(printed).toContain('ABSENT_NAME');
+    expect(printed).toContain('Verify:');
+    expect(printed).toContain('Fix:');
+    // Every non-empty line indented — no line flush to column 0 after the first.
+    const body = printed.split('\n').filter(l => l.trim().length > 0);
+    for (const line of body) {
+      expect(line.startsWith('  '), `line not indented: ${JSON.stringify(line)}`).toBe(true);
+    }
+  });
+});

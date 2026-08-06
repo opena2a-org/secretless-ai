@@ -30,7 +30,11 @@ export async function runRun(args: string[]): Promise<number> {
   try {
     return await runWithSecrets(childCommand, childArgs, { only });
   } catch (err) {
-    console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+    // Indent every line, not just the first. These messages carry a Verify/Fix
+    // block, and printing only the first line indented breaks the block apart
+    // so the recovery instructions stop reading as a list.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`\n  ${message.split('\n').join('\n  ')}\n`);
     return 1;
   }
 }

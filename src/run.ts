@@ -27,8 +27,14 @@ export async function runWithSecrets(
   const store = new SecretStore(options);
   const secrets = await store.loadSecrets(options?.only);
 
+  // A zero count only means "backend failure" when we asked for EVERYTHING and
+  // got nothing. With `--only`, a zero count means the filter matched nothing,
+  // and loadSecrets has already thrown naming the unmatched names — so this
+  // guard no longer answers a question nobody asked (#110). Scoping it also
+  // closes the empty-store path, where `--only` used to be ignored entirely and
+  // the command ran with nothing injected.
   const secretCount = Object.keys(secrets).length;
-  if (secretCount === 0) {
+  if (secretCount === 0 && !options?.only) {
     // Check if the store actually has secrets (backend may have failed to load them)
     const allSecrets = await store.listSecrets();
     if (allSecrets.length > 0) {

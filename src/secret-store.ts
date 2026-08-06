@@ -83,20 +83,111 @@ export class SecretStore {
     return this.backend.delete(key);
   }
 
-  /** Load all secrets as key-value pairs. Optionally filter by name list (case-insensitive). */
+  /**
+   * Load all secrets as key-value pairs. Optionally filter by name list
+   * (case-insensitive).
+   *
+   * Throws if any REQUESTED name resolved to nothing. This function used to
+   * filter only what the backend RETURNED, so an unmatched name left no trace
+   * and was indistinguishable downstream from a name nobody asked for. Callers
+   * saw a count and guessed at the cause: `run --only MISSING` blamed the
+   * backend, `run --only PRESENT,MISSING` ran the command a credential short and
+   * exited 0, and on an empty store `--only` was ignored entirely and the
+   * command ran with nothing injected (#110).
+   *
+   * Requested-vs-resolved is compared here because this is the only place both
+   * are in scope. Failing closed matters more than the count: a command that
+   * runs without a credential it asked for surfaces later as an auth error that
+   * never mentions secretless.
+   */
   async loadSecrets(only?: string[]): Promise<Record<string, string>> {
     const all = await this.backend.resolve(SECRET_PREFIX);
     const result: Record<string, string> = {};
     const normalizedOnly = only?.map((k) => k.toUpperCase());
 
+    const available: string[] = [];
     for (const [fullKey, value] of Object.entries(all)) {
       const name = fullKey.slice(SECRET_PREFIX.length + 1);
       if (!name) continue;
+      available.push(name);
       if (normalizedOnly && !normalizedOnly.includes(name.toUpperCase())) continue;
       result[name] = value;
     }
+
+    if (normalizedOnly) {
+      // `--only ,,` parses to an empty list, which would otherwise filter
+      // everything out and inject nothing while looking like a successful run.
+      if (normalizedOnly.length === 0) {
+        throw new Error(
+          '--only was given but named no secrets.\n\n' +
+          '  Nothing was injected and the command was not run.\n\n' +
+          '  Verify:  secretless-ai secret list\n' +
+          '  Fix:     secretless-ai run --only NAME1,NAME2 -- <command>',
+        );
+      }
+      const resolved = new Set(Object.keys(result).map((n) => n.toUpperCase()));
+      const unmatched = [...new Set(normalizedOnly)].filter((n) => !resolved.has(n));
+      if (unmatched.length > 0) {
+        throw unmatchedSecretsError(unmatched, available);
+      }
+    }
     return result;
   }
+}
+
+/** Case-insensitive Levenshtein distance, capped — only used for a typo hint. */
+function editDistance(a: string, b: string): number {
+  const s = a.toUpperCase();
+  const t = b.toUpperCase();
+  if (Math.abs(s.length - t.length) > 2) return 99;
+  let prev = Array.from({ length: t.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= s.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= t.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + (s[i - 1] === t[j - 1] ? 0 : 1),
+      );
+    }
+    prev = cur;
+  }
+  return prev[t.length];
+}
+
+/**
+ * Error for `--only` names that matched nothing.
+ *
+ * Names only NAMES, never values — `secret list` already prints names, and the
+ * Verify line points at it. The near-miss hint is drawn from names actually in
+ * the store, so it cannot suggest something that does not exist.
+ */
+function unmatchedSecretsError(unmatched: string[], available: string[]): Error {
+  const plural = unmatched.length === 1 ? '' : 's';
+  const lines = [
+    `Requested secret${plural} not found in the store: ${unmatched.join(', ')}`,
+    '',
+    '  Nothing was injected and the command was not run.',
+  ];
+
+  const hints: string[] = [];
+  for (const miss of unmatched) {
+    const near = available
+      .map((name) => ({ name, d: editDistance(miss, name) }))
+      .filter((c) => c.d > 0 && c.d <= 2)
+      .sort((a, b) => a.d - b.d)[0];
+    if (near) hints.push(`${miss} -> ${near.name}`);
+  }
+  if (hints.length > 0) {
+    lines.push('', `  Did you mean:  ${hints.join('   ')}`);
+  }
+
+  lines.push(
+    '',
+    '  Verify:  secretless-ai secret list',
+    `  Fix:     secretless-ai secret set ${unmatched[0]}`,
+  );
+  return new Error(lines.join('\n'));
 }
 
 function validateSecretName(name: string): void {
