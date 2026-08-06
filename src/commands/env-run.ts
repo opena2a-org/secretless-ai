@@ -31,9 +31,10 @@ export async function runRun(args: string[]): Promise<number> {
   try {
     return await runWithSecrets(childCommand, childArgs, { only });
   } catch (err) {
-    // Indent every line, not just the first. These messages carry a Verify/Fix
-    // block, and printing only the first line indented breaks the block apart
-    // so the recovery instructions stop reading as a list.
+    // Indent every line, not just the first, matching the top-level handler in
+    // cli.ts. Today's messages happen to indent their own continuation lines,
+    // so this is not what saves the Verify/Fix block for them — it is what
+    // keeps a message that does NOT self-indent from landing at column 0.
     const message = err instanceof Error ? err.message : String(err);
     console.error(`\n  ${message.split('\n').join('\n  ')}\n`);
     return 1;
