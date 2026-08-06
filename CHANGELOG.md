@@ -9,6 +9,23 @@ credentials missing. Both are reasons to upgrade promptly.
 
 ### Fixed
 
+- **`scan <file>` reported a clean result for a file containing a credential.** A file path was accepted, checked for existence, then walked as if it were a directory — which found nothing:
+
+  ```
+  $ secretless-ai scan single.js
+    No hardcoded credentials found.          # exit 0
+  $ secretless-ai scan .                     # the same file, via its directory
+    1 credential found                       # exit 1
+  ```
+
+  `secretless-ai scan src/config.ts` in a CI step was therefore a green pass over a live credential. A named file is now scanned as that file. Because naming a path is an explicit instruction rather than a directory walk, neither the ignore list nor the test-file heuristics apply to it: those exist to keep a walk from being noisy, and there is no walk.
+
+- **Config files were only found at the scan root.** Source files recursed; `config.json`, `docker-compose.yml`, `.mcp.json`, `terraform.tfvars` and the rest were matched only against the top directory. A monorepo, or anything under `deploy/` or `infra/`, reported clean at exactly the invocation everyone runs first, while the same scan from inside the subdirectory found the credential immediately.
+
+  Config files are now found at any depth, including in the hidden directories where tool configs actually live (`.cursor/`, `.claude/`, `.vscode/`). Generated trees (`node_modules/`, `dist/`, `build/`) are still never walked, and `.secretlessignore` still applies.
+
+- **`run --only ''` ran the command and exited 0.** An empty value read as "flag not supplied", so the filter vanished — while the semantically identical `--only ,,` correctly refused. Same input, opposite fail direction. A CI step computing `--only "$KEYS"` with an empty `$KEYS` ran unprotected and reported success. Both forms now fail closed.
+
 - **`run --only` never checked that the names it was given were found (#110).** One root cause, three failure modes, and only the least harmful was loud.
 
   | store | `--only` matches | before |

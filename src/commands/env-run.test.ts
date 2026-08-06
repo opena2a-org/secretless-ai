@@ -100,3 +100,47 @@ describe('runRun surfaces a multi-line precondition error intact', () => {
     }
   });
 });
+
+// Release-test P2: `--only ''` and `--only ,,` are semantically identical but
+// failed in opposite directions — the empty string looked like "flag absent",
+// so the child ran and exited 0. A CI job computing `--only "$KEYS"` with an
+// empty $KEYS ran unprotected and reported success.
+describe('runRun --only with an empty value fails closed', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("treats --only '' the same as --only ,,", async () => {
+    const { runRun } = await import('./env-run');
+    const { runWithSecrets } = await import('../run');
+    vi.mocked(runWithSecrets).mockClear();
+    vi.mocked(runWithSecrets).mockResolvedValue(0);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await runRun(['--only', '', '--', 'echo', 'hi']);
+
+    // The parse must pass an EMPTY LIST through, not `undefined`. `undefined`
+    // means "no filter", which injects the entire store.
+    expect(vi.mocked(runWithSecrets).mock.lastCall![2]).toEqual({ only: [] });
+  });
+
+  it('CONTROL: a real --only value still parses to that list', async () => {
+    const { runRun } = await import('./env-run');
+    const { runWithSecrets } = await import('../run');
+    vi.mocked(runWithSecrets).mockClear();
+    vi.mocked(runWithSecrets).mockResolvedValue(0);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await runRun(['--only', 'A,B', '--', 'echo', 'hi']);
+    expect(vi.mocked(runWithSecrets).mock.lastCall![2]).toEqual({ only: ['A', 'B'] });
+  });
+
+  it('CONTROL: no --only at all still means no filter', async () => {
+    const { runRun } = await import('./env-run');
+    const { runWithSecrets } = await import('../run');
+    vi.mocked(runWithSecrets).mockClear();
+    vi.mocked(runWithSecrets).mockResolvedValue(0);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await runRun(['--', 'echo', 'hi']);
+    expect(vi.mocked(runWithSecrets).mock.lastCall![2]).toEqual({ only: undefined });
+  });
+});

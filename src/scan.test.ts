@@ -586,3 +586,133 @@ describe('scan() — every finding carries a fix (no dead ends)', () => {
     }
   });
 });
+
+describe('scan() — an explicitly named FILE is scanned (release-test P1)', () => {
+  function tmpProjectWith(files: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-file-'));
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    return dir;
+  }
+
+  const KEY = ['sk-proj-', 'Q1W2E3R4T5Y6U7I8O9P0A1S2D3F4G5H6J7K8L9Z0X1C2'].join('');
+
+  it('finds a credential when the target is the file itself', () => {
+    // `scan src/config.ts` accepted the path, checked it existed, then walked it
+    // as a directory and reported "No hardcoded credentials found" with exit 0.
+    // In CI that is a green pass over a live credential.
+    const dir = tmpProjectWith({ 'single.js': `const s = "${KEY}";\n` });
+    const findings = scan(path.join(dir, 'single.js'), { scanGlobal: false });
+    expect(findings.map(f => f.file)).toEqual(['single.js']);
+  });
+
+  it('CONTROL: the same file via its directory was always found', () => {
+    // Proves the test above is about the file target, not the pattern.
+    const dir = tmpProjectWith({ 'single.js': `const s = "${KEY}";\n` });
+    expect(scan(dir, { scanGlobal: false }).length).toBe(1);
+  });
+
+  it('scans an explicitly named file even inside a suppressed directory', () => {
+    // Naming a path is an explicit instruction; default suppression is a
+    // heuristic for directory walks. The explicit instruction wins.
+    const dir = tmpProjectWith({ 'test/fixture.test.js': `const s = "${KEY}";\n` });
+    const findings = scan(path.join(dir, 'test/fixture.test.js'), { scanGlobal: false });
+    expect(findings.length).toBe(1);
+  });
+
+  it('scans an explicitly named CONFIG file', () => {
+    const dir = tmpProjectWith({ 'config.json': `{"apiKey": "${KEY}"}\n` });
+    const findings = scan(path.join(dir, 'config.json'), { scanGlobal: false });
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+  });
+
+  it('a file with no credential is still clean', () => {
+    const dir = tmpProjectWith({ 'clean.js': 'const x = 1;\n' });
+    expect(scan(path.join(dir, 'clean.js'), { scanGlobal: false })).toEqual([]);
+  });
+});
+
+describe('scan() — config files are found below the root (release-test P1)', () => {
+  function tmpProjectWith(files: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-cfgrec-'));
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    return dir;
+  }
+
+  const GKEY = ['AIzaSy', 'B7xK2mNvPwQ4tZ8hLcDfGjHkMnOpQrStU'].join('');
+
+  it('finds a credential in a nested config.json', () => {
+    // Source files recursed; config files only matched at the scan root, so a
+    // monorepo reported clean at exactly the invocation everyone runs first.
+    const dir = tmpProjectWith({ 'sub/config.json': `{"key": "${GKEY}"}\n` });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toEqual(['sub/config.json']);
+  });
+
+  it('finds a nested docker-compose.yml two levels down', () => {
+    const dir = tmpProjectWith({
+      'deploy/prod/docker-compose.yml': `services:\n  api:\n    environment:\n      GOOGLE_API_KEY: ${GKEY}\n`,
+    });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toEqual(['deploy/prod/docker-compose.yml']);
+  });
+
+  it('finds a nested tool config in a dot-directory', () => {
+    // Dot-dirs are skipped for source files but are exactly where tool configs
+    // live, so the config walk must not blanket-skip them.
+    const dir = tmpProjectWith({ 'pkg/.cursor/mcp.json': `{"token": "${GKEY}"}\n` });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toEqual(['pkg/.cursor/mcp.json']);
+  });
+
+  it('CONTROL: a root config file still works', () => {
+    const dir = tmpProjectWith({ 'config.json': `{"key": "${GKEY}"}\n` });
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toEqual(['config.json']);
+  });
+
+  it('does NOT descend into node_modules, dist, or build', () => {
+    const dir = tmpProjectWith({
+      'node_modules/pkg/config.json': `{"key": "${GKEY}"}\n`,
+      'dist/config.json': `{"key": "${GKEY}"}\n`,
+      'build/config.json': `{"key": "${GKEY}"}\n`,
+    });
+    expect(scan(dir, { scanGlobal: false })).toEqual([]);
+  });
+
+  it('does NOT descend into generated trees even with --no-ignore', () => {
+    // The assertion above cannot distinguish the walker's SOURCE_SKIP_DIRS from
+    // the default-ignore list, because both cover these directories — mutation
+    // testing caught it staying green with the walker's check removed. With
+    // `ignore: false` the ignore layer is gone, so the walker is the only thing
+    // left, and scanning a dependency tree would bury the report.
+    const dir = tmpProjectWith({
+      'node_modules/pkg/config.json': `{"key": "${GKEY}"}\n`,
+      'dist/config.json': `{"key": "${GKEY}"}\n`,
+      'build/config.json': `{"key": "${GKEY}"}\n`,
+    });
+    expect(scan(dir, { scanGlobal: false, ignore: false })).toEqual([]);
+  });
+
+  it('honours .secretlessignore for nested config files', () => {
+    const dir = tmpProjectWith({
+      'sub/config.json': `{"key": "${GKEY}"}\n`,
+      '.secretlessignore': 'sub/\n',
+    });
+    expect(scan(dir, { scanGlobal: false })).toEqual([]);
+  });
+
+  it('reports a nested config file exactly once', () => {
+    // The source-file pass must not re-report a file the config pass covered.
+    const dir = tmpProjectWith({ 'sub/package.json': `{"token": "${GKEY}"}\n` });
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBe(1);
+  });
+});
