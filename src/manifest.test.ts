@@ -205,3 +205,51 @@ describe('parseManifestDetailed — an unrecognised manifest is an error, not na
     ]);
   });
 });
+
+describe('checkManifest surfaces manifest errors to library consumers (#112)', () => {
+  it('does not report an unparseable manifest as all-satisfied', async () => {
+    // Without `errors`, a consumer sees missing:[] and concludes everything is
+    // present, when in fact nothing was checked. Same fail-open shape as the
+    // original defect, one layer up.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-badcheck-'));
+    fs.writeFileSync(path.join(dir, '.secretless'), 'required:\n  - A\n');
+    const backend = new LocalBackend({ storeDir: dir, key: 'k' });
+
+    const result = await checkManifest(dir, { backend });
+
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.missing).toEqual([]);
+    expect(result.satisfied).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('CONTROL: a valid manifest reports no errors', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-goodcheck-'));
+    fs.writeFileSync(path.join(dir, '.secretless'), 'SOME_KEY\n');
+    const backend = new LocalBackend({ storeDir: dir, key: 'k' });
+
+    const result = await checkManifest(dir, { backend });
+
+    expect(result.errors).toEqual([]);
+    expect(result.missing.map(e => e.name)).toEqual(['SOME_KEY']);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('near-miss hint is bounded (self-review, not from an issue)', () => {
+  it('does not walk a quadratic edit distance on very long names', async () => {
+    const long = 'A'.repeat(20000);
+    const store = new SecretStore({
+      backend: {
+        name: 'fake',
+        resolve: async () => ({ [`secret/${long}`]: 'v' }),
+        store: async () => {},
+        delete: async () => false,
+      },
+    });
+    const started = Date.now();
+    await expect(store.loadSecrets([long.slice(0, 19999)])).rejects.toThrow();
+    // Unbounded, this is ~4e8 cell updates. The guard makes it constant time.
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});

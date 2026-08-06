@@ -158,6 +158,16 @@ export interface ManifestCheck {
   optional: ManifestEntry[];
   /** Secrets that are already stored. */
   satisfied: ManifestEntry[];
+  /**
+   * Manifest lines that are not secret names. NON-EMPTY MEANS THE THREE ARRAYS
+   * ABOVE ARE NOT A VERDICT — the file was not understood, so an empty
+   * `missing` here means "nothing was checked", not "nothing is missing".
+   *
+   * Surfaced because this is a public API: without it a consumer handed an
+   * unparseable manifest reads all-empty as all-satisfied, which is the same
+   * fail-open shape as reporting punctuation as missing names (#112).
+   */
+  errors: ManifestError[];
 }
 
 /**
@@ -167,9 +177,15 @@ export async function checkManifest(
   dir: string,
   options?: SecretStoreOptions,
 ): Promise<ManifestCheck> {
-  const entries = readManifest(dir);
-  if (!entries) {
-    return { missing: [], optional: [], satisfied: [] };
+  const parsed = readManifestDetailed(dir);
+  if (!parsed) {
+    return { missing: [], optional: [], satisfied: [], errors: [] };
+  }
+  const entries = parsed.entries;
+  if (parsed.errors.length > 0) {
+    // Do not consult the store against a file we could not read. Returning a
+    // tally here is what made "Missing: 3 required" a measurement of nothing.
+    return { missing: [], optional: [], satisfied: [], errors: parsed.errors };
   }
 
   const store = new SecretStore(options);
@@ -190,5 +206,5 @@ export async function checkManifest(
     }
   }
 
-  return { missing, optional, satisfied };
+  return { missing, optional, satisfied, errors: [] };
 }

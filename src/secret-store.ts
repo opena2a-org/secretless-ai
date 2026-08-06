@@ -139,6 +139,10 @@ export class SecretStore {
 function editDistance(a: string, b: string): number {
   const s = a.toUpperCase();
   const t = b.toUpperCase();
+  // Bail on anything longer than a plausible env var name. Names have no length
+  // limit, and the length-difference guard below does not help when BOTH are
+  // long, which would leave a quadratic walk on attacker-shaped input.
+  if (s.length > 64 || t.length > 64) return 99;
   if (Math.abs(s.length - t.length) > 2) return 99;
   let prev = Array.from({ length: t.length + 1 }, (_, i) => i);
   for (let i = 1; i <= s.length; i++) {
