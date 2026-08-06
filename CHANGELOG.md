@@ -1,8 +1,28 @@
 # Changelog
 
-## [0.21.0] - 2026-08-05
+## [0.21.0] - 2026-08-06
 
 ### Fixed
+
+- **`scan --explain` printed model output instead of the fix, not alongside it.** When the local NanoMind engine happened to return text, that text *replaced* the deterministic `Fix:` line, so a HIGH finding arrived with no remediation at all. One run produced `Also, provide a solution to the security risk of a hardcoded OpenAI Project Key found in src/client.js.` — the model echoing its own prompt back, presented as the tool's own guidance. Other runs produced a `require('openai-project-key')` (no such npm package) and a repetition loop.
+
+  The trigger looked intermittent because the engine usually returns an empty string and the fallback branch then printed the real fix. The defect itself was not intermittent: *any* non-null explanation replaced the remediation.
+
+  The `Fix:` line now always prints. Generated text may only appear beside it, labelled `Context (generated, unverified):`, and is dropped when it fails validation — prompt echo (measured against the actual prompt, so it survives rewording), install or import directives, host references, degenerate repetition, and length. The prompt no longer asks the model for "the immediate action to take"; remediation belongs to the verified fix, and soliciting it is what invited an invented package name. A security tool must not emit a package name or a rotation URL it made up: an invented URL points at a domain an attacker is free to register.
+
+- **`--include-tests` did not include test files.** A credential in `test/fixture.test.js` was reported clean with the flag set — a silent false all-clear on exactly the tree the user asked to check.
+
+  Two independent gates suppress test paths: the walker's `TEST_DIRS` check and the default-ignore list's `test/` entry. The flag opened only the first, so anything inside a test *directory* stayed hidden; a test-*named* file outside one (`src/fixture.test.js`) was found, which is why the flag looked like it worked. It now opens both, and reaches `tests/`, `__tests__/`, `__fixtures__/`, `test-server/` and `e2e/` as well.
+
+  Deliberately unchanged: `node_modules/`, `dist/` and `build/` stay suppressed — asking for tests is not asking to scan dependency trees — and an explicit entry in your own `.secretlessignore` still wins, with `--no-ignore` remaining the way to override that.
+
+- **40 of 57 credential patterns produced findings with no fix.** `aws-secret` was the one a release-test fixture happened to exercise; the missing guidance covered most of the catalog, including every GitHub token variant, `npm`, `gitlab`, `sendgrid`, `digitalocean`, `sentry` and `stripe-webhook`. Each rendered a HIGH or CRITICAL finding and then stopped, with nothing to act on.
+
+  `fix` is now non-optional. Patterns without a hand-written entry derive one from data the pattern already carries — the exact env var name, plus revoke-and-reissue — so a newly added pattern cannot ship a dead end. Derived text names no console URL, because we have not verified one for those providers and inventing it is the same failure as inventing a package name.
+
+- **An AWS secret-key preview hid which variable was exposed.** The name-gated pattern's match spans the variable name, so redacting the whole match rendered `AWS_SECRET_ACCESS_KEY = "…"` as a bare `"`. Patterns that capture their value now redact only the value: the preview reads `const AWS_SECRET_ACCESS_KEY = "[AWS Secret Access Key REDACTED]";`. The secret itself is still never shown.
+
+- **The `--explain` footer claimed "147+ checks" for `hackmyagent secure`.** The real figure is over 300 and moves every release. The claim is gone rather than restated — a number in user-facing output has to trace to something measured.
 
 - **A configured backend that could not be reached was silently replaced by the local store.** With `backend set 1password` and the 1Password desktop app disconnected, `secret set NAME=value` wrote to the *local* store and printed `Stored: NAME`. `secret get NAME` then read 1Password and reported nothing. `run` executed the command with no credentials injected at all. Each of those reports success at the point of use, and the failure only surfaces later as an authentication error that never mentions secretless.
 
