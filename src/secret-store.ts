@@ -190,6 +190,16 @@ function unmatchedSecretsError(unmatched: string[], available: string[]): Error 
   return new Error(lines.join('\n'));
 }
 
+/**
+ * Whether a string is usable as a secret name. Shared so the manifest parser
+ * applies the SAME rule as the store instead of restating it — `.secretless`
+ * used to accept `required:` and `-` as names and report them as missing
+ * secrets (#112).
+ */
+export function isValidSecretName(name: string): boolean {
+  return SAFE_NAME.test(name);
+}
+
 function validateSecretName(name: string): void {
   if (!SAFE_NAME.test(name)) {
     throw new Error(

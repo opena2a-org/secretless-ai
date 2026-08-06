@@ -6,7 +6,8 @@
  */
 
 import * as readline from 'readline';
-import { readManifest, checkManifest } from './manifest';
+import { readManifestDetailed, checkManifest, MANIFEST_FORMAT_HINT } from './manifest';
+import type { ManifestError } from './manifest';
 import { SecretStore } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
 
@@ -31,6 +32,12 @@ export interface SetupResult {
   skipped: number;
   /** Whether all required secrets are satisfied. */
   complete: boolean;
+  /**
+   * Lines of `.secretless` that are not secret names. When present the counts
+   * above are vacuous — the manifest was not understood, so nothing was
+   * checked. Callers must not render a satisfied/missing tally.
+   */
+  manifestErrors?: ManifestError[];
 }
 
 /**
@@ -43,8 +50,8 @@ export async function runSetup(
   dir: string,
   options?: SetupOptions,
 ): Promise<SetupResult> {
-  const entries = readManifest(dir);
-  if (!entries) {
+  const parsed = readManifestDetailed(dir);
+  if (!parsed) {
     process.stderr.write('  No .secretless manifest found in this directory.\n');
     process.stderr.write('  Create a .secretless file with one secret name per line:\n');
     process.stderr.write('    ANTHROPIC_API_KEY\n');
@@ -54,6 +61,29 @@ export async function runSetup(
       return { manifestFound: false, set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: false };
     }
     return { manifestFound: false, set: 0, existing: 0, missing: 0, missingNames: [], skipped: 0, complete: true };
+  }
+
+  // A manifest we cannot parse is a manifest error, not a store that is missing
+  // things. Reporting a count derived from unparseable input is a confident
+  // wrong answer, and in CI it is a red build pointing at the wrong file (#112).
+  if (parsed.errors.length > 0) {
+    process.stderr.write('\n  .secretless could not be parsed.\n\n');
+    for (const e of parsed.errors) {
+      process.stderr.write(`    line ${e.line}: ${e.text}\n`);
+      process.stderr.write(`             ${e.reason}\n`);
+    }
+    process.stderr.write('\n  ' + MANIFEST_FORMAT_HINT.split('\n').join('\n  ') + '\n\n');
+    process.stderr.write('  No secrets were checked, because the file does not say which to check.\n\n');
+    return {
+      manifestFound: true,
+      set: 0,
+      existing: 0,
+      missing: 0,
+      missingNames: [],
+      skipped: 0,
+      complete: false,
+      manifestErrors: parsed.errors,
+    };
   }
 
   const check = await checkManifest(dir, options);
