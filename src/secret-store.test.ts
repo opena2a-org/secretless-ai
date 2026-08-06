@@ -262,9 +262,9 @@ describe('loadSecrets — a requested name that resolves to nothing (issue #110)
 });
 
 describe('near-miss hint work is bounded (CI review finding, measured)', () => {
-  function bigStore(n: number) {
+  function storeOf(names: string[]) {
     const entries: Record<string, string> = {};
-    for (let i = 0; i < n; i++) entries[`secret/${'A'.repeat(58)}${String(i).padStart(4, '0')}`] = 'v';
+    for (const n of names) entries[`secret/${n}`] = 'v';
     return new SecretStore({
       backend: {
         name: 'fake',
@@ -275,31 +275,27 @@ describe('near-miss hint work is bounded (CI review finding, measured)', () => {
     });
   }
 
-  it('stays fast with a large store and a long unmatched list', async () => {
-    // Measured pre-fix at 7.8s for this shape: the length caps do not help when
-    // both strings sit near the cap, so the full table was walked every time.
-    const store = bigStore(5000);
+  it('stays fast when stored names SHARE A LONG PREFIX', async () => {
+    // This is the shape that matters, and the one an earlier benchmark missed.
+    // Maximally-different names exit on the first row of the table, so they
+    // never exercise the expensive path; names that look alike — which stored
+    // secret names do — keep the band under the threshold the whole way.
+    // Measured: 7814ms unbounded, 840ms with a row cutoff alone, 378ms banded.
+    const names: string[] = [];
+    for (let i = 0; i < 5000; i++) names.push('A'.repeat(60) + String(i).padStart(4, '0'));
     const requested: string[] = [];
-    for (let i = 0; i < 100; i++) requested.push('B'.repeat(58) + String(i).padStart(4, '0'));
+    for (let i = 0; i < 100; i++) requested.push('A'.repeat(60) + String(9000 + i).padStart(4, '0'));
 
     const started = Date.now();
-    await expect(store.loadSecrets(requested)).rejects.toThrow();
-    expect(Date.now() - started).toBeLessThan(1000);
+    await expect(storeOf(names).loadSecrets(requested)).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(1500);
   });
 
   it('CONTROL: a real near miss is still suggested', async () => {
-    // The cutoff must not be so aggressive that it stops finding typos.
-    const store = new SecretStore({
-      backend: {
-        name: 'fake',
-        resolve: async () => ({ 'secret/DATABASE_URL': 'v' }),
-        store: async () => {},
-        delete: async () => false,
-      },
-    });
+    // The band must not be so tight that it stops finding typos.
     let message = '';
     try {
-      await store.loadSecrets(['DATABSE_URL']);
+      await storeOf(['DATABASE_URL']).loadSecrets(['DATABSE_URL']);
     } catch (e) {
       message = (e as Error).message;
     }
@@ -307,20 +303,38 @@ describe('near-miss hint work is bounded (CI review finding, measured)', () => {
   });
 
   it('CONTROL: a distance-2 typo is still within the threshold', async () => {
-    const store = new SecretStore({
-      backend: {
-        name: 'fake',
-        resolve: async () => ({ 'secret/GITHUB_TOKEN': 'v' }),
-        store: async () => {},
-        delete: async () => false,
-      },
-    });
     let message = '';
     try {
-      await store.loadSecrets(['GITHB_TOKN']);
+      await storeOf(['GITHUB_TOKEN']).loadSecrets(['GITHB_TOKN']);
     } catch (e) {
       message = (e as Error).message;
     }
     expect(message).toContain('GITHUB_TOKEN');
+  });
+
+  it('CONTROL: a near miss LATE in a long shared prefix is still found', async () => {
+    // Banding is indexed off the diagonal, so an edit far along the string is
+    // exactly where a wrong band would clip the answer.
+    const base = 'A'.repeat(50) + 'DATABASE_URL';
+    let message = '';
+    try {
+      await storeOf([base]).loadSecrets([base.slice(0, -1) + 'X']);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain(base);
+  });
+
+  it('does NOT suggest a name three edits away', async () => {
+    // Pins the threshold from the other side: without this, widening the band
+    // to "fix" a clipped near miss would go unnoticed.
+    const base = 'A'.repeat(50) + 'DATABASE_URL';
+    let message = '';
+    try {
+      await storeOf([base]).loadSecrets([base.slice(0, -3) + 'XYZ']);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).not.toContain('Did you mean');
   });
 });

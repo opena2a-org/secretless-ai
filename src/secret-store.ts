@@ -141,33 +141,55 @@ const NEAR_MISS_MAX = 2;
 /** Most unmatched names we compute a near-miss hint for. */
 const MAX_HINTED = 10;
 
-/** Case-insensitive Levenshtein distance, capped — only used for a typo hint. */
+/** Anything above the threshold; all such values are equivalent to the caller. */
+const OVER = NEAR_MISS_MAX + 1;
+
+/**
+ * Case-insensitive edit distance, only ever used to suggest a typo fix.
+ * Any result above NEAR_MISS_MAX is returned as OVER, not computed exactly.
+ *
+ * BANDED. Only cells within NEAR_MISS_MAX of the diagonal are evaluated, so a
+ * comparison costs O(n * k) rather than O(n^2) — bounded whether the two names
+ * are similar or not.
+ *
+ * A row-minimum cutoff alone is not enough, and the measurement that suggested
+ * it was misleading: it used maximally DIFFERENT names, which exit on the first
+ * row. For names sharing a long prefix and differing only near the end — the
+ * realistic shape, since stored names look alike — the band around the diagonal
+ * stays under the threshold and the full table gets computed. Measured at 5000
+ * stored names sharing a 60-char prefix, against 100 unmatched: 7814ms
+ * unbounded, 840ms with the cutoff alone, 378ms banded. (The same shape with
+ * maximally different names is 33ms — which is why benchmarking that shape hid
+ * the problem.)
+ */
 function editDistance(a: string, b: string): number {
   const s = a.toUpperCase();
   const t = b.toUpperCase();
-  // Bail on anything longer than a plausible env var name. Names have no length
-  // limit, and the length-difference guard below does not help when BOTH are
-  // long, which would leave a quadratic walk on attacker-shaped input.
-  if (s.length > 64 || t.length > 64) return 99;
-  if (Math.abs(s.length - t.length) > NEAR_MISS_MAX) return 99;
-  let prev = Array.from({ length: t.length + 1 }, (_, i) => i);
+  // Names have no length limit; keep the table small regardless.
+  if (s.length > 64 || t.length > 64) return OVER;
+  if (Math.abs(s.length - t.length) > NEAR_MISS_MAX) return OVER;
+
+  let prev: number[] = new Array(t.length + 1).fill(OVER);
+  for (let j = 0; j <= Math.min(t.length, NEAR_MISS_MAX); j++) prev[j] = j;
+
   for (let i = 1; i <= s.length; i++) {
-    const cur = [i];
-    let rowMin = i;
-    for (let j = 1; j <= t.length; j++) {
-      cur[j] = Math.min(
+    const cur: number[] = new Array(t.length + 1).fill(OVER);
+    cur[0] = i <= NEAR_MISS_MAX ? i : OVER;
+    const lo = Math.max(1, i - NEAR_MISS_MAX);
+    const hi = Math.min(t.length, i + NEAR_MISS_MAX);
+    let rowMin = cur[0];
+    for (let j = lo; j <= hi; j++) {
+      const v = Math.min(
         prev[j] + 1,
         cur[j - 1] + 1,
         prev[j - 1] + (s[i - 1] === t[j - 1] ? 0 : 1),
       );
+      cur[j] = v > OVER ? OVER : v;
       if (cur[j] < rowMin) rowMin = cur[j];
     }
-    // Cutoff: row values never decrease as rows are added, so once every cell
-    // in a row exceeds the threshold the final distance cannot come back under
-    // it. Only distances <= 2 are ever used, so the rest of the table is waste.
-    // Without this, 5000 stored names against 100 unmatched ones took 7.8s —
-    // the length caps alone do not help when both strings are near the cap.
-    if (rowMin > NEAR_MISS_MAX) return 99;
+    // Every reachable cell already exceeds the threshold, so the final distance
+    // cannot come back under it.
+    if (rowMin > NEAR_MISS_MAX) return OVER;
     prev = cur;
   }
   return prev[t.length];
