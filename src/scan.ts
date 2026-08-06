@@ -500,16 +500,23 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
    * would otherwise be reported three times — turning "1 path could not be read"
    * into "3 paths could not be read" for a single underlying cause.
    */
+  // Keyed on the RESOLVED path, not the path we walked: one unreadable directory
+  // reachable through eight in-tree links reported nine separate entries, and
+  // since a non-empty list sets exit 1, that is nine lines of noise for one
+  // cause.
   const seenUnreadable = new Set<string>();
   const seenOutOfRoot = new Set<string>();
+  const dedupeKey = (p: string) => realpathOrNull(path.resolve(projectDir, p)) ?? p;
   const absorbWalk = (walk: WalkResult) => {
     if (!stats) return;
     if (walk.truncated) stats.truncated = true;
     for (const p of walk.unreadable) {
-      if (stats.unreadable && !seenUnreadable.has(p)) { seenUnreadable.add(p); stats.unreadable.push(p); }
+      const k = dedupeKey(p);
+      if (stats.unreadable && !seenUnreadable.has(k)) { seenUnreadable.add(k); stats.unreadable.push(p); }
     }
     for (const p of walk.outOfRoot) {
-      if (stats.outOfRoot && !seenOutOfRoot.has(p)) { seenOutOfRoot.add(p); stats.outOfRoot.push(p); }
+      const k = dedupeKey(p);
+      if (stats.outOfRoot && !seenOutOfRoot.has(k)) { seenOutOfRoot.add(k); stats.outOfRoot.push(p); }
     }
   };
 
@@ -673,7 +680,32 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     return a.file.localeCompare(b.file);
   });
 
-  return findings;
+  // One credential, one finding. Following symlinks means the same underlying
+  // file is reachable by more than one path — twelve packages each linking to a
+  // shared config turned one leaked key into thirteen criticals, so `total`
+  // counted PATHS rather than credentials and a triage queue read thirteen
+  // incidents. Deduplicated on the resolved file plus its position, after the
+  // sort, so the surviving path is the highest-confidence one.
+  return dedupeByRealFile(findings, projectDir);
+}
+
+/** Collapse findings that resolve to the same real file, line and pattern. */
+function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFinding[] {
+  const realOf = new Map<string, string>();
+  const seen = new Set<string>();
+  const out: ScanFinding[] = [];
+  for (const f of findings) {
+    let real = realOf.get(f.file);
+    if (real === undefined) {
+      real = realpathOrNull(path.resolve(projectDir, f.file)) ?? f.file;
+      realOf.set(f.file, real);
+    }
+    const key = `${real} ${f.line} ${f.patternId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
 }
 
 /**
@@ -759,8 +791,11 @@ function classifyEntry(entryPath: string, entry: fs.Dirent): 'dir' | 'file' | 's
     // there is nothing to scan, so it is genuinely a skip. EACCES/ELOOP/EMFILE
     // mean something IS there and we could not look at it, which must be
     // reported rather than counted as clean.
+    // ENOENT is a broken link and ENOTDIR is a link through a non-directory —
+    // both point at nothing, so there is no content we failed to examine.
+    // EACCES/ELOOP/EMFILE mean something IS there that we could not look at.
     const code = (err as NodeJS.ErrnoException)?.code;
-    return code === 'ENOENT' ? 'skip' : 'unreadable';
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'skip' : 'unreadable';
   }
 }
 
@@ -844,9 +879,39 @@ function matchesConfigName(
  */
 const MAX_DIRS_VISITED = 50_000;
 
-/** Is `target` the root itself or inside it? Both must already be real paths. */
+/**
+ * How many distinct paths to the SAME real directory one walk will follow.
+ *
+ * Per-ancestry cycle detection deliberately allows a directory to be reached by
+ * more than one path — that is what makes `pkg/.claude -> shared/` work when
+ * `shared/` is also in the tree. But the number of paths through a lattice of
+ * links is exponential: a hand-built 31-directory fixture produced 2,047 walks,
+ * 45s of wall clock and 289 MB of RSS. A repo is a hostile input to a scanner,
+ * so the multiplicity is capped. Twelve packages each linking to a shared
+ * directory is the realistic high-water mark; well past that is pathological,
+ * and crossing the cap sets `truncated` rather than passing silently.
+ */
+const MAX_PATHS_PER_DIR = 32;
+
+/**
+ * Is `target` the root itself or inside it? Both must already be real paths.
+ *
+ * `path.sep` is appended for the prefix test so `/tmp/rootx` is not read as
+ * inside `/tmp/root` — but a root of `/` already ends in the separator, and
+ * appending a second one made every absolute path test as OUTSIDE it.
+ *
+ * On a case-insensitive filesystem `realpathSync` does NOT canonicalise case, so
+ * scanning `ROOT` when the directory is `root` leaves an in-tree link resolving
+ * to a path that fails a case-sensitive prefix test — and the subtree it reaches
+ * would be dropped. Compare case-insensitively where the platform is.
+ */
 function isWithinRoot(target: string, rootReal: string): boolean {
-  return target === rootReal || target.startsWith(rootReal + path.sep);
+  const prefix = rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep;
+  if (target === rootReal || target.startsWith(prefix)) return true;
+  if (process.platform !== 'darwin' && process.platform !== 'win32') return false;
+  const t = target.toLowerCase();
+  const r = rootReal.toLowerCase();
+  return t === r || t.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
 }
 
 /** Resolve a path to its real location, or null when it cannot be resolved. */
@@ -895,6 +960,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   const rootReal = realpathOrNull(dir) ?? path.resolve(dir);
   // Each entry carries the realpath chain of the directories above it.
   const queue: Array<{ dir: string; ancestors: string[] }> = [{ dir, ancestors: [] }];
+  const visitsByReal = new Map<string, number>();
   let dirsVisited = 0;
 
   const rel = (p: string) => path.relative(dir, p).replace(/\\/g, '/');
@@ -908,6 +974,11 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     if (currentReal === null) { unreadable.push(rel(current)); continue; }
     // A directory inside its own ancestry is a genuine loop.
     if (ancestors.includes(currentReal)) continue;
+    // Bound how many distinct routes to one directory we follow (see the
+    // constant): the path count through a link lattice is exponential.
+    const seenCount = visitsByReal.get(currentReal) ?? 0;
+    if (seenCount >= MAX_PATHS_PER_DIR) { truncated = true; continue; }
+    visitsByReal.set(currentReal, seenCount + 1);
     const childAncestors = [...ancestors, currentReal];
     dirsVisited += 1;
 
@@ -929,22 +1000,33 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
       if (kind === 'unreadable') { unreadable.push(relFromRoot); continue; }
       if (kind === 'skip') continue;
 
-      // Containment. A link out of the tree is not followed: `link -> $HOME`
-      // would otherwise make `scan .` traverse the whole home directory. This
-      // matches the policy transcript.ts already states for its own walk.
-      if (entry.isSymbolicLink()) {
-        const target = realpathOrNull(entryPath);
-        if (target === null) { continue; }         // broken link: nothing to scan
-        if (!isWithinRoot(target, rootReal)) { outOfRoot.push(relFromRoot); continue; }
-      }
-
       if (kind === 'dir') {
+        // Filters run BEFORE containment, so a pruned tree never produces a
+        // coverage warning. Reporting `node_modules -> /pnpm-store` as an
+        // unfollowed boundary — and telling the user to go scan it — is noise
+        // about a directory that was never going to be walked.
         if (spec.skipDir(entry.name, relFromRoot)) continue;
+
+        // Containment applies to DIRECTORY links only. Following one is
+        // unbounded: a repo holding `link -> $HOME` would pull the whole home
+        // directory into the scan.
+        if (entry.isSymbolicLink()) {
+          const target = realpathOrNull(entryPath);
+          if (target === null) continue;
+          if (!isWithinRoot(target, rootReal)) { outOfRoot.push(relFromRoot); continue; }
+        }
+
         // Checked AFTER the filters, so only a real candidate trips the cap.
         if (files.length >= maxFiles) { truncated = true; break; }
         queue.push({ dir: entryPath, ancestors: childAncestors });
       } else {
         if (!spec.acceptFile(entry.name, relFromRoot)) continue;
+        // A symlinked FILE is NOT contained, even out of the root. Reading one
+        // file the repository explicitly names is bounded work, and it is the
+        // shape every dotfile manager produces: `pkg/.env -> ../../shared/.env`
+        // under stow/chezmoi, or a package pointing at the monorepo root env.
+        // Refusing it would drop a credential the repo is asking us to treat as
+        // its own — the opposite of the unbounded-traversal risk above.
         if (files.length >= maxFiles) { truncated = true; break; }
         files.push(spec.collect(entryPath, relFromRoot));
       }

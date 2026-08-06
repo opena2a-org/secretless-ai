@@ -123,6 +123,19 @@ export function runInit(projectDir: string): number {
   return 0;
 }
 
+/**
+ * Quote a path for a shell command we PRINT for the user to copy.
+ *
+ * The paths here are filenames from a scanned repository, i.e. attacker
+ * controlled, and the whole point of a `Fix:` line is that it gets pasted into a
+ * terminal. A link named `a"; id; echo "b` interpolated raw produced a command
+ * that closed the quote and ran `id`. Single quotes with the standard
+ * `'\''` escape make every byte literal.
+ */
+function shellQuote(p: string): string {
+  return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
+}
+
 export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
   const scanOpts = {
@@ -193,7 +206,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   const runnable = (rel: string) => {
     const abs = nodePath.resolve(projectDir, rel);
     const fromCwd = nodePath.relative(process.cwd(), abs);
-    return fromCwd && !fromCwd.startsWith('..') ? fromCwd : abs;
+    // A bare relative path is only usable when it stays inside cwd AND does not
+    // read as a flag; anything else falls back to the absolute path.
+    const chosen = fromCwd && !fromCwd.startsWith('..') && !fromCwd.startsWith('-') ? fromCwd : abs;
+    return shellQuote(chosen);
   };
 
   // A walk that stopped at the file cap left tree unvisited, and a file we could
@@ -225,7 +241,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       console.log(`  ${c.dim('Following them would let a link to $HOME pull the whole home directory into the scan.')}`);
-      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan "$(readlink -f ${runnable(stats.outOfRoot[0])})"\n`);
+      // No `$(...)` here: the path is attacker-controlled (it is a filename in a
+      // scanned repo), and a command substitution around it hands a
+      // copy-pasting user an execution primitive.
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable(nodeFs.realpathSync(nodePath.resolve(projectDir, stats.outOfRoot[0])))}\n`);
     }
   };
   // An out-of-root link is a reported boundary, not a gap in what we claimed to

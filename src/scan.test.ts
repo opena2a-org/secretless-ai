@@ -795,20 +795,19 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     expect(findings.filter(f => f.file.endsWith('config.json')).length).toBe(1);
   });
 
-  it('a symlink pointing OUTSIDE the scan root is NOT followed, but IS reported', () => {
-    // Containment. Following out-of-root links makes `scan .` on a repo holding
-    // `link -> $HOME` traverse the entire home directory, and it contradicts the
-    // policy transcript.ts already states for its own walk. Reporting the skip is
-    // what keeps this from being a fail-open of its own: the user is told the
-    // boundary was hit and given the command to scan the target directly.
+  it('an out-of-root symlinked FILE is still read', () => {
+    // Containment applies to directories, not files. Reading one file the repo
+    // explicitly names is bounded work, and `pkg/.env -> ../../shared/.env` is
+    // what stow/chezmoi and monorepo-root env files actually produce — refusing
+    // it would drop a credential the repo is asking us to treat as its own.
     const outside = tmpdir('scan-symout-target-');
     fs.writeFileSync(path.join(outside, 'payload.json'), `{"key": "${GKEY}"}\n`);
     const dir = tmpdir('scan-symout-');
     fs.symlinkSync(path.join(outside, 'payload.json'), path.join(dir, 'config.json'));
 
     const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
-    expect(scan(dir, { scanGlobal: false }, stats).map(f => f.file)).not.toContain('config.json');
-    expect(stats.outOfRoot).toEqual(['config.json']);
+    expect(scan(dir, { scanGlobal: false }, stats).map(f => f.file)).toContain('config.json');
+    expect(stats.outOfRoot).toEqual([]);
   });
 
   it('an out-of-root symlinked DIRECTORY is not traversed', () => {
@@ -838,6 +837,62 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     fs.symlinkSync(path.join(dir, 'shared'), path.join(dir, 'pkg/.claude'), 'dir');
 
     expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toContain('pkg/.claude/settings.json');
+  });
+
+  it('reports ONE finding for a credential reachable by several in-tree paths', () => {
+    // Following links means the same real file is reachable more than once, and
+    // per-ancestry cycle detection deliberately walks each route. A monorepo
+    // where 12 packages each link to a shared config turned one leaked key into
+    // 13 criticals, so `summary.total` counted PATHS, not credentials.
+    const dir = tmpdir('scan-dupe-');
+    fs.mkdirSync(path.join(dir, 'common'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'common/config.json'), `{"key": "${GKEY}"}\n`);
+    for (const pkg of ['a', 'b', 'c', 'd']) {
+      fs.mkdirSync(path.join(dir, 'packages', pkg), { recursive: true });
+      fs.symlinkSync(path.join(dir, 'common'), path.join(dir, 'packages', pkg, 'shared'), 'dir');
+    }
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBe(1);
+  });
+
+  it('does NOT report a pruned directory as an out-of-root boundary', () => {
+    // The containment check used to run before the skip filters, so a
+    // `node_modules -> /pnpm-store` link was reported as an unfollowed boundary
+    // and the user was told to go scan their whole package store — about a
+    // directory that was never going to be walked.
+    const outside = tmpdir('scan-store-');
+    fs.writeFileSync(path.join(outside, 'config.json'), `{"key": "${GKEY}"}\n`);
+    const dir = tmpdir('scan-pruned-');
+    fs.symlinkSync(outside, path.join(dir, 'node_modules'), 'dir');
+
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+    expect(stats.outOfRoot).toEqual([]);
+  });
+
+  it('bounds a lattice of links instead of walking exponentially many paths', () => {
+    // A 31-directory link lattice produced 2047 traversals, 45s and 289 MB.
+    // A repo is a hostile input; the multiplicity cap makes this bounded, and
+    // crossing it must SAY so rather than pass silently.
+    const dir = tmpdir('scan-lattice-');
+    let prev = dir;
+    for (let level = 0; level < 12; level++) {
+      const next = path.join(prev, 'd');
+      fs.mkdirSync(next, { recursive: true });
+      fs.symlinkSync(next, path.join(prev, 'l1'), 'dir');
+      fs.symlinkSync(next, path.join(prev, 'l2'), 'dir');
+      prev = next;
+    }
+    fs.writeFileSync(path.join(prev, 'config.json'), `{"key": "${GKEY}"}\n`);
+
+    const started = process.hrtime.bigint();
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(elapsedMs).toBeLessThan(10_000);
+    // One real credential, however many routes reach it.
+    expect(findings.length).toBe(1);
   });
 
   it('an unreadable DIRECTORY is reported, not counted as clean', () => {
