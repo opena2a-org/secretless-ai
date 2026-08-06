@@ -5,7 +5,8 @@ import { status } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles } from '../doctor';
-import { readBackendConfig } from '../backends/config';
+import { readBackendConfig, resolveBackendType } from '../backends/config';
+import { effectiveBackendName } from '../backends/factory';
 import { getDaemonStatus } from '../broker/daemon';
 import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
@@ -308,8 +309,11 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
   const brokerInstalled = isDaemonInstalled();
   const tp = s.transcriptProtection;
   const configuredBackend = readBackendConfig();
-  // Session warmth only matters for backends that trigger OS auth prompts.
-  const sessionRelevant = configuredBackend === '1password' || configuredBackend === 'keychain';
+  // Session warmth only matters for backends that trigger OS auth prompts, and
+  // that is a property of the EFFECTIVE backend: `local` upgrades to the
+  // platform keychain, which prompts.
+  const effectiveBackend = effectiveBackendName(resolveBackendType());
+  const sessionRelevant = effectiveBackend.startsWith('keychain') || effectiveBackend === '1password';
 
   // Build observation rows. Each row: glyph + label + optional → command.
   // Satisfied observations use ✓; needs-action use ⚠. Every ⚠ ends in a
@@ -401,7 +405,8 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
       configuredTools: s.configuredTools,
       secretsFound: s.secretsFound,
       transcriptProtection: tp,
-      backend: configuredBackend ?? null,
+      backend: effectiveBackend,
+      configuredBackend: configuredBackend ?? null,
       session: { relevant: sessionRelevant, warm: session.warm },
       broker: {
         installed: brokerInstalled,

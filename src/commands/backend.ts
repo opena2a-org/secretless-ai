@@ -363,8 +363,12 @@ export function runCache(args: string[]): number {
 
   // Default: show cache status
   const ttl = readCacheTtl();
-  const backendType = resolveBackendType();
-  const needsCache = backendType === 'keychain' || backendType === '1password';
+  // The EFFECTIVE backend, not the configured one: `local` upgrades to the
+  // platform keychain, which DOES prompt. Keying this off the configured value
+  // printed "Not needed (local backend has no auth prompts)" on a machine whose
+  // secrets were going to the keychain — advice that was exactly backwards.
+  const backendType = effectiveBackendName(resolveBackendType());
+  const needsCache = backendType.startsWith('keychain') || backendType === '1password';
 
   console.log('\n  Secret Cache\n');
   console.log(`  Backend:  ${backendType}`);

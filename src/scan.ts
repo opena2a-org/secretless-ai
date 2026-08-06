@@ -276,6 +276,22 @@ function scanSingleFile(
 ): ScanFinding[] {
   const findings: ScanFinding[] = [];
   const name = path.basename(filePath);
+  // Report a path the reader can act on. The basename alone does not resolve
+  // from the caller's cwd, so a CI job annotating file:line from --json pointed
+  // at the wrong file or at nothing. Prefer cwd-relative; fall back to the
+  // absolute path when the target is outside the tree.
+  // realpath both sides: on macOS the temp dir and /tmp are symlinks, so a
+  // literal cwd-vs-path comparison escapes with `../../..` and loses the
+  // relative form for paths that are genuinely inside the tree.
+  const display = (() => {
+    try {
+      const rel = path.relative(fs.realpathSync(process.cwd()), fs.realpathSync(filePath));
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel.replace(/\\/g, '/');
+    } catch {
+      // fall through to the path as given
+    }
+    return filePath;
+  })();
   const isConfig = CONFIG_FILES.some(c => c === name || filePath.replace(/\\/g, '/').endsWith('/' + c));
   const severity: 'critical' | 'high' = isConfig ? 'critical' : 'high';
   const minConfidence = Math.max(0, Math.min(1, options?.minConfidence ?? 0));
@@ -304,7 +320,7 @@ function scanSingleFile(
           });
           if (breakdown.score >= minConfidence) {
             findings.push({
-              file: name,
+              file: display,
               line: i + 1,
               patternId: pattern.id,
               patternName: pattern.name,
