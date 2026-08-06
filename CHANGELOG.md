@@ -24,6 +24,12 @@ credentials missing. Both are reasons to upgrade promptly.
 
   Config files are now found at any depth, including in the hidden directories where tool configs actually live (`.cursor/`, `.claude/`, `.vscode/`). Generated trees (`node_modules/`, `dist/`, `build/`) are still never walked, and `.secretlessignore` still applies.
 
+- **`scan <a> <b>` silently scanned only the first path.** The second was dropped with no warning, and because the first path's findings still set exit 1, the run looked complete while an entire file went unscanned. It now exits 2 naming the paths it was given, rather than answering for input it ignored.
+
+- **A single-file finding reported a path that did not resolve.** `scan deploy/prod/app.js --json` reported `file: "app.js"`, so a CI job annotating `file:line` from the JSON pointed at the wrong file or at nothing. It now reports the same path a directory scan does.
+
+- **`status`, `cache` and `mcp-status` reported the configured backend rather than the one in use.** The same defect as #111, in the three surfaces that were not swept when `backend` was fixed. `cache` drew a wrong conclusion from it — `Status: Not needed (local backend has no auth prompts)` on a machine whose secrets go to the Keychain, which does prompt. All four surfaces now name the effective backend and agree; `status --json` gains a `configuredBackend` field alongside it.
+
 - **`run --only ''` ran the command and exited 0.** An empty value read as "flag not supplied", so the filter vanished — while the semantically identical `--only ,,` correctly refused. Same input, opposite fail direction. A CI step computing `--only "$KEYS"` with an empty `$KEYS` ran unprotected and reported success. Both forms now fail closed.
 
 - **`run --only` never checked that the names it was given were found (#110).** One root cause, three failure modes, and only the least harmful was loud.

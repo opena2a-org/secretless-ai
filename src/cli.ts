@@ -165,6 +165,18 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
         console.error(`  Warning: ignoring unknown flag${unknownFlags.length > 1 ? 's' : ''} ${unknownFlags.join(', ')}.`);
         console.error(`  Run \`${CLI_BARE} scan\` for supported flags (--json, --show-placeholders, --min-confidence, --no-ignore, --include-tests, --explain).`);
       }
+      // Refuse extra paths rather than silently scanning only the first. A
+      // second path used to be dropped with no warning, and since the first
+      // path's findings still set exit 1, the run LOOKED complete while a whole
+      // file went unscanned — the same silent-shortfall class this release is
+      // about. Failing loudly is better than answering for input we ignored.
+      if (positionalArgs.length > 1) {
+        console.error(`  scan takes one path, but ${positionalArgs.length} were given: ${positionalArgs.join(', ')}`);
+        console.error('  Scan them one at a time, or pass the directory that contains them:');
+        console.error(`    ${CLI_BARE} scan ${positionalArgs[0]}`);
+        console.error(`    ${CLI_BARE} scan .`);
+        return 2;
+      }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
       return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders });

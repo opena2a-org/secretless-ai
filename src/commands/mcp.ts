@@ -4,6 +4,7 @@ import { discoverMcpConfigs } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
 import { resolveBackendType } from '../backends/config';
+import { effectiveBackendName } from '../backends/factory';
 import type { SelectableBackendType } from '../backends/config';
 
 function getWrapperPath(): string {
@@ -82,7 +83,8 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 export function runMcpStatus(): number {
   console.log('\n  Secretless MCP Status\n');
 
-  const backend = resolveBackendType();
+  // Report where secrets actually go, matching `backend` and `secret list`.
+  const backend = effectiveBackendName(resolveBackendType());
   console.log(`  Backend: ${backend}\n`);
 
   const configs = discoverMcpConfigs();

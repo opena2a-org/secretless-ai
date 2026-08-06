@@ -606,7 +606,10 @@ describe('scan() — an explicitly named FILE is scanned (release-test P1)', () 
     // In CI that is a green pass over a live credential.
     const dir = tmpProjectWith({ 'single.js': `const s = "${KEY}";\n` });
     const findings = scan(path.join(dir, 'single.js'), { scanGlobal: false });
-    expect(findings.map(f => f.file)).toEqual(['single.js']);
+    expect(findings.length).toBe(1);
+    expect(path.basename(findings[0].file)).toBe('single.js');
+    // Whatever form the path takes, it must point at a real file.
+    expect(fs.existsSync(findings[0].file)).toBe(true);
   });
 
   it('CONTROL: the same file via its directory was always found', () => {
@@ -714,5 +717,47 @@ describe('scan() — config files are found below the root (release-test P1)', (
     const dir = tmpProjectWith({ 'sub/package.json': `{"token": "${GKEY}"}\n` });
     const findings = scan(dir, { scanGlobal: false });
     expect(findings.length).toBe(1);
+  });
+});
+
+describe('scan() — a single-file finding reports a path that resolves (re-test P2)', () => {
+  it('reports the path relative to cwd, not the bare basename', () => {
+    // The basename alone does not resolve from the caller's cwd, so a CI job
+    // annotating file:line from --json pointed at the wrong file or nothing.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-relpath-'));
+    fs.mkdirSync(path.join(dir, 'deploy/prod'), { recursive: true });
+    const KEY = ['sk-proj-', 'M1N2B3V4C5X6Z7L8K9J0H1G2F3D4S5A6P7O8I9U0Y1T2'].join('');
+    fs.writeFileSync(path.join(dir, 'deploy/prod/app.js'), `const k = "${KEY}";\n`);
+
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const findings = scan(path.join(dir, 'deploy/prod/app.js'), { scanGlobal: false });
+      expect(findings.length).toBe(1);
+      // Must match what a directory scan of the same tree reports.
+      expect(findings[0].file).toBe('deploy/prod/app.js');
+      // And it must actually exist relative to cwd.
+      expect(fs.existsSync(findings[0].file)).toBe(true);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it('falls back to the absolute path for a target outside cwd', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-outside-'));
+    const KEY = ['sk-proj-', 'M1N2B3V4C5X6Z7L8K9J0H1G2F3D4S5A6P7O8I9U0Y1T2'].join('');
+    const target = path.join(dir, 'outside.js');
+    fs.writeFileSync(target, `const k = "${KEY}";\n`);
+
+    const cwd = process.cwd();
+    try {
+      process.chdir(os.homedir());
+      const findings = scan(target, { scanGlobal: false });
+      expect(findings.length).toBe(1);
+      // Whatever form it takes, it must point at a real file.
+      expect(fs.existsSync(findings[0].file)).toBe(true);
+    } finally {
+      process.chdir(cwd);
+    }
   });
 });
