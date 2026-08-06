@@ -131,9 +131,17 @@ async function resolveFromBackend(ref: SecretRef): Promise<string | undefined> {
     // Use the ref's backend type, not the configured default
     backend = createBackend(ref.backend as any);
   } catch {
-    // Backend not available (e.g., 1password CLI not installed)
-    // Try the configured backend as fallback
-    backend = createBackend(configuredBackend ?? 'local');
+    // Backend not available (e.g., 1password CLI not installed).
+    // Try the configured backend as fallback — which can be unavailable too,
+    // and now throws when it is. Both unreachable means this ref cannot be
+    // resolved, which is `undefined`: resolveRef() turns that into a
+    // RefResolutionError naming the URI. Letting the throw escape instead
+    // would replace that message with a bare backend error carrying no ref.
+    try {
+      backend = createBackend(configuredBackend ?? 'local');
+    } catch {
+      return undefined;
+    }
   }
 
   try {
