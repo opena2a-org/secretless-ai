@@ -85,7 +85,7 @@ export function parseManifestDetailed(content: string): ParsedManifest {
     if (!name) continue;
 
     if (!isValidSecretName(name)) {
-      errors.push({ line: i + 1, text: line, reason: describeInvalidName(name) });
+      errors.push({ line: i + 1, text: forDisplay(line), reason: describeInvalidName(name) });
       continue;
     }
 
@@ -96,7 +96,7 @@ export function parseManifestDetailed(content: string): ParsedManifest {
     if (extra.length > 0) {
       errors.push({
         line: i + 1,
-        text: line,
+        text: forDisplay(line),
         reason: `unexpected "${extra[0]}" after the name (only "optional" and a # comment may follow)`,
       });
       continue;
@@ -112,11 +112,30 @@ export function parseManifestDetailed(content: string): ParsedManifest {
   return { entries, errors };
 }
 
-/** Human-readable reason a token cannot be a secret name. */
+/** Longest manifest line echoed back in an error. */
+const MAX_ECHOED_LINE = 120;
+
+/** Trim a line for display so a pathological one cannot flood stderr. */
+function forDisplay(line: string): string {
+  return line.length <= MAX_ECHOED_LINE
+    ? line
+    : `${line.slice(0, MAX_ECHOED_LINE)}… (${line.length} chars)`;
+}
+
+/**
+ * Human-readable reason a token cannot be a secret name.
+ *
+ * Deduplicates BEFORE validating, so cost is bounded by the alphabet rather
+ * than the line length. Still asks `isValidSecretName` rather than restating
+ * its character class — a second copy of the rule is free to drift from the
+ * one the store enforces, which is the defect class this file just fixed.
+ */
 function describeInvalidName(name: string): string {
-  const bad = [...new Set(name.split('').filter((c) => !isValidSecretName(c)))];
+  const bad = [...new Set(name.split(''))].filter((c) => !isValidSecretName(c));
   if (bad.length > 0) {
-    return `contains ${bad.map((c) => `"${c}"`).join(', ')} — names allow letters, digits, '-' and '_' only`;
+    const shown = bad.slice(0, 5).map((c) => `"${c}"`).join(', ');
+    const more = bad.length > 5 ? `, and ${bad.length - 5} more` : '';
+    return `contains ${shown}${more} — names allow letters, digits, '-' and '_' only`;
   }
   return "not a valid secret name — letters, digits, '-' and '_' only";
 }

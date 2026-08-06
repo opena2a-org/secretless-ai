@@ -260,3 +260,67 @@ describe('loadSecrets — a requested name that resolves to nothing (issue #110)
     expect(out).toEqual({ ANTHROPIC_API_KEY: 'v1' });
   });
 });
+
+describe('near-miss hint work is bounded (CI review finding, measured)', () => {
+  function bigStore(n: number) {
+    const entries: Record<string, string> = {};
+    for (let i = 0; i < n; i++) entries[`secret/${'A'.repeat(58)}${String(i).padStart(4, '0')}`] = 'v';
+    return new SecretStore({
+      backend: {
+        name: 'fake',
+        resolve: async () => entries,
+        store: async () => {},
+        delete: async () => false,
+      },
+    });
+  }
+
+  it('stays fast with a large store and a long unmatched list', async () => {
+    // Measured pre-fix at 7.8s for this shape: the length caps do not help when
+    // both strings sit near the cap, so the full table was walked every time.
+    const store = bigStore(5000);
+    const requested: string[] = [];
+    for (let i = 0; i < 100; i++) requested.push('B'.repeat(58) + String(i).padStart(4, '0'));
+
+    const started = Date.now();
+    await expect(store.loadSecrets(requested)).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('CONTROL: a real near miss is still suggested', async () => {
+    // The cutoff must not be so aggressive that it stops finding typos.
+    const store = new SecretStore({
+      backend: {
+        name: 'fake',
+        resolve: async () => ({ 'secret/DATABASE_URL': 'v' }),
+        store: async () => {},
+        delete: async () => false,
+      },
+    });
+    let message = '';
+    try {
+      await store.loadSecrets(['DATABSE_URL']);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('DATABASE_URL');
+  });
+
+  it('CONTROL: a distance-2 typo is still within the threshold', async () => {
+    const store = new SecretStore({
+      backend: {
+        name: 'fake',
+        resolve: async () => ({ 'secret/GITHUB_TOKEN': 'v' }),
+        store: async () => {},
+        delete: async () => false,
+      },
+    });
+    let message = '';
+    try {
+      await store.loadSecrets(['GITHB_TOKN']);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('GITHUB_TOKEN');
+  });
+});

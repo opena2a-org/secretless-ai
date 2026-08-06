@@ -135,6 +135,12 @@ export class SecretStore {
   }
 }
 
+/** Largest edit distance still shown as a "did you mean". */
+const NEAR_MISS_MAX = 2;
+
+/** Most unmatched names we compute a near-miss hint for. */
+const MAX_HINTED = 10;
+
 /** Case-insensitive Levenshtein distance, capped — only used for a typo hint. */
 function editDistance(a: string, b: string): number {
   const s = a.toUpperCase();
@@ -143,17 +149,25 @@ function editDistance(a: string, b: string): number {
   // limit, and the length-difference guard below does not help when BOTH are
   // long, which would leave a quadratic walk on attacker-shaped input.
   if (s.length > 64 || t.length > 64) return 99;
-  if (Math.abs(s.length - t.length) > 2) return 99;
+  if (Math.abs(s.length - t.length) > NEAR_MISS_MAX) return 99;
   let prev = Array.from({ length: t.length + 1 }, (_, i) => i);
   for (let i = 1; i <= s.length; i++) {
     const cur = [i];
+    let rowMin = i;
     for (let j = 1; j <= t.length; j++) {
       cur[j] = Math.min(
         prev[j] + 1,
         cur[j - 1] + 1,
         prev[j - 1] + (s[i - 1] === t[j - 1] ? 0 : 1),
       );
+      if (cur[j] < rowMin) rowMin = cur[j];
     }
+    // Cutoff: row values never decrease as rows are added, so once every cell
+    // in a row exceeds the threshold the final distance cannot come back under
+    // it. Only distances <= 2 are ever used, so the rest of the table is waste.
+    // Without this, 5000 stored names against 100 unmatched ones took 7.8s —
+    // the length caps alone do not help when both strings are near the cap.
+    if (rowMin > NEAR_MISS_MAX) return 99;
     prev = cur;
   }
   return prev[t.length];
@@ -174,11 +188,13 @@ function unmatchedSecretsError(unmatched: string[], available: string[]): Error 
     '  Nothing was injected and the command was not run.',
   ];
 
+  // Hints are a bonus on top of naming every unmatched entry, so bound the work
+  // rather than letting a long `--only` list multiply against a large store.
   const hints: string[] = [];
-  for (const miss of unmatched) {
+  for (const miss of unmatched.slice(0, MAX_HINTED)) {
     const near = available
       .map((name) => ({ name, d: editDistance(miss, name) }))
-      .filter((c) => c.d > 0 && c.d <= 2)
+      .filter((c) => c.d > 0 && c.d <= NEAR_MISS_MAX)
       .sort((a, b) => a.d - b.d)[0];
     if (near) hints.push(`${miss} -> ${near.name}`);
   }
