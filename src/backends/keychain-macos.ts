@@ -11,7 +11,7 @@
  * Uses execFileSync (no shell) to prevent injection via secret values.
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { WritableSecretBackend, BackendHealth } from './types';
@@ -36,21 +36,63 @@ function serviceNameFor(key: string): string {
  * macOS `security find-generic-password -w` hex-encodes passwords that contain
  * non-printable characters (e.g. newlines). Detect and decode hex output.
  *
- * Hex output: even-length string matching /^[0-9a-fA-F]+$/.
- * To avoid false positives on normal hex-like passwords (e.g. "deadbeef"),
- * only decode if the hex bytes contain at least one non-printable character.
+ * **`-w` output cannot tell you which happened.** Measured:
+ *
+ *   stored text  "d259cc9961fbd259cc9961fbd259cc99" -> d259cc9961fbd259cc99...
+ *   stored bytes  line1\nline2                      -> 6c696e65310a6c696e6532
+ *
+ * Identical shape. No content-based rule separates them, and the one this code
+ * used to apply (decode if the decoded bytes hold a control character) silently
+ * corrupted most 32-hex-character API keys. Those decode to 16 random bytes and
+ * the control ranges it tested cover 32 of 256 values, so
+ * `1 - (224/256)^16` = **88%** of such keys tripped it. A real HIBP key read
+ * back as 16 bytes of binary. The keychain was never wrong; the read path was.
+ *
+ * `-g` settles it without guessing, because macOS states the encoding:
+ *
+ *   plain   -> password: "d259cc9961fbd259cc9961fbd259cc99"
+ *   binary  -> password: 0x6C696E65310A6C696E6532  "line1\012line2"
+ *
+ * So: take the exact bytes from `-w`, and consult `-g` only when the shape is
+ * ambiguous, which leaves the common case at one `security` call.
+ *
+ * Fails CLOSED on any doubt: if `-g` cannot be read, or does not clearly say
+ * `0x`, the raw `-w` value is returned unchanged. Handing back a secret verbatim
+ * is always safe; decoding one that was never encoded is the bug being fixed.
  */
-function decodeKeychainValue(raw: string): string {
-  if (raw.length >= 2 && raw.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(raw)) {
-    const buf = Buffer.from(raw, 'hex');
-    const decoded = buf.toString('utf-8');
-    // Only use decoded value if it contains a non-printable char (newline, tab, etc.)
-    // This prevents false-positive decoding of passwords that happen to look like hex
-    if (/[\x00-\x08\x0a-\x1f\x7f]/.test(decoded)) {
-      return decoded;
-    }
+function looksLikeKeychainHex(raw: string): boolean {
+  return raw.length >= 2 && raw.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(raw);
+}
+
+export function decodeKeychainValue(
+  raw: string,
+  isHexEncoded?: () => boolean,
+): string {
+  if (!looksLikeKeychainHex(raw)) return raw;
+  if (!isHexEncoded) return raw;
+  // The probe shells out, so it can throw for reasons that have nothing to do
+  // with this secret (keychain locked, `security` missing, spawn limit). Any of
+  // those must leave the value alone rather than decode on an unanswered
+  // question. Caught here as well as inside the probe: this function is
+  // exported and its contract should not depend on who supplies the callback.
+  let encoded = false;
+  try {
+    encoded = isHexEncoded();
+  } catch {
+    return raw;
   }
-  return raw;
+  if (!encoded) return raw;
+  return Buffer.from(raw, 'hex').toString('utf-8');
+}
+
+/**
+ * Parse `security find-generic-password -g` output for the explicit `0x` marker.
+ *
+ * Anchored to the `password:` line so a `0x` appearing inside the ATTRIBUTE dump
+ * that `-g` also prints cannot be mistaken for the encoding marker.
+ */
+export function keychainOutputIsHexEncoded(stderrAndStdout: string): boolean {
+  return /^password:\s*0x[0-9A-Fa-f]+/m.test(stderrAndStdout);
 }
 
 export class MacOSKeychainBackend implements WritableSecretBackend {
@@ -114,11 +156,18 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
 
     const results: Record<string, string> = {};
     for (const key of matchingKeys) {
-      // Try new per-key service name first, fall back to legacy
-      const raw = this.findPassword(serviceNameFor(key), key)
-        ?? this.findPassword(LEGACY_SERVICE_NAME, key);
+      // Try new per-key service name first, fall back to legacy. Track WHICH
+      // service answered: the hex-encoding question has to be asked of the same
+      // entry the value came from, or the answer describes a different secret.
+      let service = serviceNameFor(key);
+      let raw = this.findPassword(service, key);
+      if (raw === null) {
+        service = LEGACY_SERVICE_NAME;
+        raw = this.findPassword(service, key);
+      }
       if (raw !== null) {
-        results[key] = decodeKeychainValue(raw);
+        const from = service;
+        results[key] = decodeKeychainValue(raw, () => this.isHexEncoded(from, key));
       }
     }
     return results;
@@ -175,6 +224,28 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
         latencyMs: Date.now() - start,
         message: 'macOS Keychain not accessible',
       };
+    }
+  }
+
+  /**
+   * Ask macOS whether it hex-encoded this entry, using the `0x` marker on the
+   * `-g` password line. Only called when `-w` output is ambiguously shaped.
+   *
+   * `-g` prints the password line to STDERR, so both streams are captured.
+   * Any failure returns false, which leaves the value undecoded.
+   */
+  private isHexEncoded(service: string, account: string): boolean {
+    try {
+      const res = spawnSync('security', [
+        'find-generic-password',
+        '-s', service,
+        '-a', account,
+        '-g',
+      ], { encoding: 'utf-8' });
+      if (res.error) return false;
+      return keychainOutputIsHexEncoded(`${res.stderr ?? ''}\n${res.stdout ?? ''}`);
+    } catch {
+      return false;
     }
   }
 

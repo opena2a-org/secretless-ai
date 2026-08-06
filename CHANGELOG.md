@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Most 32-hex-character secrets were silently corrupted on read (macOS Keychain).** A HIBP Pro API key stored with `secret set` came back from `secret get` as 16 bytes of binary, and the same corrupted value was injected by `secret run`, so every consumer of that credential authenticated with garbage. The key in the Keychain was never wrong; only the read path was, which is why nothing looked broken until an API rejected the request.
+
+  `security find-generic-password -w` hex-encodes a password it will not print literally (an embedded newline, for example), and the value has to be decoded back. But its output is genuinely ambiguous — the text `d259cc9961fbd259cc9961fbd259cc99` and the bytes `line1\nline2` both come back as an even-length run of hex digits, and nothing in the output distinguishes them. The old code decided from content: decode when the decoded bytes contain a control character, a rule meant to spare hex-looking passwords such as `deadbeef`.
+
+  A 32-hex-character key is 16 random bytes, and the control ranges that rule tested cover 32 of 256 values, so `1 - (224/256)^16` = **88%** of such keys tripped it. That shape is ordinary: HIBP keys, MD5-form tokens, and many other API keys are exactly 32 hex characters. The remaining 12% round-tripped fine, which is what made the failure look intermittent.
+
+  Content cannot answer the question, so the decision no longer comes from content. `security ... -g` states the encoding explicitly — `password: "…"` for text, `password: 0x…` for encoded bytes — and that marker is now what decides. The exact bytes still come from `-w`; `-g` is consulted only when the value is ambiguously shaped, so the common case still costs one `security` call. Anything unclear (probe fails, Keychain locked, no `0x` marker) returns the raw value undecoded: handing back a secret verbatim is always safe, decoding one that was never encoded is the bug.
+
+  No re-entry is needed. Values already in the Keychain were stored correctly and read back intact once this is in — confirmed against a real affected key, which read back byte-identical to what `security` reports.
+
+  One upgrade note: resolved values are cached for five minutes in `~/.secretless-ai/store/.secret-cache`, so a corrupted value read by the previous version can still be served briefly after upgrading. It expires on its own; the cache is keyed on write time, not on access, so it cannot be held alive by reads. If a credential still looks wrong immediately after upgrading, wait out the TTL rather than re-entering the secret. This is also worth knowing when diagnosing: while the old CLI is still installed alongside a new build, running either one repopulates the shared cache for the other.
+
 ### Security
 
 - **The guard hook no longer fails open on a pretty-printed payload.** `tool_name` and `file_path` were extracted with greps that match only compact JSON (`"tool_name":"Bash"`, no space after the colon). A client that pretty-prints its hook payload left both empty, which skipped the entire Bash-command branch and the file-path guard, so every guard silently permitted the call. This is the same dead-branch class as the 2026-07-16 `FILE_PATH` regression, reached through payload formatting rather than through `set -euo pipefail`. Both fields are now parsed with `python3`'s JSON module (as the `command` field already was), with the greps kept as the fallback for hosts without python3 — where python3 is absent, the pretty-printed payload still fails open, so this closes the hole only on hosts that have it.
