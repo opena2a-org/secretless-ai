@@ -276,9 +276,22 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
     if (finding.fix) {
       console.log(`         Fix: ${finding.fix}`);
     }
-    const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
-    if (explanation) {
-      console.log(`         Context (generated, unverified): ${explanation}`);
+    // Generated context is OFF by default. Measured over 30 runs against the
+    // local engine (2026-08-06): 30/30 produced text, 0/30 produced a usable
+    // explanation. What survived validation was instruction-tuning noise
+    // ("Your answer must contain exactly 3 bullet points"); what validation
+    // caught included confident and WRONG security claims — a leaked OpenAI key
+    // described as "vulnerable to brute-force attacks" and as letting an
+    // attacker "inject malicious code into the client".
+    //
+    // A wrong security claim from a security tool is worse than no claim, and a
+    // label does not make it true. Kept behind an opt-in so the path stays
+    // exercised and can be re-enabled when a model earns it.
+    if (process.env.SECRETLESS_NANOMIND_EXPLAIN === '1') {
+      const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
+      if (explanation) {
+        console.log(`         Context (generated, unverified): ${explanation}`);
+      }
     }
     console.log();
   }

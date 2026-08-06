@@ -130,7 +130,7 @@ ${banner}  Keep secrets out of AI context.
 
   Scan options:
     --include-tests          Include test files in source code scan
-    --explain                Use NanoMind for rich context explanations
+    --explain                Detailed per-finding view with remediation
     --no-ignore              Disable .secretlessignore + default-ignore
     --min-confidence <n>     Drop findings with composite confidence below n (0-1)
 

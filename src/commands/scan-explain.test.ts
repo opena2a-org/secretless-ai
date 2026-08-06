@@ -46,12 +46,16 @@ describe('scan --explain — generated text never replaces the verified fix', ()
 
   afterEach(() => {
     logSpy.mockRestore();
+    delete process.env.SECRETLESS_NANOMIND_EXPLAIN;
     vi.mocked(explainFinding).mockResolvedValue(
       'An attacker could bill API usage to your account and read stored data.',
     );
   });
 
   it('prints the deterministic Fix line even when the model returns text', async () => {
+    // Opt in, or the model is never consulted and this asserts nothing about
+    // the branch the P1 lived in.
+    process.env.SECRETLESS_NANOMIND_EXPLAIN = '1';
     const dir = tmpProjectWith({ 'src/client.js': `const k = "${REAL_OPENAI_KEY}";\n` });
     await runScan(dir, { explain: true });
     const text = out.join('\n');
@@ -61,7 +65,22 @@ describe('scan --explain — generated text never replaces the verified fix', ()
     expect(text).toContain('Fix: Move to env var OPENAI_API_KEY');
   });
 
-  it('labels model output as generated and unverified', async () => {
+  it('does NOT print generated context by default', async () => {
+    // Measured 2026-08-06: 30/30 engine runs produced text, 0/30 produced a
+    // usable explanation, and several asserted false security claims. Off
+    // unless explicitly opted into.
+    delete process.env.SECRETLESS_NANOMIND_EXPLAIN;
+    const dir = tmpProjectWith({ 'src/client.js': `const k = "${REAL_OPENAI_KEY}";\n` });
+    await runScan(dir, { explain: true });
+    const text = out.join('\n');
+
+    expect(text).toContain('Fix: Move to env var OPENAI_API_KEY');
+    expect(text).not.toContain('Context (generated, unverified):');
+    expect(text).not.toContain('An attacker could bill API usage');
+  });
+
+  it('labels model output as generated and unverified when opted in', async () => {
+    process.env.SECRETLESS_NANOMIND_EXPLAIN = '1';
     const dir = tmpProjectWith({ 'src/client.js': `const k = "${REAL_OPENAI_KEY}";\n` });
     await runScan(dir, { explain: true });
     const text = out.join('\n');
@@ -75,6 +94,7 @@ describe('scan --explain — generated text never replaces the verified fix', ()
   });
 
   it('still prints the Fix line when the model returns nothing', async () => {
+    process.env.SECRETLESS_NANOMIND_EXPLAIN = '1';
     vi.mocked(explainFinding).mockResolvedValue(null);
     const dir = tmpProjectWith({ 'src/client.js': `const k = "${REAL_OPENAI_KEY}";\n` });
     await runScan(dir, { explain: true });
