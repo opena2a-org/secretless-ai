@@ -145,7 +145,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.error(`Directory not found: ${projectDir}`);
       return 1;
     }
-    const stats = { placeholdersSuppressed: 0, truncated: false };
+    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
     console.log(JSON.stringify({
@@ -160,11 +160,14 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         // A machine consumer must be able to tell "clean" from "unfinished".
         truncated: stats.truncated,
         maxFiles: capUsed,
+        unreadable: stats.unreadable.length,
       },
+      unreadableFiles: stats.unreadable,
     }, null, 2));
-    // An incomplete scan is not a pass. `total: 0` with `truncated: true` means
-    // the walk stopped early, so exiting 0 would gate CI on a subset.
-    return findings.length > 0 || stats.truncated ? 1 : 0;
+    // An incomplete scan is not a pass. `total: 0` with `truncated: true` or an
+    // unreadable file means part of the tree was never read, so exiting 0 would
+    // gate CI on a subset.
+    return findings.length > 0 || stats.truncated || stats.unreadable.length > 0 ? 1 : 0;
   }
 
   console.log('\n  Secretless Scanner\n');
@@ -175,19 +178,32 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return 1;
   }
 
-  const stats = { placeholdersSuppressed: 0, truncated: false };
+  const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
   const findings = scan(projectDir, scanOpts, stats);
 
-  // A walk that stopped at the file cap left tree unvisited, so the findings are
-  // a SUBSET. Rendering that as "No hardcoded credentials found." is the
-  // fail-open this warning closes: an answer we never got is not a good answer.
-  const truncationWarning = () => {
-    if (!stats.truncated) return;
-    console.log(`  ${c.boldYellow('Scan incomplete')} — stopped at the ${capUsed}-file cap, so files were left unscanned.`);
-    console.log(`  ${c.dim('This is not a clean result. Raise the cap or scan subtrees:')}`);
-    console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan --max-files ${capUsed * 4}`);
-    console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ./<subdirectory>\n`);
+  // A walk that stopped at the file cap left tree unvisited, and a file we could
+  // not open was never read at all. Either way the findings are a SUBSET, so
+  // rendering them as "No hardcoded credentials found." is the fail-open these
+  // warnings close: an answer we never got is not a good answer.
+  const coverageWarnings = () => {
+    if (stats.truncated) {
+      console.log(`  ${c.boldYellow('Scan incomplete')} — stopped at the ${capUsed}-file cap, so files were left unscanned.`);
+      console.log(`  ${c.dim('This is not a clean result. Raise the cap or scan subtrees:')}`);
+      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan --max-files ${capUsed * 4}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ./<subdirectory>\n`);
+    }
+    if (stats.unreadable.length > 0) {
+      const n = stats.unreadable.length;
+      console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} could not be read`)} — not scanned, so not known to be clean.`);
+      for (const f of stats.unreadable.slice(0, 10)) {
+        console.log(`  ${c.dim(`  ${f}`)}`);
+      }
+      if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      console.log(`  ${c.cyan('Verify:')} ls -l ${stats.unreadable[0]}`);
+      console.log(`  ${c.cyan('Fix:')}    chmod +r ${stats.unreadable[0]}\n`);
+    }
   };
+  const anyCoverageGap = () => stats.truncated || stats.unreadable.length > 0;
 
   // When everything (or a real subset) was hidden as a placeholder, say so and
   // point at the flag that reveals them. A silent "No credentials found" makes a
@@ -204,11 +220,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   };
 
   if (findings.length === 0) {
-    if (stats.truncated) {
+    if (anyCoverageGap()) {
       // Deliberately NOT "No hardcoded credentials found" — nothing was found in
       // the part we reached, which is a different claim.
       console.log('  No credentials found in the files scanned.\n');
-      truncationWarning();
+      coverageWarnings();
       placeholderHint();
       return 1;
     }
@@ -221,12 +237,12 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   // If --explain requested, use NanoMind engine for rich context
   if (options?.explain) {
     const code = await runScanWithExplanations(findings);
-    truncationWarning();
+    coverageWarnings();
     return code;
   }
 
   printFindings(findings);
-  truncationWarning();
+  coverageWarnings();
   placeholderHint();
   return 1;
 }

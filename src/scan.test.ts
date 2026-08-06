@@ -810,6 +810,67 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
   });
 });
 
+describe('scan() — an unreadable file is not reported as clean (#116 P2-1)', () => {
+  // "Could not read" is a third state. Rendering it as "clean" is the same
+  // fail-open class as the truncation defect: the same content, readable,
+  // produces a finding, so silence here is an answer we never got.
+  const KEY = ['sk-proj-', 'M1N2B3V4C5X6Z7L8K9J0H1G2F3D4S5A6P7O8I9U0Y1T2'].join('');
+
+  // chmod 000 does not restrict root, and CI often runs as root.
+  const canDenyReads = (() => {
+    if (process.platform === 'win32') return false;
+    try {
+      return typeof process.getuid === 'function' && process.getuid() !== 0;
+    } catch {
+      return false;
+    }
+  })();
+
+  function tmpWithUnreadable(): { dir: string; file: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-noread-'));
+    const file = path.join(dir, 'noread.js');
+    fs.writeFileSync(file, `const k = "${KEY}";\n`);
+    fs.chmodSync(file, 0o000);
+    return { dir, file };
+  }
+
+  it.skipIf(!canDenyReads)('flags an unreadable file in a DIRECTORY scan', () => {
+    const { dir, file } = tmpWithUnreadable();
+    try {
+      const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+      const findings = scan(dir, { scanGlobal: false }, stats);
+      // The credential is genuinely unreachable, so no finding is correct...
+      expect(findings).toEqual([]);
+      // ...but silence about it is not.
+      expect(stats.unreadable.length).toBe(1);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+  });
+
+  it.skipIf(!canDenyReads)('flags an unreadable file named DIRECTLY', () => {
+    const { dir, file } = tmpWithUnreadable();
+    try {
+      const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+      scan(file, { scanGlobal: false }, stats);
+      expect(stats.unreadable.length).toBe(1);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+  });
+
+  it.skipIf(!canDenyReads)('CONTROL: the same file, readable, produces a finding and no warning', () => {
+    // Pins that the assertions above measure READABILITY and not merely "a .js
+    // file exists" — without this the fix could pass by warning on everything.
+    const { dir, file } = tmpWithUnreadable();
+    fs.chmodSync(file, 0o644);
+    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    expect(findings.length).toBe(1);
+    expect(stats.unreadable).toEqual([]);
+  });
+});
+
 describe('scan() — a credential pasted into .secretless is detected', () => {
   // The manifest is documented "safe to commit" and holds names only, so a value
   // there is a mistake nothing caught: the parse-error path was the ONLY reader

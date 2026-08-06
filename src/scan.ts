@@ -148,6 +148,15 @@ export interface ScanStats {
    * this exists to close.
    */
   truncated: boolean;
+  /**
+   * Paths that matched the scan but could not be read (permissions, I/O). "Could
+   * not read" is a THIRD state: the same content, readable, produces a finding,
+   * so dropping these silently reports a file we never opened as clean.
+   *
+   * Optional so an existing caller still compiles; `scan()` only appends when
+   * the caller supplies the array, and the CLI always does.
+   */
+  unreadable?: string[];
 }
 
 /**
@@ -283,6 +292,7 @@ function scanSingleFile(
   filePath: string,
   options: ScanOptions | undefined,
   matchOpts: { includeExamples: boolean; onSuppressed: () => void },
+  stats?: ScanStats,
 ): ScanFinding[] {
   const findings: ScanFinding[] = [];
   const name = path.basename(filePath);
@@ -347,7 +357,10 @@ function scanSingleFile(
       }
     }
   } catch {
-    // Unreadable — no findings rather than a crash.
+    // Unreadable — no findings rather than a crash, but say so. A named target
+    // that cannot be opened used to print "No hardcoded credentials found" and
+    // exit 0, which is a green CI gate over a file nobody read.
+    stats?.unreadable?.push(display);
   }
   return findings;
 }
@@ -375,7 +388,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   // being noisy, and there is no walk here.
   try {
     if (fs.statSync(projectDir).isFile()) {
-      return scanSingleFile(projectDir, options, matchOpts);
+      return scanSingleFile(projectDir, options, matchOpts, stats);
     }
   } catch {
     // Unreadable/nonexistent — fall through to the directory path, which
@@ -510,7 +523,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         }
       }
     } catch {
-      // Skip unreadable files
+      // Not "clean" — a file we could not open. Silently dropping it from the
+      // count is how an unreadable config rendered as a passing scan.
+      stats?.unreadable?.push(configFile);
     }
   }
 
@@ -562,7 +577,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           }
         }
       } catch {
-        // Skip unreadable files
+        stats?.unreadable?.push(relPath.replace(/\\/g, '/'));
       }
     }
   }
@@ -614,7 +629,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           }
         }
       } catch {
-        // Skip unreadable / non-UTF8 files
+        // Non-UTF8 is expected for .p12/.pfx and handled above, so reaching here
+        // means the file could not be opened at all.
+        stats?.unreadable?.push(relPath.replace(/\\/g, '/'));
       }
     }
   }
