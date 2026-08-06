@@ -13,7 +13,11 @@ export async function runRun(args: string[]): Promise<number> {
   // Check for --only before the separator
   const searchEnd = separatorIdx !== -1 ? separatorIdx : args.length;
   for (let i = 0; i < searchEnd; i++) {
-    if (args[i] === '--only' && args[i + 1]) {
+    // `args[i + 1] !== undefined`, not a truthiness test: `--only ''` is the
+    // flag WITH an empty value, and treating it as "flag absent" injected the
+    // whole store and exited 0, while the equivalent `--only ,,` failed closed.
+    // Same input, opposite fail direction (#110).
+    if (args[i] === '--only' && args[i + 1] !== undefined) {
       only = args[i + 1].split(',').map(s => s.trim()).filter(Boolean);
       break;
     }
@@ -71,7 +75,11 @@ export async function runEnv(args: string[]): Promise<number> {
   // Parse --only flag
   let only: string[] | undefined;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--only' && args[i + 1]) {
+    // `args[i + 1] !== undefined`, not a truthiness test: `--only ''` is the
+    // flag WITH an empty value, and treating it as "flag absent" injected the
+    // whole store and exited 0, while the equivalent `--only ,,` failed closed.
+    // Same input, opposite fail direction (#110).
+    if (args[i] === '--only' && args[i + 1] !== undefined) {
       only = args[i + 1].split(',').map(s => s.trim()).filter(Boolean);
       break;
     }

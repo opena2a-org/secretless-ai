@@ -263,6 +263,69 @@ const GLOBAL_CONFIG_FILES = [
  * Also scans global AI tool configs (e.g. ~/.claude/CLAUDE.md).
  * Returns findings sorted by severity then file.
  */
+/**
+ * Scan a single explicitly-named file.
+ *
+ * Severity mirrors the directory scan: a config file is `critical` (they get
+ * committed and read by tooling), source is `high`.
+ */
+function scanSingleFile(
+  filePath: string,
+  options: ScanOptions | undefined,
+  matchOpts: { includeExamples: boolean; onSuppressed: () => void },
+): ScanFinding[] {
+  const findings: ScanFinding[] = [];
+  const name = path.basename(filePath);
+  const isConfig = CONFIG_FILES.some(c => c === name || filePath.replace(/\\/g, '/').endsWith('/' + c));
+  const severity: 'critical' | 'high' = isConfig ? 'critical' : 'high';
+  const minConfidence = Math.max(0, Math.min(1, options?.minConfidence ?? 0));
+
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > 10 * 1024 * 1024) return findings;
+    const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.length > 4096) continue;
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') && trimmed.includes('regex')) continue;
+      if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
+      if (/process\.env\.[A-Z_]+/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
+      if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
+
+      for (const pattern of CREDENTIAL_PATTERNS) {
+        const match = findRealMatch(line, pattern, matchOpts);
+        if (match) {
+          const breakdown = scoreFinding({
+            pattern: { id: pattern.id, regex: pattern.regex },
+            value: match[0],
+            filePath: name,
+          });
+          if (breakdown.score >= minConfidence) {
+            findings.push({
+              file: name,
+              line: i + 1,
+              patternId: pattern.id,
+              patternName: pattern.name,
+              severity,
+              preview: maskLine(line, pattern).trim().substring(0, 80),
+              fix: fixFor(pattern),
+              confidence: breakdown.score,
+              confidenceTier: breakdown.tier,
+              looksLikeFixture: false,
+            });
+          }
+          break;
+        }
+      }
+    }
+  } catch {
+    // Unreadable — no findings rather than a crash.
+  }
+  return findings;
+}
+
 export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStats): ScanFinding[] {
   // Shared per-match options for the credential-pattern call sites: reveal or count
   // placeholder-suppressed matches so the CLI can tell the user what was hidden.
@@ -272,6 +335,23 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   };
   const findings: ScanFinding[] = [];
   const scanGlobal = options?.scanGlobal !== false;
+
+  // A FILE target is scanned as that file. It used to be accepted, checked for
+  // existence, then walked as a directory — which found nothing and reported
+  // "No hardcoded credentials found" with exit 0, so `scan src/config.ts` in CI
+  // was a green pass over a live credential.
+  //
+  // Naming a path is an explicit instruction, so neither the ignore list nor
+  // the test-file heuristics apply: those exist to keep a directory WALK from
+  // being noisy, and there is no walk here.
+  try {
+    if (fs.statSync(projectDir).isFile()) {
+      return scanSingleFile(projectDir, options, matchOpts);
+    }
+  } catch {
+    // Unreadable/nonexistent — fall through to the directory path, which
+    // reports the not-found error the CLI already renders.
+  }
 
   // Resolve the ignore matcher. Default: load `<projectDir>/.secretlessignore`
   // plus the default-ignore list. `ignore: false` disables both.
@@ -297,6 +377,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     : null;
 
   const minConfidence = Math.max(0, Math.min(1, options?.minConfidence ?? 0));
+  const includeTestsOpt = options?.includeTests ?? false;
 
   // Helper: classify a match into a `ScanFinding` with confidence + fixture flag.
   function buildFinding(
@@ -354,11 +435,19 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     } catch { /* skip */ }
   }
 
-  // Scan project-level config files
-  for (const configFile of CONFIG_FILES) {
+  // Scan project-level config files, at any depth.
+  //
+  // These used to be looked up ONLY at the scan root, while source files
+  // recursed — so a monorepo with `packages/*/config.json`, or anything under
+  // `deploy/` or `infra/`, reported clean at exactly the invocation every user
+  // runs first. A scanner that answers "clean" for a tree it never walked is
+  // worse than one that errors.
+  const scannedConfigFiles: string[] = [];
+  for (const configFile of walkConfigFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTestsOpt, ignore)) {
     if (ignore && ignore.matches(configFile)) continue;
     const fullPath = path.join(projectDir, configFile);
     if (!fs.existsSync(fullPath)) continue;
+    scannedConfigFiles.push(configFile);
 
     try {
       const stat = fs.statSync(fullPath);
@@ -396,7 +485,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
 
   // Scan source code files for hardcoded credentials
   if (options?.scanSource !== false) {
-    const configFileSet = new Set(CONFIG_FILES);
+    const configFileSet = new Set(scannedConfigFiles);
     const maxFiles = options?.maxSourceFiles ?? 5000;
     const includeTests = options?.includeTests ?? false;
     const sourceFiles = walkSourceFiles(projectDir, maxFiles, includeTests, ignore);
@@ -579,6 +668,67 @@ function walkKeyFiles(
         if (!includeTests && isTestFile(entry.name)) continue;
         if (ignore && ignore.matches(relFromRoot)) continue;
         results.push(entryPath);
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Walk a directory tree and return paths (relative, POSIX) of project config
+ * files at ANY depth.
+ *
+ * Config files used to be looked up only at the scan root while source files
+ * recursed, so a monorepo's per-package config, `deploy/`, and `infra/` were
+ * invisible to the root invocation. Entries containing a slash
+ * (`.cursor/mcp.json`) match as a path suffix; the rest match on basename.
+ *
+ * Unlike source files, config files commonly live in HIDDEN directories
+ * (`.claude/`, `.cursor/`, `.vscode/`), so dot-dirs are walked — mirroring
+ * walkKeyFiles rather than walkSourceFiles.
+ */
+function walkConfigFiles(
+  dir: string,
+  maxFiles: number,
+  includeTests: boolean,
+  ignore: IgnoreMatcher | null,
+): string[] {
+  const byBasename = new Set<string>();
+  const bySuffix: string[] = [];
+  for (const entry of CONFIG_FILES) {
+    if (entry.includes('/')) bySuffix.push(entry);
+    else byBasename.add(entry);
+  }
+
+  const results: string[] = [];
+  const queue: string[] = [dir];
+
+  while (queue.length > 0 && results.length < maxFiles) {
+    const current = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxFiles) break;
+      const entryPath = path.join(current, entry.name);
+      const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
+
+      if (entry.isDirectory()) {
+        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name === '.git') continue;
+        if (!includeTests && TEST_DIRS.has(entry.name)) continue;
+        if (ignore && ignore.matches(relFromRoot + '/.')) continue;
+        queue.push(entryPath);
+      } else if (entry.isFile()) {
+        const isConfig = byBasename.has(entry.name)
+          || bySuffix.some(sfx => relFromRoot === sfx || relFromRoot.endsWith('/' + sfx));
+        if (!isConfig) continue;
+        if (ignore && ignore.matches(relFromRoot)) continue;
+        results.push(relFromRoot);
       }
     }
   }
