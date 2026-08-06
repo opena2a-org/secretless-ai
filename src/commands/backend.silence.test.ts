@@ -111,3 +111,32 @@ describe('read-only commands stay silent (no biometric / 1P prompts)', () => {
     expect(offending()).toEqual([]);
   });
 });
+
+// Re-test P2: `cache` keyed its auth-prompt advice off the CONFIGURED backend,
+// so on a default machine it said "Not needed (local backend has no auth
+// prompts)" while secrets were going to the Keychain, which does prompt.
+describe('cache reports the effective backend', () => {
+  it('names the same backend `backend` and SecretStore report', async () => {
+    const { runCache } = await import('./backend');
+    const { effectiveBackendName } = await import('../backends/factory');
+    const { resolveBackendType } = await import('../backends/config');
+
+    const out: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.join(' ')); });
+    try {
+      await runCache([]);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const expected = effectiveBackendName(resolveBackendType());
+    const backendLine = out.find(l => l.includes('Backend:')) ?? '';
+    expect(backendLine).toContain(expected);
+
+    // And the advice must follow from the EFFECTIVE backend, not the config.
+    const statusLine = out.find(l => l.includes('Status:')) ?? '';
+    if (expected.startsWith('keychain') || expected === '1password') {
+      expect(statusLine).not.toContain('no auth prompts');
+    }
+  });
+});

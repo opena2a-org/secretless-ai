@@ -338,3 +338,43 @@ describe('scan warns on unknown flags / secret usage (regression: #80, #81)', ()
     }
   });
 });
+
+/**
+ * Re-test P2: `scan a.js b.js` dropped every path after the first with no
+ * warning. Because the first path's findings still set exit 1, the run looked
+ * complete while an entire file went unscanned.
+ */
+describe('scan rejects more than one path', () => {
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  itIfBuilt('refuses more than one path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-multipath-'));
+    const KEY = ['sk-proj-', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8C9V0B1N2'].join('');
+    fs.writeFileSync(path.join(dir, 'a.js'), `const k = "${KEY}";\n`);
+    fs.writeFileSync(path.join(dir, 'b.js'), `const k = "${KEY}";\n`);
+
+    const res = spawnSync(process.execPath, [CLI_PATH, 'scan', 'a.js', 'b.js'], {
+      encoding: 'utf-8', cwd: dir, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    expect(res.status).toBe(2);
+    const err = res.stderr ?? '';
+    expect(err).toContain('one path');
+    // It must name what it was given, so the user can see what was refused.
+    expect(err).toContain('a.js');
+    expect(err).toContain('b.js');
+  });
+
+  itIfBuilt('CONTROL: a single path still scans', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-singlepath-'));
+    const KEY = ['sk-proj-', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8C9V0B1N2'].join('');
+    fs.writeFileSync(path.join(dir, 'a.js'), `const k = "${KEY}";\n`);
+
+    const res = spawnSync(process.execPath, [CLI_PATH, 'scan', 'a.js'], {
+      encoding: 'utf-8', cwd: dir, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    expect(res.status).toBe(1);
+    expect(res.stdout).toContain('credential');
+  });
+});
