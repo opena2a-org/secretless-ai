@@ -3,13 +3,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as child_process from 'child_process';
-import { MacOSKeychainBackend } from './keychain-macos';
+import {
+  MacOSKeychainBackend,
+  decodeKeychainValue,
+  keychainOutputIsHexEncoded,
+} from './keychain-macos';
 
 vi.mock('child_process', () => ({
   execFileSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
 const mockExecFileSync = vi.mocked(child_process.execFileSync);
+const mockSpawnSync = vi.mocked(child_process.spawnSync);
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-keychain-macos-test-'));
@@ -25,6 +31,7 @@ describe('MacOSKeychainBackend', () => {
   beforeEach(() => {
     dir = tmpDir();
     mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
   });
 
   afterEach(() => {
@@ -209,5 +216,139 @@ describe('MacOSKeychainBackend', () => {
       const health = await backend.healthCheck();
       expect(health.healthy).toBe(false);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hex round-trip. `security -w` output is ambiguous between "a hex-looking
+// password" and "a password macOS hex-encoded", and the decision used to be
+// made from content: decode when the decoded bytes hold a control character.
+//
+// That silently corrupted most 32-hex API keys. 32 hex chars is 16 random
+// bytes, and the control ranges tested cover 32 of 256 values, so
+// 1 - (224/256)^16 = 88% of such keys tripped it. The fixture below is the MD5
+// of the empty string, an entirely ordinary token, whose bytes include 0x00,
+// 0x04 and 0x09.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Ordinary 32-hex token. Decodes to bytes containing 0x00 / 0x04 / 0x09. */
+const HEX32_TOKEN = 'd41d8cd98f00b204e9800998ecf8427e';
+
+describe('decodeKeychainValue', () => {
+  it('returns a 32-hex token unchanged when macOS did not encode it', () => {
+    // The regression. Against the old content heuristic this returned 16 bytes
+    // of binary, so this assertion is red on the pre-fix code.
+    const out = decodeKeychainValue(HEX32_TOKEN, () => false);
+    expect(out).toBe(HEX32_TOKEN);
+    expect(out).toHaveLength(32);
+  });
+
+  it('decodes when macOS says it encoded the value', () => {
+    // "line1\nline2" is the case the encoding exists for.
+    const encoded = Buffer.from('line1\nline2', 'utf-8').toString('hex');
+    expect(decodeKeychainValue(encoded, () => true)).toBe('line1\nline2');
+  });
+
+  it('fails closed when the encoding cannot be established', () => {
+    // No probe available, and a probe that throws, both leave the value alone.
+    expect(decodeKeychainValue(HEX32_TOKEN, undefined)).toBe(HEX32_TOKEN);
+    expect(
+      decodeKeychainValue(HEX32_TOKEN, () => {
+        throw new Error('security unavailable');
+      }),
+    ).toBe(HEX32_TOKEN);
+  });
+
+  it('never probes a value that is not shaped like hex output', () => {
+    // Odd length, non-hex characters, and empty all skip the extra call.
+    const probe = vi.fn(() => true);
+    for (const v of ['not-hex-at-all', 'abc', '', 'zzzz']) {
+      expect(decodeKeychainValue(v, probe)).toBe(v);
+    }
+    expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+describe('keychainOutputIsHexEncoded', () => {
+  it('reads the 0x marker on the password line', () => {
+    expect(
+      keychainOutputIsHexEncoded('password: 0x6C696E65310A6C696E6532  "line1\\012line2"'),
+    ).toBe(true);
+  });
+
+  it('does not treat a quoted hex-looking password as encoded', () => {
+    expect(keychainOutputIsHexEncoded(`password: "${HEX32_TOKEN}"`)).toBe(false);
+  });
+
+  it('ignores 0x appearing anywhere but the password line', () => {
+    // `-g` also dumps attributes; a 0x in one of them is not the marker.
+    const out = [
+      'keychain: "/Users/x/Library/Keychains/login.keychain-db"',
+      '    "cdat"<timedate>=0x32303236  "20260805"',
+      `password: "${HEX32_TOKEN}"`,
+    ].join('\n');
+    expect(keychainOutputIsHexEncoded(out)).toBe(false);
+  });
+});
+
+describe('resolve() hex handling', () => {
+  it('does not corrupt a stored 32-hex token', async () => {
+    const hexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-keychain-hex-'));
+    try {
+      const backend = new MacOSKeychainBackend({ storeDir: hexDir });
+      fs.writeFileSync(
+        path.join(hexDir, 'keychain-index.json'),
+        JSON.stringify(['secret/TOKEN']),
+      );
+
+      mockExecFileSync.mockReset();
+      mockSpawnSync.mockReset();
+      mockExecFileSync.mockImplementation((_cmd, args) => {
+        if (Array.isArray(args) && args[0] === 'find-generic-password') {
+          return HEX32_TOKEN as unknown as Buffer;
+        }
+        throw new Error('not found');
+      });
+      // macOS reports it as plain text (quoted, no 0x), so it must not decode.
+      mockSpawnSync.mockReturnValue({
+        stdout: '',
+        stderr: `password: "${HEX32_TOKEN}"`,
+      } as unknown as ReturnType<typeof child_process.spawnSync>);
+
+      const out = await backend.resolve('secret/TOKEN');
+      expect(out['secret/TOKEN']).toBe(HEX32_TOKEN);
+    } finally {
+      fs.rmSync(hexDir, { recursive: true, force: true });
+    }
+  });
+
+  it('decodes a stored value macOS actually hex-encoded', async () => {
+    const hexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-keychain-hex-'));
+    try {
+      const backend = new MacOSKeychainBackend({ storeDir: hexDir });
+      fs.writeFileSync(
+        path.join(hexDir, 'keychain-index.json'),
+        JSON.stringify(['secret/MULTILINE']),
+      );
+
+      const encoded = Buffer.from('line1\nline2', 'utf-8').toString('hex');
+      mockExecFileSync.mockReset();
+      mockSpawnSync.mockReset();
+      mockExecFileSync.mockImplementation((_cmd, args) => {
+        if (Array.isArray(args) && args[0] === 'find-generic-password') {
+          return encoded as unknown as Buffer;
+        }
+        throw new Error('not found');
+      });
+      mockSpawnSync.mockReturnValue({
+        stdout: '',
+        stderr: `password: 0x${encoded.toUpperCase()}  "line1\\012line2"`,
+      } as unknown as ReturnType<typeof child_process.spawnSync>);
+
+      const out = await backend.resolve('secret/MULTILINE');
+      expect(out['secret/MULTILINE']).toBe('line1\nline2');
+    } finally {
+      fs.rmSync(hexDir, { recursive: true, force: true });
+    }
   });
 });
