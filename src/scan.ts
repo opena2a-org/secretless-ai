@@ -16,8 +16,13 @@ export interface ScanFinding {
   patternName: string;
   severity: 'critical' | 'high';
   preview: string;
-  /** Actionable fix guidance for this finding */
-  fix?: string;
+  /**
+   * Actionable fix guidance. ALWAYS non-empty — a finding without a fix is a
+   * dead end, and 40 of 57 patterns used to produce one. `fixFor()` derives a
+   * fallback from the pattern's own `envPrefix` when there is no verified
+   * per-provider entry, so a newly added pattern cannot ship a dead end.
+   */
+  fix: string;
   /** Composite confidence score in [0, 1]. Higher = more likely a real credential. */
   confidence: number;
   /** Display tier derived from `confidence`: high / medium / low. */
@@ -37,6 +42,7 @@ const FIX_GUIDANCE: Record<string, string> = {
   'openai-proj': 'Move to env var OPENAI_API_KEY. Rotate at platform.openai.com > API Keys.',
   'openai-legacy': 'Move to env var OPENAI_API_KEY. Rotate at platform.openai.com > API Keys.',
   'aws-access': 'Move to env var AWS_ACCESS_KEY_ID. Rotate in AWS IAM console.',
+  'aws-secret': 'Move to env var AWS_SECRET_ACCESS_KEY. Rotate the access key in AWS IAM console > Users > Security credentials.',
   'aws-sts': 'STS tokens are temporary but should not be committed. Use AWS SDK credential chain.',
   'github-pat': 'Move to env var GITHUB_TOKEN. Rotate at github.com > Settings > Developer Settings > PATs.',
   'github-fine': 'Move to env var GITHUB_TOKEN. Rotate at github.com > Settings > Developer Settings > Fine-grained PATs.',
@@ -51,6 +57,47 @@ const FIX_GUIDANCE: Record<string, string> = {
   'google': 'Move to env var GOOGLE_API_KEY. Restrict and rotate at console.cloud.google.com.',
   'supabase': 'Move to env var SUPABASE_SERVICE_ROLE_KEY. Rotate in Supabase dashboard > Settings > API.',
 };
+
+/**
+ * Fix guidance for a pattern. Never returns empty.
+ *
+ * Patterns without a verified per-provider entry in FIX_GUIDANCE fall back to
+ * guidance built from data we actually hold: the env var name is exact
+ * (`pattern.envPrefix`), and the action is to revoke and reissue. The fallback
+ * deliberately names NO console URL — an invented rotation URL is the same
+ * class of harm as an invented package name, and can point a user at a domain
+ * an attacker is free to register.
+ */
+export function fixFor(pattern: Pick<CredentialPattern, 'id' | 'name' | 'envPrefix'>): string {
+  const verified = FIX_GUIDANCE[pattern.id];
+  if (verified) return verified;
+  return `Move to env var ${pattern.envPrefix}. Revoke and reissue this ${pattern.name} in the provider's dashboard.`;
+}
+
+/**
+ * Mask the credential in a line for preview.
+ *
+ * For name-gated patterns the regex match SPANS the variable name (the name is
+ * the gate, not a lookbehind), so replacing the whole match erased the name and
+ * rendered `AWS_SECRET_ACCESS_KEY = "…"` as a bare `"`. When the pattern
+ * captures the value in group 1, only that group is redacted, so the preview
+ * still shows which variable is exposed. Patterns with no capture group keep
+ * whole-match redaction.
+ */
+export function maskLine(line: string, pattern: Pick<CredentialPattern, 'name' | 'regex'>): string {
+  const flags = pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g';
+  const globalRegex = new RegExp(pattern.regex.source, flags);
+  const label = `[${pattern.name} REDACTED]`;
+  return line.replace(globalRegex, (full: string, ...rest: unknown[]) => {
+    // A replacer's trailing args are (offset, wholeString[, groups]); a string
+    // in slot 0 means the pattern has at least one capture group.
+    const value = typeof rest[0] === 'string' ? rest[0] : undefined;
+    if (!value) return label;
+    const idx = full.lastIndexOf(value);
+    if (idx === -1) return label;
+    return full.slice(0, idx) + label + full.slice(idx + value.length);
+  });
+}
 
 export interface ScanOptions {
   /** Scan global config files like ~/.claude/CLAUDE.md (default: true) */
@@ -230,7 +277,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     if (options?.ignore === false) return null;
     if (options?.ignore && typeof options.ignore === 'object') return options.ignore;
     try {
-      return loadSecretlessIgnore(projectDir);
+      // `includeTests` must reach the matcher too, not just the walkers. The
+      // default-ignore list carries `test/` independently of the walkers'
+      // TEST_DIRS check, so passing the flag to only one of them left
+      // `--include-tests` a silent no-op for every file under `test/`.
+      return loadSecretlessIgnore(projectDir, { includeTests: options?.includeTests ?? false });
     } catch {
       return null;
     }
@@ -268,7 +319,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       patternName: pattern.name,
       severity,
       preview: masked.trim().substring(0, 80),
-      fix: FIX_GUIDANCE[pattern.id],
+      fix: fixFor(pattern),
       confidence: breakdown.score,
       confidenceTier: breakdown.tier,
       looksLikeFixture,
@@ -291,8 +342,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         for (const pattern of CREDENTIAL_PATTERNS) {
           const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
-            const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
-            const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
+            const masked = maskLine(line, pattern);
             const finding = buildFinding(global.label, i + 1, pattern, match, 'critical', masked);
             if (finding) findings.push(finding);
             break;
@@ -329,8 +379,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
             // Mask the actual secret in the preview (replace ALL occurrences)
-            const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
-            const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
+            const masked = maskLine(line, pattern);
 
             const finding = buildFinding(configFile, i + 1, pattern, match, 'critical', masked);
             if (finding) findings.push(finding);
@@ -381,8 +430,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           for (const pattern of CREDENTIAL_PATTERNS) {
             const match = findRealMatch(line, pattern, matchOpts);
             if (match) {
-              const globalRegex = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g');
-              const masked = line.replace(globalRegex, `[${pattern.name} REDACTED]`);
+              const masked = maskLine(line, pattern);
 
               const finding = buildFinding(relPath, i + 1, pattern, match, 'high', masked);
               if (finding) findings.push(finding);
@@ -459,7 +507,14 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   return findings;
 }
 
-/** Directories that contain test fixtures and should be skipped by default */
+/**
+ * Directories that contain test fixtures and should be skipped by default.
+ *
+ * This is the walker half of a pair; `TEST_DEFAULT_IGNORE_PATTERNS` in
+ * secretlessignore.ts is the ignore-list half. Both suppress independently, so
+ * `includeTests` has to open BOTH — opening only this one is what made
+ * `--include-tests` a no-op for files under `test/`.
+ */
 const TEST_DIRS = new Set(['__tests__', '__mocks__', 'test', 'tests', 'fixtures', '__fixtures__']);
 
 /** File name patterns that indicate test files */

@@ -269,18 +269,22 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
     console.log(`         ${finding.file}:${finding.line}`);
     console.log(`         ${finding.preview}`);
 
-    // Try NanoMind explanation, fall back to static fix
+    // The deterministic fix ALWAYS prints. Generated text may only appear
+    // alongside it, explicitly labelled, never in place of it — substituting
+    // model output for the verified remediation left findings with no fix at
+    // all and presented echoed prompt text as the tool's own guidance.
+    if (finding.fix) {
+      console.log(`         Fix: ${finding.fix}`);
+    }
     const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
     if (explanation) {
-      console.log(`         ${explanation}`);
-    } else if (finding.fix) {
-      console.log(`         Fix: ${finding.fix}`);
+      console.log(`         Context (generated, unverified): ${explanation}`);
     }
     console.log();
   }
 
   console.log(`  Run \`npx secretless-ai init\` to add protections.`);
-  console.log('  For a full security scan (147+ checks): npx hackmyagent secure\n');
+  console.log('  For a full security scan: npx hackmyagent secure\n');
   return findings.length > 0 ? 1 : 0;
 }
 
