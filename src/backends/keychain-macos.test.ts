@@ -459,3 +459,48 @@ describe('store() error redaction', () => {
     }
   });
 });
+
+/**
+ * Adversarial cases for the redaction, found by probing it rather than by
+ * reading it. A secret may legitimately contain newlines — that is why the
+ * read path handles hex-encoded values at all.
+ */
+describe('store() error redaction: adversarial inputs', () => {
+  it('does not leak a fragment when the value straddles the filtered line', () => {
+    // Scrubbing after the "Command failed:" line filter split this value in
+    // two, so neither the replace nor the containment check could see it and
+    // "realsecret" survived into the message.
+    const value = 'Command failed: X\nrealsecret';
+    const err = redactSecurityError(
+      new Error(`Command failed: security add-generic-password -w ${value}`),
+      value,
+      'secret/K',
+    );
+    expect(err.message).not.toContain('realsecret');
+    expect(err.message).not.toContain(value);
+  });
+
+  it('does not leak any line of a multi-line secret echoed back mangled', () => {
+    const value = '-----BEGIN KEY-----\nMIIEvgIBADANBg\n-----END KEY-----';
+    // security echoes only the middle line back, so the whole-value check misses it.
+    const err = redactSecurityError(
+      new Error('security: could not store MIIEvgIBADANBg'),
+      value,
+      'secret/K',
+    );
+    expect(err.message).not.toContain('MIIEvgIBADANBg');
+  });
+
+  it('survives a value that is itself the redaction placeholder', () => {
+    const value = '[REDACTED]';
+    const err = redactSecurityError(new Error('security: [REDACTED] failed'), value, 'secret/K');
+    // Cannot distinguish placeholder from secret, so the detail is dropped.
+    expect(err.message).toContain('Could not store');
+  });
+
+  it('still produces an actionable message when the detail is discarded', () => {
+    const err = redactSecurityError(new Error('security: aaaaa'), 'aa', 'secret/K');
+    expect(err.message).toMatch(/Verify:/);
+    expect(err.message).toMatch(/Fix:/);
+  });
+});

@@ -111,22 +111,47 @@ export function keychainOutputIsHexEncoded(stderrAndStdout: string): boolean {
  * from whatever remains. The final guard is unconditional: if the value can
  * still be found in the message, the message is discarded rather than trimmed.
  */
+/**
+ * True if `detail` still contains the whole value, or any individual line of a
+ * multi-line value.
+ *
+ * Defence in depth behind the scrub: `security` can echo part of a value back
+ * in a form that no longer matches it byte for byte, and a per-line check
+ * catches the fragment the whole-value comparison would miss. Lines shorter
+ * than four characters are ignored, or a secret containing a line like "1"
+ * would blank every error message the backend ever produces.
+ */
+function leaksAnyLineOf(detail: string, value: string): boolean {
+  if (detail.includes(value)) return true;
+  for (const line of value.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length >= 4 && detail.includes(trimmed)) return true;
+  }
+  return false;
+}
+
 export function redactSecurityError(err: unknown, value: string, key: string): Error {
   const raw = err instanceof Error ? err.message : String(err);
 
-  let detail = raw
+  // Scrub BEFORE any line filtering. A secret may contain newlines — that is
+  // exactly why the read path has to handle hex-encoded values — and dropping
+  // lines first can split the value across the boundary, leaving a fragment
+  // that no longer matches `value` and so survives both the replace and the
+  // containment backstop. Replace it while it is still contiguous.
+  let detail = value.length > 0
+    ? raw.split(value).join('[REDACTED]')
+    : raw;
+
+  detail = detail
     .split('\n')
     .filter(line => !/^\s*Command failed:/.test(line))
     .join('\n')
     .trim();
 
-  if (value.length > 0) {
-    detail = detail.split(value).join('[REDACTED]');
-  }
-
-  // Unconditional backstop. Any path that would still expose the value loses
-  // the detail instead — a vaguer error is always preferable to a leaked one.
-  if (value.length > 0 && detail.includes(value)) {
+  // Unconditional backstop, checked against every line the value could have
+  // been split across. Any path that would still expose it loses the detail
+  // instead — a vaguer error is always preferable to a leaked one.
+  if (value.length > 0 && leaksAnyLineOf(detail, value)) {
     detail = '';
   }
 
