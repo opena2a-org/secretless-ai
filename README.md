@@ -152,6 +152,7 @@ npx secretless-ai mcp-unprotect                     # restore original configs f
 
 ```bash
 npx secretless-ai scan --min-confidence 0.85   # high-confidence findings only
+npx secretless-ai scan --max-files 20000       # raise the per-walk file cap (default 5000)
 npx secretless-ai ignore docs/migration.md     # append a path to .secretlessignore
 npx secretless-ai ignore --pattern '*.golden.txt'
 npx secretless-ai diff main                    # audit secretless-managed file changes vs a git ref
@@ -160,6 +161,16 @@ npx secretless-ai status --json                # protection state for CI (gate o
 ```
 
 `scan` renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so they stay visible without being re-suppressed.
+
+### Incomplete scans do not report clean
+
+A scan that could not read everything is not a passing scan. If the walk stops at the file cap, or a file cannot be opened, `scan` prints what it missed, exits 1, and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`. In `--json`, `summary.truncated` and `summary.unreadable` carry the same signal, so CI can tell "clean" from "unfinished".
+
+```bash
+npx secretless-ai scan --json | jq '.summary'
+# { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
+#   "truncated": false, "maxFiles": 5000, "unreadable": 0 }
+```
 
 ## Architecture
 

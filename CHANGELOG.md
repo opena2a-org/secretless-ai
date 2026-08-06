@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.21.2] - 2026-08-06
+
+Three defects that shipped in 0.21.1, two of them regressions introduced by that
+release's own fixes. All three are cases where the scanner reported a clean or
+complete result for work it had not done, so upgrade promptly.
+
+**Behavior change worth reading before you upgrade:** a scan that could not read
+everything no longer exits 0. If the file walk stops at the cap, or any file
+cannot be opened, `scan` exits 1 and says `No credentials found in the files
+scanned` instead of `No hardcoded credentials found`. A CI job over a tree larger
+than the 5000-file cap that was passing will now fail until you raise
+`--max-files` or narrow the path. Those passes were not earned: the walk stopped
+early and the result was reported as clean.
+
+### Fixed
+
+- **A symlinked config file or directory was silently skipped (regression in 0.21.1).** `walkConfigFiles` classified entries with `Dirent.isDirectory()` / `isFile()`, which are `lstat`-based — a symlink is neither, so it fell through both branches and was dropped. 0.21.0 reached config files through `existsSync`/`statSync`, which follow links; making the config walk recursive removed symlink support without anything noticing.
+
+  ```
+  repo/.claude -> shared-claude/          # settings.json holds a live key
+  0.21.0   exit 1   1 critical credential exposed
+  0.21.1   exit 0   No hardcoded credentials found.
+  ```
+
+  This affected every `CONFIG_FILES` entry at any depth — `.env`, `.mcp.json`, `docker-compose.yml`, `terraform.tfvars` — and a symlinked `.claude/` is exactly what a dotfile manager or a shared monorepo config produces. Entries are now classified by following the link, in all three walkers rather than only the config walk. A visited-realpath cycle guard lands in the same change: no walker has a depth bound, so restoring symlink-following without one would have traded a fail-open for a hang.
+
+- **A scan that hit the file cap reported clean.** The walkers stopped at `maxSourceFiles` (default 5000) and returned quietly, so an incomplete scan was indistinguishable from a complete one — fewer findings, no signal, exit 0. Truncation is now reported through `ScanStats.truncated`, surfaced in the human output and in `--json` as `summary.truncated` alongside `summary.maxFiles`, and exits 1. Adds `--max-files <n>` so the warning has a runnable fix.
+
+- **`.secretless` parse errors echoed credential values to stderr, twice.** The manifest is documented safe to commit, and `setup --check` stderr is exactly what lands in CI logs. A `NAME=VALUE` line echoed the whole line; a `NAME VALUE` line echoed it again interpolated into the error reason, which was also unbounded — so a 200 KB token flooded stderr through a field the 120-char line limit did not cover.
+
+  Redaction is an allowlist by position rather than a character test. Secret names allow `[a-zA-Z0-9_-]`, so a live token is itself a valid name and no charset rule can tell the two apart; only position can. The reason now names the shape it saw (dotenv, YAML, JSON), which is more actionable than the echo it replaces:
+
+  ```
+  line 1: ANTHROPIC_API_KEY=[redacted]
+          looks like dotenv (NAME=VALUE) — .secretless declares names only, never values
+  ```
+
+  `scan` now also reads `.secretless`, which nothing did before, so a pasted value is flagged rather than only printed.
+
+- **An unreadable file was reported as clean, exit 0 (#116).** The same content, readable, produces a finding. A directory scan dropped the file from the count and a named target printed `No hardcoded credentials found`. Unreadable paths are now listed with a runnable `chmod` fix, counted in `--json` as `summary.unreadable`, and exit 1.
+
+- **`.env` variants were mostly missed (#116).** `.env` and `.env.local` were detected; `.env.development`, `.env.production`, `.env.staging`, `.env.test` and `.env.prod` were not — the exact set named in the CLAUDE.md block Secretless itself installs. Any unrecognised `.env.*` is now scanned and only known template suffixes (`.example`, `.sample`, `.template`, `.dist`) are skipped, so the unknown case fails closed.
+
+- **Config filenames were matched case-sensitively.** On macOS and Windows `Claude.md` and `CLAUDE.md` are the same file to the OS but not to an exact-match lookup, so a file the user could plainly see was skipped.
+
+### Internal
+
+- Two tests asserted nothing and were rewritten. One asserted a pattern that accepted the unfixed value it claimed to guard against; the other computed its expectation by calling the same function as the code under test, so a wrong answer was wrong identically on both sides. Both are now pinned against independent oracles and verified to fail on a mutant.
+
 ## [0.21.1] - 2026-08-06
 
 Four defects that shipped in 0.21.0, plus issues #110, #111 and #112. Two of
