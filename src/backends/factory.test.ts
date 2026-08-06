@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
-import { createBackend, isKeychainAvailable } from './factory';
+import { createBackend, isKeychainAvailable, unavailableBackendError } from './factory';
 import { LocalBackend } from './local';
 
 vi.mock('child_process', async (importOriginal) => {
@@ -167,5 +167,24 @@ describe('isKeychainAvailable', () => {
     } else if (process.platform === 'linux') {
       expect(result.platform).toBe('Linux');
     }
+  });
+});
+
+describe('unavailableBackendError formatting', () => {
+  it('keeps the Verify/Fix block intact when the reason carries newlines', () => {
+    const err = unavailableBackendError(
+      '1password',
+      'line one\nline two\n  indented three',
+      ['do the thing'],
+      'op account get',
+    );
+    const lines = err.message.split('\n');
+    // The reason must occupy exactly one line, or everything below it stops
+    // reading as a list.
+    expect(lines[0]).toBe(
+      'Configured backend "1password" is not reachable: line one line two indented three',
+    );
+    expect(err.message).toMatch(/^  Verify:  op account get$/m);
+    expect(err.message).toMatch(/^  Fix:     do the thing$/m);
   });
 });

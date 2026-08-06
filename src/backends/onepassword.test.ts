@@ -522,3 +522,45 @@ describe('OnePasswordBackend', () => {
     });
   });
 });
+
+describe('op error handling', () => {
+  beforeEach(() => { mockExecFileSync.mockReset(); });
+
+  it('reports a timeout when execFileSync signals ETIMEDOUT rather than SIGTERM', async () => {
+    mockOpCli([]);
+    const base = mockExecFileSync.getMockImplementation()!;
+    mockExecFileSync.mockImplementation((cmd, args) => {
+      if (Array.isArray(args) && args[0] === 'item' && args[1] === 'create') {
+        const e = new Error('spawnSync op ETIMEDOUT') as NodeJS.ErrnoException;
+        e.code = 'ETIMEDOUT';
+        throw e;
+      }
+      return base(cmd as never, args as never);
+    });
+
+    const backend = new OnePasswordBackend();
+    // Without the ETIMEDOUT arm this fell through and reported something that
+    // read nothing like a timeout.
+    await expect(backend.store('secret/K', 'v')).rejects.toThrow(/did not respond within/);
+  });
+
+  it('keeps what op said but drops our own argv echo on a generic failure', async () => {
+    mockOpCli([]);
+    const base = mockExecFileSync.getMockImplementation()!;
+    mockExecFileSync.mockImplementation((cmd, args) => {
+      if (Array.isArray(args) && args[0] === 'item' && args[1] === 'create') {
+        throw new Error(
+          'Command failed: op item create --vault abc --template /tmp/x.json\n' +
+          '[ERROR] 2026/08/05 vault "abc" not found',
+        );
+      }
+      return base(cmd as never, args as never);
+    });
+
+    const backend = new OnePasswordBackend();
+    const err = await backend.store('secret/K', 'v').catch((e: Error) => e);
+    expect(err.message).toContain('vault "abc" not found');
+    expect(err.message).not.toMatch(/Command failed:/);
+    expect(err.message).toMatch(/Verify: op account get/);
+  });
+});

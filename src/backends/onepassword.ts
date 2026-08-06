@@ -31,6 +31,22 @@ const DEFAULT_VAULT = 'Secretless';
 const ITEM_TAG = 'secretless';
 const DEFAULT_OP_TIMEOUT_MS = 30_000;
 
+/**
+ * What `op` actually reported, without our own `Command failed: ...` argv echo.
+ * Returns an indented block ending in a newline, or empty when there is nothing
+ * useful to show.
+ */
+function opStderr(e: { stderr?: unknown; message?: string }): string {
+  const raw = typeof e?.stderr === 'string' && e.stderr.trim()
+    ? e.stderr
+    : (e?.message ?? '');
+  const kept = String(raw)
+    .split('\n')
+    .filter(line => line.trim() && !/^\s*Command failed:/.test(line))
+    .map(line => `  ${line.trim()}`);
+  return kept.length ? `${kept.join('\n')}\n` : '';
+}
+
 /** Per-invocation ceiling for `op`, overridable for slow approval flows. */
 function opTimeoutMs(): number {
   const raw = Number(process.env.SECRETLESS_OP_TIMEOUT_MS);
@@ -231,7 +247,11 @@ export class OnePasswordBackend implements WritableSecretBackend {
       }) as unknown as string;
     } catch (err) {
       const e = err as NodeJS.ErrnoException & { signal?: string };
-      if (e?.signal === 'SIGTERM') {
+      // execFileSync surfaces a timeout as the kill signal, but not on every
+      // path — `ETIMEDOUT` appears instead depending on where it trips. Match
+      // both, or a timed-out call falls through to the generic branch and
+      // reports something that reads nothing like "it timed out".
+      if (e?.signal === 'SIGTERM' || e?.code === 'ETIMEDOUT') {
         throw new Error(
           `1Password did not respond within ${opTimeoutMs() / 1000}s (op ${args[0]} ${args[1] ?? ''}).\n` +
           `  This usually means an approval prompt is waiting, or the desktop app is not running.\n` +
@@ -240,7 +260,15 @@ export class OnePasswordBackend implements WritableSecretBackend {
           `  Adjust: SECRETLESS_OP_TIMEOUT_MS=60000`,
         );
       }
-      throw err;
+      // Everything else: keep what `op` actually said, drop our own argv echo.
+      // No secret value is ever in this argv — that is why store() writes the
+      // value to a mode-0600 template file — but the echo is noise that buries
+      // op's real message, and vault ids and key names do not need reprinting.
+      throw new Error(
+        `1Password command failed (op ${args[0]} ${args[1] ?? ''}).\n` +
+        `${opStderr(e)}` +
+        `  Verify: op account get`,
+      );
     }
   }
 

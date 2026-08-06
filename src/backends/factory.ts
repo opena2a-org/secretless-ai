@@ -146,8 +146,13 @@ export function unavailableBackendError(
   fixes: string[],
   verifyCmd: string,
 ): Error {
+  // `why` is the `.message` of a caught error and can carry newlines. Left as
+  // is, it breaks the block apart and the Verify/Fix lines stop reading as a
+  // list — the recovery instructions are the whole point of this message.
+  const reason = why.replace(/\s+/g, ' ').trim();
+
   const lines = [
-    `Configured backend "${type}" is not reachable: ${why}`,
+    `Configured backend "${type}" is not reachable: ${reason}`,
     '',
     `  Your secrets are safe. Nothing was read from or written to another store.`,
     '',
