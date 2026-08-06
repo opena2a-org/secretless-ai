@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { isKnownExample, findRealMatch, scan, fixFor } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
-import { buildMatcher } from './secretlessignore';
+import { buildMatcher, loadSecretlessIgnore } from './secretlessignore';
 
 function patternByName(name: string) {
   const p = CREDENTIAL_PATTERNS.find(p => p.name === name);
@@ -467,15 +467,37 @@ describe('scan() — --include-tests actually includes test files', () => {
     expect(found).toEqual(['__fixtures__/c.js', '__tests__/b.js', 'e2e/e.js', 'test-server/d.js', 'tests/a.js']);
   });
 
-  it('does NOT re-enable node_modules, dist, or build', () => {
-    // Widening the flag must not drag in generated trees — that would bury the
-    // report under dependency noise.
+  it('does NOT re-enable non-test default-ignore dirs', () => {
+    // `examples/` and `docs/vhs/` are held back ONLY by the default-ignore
+    // list, so this fixture actually exercises the layer includeTests changes.
+    //
+    // node_modules/dist/build are deliberately NOT used here: they are also in
+    // walkSourceFiles' SOURCE_SKIP_DIRS, which answers first, so a test built on
+    // them stays green even if the ignore layer is removed entirely. Mutation
+    // testing caught exactly that — see the matcher-level test below, which is
+    // what actually pins the generated-tree defaults.
     const dir = tmpProjectWith({
-      'node_modules/pkg/index.js': CRED_LINE,
-      'dist/bundle.js': CRED_LINE,
-      'build/out.js': CRED_LINE,
+      'examples/demo.js': CRED_LINE,
+      'docs/vhs/setup.sh': CRED_LINE,
     });
     expect(scan(dir, { scanGlobal: false, includeTests: true })).toEqual([]);
+  });
+
+  it('includeTests keeps every non-test default in the matcher', () => {
+    // Tests the ignore matcher directly, because the scan-level assertion above
+    // cannot distinguish this layer from SOURCE_SKIP_DIRS.
+    const dir = tmpProjectWith({ 'src/a.js': '\n' });
+    const m = loadSecretlessIgnore(dir, { includeTests: true });
+
+    for (const p of ['node_modules/pkg/index.js', 'dist/bundle.js', 'build/out.js',
+                     'examples/demo.js', 'docs/vhs/setup.sh']) {
+      expect(m.matches(p), `${p} must stay ignored under includeTests`).toBe(true);
+    }
+    // ...and the test defaults are genuinely released.
+    for (const p of ['test/a.js', 'tests/b.js', '__tests__/c.js', '__fixtures__/d.js',
+                     'test-server/e.js', 'e2e/f.js']) {
+      expect(m.matches(p), `${p} must be reachable under includeTests`).toBe(false);
+    }
   });
 
   it('does NOT override an explicit user .secretlessignore entry', () => {
