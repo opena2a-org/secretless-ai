@@ -146,13 +146,27 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
           console.error(`  Warning: ignoring invalid --min-confidence value "${raw}" (must be in [0, 1]).`);
         }
       }
-      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence']);
+      // --max-files <n>  Raise the per-walk file cap (default 5000). Without
+      // this, hitting the cap is a dead end: the scan reports it stopped early
+      // but the user has no way to finish it short of scanning subtrees by hand.
+      let maxFiles: number | undefined;
+      const mfIdx = args.indexOf('--max-files');
+      if (mfIdx !== -1 && mfIdx + 1 < args.length) {
+        const raw = args[mfIdx + 1];
+        const parsed = Number.parseInt(raw, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          maxFiles = parsed;
+        } else {
+          console.error(`  Warning: ignoring invalid --max-files value "${raw}" (must be a positive integer).`);
+        }
+      }
+      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence', '--max-files']);
       const positionalArgs: string[] = [];
       const unknownFlags: string[] = [];
       for (let k = 1; k < args.length; k++) {
         const a = args[k];
         if (flagFlag.has(a)) {
-          if (a === '--min-confidence') k++;
+          if (a === '--min-confidence' || a === '--max-files') k++;
           continue;
         }
         // Warn (don't fail) on an unrecognized flag so a typo like `--show-placeholder`
@@ -163,7 +177,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       if (unknownFlags.length > 0) {
         console.error(`  Warning: ignoring unknown flag${unknownFlags.length > 1 ? 's' : ''} ${unknownFlags.join(', ')}.`);
-        console.error(`  Run \`${CLI_BARE} scan\` for supported flags (--json, --show-placeholders, --min-confidence, --no-ignore, --include-tests, --explain).`);
+        console.error(`  Run \`${CLI_BARE} scan\` for supported flags (--json, --show-placeholders, --min-confidence, --max-files, --no-ignore, --include-tests, --explain).`);
       }
       // Refuse extra paths rather than silently scanning only the first. A
       // second path used to be dropped with no warning, and since the first
@@ -179,7 +193,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders });
+      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders, maxFiles });
     }
     case 'status': {
       const json = args.includes('--json');

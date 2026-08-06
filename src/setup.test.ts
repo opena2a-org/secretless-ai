@@ -165,10 +165,34 @@ describe('runSetup — an unparseable manifest is not a missing-secrets count (#
 
     const printed = errSpy.mock.calls.flat().join('');
     expect(printed).toContain('line 2');
-    expect(printed).toContain('bad:line');
+    // The line itself is NOT echoed: a manifest line is where a pasted
+    // credential lands, and this stderr is what CI logs capture. The line
+    // number plus the reason locate it without reading the file back.
     expect(printed).toContain('one secret name per line');
     // Must not imply the store was consulted.
     expect(printed).toContain('No secrets were checked');
+  });
+
+  it('does not echo a credential VALUE from an unparseable manifest to stderr', async () => {
+    // `.secretless` is documented "safe to commit", so this parse-error path is
+    // the surface that reads it — and `setup --check` stderr is exactly what
+    // lands in CI logs. Both leaking shapes are covered: NAME=VALUE and
+    // NAME VALUE (which leaked twice, text and reason).
+    const ANTHROPIC = ['sk-ant-api03-', 'FAKEvalueLEAKEDdonotprint'].join('');
+    const GITHUB = ['ghp_', 'FAKEtokenLEAKEDdonotprint'].join('');
+    fs.writeFileSync(path.join(tmpDir, '.secretless'),
+      `ANTHROPIC_API_KEY=${ANTHROPIC}\nGITHUB_TOKEN ${GITHUB}\n`);
+
+    await runSetup(tmpDir, { check: true, backend });
+
+    const printed = errSpy.mock.calls.flat().join('');
+    expect(printed).not.toContain(ANTHROPIC);
+    expect(printed).not.toContain(GITHUB);
+    // Still actionable: both lines are located and both declared names shown.
+    expect(printed).toContain('line 1');
+    expect(printed).toContain('line 2');
+    expect(printed).toContain('ANTHROPIC_API_KEY');
+    expect(printed).toContain('GITHUB_TOKEN');
   });
 
   it('CONTROL: a valid manifest still produces a real count', async () => {

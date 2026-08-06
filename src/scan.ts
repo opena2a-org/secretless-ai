@@ -138,6 +138,16 @@ export interface ScanOptions {
 export interface ScanStats {
   /** Count of pattern matches suppressed as known examples / placeholders. */
   placeholdersSuppressed: number;
+  /**
+   * True when a file walk stopped at `maxSourceFiles` with tree left unvisited,
+   * so the findings are a SUBSET and "no credentials found" is not a verdict.
+   *
+   * `scan()` writes this unconditionally (false on a complete walk), so a caller
+   * that passes a bare object still gets a correct value rather than
+   * `undefined` — an absent flag reads as falsy, which is the fail-open shape
+   * this exists to close.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -351,6 +361,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   };
   const findings: ScanFinding[] = [];
   const scanGlobal = options?.scanGlobal !== false;
+  // Written unconditionally so a complete walk actively reports "not truncated"
+  // rather than leaving a stale or absent flag for the caller to misread.
+  if (stats) stats.truncated = false;
 
   // A FILE target is scanned as that file. It used to be accepted, checked for
   // existence, then walked as a directory — which found nothing and reported
@@ -459,7 +472,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   // runs first. A scanner that answers "clean" for a tree it never walked is
   // worse than one that errors.
   const scannedConfigFiles: string[] = [];
-  for (const configFile of walkConfigFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTestsOpt, ignore)) {
+  const configWalk = walkConfigFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTestsOpt, ignore);
+  if (configWalk.truncated && stats) stats.truncated = true;
+  for (const configFile of configWalk.files) {
     if (ignore && ignore.matches(configFile)) continue;
     const fullPath = path.join(projectDir, configFile);
     if (!fs.existsSync(fullPath)) continue;
@@ -504,9 +519,10 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     const configFileSet = new Set(scannedConfigFiles);
     const maxFiles = options?.maxSourceFiles ?? 5000;
     const includeTests = options?.includeTests ?? false;
-    const sourceFiles = walkSourceFiles(projectDir, maxFiles, includeTests, ignore);
+    const sourceWalk = walkSourceFiles(projectDir, maxFiles, includeTests, ignore);
+    if (sourceWalk.truncated && stats) stats.truncated = true;
 
-    for (const filePath of sourceFiles) {
+    for (const filePath of sourceWalk.files) {
       const relPath = path.relative(projectDir, filePath);
       // Skip files already covered by config scan
       if (configFileSet.has(relPath)) continue;
@@ -559,8 +575,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   if (options?.scanSource !== false) {
     const includeTests = options?.includeTests ?? false;
     const pemPattern = CREDENTIAL_PATTERNS.find(p => p.id === 'pem-private-key')!;
-    const keyFiles = walkKeyFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTests, ignore);
-    for (const filePath of keyFiles) {
+    const keyWalk = walkKeyFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTests, ignore);
+    if (keyWalk.truncated && stats) stats.truncated = true;
+    for (const filePath of keyWalk.files) {
       const relPath = path.relative(projectDir, filePath);
       if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
       try {
@@ -643,6 +660,140 @@ function isTestFile(name: string): boolean {
 /** Private-key file extensions scanned in addition to source/config files. */
 const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx']);
 
+/** What a walker collected, and whether the file cap cut the walk short. */
+interface WalkResult {
+  files: string[];
+  /**
+   * True when a real candidate was dropped because `maxFiles` was already
+   * reached, or when queued directories were left unvisited. A truncated walk
+   * must never render as a clean scan — see `ScanStats.truncated`.
+   */
+  truncated: boolean;
+}
+
+/**
+ * Classify a directory entry, FOLLOWING symlinks.
+ *
+ * `Dirent.isDirectory()` / `isFile()` are lstat-based: a symlink is NEITHER, so
+ * classifying from the Dirent alone drops every symlinked entry on the floor.
+ * 0.21.0 reached config files through `existsSync`/`statSync`, which follow
+ * links; making the config walk recursive in 0.21.1 silently removed symlink
+ * support, so a symlinked `.claude/` — what a dotfile manager or a shared
+ * monorepo config produces — reported "No hardcoded credentials found."
+ *
+ * Returns 'skip' for a broken link, a socket/fifo/device, or anything we cannot
+ * stat, so an unresolvable link is dropped rather than throwing mid-walk.
+ */
+function classifyEntry(entryPath: string, entry: fs.Dirent): 'dir' | 'file' | 'skip' {
+  if (entry.isDirectory()) return 'dir';
+  if (entry.isFile()) return 'file';
+  if (!entry.isSymbolicLink()) return 'skip';
+  try {
+    const target = fs.statSync(entryPath); // follows the link
+    if (target.isDirectory()) return 'dir';
+    if (target.isFile()) return 'file';
+    return 'skip';
+  } catch {
+    return 'skip';
+  }
+}
+
+/**
+ * Cycle guard for a symlink-following walk.
+ *
+ * Following symlinks without one trades a fail-open for a hang: no walker has a
+ * depth bound, so `a/loop -> a` recurses until the file cap and a cross-linked
+ * pair of directories never terminates. Keyed on the RESOLVED real path, so two
+ * routes to the same directory are walked once. Returns false if already seen.
+ */
+/**
+ * `.env` suffixes that hold placeholders by convention and are meant to be
+ * committed. Everything else after `.env.` is treated as a REAL env file.
+ *
+ * The polarity matters: an unrecognised `.env.whatever` is scanned rather than
+ * skipped, so the unknown case fails closed. The previous allowlist named only
+ * `.env` and `.env.local`, which missed `.env.development`, `.env.production`,
+ * `.env.staging`, `.env.test` and `.env.prod` — the exact set the CLAUDE.md
+ * block Secretless itself installs tells the user it protects (#116 P2-3).
+ */
+const ENV_TEMPLATE_SUFFIXES = new Set(['example', 'sample', 'template', 'dist']);
+
+/** True for a real `.env` file; false for a committed template. */
+export function isEnvFile(basename: string): boolean {
+  if (basename === '.env') return true;
+  if (!basename.startsWith('.env.')) return false;
+  // A template marker in ANY segment wins, so `.env.example.local` stays out.
+  return !basename
+    .slice('.env.'.length)
+    .toLowerCase()
+    .split('.')
+    .some(segment => ENV_TEMPLATE_SUFFIXES.has(segment));
+}
+
+/**
+ * Config files this tool scans on top of the shared `CONFIG_FILES` catalog.
+ *
+ * `.secretless` is OUR OWN manifest, not a third-party credential surface, so it
+ * does not belong in `@opena2a/credential-patterns` (a cross-tool catalog whose
+ * copy here is held byte-identical by `lockstep.test.ts`). It still has to be
+ * scanned: the file is documented "safe to commit" and holds NAMES only, so a
+ * pasted value is a likely mistake that nothing detected — before this, the
+ * parse-error path was the only surface that ever read the file, and it printed
+ * the value instead of flagging it.
+ */
+const LOCAL_CONFIG_FILES = ['.secretless'];
+
+interface ConfigNameMatcher {
+  byBasename: Set<string>;
+  bySuffix: string[];
+}
+
+/** Split the config catalogs into basename and path-suffix forms, lowercased once. */
+function buildConfigNameMatcher(): ConfigNameMatcher {
+  const byBasename = new Set<string>();
+  const bySuffix: string[] = [];
+  for (const entry of [...CONFIG_FILES, ...LOCAL_CONFIG_FILES]) {
+    if (entry.includes('/')) bySuffix.push(entry.toLowerCase());
+    else byBasename.add(entry.toLowerCase());
+  }
+  return { byBasename, bySuffix };
+}
+
+/**
+ * Does this entry name a project config file?
+ *
+ * Matched case-insensitively: on a case-insensitive filesystem (macOS, Windows)
+ * `Claude.md` and `CLAUDE.md` are the SAME file to the OS but not to an
+ * exact-match Set, so an exact comparison skipped a file the user can plainly
+ * see. On a case-sensitive filesystem this widens the match to case variants of
+ * the same config name, which is the safe direction for a scanner.
+ */
+function matchesConfigName(
+  basename: string,
+  relFromRoot: string,
+  matcher: ConfigNameMatcher,
+): boolean {
+  if (matcher.byBasename.has(basename.toLowerCase())) return true;
+  if (isEnvFile(basename)) return true;
+  const lowerRel = relFromRoot.toLowerCase();
+  return matcher.bySuffix.some(sfx => lowerRel === sfx || lowerRel.endsWith('/' + sfx));
+}
+
+function makeVisitedGuard(): (dir: string) => boolean {
+  const seen = new Set<string>();
+  return (dir: string) => {
+    let key: string;
+    try {
+      key = fs.realpathSync(dir);
+    } catch {
+      key = path.resolve(dir);
+    }
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  };
+}
+
 /**
  * Walk a directory tree and return standalone key files (`*.pem`, `*.key`, `*.p12`, ...).
  * Mirrors walkSourceFiles' directory pruning, test-skipping, and ignore semantics so a
@@ -653,12 +804,17 @@ function walkKeyFiles(
   maxFiles: number,
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
-): string[] {
+): WalkResult {
   const results: string[] = [];
   const queue: string[] = [dir];
+  const visit = makeVisitedGuard();
+  let truncated = false;
 
-  while (queue.length > 0 && results.length < maxFiles) {
+  while (queue.length > 0) {
+    // Queued directories left unvisited are unscanned tree, not a clean result.
+    if (results.length >= maxFiles) { truncated = true; break; }
     const current = queue.shift()!;
+    if (!visit(current)) continue;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
@@ -667,28 +823,31 @@ function walkKeyFiles(
     }
 
     for (const entry of entries) {
-      if (results.length >= maxFiles) break;
       const entryPath = path.join(current, entry.name);
       const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
+      const kind = classifyEntry(entryPath, entry);
 
-      if (entry.isDirectory()) {
+      if (kind === 'dir') {
         // Unlike source files, key files commonly live in HIDDEN directories (`.ssh/`,
         // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
         // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
         if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name === '.git') continue;
         if (!includeTests && TEST_DIRS.has(entry.name)) continue;
         if (ignore && ignore.matches(relFromRoot + '/.')) continue;
+        // Cap checked AFTER the filters, so only a real candidate trips it.
+        if (results.length >= maxFiles) { truncated = true; break; }
         queue.push(entryPath);
-      } else if (entry.isFile()) {
+      } else if (kind === 'file') {
         if (!KEY_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
         if (!includeTests && isTestFile(entry.name)) continue;
         if (ignore && ignore.matches(relFromRoot)) continue;
+        if (results.length >= maxFiles) { truncated = true; break; }
         results.push(entryPath);
       }
     }
   }
 
-  return results;
+  return { files: results, truncated };
 }
 
 /**
@@ -709,19 +868,18 @@ function walkConfigFiles(
   maxFiles: number,
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
-): string[] {
-  const byBasename = new Set<string>();
-  const bySuffix: string[] = [];
-  for (const entry of CONFIG_FILES) {
-    if (entry.includes('/')) bySuffix.push(entry);
-    else byBasename.add(entry);
-  }
+): WalkResult {
+  const matcher = buildConfigNameMatcher();
 
   const results: string[] = [];
   const queue: string[] = [dir];
+  const visit = makeVisitedGuard();
+  let truncated = false;
 
-  while (queue.length > 0 && results.length < maxFiles) {
+  while (queue.length > 0) {
+    if (results.length >= maxFiles) { truncated = true; break; }
     const current = queue.shift()!;
+    if (!visit(current)) continue;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
@@ -730,26 +888,26 @@ function walkConfigFiles(
     }
 
     for (const entry of entries) {
-      if (results.length >= maxFiles) break;
       const entryPath = path.join(current, entry.name);
       const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
+      const kind = classifyEntry(entryPath, entry);
 
-      if (entry.isDirectory()) {
+      if (kind === 'dir') {
         if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name === '.git') continue;
         if (!includeTests && TEST_DIRS.has(entry.name)) continue;
         if (ignore && ignore.matches(relFromRoot + '/.')) continue;
+        if (results.length >= maxFiles) { truncated = true; break; }
         queue.push(entryPath);
-      } else if (entry.isFile()) {
-        const isConfig = byBasename.has(entry.name)
-          || bySuffix.some(sfx => relFromRoot === sfx || relFromRoot.endsWith('/' + sfx));
-        if (!isConfig) continue;
+      } else if (kind === 'file') {
+        if (!matchesConfigName(entry.name, relFromRoot, matcher)) continue;
         if (ignore && ignore.matches(relFromRoot)) continue;
+        if (results.length >= maxFiles) { truncated = true; break; }
         results.push(relFromRoot);
       }
     }
   }
 
-  return results;
+  return { files: results, truncated };
 }
 
 function walkSourceFiles(
@@ -757,12 +915,16 @@ function walkSourceFiles(
   maxFiles: number,
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
-): string[] {
+): WalkResult {
   const results: string[] = [];
   const queue: string[] = [dir];
+  const visit = makeVisitedGuard();
+  let truncated = false;
 
-  while (queue.length > 0 && results.length < maxFiles) {
+  while (queue.length > 0) {
+    if (results.length >= maxFiles) { truncated = true; break; }
     const current = queue.shift()!;
+    if (!visit(current)) continue;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
@@ -771,28 +933,29 @@ function walkSourceFiles(
     }
 
     for (const entry of entries) {
-      if (results.length >= maxFiles) break;
-
       const entryPath = path.join(current, entry.name);
       const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
+      const kind = classifyEntry(entryPath, entry);
 
-      if (entry.isDirectory()) {
+      if (kind === 'dir') {
         if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
         if (!includeTests && TEST_DIRS.has(entry.name)) continue;
         // Prune whole-tree ignored directories. The matcher's directory
         // patterns end with `/`, so we test the dir path with a trailing
         // segment; equivalently, append `/dummy`.
         if (ignore && ignore.matches(relFromRoot + '/.')) continue;
+        if (results.length >= maxFiles) { truncated = true; break; }
         queue.push(entryPath);
-      } else if (entry.isFile()) {
+      } else if (kind === 'file') {
         const ext = path.extname(entry.name);
         if (!SOURCE_FILE_EXTENSIONS.has(ext)) continue;
         if (!includeTests && isTestFile(entry.name)) continue;
         if (ignore && ignore.matches(relFromRoot)) continue;
+        if (results.length >= maxFiles) { truncated = true; break; }
         results.push(entryPath);
       }
     }
   }
 
-  return results;
+  return { files: results, truncated };
 }

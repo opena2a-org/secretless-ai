@@ -720,6 +720,194 @@ describe('scan() — config files are found below the root (release-test P1)', (
   });
 });
 
+describe('scan() — a symlinked config file or directory is followed (0.21.1 regression)', () => {
+  // `walkConfigFiles` classifies with Dirent.isDirectory()/isFile(), which are
+  // LSTAT-based: a symlink is neither, so it fell through both branches and was
+  // dropped. 0.21.0 reached config files via existsSync/statSync, which FOLLOW
+  // symlinks — making the walk recursive silently removed symlink support, and a
+  // symlinked `.claude/` (what a dotfile manager or a shared monorepo config
+  // produces) reported "No hardcoded credentials found." with exit 0.
+  const GKEY = ['AIzaSy', 'B7xK2mNvPwQ4tZ8hLcDfGjHkMnOpQrStU'].join('');
+
+  function tmpdir(prefix: string): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  }
+
+  it('follows a symlinked config DIRECTORY', () => {
+    const dir = tmpdir('scan-symdir-');
+    fs.mkdirSync(path.join(dir, 'shared-claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'shared-claude/settings.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync('shared-claude', path.join(dir, '.claude'), 'dir');
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toContain('.claude/settings.json');
+  });
+
+  it('follows a symlinked config FILE', () => {
+    const dir = tmpdir('scan-symfile-');
+    fs.mkdirSync(path.join(dir, 'real'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'real/payload.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync('real/payload.json', path.join(dir, 'config.json'));
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toContain('config.json');
+  });
+
+  it('follows a symlinked config file nested below the root', () => {
+    const dir = tmpdir('scan-symnest-');
+    fs.mkdirSync(path.join(dir, 'real'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'pkg/a'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'real/payload.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(dir, 'real/payload.json'), path.join(dir, 'pkg/a/config.json'));
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toContain('pkg/a/config.json');
+  });
+
+  it('CONTROL: the same file reached without a symlink is found', () => {
+    // Pins that the assertions above measure symlink FOLLOWING and not merely
+    // "the walker finds config.json", which would pass with the fix reverted.
+    const dir = tmpdir('scan-symctl-');
+    fs.writeFileSync(path.join(dir, 'config.json'), `{"key": "${GKEY}"}\n`);
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toEqual(['config.json']);
+  });
+
+  it('a symlink CYCLE terminates instead of hanging', () => {
+    // Restoring symlink-following without a visited guard trades a fail-open for
+    // a hang: no walker has a depth bound. A self-referential directory link is
+    // the minimal case; `a/link -> a` recurses forever without a realpath guard.
+    const dir = tmpdir('scan-symloop-');
+    fs.mkdirSync(path.join(dir, 'a'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a/config.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(dir, 'a'), path.join(dir, 'a/loop'), 'dir');
+
+    const started = process.hrtime.bigint();
+    const findings = scan(dir, { scanGlobal: false });
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    // Terminating at all is the assertion; the bound catches a walk that only
+    // ends because it hit the 5000-file cap after thousands of stat calls.
+    expect(elapsedMs).toBeLessThan(5000);
+    expect(findings.map(f => f.file)).toContain('a/config.json');
+    // And it must be reported ONCE, not once per lap around the cycle.
+    expect(findings.filter(f => f.file.endsWith('config.json')).length).toBe(1);
+  });
+
+  it('a symlink pointing OUTSIDE the scan root is followed, not silently dropped', () => {
+    const outside = tmpdir('scan-symout-target-');
+    fs.writeFileSync(path.join(outside, 'payload.json'), `{"key": "${GKEY}"}\n`);
+    const dir = tmpdir('scan-symout-');
+    fs.symlinkSync(path.join(outside, 'payload.json'), path.join(dir, 'config.json'));
+
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toContain('config.json');
+  });
+
+  it('a BROKEN symlink does not throw and does not report a finding', () => {
+    const dir = tmpdir('scan-symbroken-');
+    fs.symlinkSync(path.join(dir, 'does-not-exist.json'), path.join(dir, 'config.json'));
+    expect(() => scan(dir, { scanGlobal: false })).not.toThrow();
+    expect(scan(dir, { scanGlobal: false })).toEqual([]);
+  });
+});
+
+describe('scan() — a credential pasted into .secretless is detected', () => {
+  // The manifest is documented "safe to commit" and holds names only, so a value
+  // there is a mistake nothing caught: the parse-error path was the ONLY reader
+  // of the file, and it echoed the value rather than flagging it. Detection is
+  // the half that makes the redaction fix permanent.
+  function tmpProjectWith(files: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-manifest-'));
+    for (const [rel, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(dir, rel), content);
+    }
+    return dir;
+  }
+
+  it('flags a credential value pasted into .secretless', () => {
+    const KEY = ['AIzaSy', 'B7xK2mNvPwQ4tZ8hLcDfGjHkMnOpQrStU'].join('');
+    const dir = tmpProjectWith({ '.secretless': `GOOGLE_API_KEY=${KEY}\n` });
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toEqual(['.secretless']);
+  });
+
+  it('CONTROL: a names-only manifest produces no findings', () => {
+    // The absence half. Without it, this could pass by flagging every manifest —
+    // the name-gated patterns (AWS_SECRET_ACCESS_KEY) need a VALUE to fire, and
+    // a manifest that tripped them would make the scanner unusable on itself.
+    const dir = tmpProjectWith({
+      '.secretless': [
+        'GITHUB_TOKEN                 # required, GitHub API access',
+        'DATABASE_URL                 # required, PostgreSQL connection',
+        'ANTHROPIC_API_KEY',
+        'AWS_SECRET_ACCESS_KEY',
+        'STRIPE_SECRET_KEY  optional  # only needed for payments',
+        '',
+      ].join('\n'),
+    });
+    expect(scan(dir, { scanGlobal: false })).toEqual([]);
+  });
+});
+
+describe('scan() — a truncated scan does not render as a clean scan (fail-open)', () => {
+  // walkConfigFiles stops at maxFiles and returns quietly, so an incomplete scan
+  // was indistinguishable from a complete one: fewer findings, no signal, exit 0.
+  const GKEY = ['AIzaSy', 'B7xK2mNvPwQ4tZ8hLcDfGjHkMnOpQrStU'].join('');
+
+  function tmpProjectWith(files: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-trunc-'));
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    return dir;
+  }
+
+  const THREE_CONFIGS = {
+    'a/config.json': `{"key": "${GKEY}"}\n`,
+    'b/config.json': `{"key": "${GKEY}"}\n`,
+    'c/config.json': `{"key": "${GKEY}"}\n`,
+  };
+
+  it('CONTROL: uncapped, all three config files are found and nothing is flagged', () => {
+    const dir = tmpProjectWith(THREE_CONFIGS);
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    expect(findings.length).toBe(3);
+    expect(stats.truncated).toBe(false);
+  });
+
+  it('sets the truncation flag when the config walk hits the cap', () => {
+    const dir = tmpProjectWith(THREE_CONFIGS);
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    const findings = scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+    // The dropped file is the defect; the FLAG is what makes it visible.
+    expect(findings.length).toBeLessThan(3);
+    expect(stats.truncated).toBe(true);
+  });
+
+  it('sets the truncation flag when the SOURCE walk hits the cap', () => {
+    const SKEY = ['sk-proj-', 'M1N2B3V4C5X6Z7L8K9J0H1G2F3D4S5A6P7O8I9U0Y1T2'].join('');
+    const dir = tmpProjectWith({
+      'a.js': `const k = "${SKEY}";\n`,
+      'b.js': `const k = "${SKEY}";\n`,
+      'c.js': `const k = "${SKEY}";\n`,
+    });
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+    expect(stats.truncated).toBe(true);
+  });
+
+  it('sets the truncation flag when the KEY-file walk hits the cap', () => {
+    const dir = tmpProjectWith({
+      'a.pem': 'x\n', 'b.pem': 'x\n', 'c.pem': 'x\n',
+      'd.pem': 'x\n', 'e.pem': 'x\n', 'f.pem': 'x\n',
+    });
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+    expect(stats.truncated).toBe(true);
+  });
+});
+
 describe('scan() — a single-file finding reports a path that resolves (re-test P2)', () => {
   it('reports the path relative to cwd, not the bare basename', () => {
     // The basename alone does not resolve from the caller's cwd, so a CI job
