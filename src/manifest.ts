@@ -161,17 +161,19 @@ function redactManifestLine(line: string): string {
 }
 
 /**
- * Show the first token when it is name-shaped, and split a `NAME=VALUE` paste so
- * the user still sees WHICH key they got wrong. In dotenv the left side of `=`
- * is the variable name and the right side is the value, so the left side is safe.
+ * Show the first token only when the whole token is a valid secret name.
+ *
+ * An earlier version split a `NAME=VALUE` paste and echoed the left side, on the
+ * reasoning that in dotenv the left of `=` is the name. That is a leak: `=` is
+ * also base64 PADDING, so for a secret from `openssl rand -base64 32` the "left
+ * side of the `=`" IS the entire secret, and it was printed in full to
+ * `setup --check` stderr. The left side of a separator is not a name just
+ * because a separator appears — the token is only a name if the WHOLE token is
+ * one. `describeInvalidName` still reports the dotenv shape, so the user learns
+ * what is wrong without the value being read back to them.
  */
 function redactFirstToken(token: string): string {
-  if (isValidSecretName(token)) return token;
-  const eq = token.indexOf('=');
-  if (eq > 0 && isValidSecretName(token.slice(0, eq))) {
-    return `${token.slice(0, eq)}=${REDACTED}`;
-  }
-  return REDACTED;
+  return isValidSecretName(token) ? token : REDACTED;
 }
 
 /**

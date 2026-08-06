@@ -164,12 +164,14 @@ npx secretless-ai status --json                # protection state for CI (gate o
 
 ### Incomplete scans do not report clean
 
-A scan that could not read everything is not a passing scan. If the walk stops at the file cap, or a file cannot be opened, `scan` prints what it missed, exits 1, and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`. In `--json`, `summary.truncated` and `summary.unreadable` carry the same signal, so CI can tell "clean" from "unfinished".
+A scan that could not read everything is not a passing scan. If the walk stops at the file cap, or a path cannot be opened, `scan` prints what it missed, exits 1, and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`. In `--json`, `summary.truncated` and `summary.unreadable` carry the same signal, so CI can tell "clean" from "unfinished".
+
+Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed -- otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan -- and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
 
 ```bash
 npx secretless-ai scan --json | jq '.summary'
 # { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
-#   "truncated": false, "maxFiles": 5000, "unreadable": 0 }
+#   "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0 }
 ```
 
 ## Architecture

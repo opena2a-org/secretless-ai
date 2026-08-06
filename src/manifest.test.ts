@@ -160,8 +160,6 @@ describe('parseManifestDetailed — an unrecognised manifest is an error, not na
     expect(entries).toEqual([]);
     expect(errors).toHaveLength(1);
     expect(errors[0].reason).toContain('dotenv');
-    // The name is still identified; only the value position is dropped.
-    expect(errors[0].text).toContain('ANTHROPIC_API_KEY');
     expect(errors[0].text).not.toContain('sk-ant-xxx');
   });
 
@@ -299,8 +297,28 @@ describe('parseManifestDetailed — a parse error never echoes a credential VALU
   it('names the dotenv shape instead of echoing it', () => {
     const { errors } = parseManifestDetailed(`ANTHROPIC_API_KEY=${ANTHROPIC}\n`);
     expect(errors[0].reason.toLowerCase()).toContain('value');
-    // The declared name is safe and useful; the value is not.
-    expect(errors[0].text).toContain('ANTHROPIC_API_KEY');
+    expect(errors[0].reason).toContain('dotenv');
+    expect(errors[0].line).toBe(1);
+  });
+
+  it('does not echo a base64 secret whose PADDING looks like a NAME=VALUE split', () => {
+    // The redactor briefly split on `=` and echoed the left side, reasoning that
+    // in dotenv the left of `=` is the name. But `=` is also base64 padding, so
+    // for `openssl rand -base64 32` output the "name" is the entire secret. The
+    // left side of a separator is not a name just because a separator appears.
+    const B64 = ['ZjQ2NmE4YzBkNzFl', 'NGY5M2E4YjJjNWQ2ZTdmMDExMjM='].join('');
+    const payload = B64.slice(0, -1); // everything before the padding
+    const { errors } = parseManifestDetailed(`${B64}\n`);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].text).not.toContain(payload);
+    expect(JSON.stringify(errors[0])).not.toContain(payload);
+  });
+
+  it('does not echo a token that merely ENDS in = (no value after it)', () => {
+    const TOKEN = ['ghp_', 'FAKEliveTOKENvalue123'].join('');
+    const { errors } = parseManifestDetailed(`${TOKEN}=\n`);
+    expect(errors).toHaveLength(1);
+    expect(JSON.stringify(errors[0])).not.toContain(TOKEN);
   });
 
   it('bounds the reason as well as the text (a 200 KB token must not flood stderr)', () => {

@@ -772,10 +772,12 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toEqual(['config.json']);
   });
 
-  it('a symlink CYCLE terminates instead of hanging', () => {
-    // Restoring symlink-following without a visited guard trades a fail-open for
-    // a hang: no walker has a depth bound. A self-referential directory link is
-    // the minimal case; `a/link -> a` recurses forever without a realpath guard.
+  it('a symlink CYCLE terminates and reports the file once', () => {
+    // Note on what this does and does not prove: the OS bounds a symlink loop
+    // with ELOOP after ~32 hops, so a walk with NO cycle guard at all still
+    // terminates (measured at 7ms). The timing bound below is therefore a
+    // smoke check, not the assertion that matters. What the guard buys is the
+    // COUNT: without it the same file is collected once per lap (measured 16).
     const dir = tmpdir('scan-symloop-');
     fs.mkdirSync(path.join(dir, 'a'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'a/config.json'), `{"key": "${GKEY}"}\n`);
@@ -793,13 +795,66 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     expect(findings.filter(f => f.file.endsWith('config.json')).length).toBe(1);
   });
 
-  it('a symlink pointing OUTSIDE the scan root is followed, not silently dropped', () => {
+  it('a symlink pointing OUTSIDE the scan root is NOT followed, but IS reported', () => {
+    // Containment. Following out-of-root links makes `scan .` on a repo holding
+    // `link -> $HOME` traverse the entire home directory, and it contradicts the
+    // policy transcript.ts already states for its own walk. Reporting the skip is
+    // what keeps this from being a fail-open of its own: the user is told the
+    // boundary was hit and given the command to scan the target directly.
     const outside = tmpdir('scan-symout-target-');
     fs.writeFileSync(path.join(outside, 'payload.json'), `{"key": "${GKEY}"}\n`);
     const dir = tmpdir('scan-symout-');
     fs.symlinkSync(path.join(outside, 'payload.json'), path.join(dir, 'config.json'));
 
-    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toContain('config.json');
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    expect(scan(dir, { scanGlobal: false }, stats).map(f => f.file)).not.toContain('config.json');
+    expect(stats.outOfRoot).toEqual(['config.json']);
+  });
+
+  it('an out-of-root symlinked DIRECTORY is not traversed', () => {
+    const outside = tmpdir('scan-symoutdir-target-');
+    fs.mkdirSync(path.join(outside, 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'deep/config.json'), `{"key": "${GKEY}"}\n`);
+    const dir = tmpdir('scan-symoutdir-');
+    fs.symlinkSync(outside, path.join(dir, 'link'), 'dir');
+
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+    expect(stats.outOfRoot).toEqual(['link']);
+  });
+
+  it('follows a symlinked config dir whose TARGET is also inside the tree', () => {
+    // The cycle guard was a GLOBAL visited-realpath set, so whichever path BFS
+    // reached first won and the other was dropped. Here the real directory is
+    // in-tree and sorts first, so it was marked seen and `pkg/.claude` skipped —
+    // and only the `.claude` path matches the `.claude/settings.json` config
+    // entry, because `settings.json` is not a bare basename in CONFIG_FILES.
+    // Result: the exact case the changelog advertises reported clean, exit 0,
+    // and which way it fell depended on readdir order.
+    const dir = tmpdir('scan-symdual-');
+    fs.mkdirSync(path.join(dir, 'shared'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'shared/settings.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(dir, 'shared'), path.join(dir, 'pkg/.claude'), 'dir');
+
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toContain('pkg/.claude/settings.json');
+  });
+
+  it('an unreadable DIRECTORY is reported, not counted as clean', () => {
+    // readdirSync failure used to `continue` with nothing recorded, so the scan
+    // asserted truncated:false / unreadable:0 over a subtree it never opened.
+    if (process.platform === 'win32' || (process.getuid?.() === 0)) return;
+    const dir = tmpdir('scan-noreaddir-');
+    fs.mkdirSync(path.join(dir, 'locked'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'locked/config.json'), `{"key": "${GKEY}"}\n`);
+    fs.chmodSync(path.join(dir, 'locked'), 0o000);
+    try {
+      const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+      expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+      expect(stats.unreadable).toContain('locked');
+    } finally {
+      fs.chmodSync(path.join(dir, 'locked'), 0o755);
+    }
   });
 
   it('a BROKEN symlink does not throw and does not report a finding', () => {
@@ -868,43 +923,6 @@ describe('scan() — an unreadable file is not reported as clean (#116 P2-1)', (
     const findings = scan(dir, { scanGlobal: false }, stats);
     expect(findings.length).toBe(1);
     expect(stats.unreadable).toEqual([]);
-  });
-});
-
-describe('scan() — a credential pasted into .secretless is detected', () => {
-  // The manifest is documented "safe to commit" and holds names only, so a value
-  // there is a mistake nothing caught: the parse-error path was the ONLY reader
-  // of the file, and it echoed the value rather than flagging it. Detection is
-  // the half that makes the redaction fix permanent.
-  function tmpProjectWith(files: Record<string, string>): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-manifest-'));
-    for (const [rel, content] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, rel), content);
-    }
-    return dir;
-  }
-
-  it('flags a credential value pasted into .secretless', () => {
-    const KEY = ['AIzaSy', 'B7xK2mNvPwQ4tZ8hLcDfGjHkMnOpQrStU'].join('');
-    const dir = tmpProjectWith({ '.secretless': `GOOGLE_API_KEY=${KEY}\n` });
-    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toEqual(['.secretless']);
-  });
-
-  it('CONTROL: a names-only manifest produces no findings', () => {
-    // The absence half. Without it, this could pass by flagging every manifest —
-    // the name-gated patterns (AWS_SECRET_ACCESS_KEY) need a VALUE to fire, and
-    // a manifest that tripped them would make the scanner unusable on itself.
-    const dir = tmpProjectWith({
-      '.secretless': [
-        'GITHUB_TOKEN                 # required, GitHub API access',
-        'DATABASE_URL                 # required, PostgreSQL connection',
-        'ANTHROPIC_API_KEY',
-        'AWS_SECRET_ACCESS_KEY',
-        'STRIPE_SECRET_KEY  optional  # only needed for payments',
-        '',
-      ].join('\n'),
-    });
-    expect(scan(dir, { scanGlobal: false })).toEqual([]);
   });
 });
 

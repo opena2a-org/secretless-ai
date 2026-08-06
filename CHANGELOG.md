@@ -24,9 +24,9 @@ early and the result was reported as clean.
   0.21.1   exit 0   No hardcoded credentials found.
   ```
 
-  This affected every `CONFIG_FILES` entry at any depth — `.env`, `.mcp.json`, `docker-compose.yml`, `terraform.tfvars` — and a symlinked `.claude/` is exactly what a dotfile manager or a shared monorepo config produces. Entries are now classified by following the link, in all three walkers rather than only the config walk. A visited-realpath cycle guard lands in the same change: no walker has a depth bound, so restoring symlink-following without one would have traded a fail-open for a hang.
+  This affected every `CONFIG_FILES` entry at any depth — `.env`, `.mcp.json`, `docker-compose.yml`, `terraform.tfvars` — and a symlinked `.claude/` is exactly what a dotfile manager or a shared monorepo config produces. Entries are now classified by following the link, and the three near-identical tree walks were collapsed onto one shared traversal: they had drifted apart, which is how the config copy gained recursion while losing the symlink handling, and sharing the walk means link handling, cycle safety and coverage reporting cannot diverge again.
 
-  Note this means a symlink whose target lies outside the scan root is read, which is what makes a symlinked shared-config directory work at all. Sockets, FIFOs and device files are never opened. Use `.secretlessignore` to exclude a link you do not want followed.
+  Two boundaries come with it. A directory is treated as a cycle only when it appears in its **own ancestor chain** — a global visited set also terminates, but it drops a directory reachable by a second path once the first is seen, which silently re-broke this very case whenever the link's target was itself in the tree. And a symlink whose target resolves **outside the scan root is not followed**, because otherwise a repo containing `link -> $HOME` makes `scan .` traverse the whole home directory; such links are listed in the output with the command to scan the target directly, so declining to follow them is never silent. Sockets, FIFOs and device files are never opened.
 
 - **A scan that hit the file cap reported clean.** The walkers stopped at `maxSourceFiles` (default 5000) and returned quietly, so an incomplete scan was indistinguishable from a complete one — fewer findings, no signal, exit 0. Truncation is now reported through `ScanStats.truncated`, surfaced in the human output and in `--json` as `summary.truncated` alongside `summary.maxFiles`, and exits 1. Adds `--max-files <n>` so the warning has a runnable fix.
 
@@ -35,13 +35,17 @@ early and the result was reported as clean.
   Redaction is an allowlist by position rather than a character test. Secret names allow `[a-zA-Z0-9_-]`, so a live token is itself a valid name and no charset rule can tell the two apart; only position can. The reason now names the shape it saw (dotenv, YAML, JSON), which is more actionable than the echo it replaces:
 
   ```
-  line 1: ANTHROPIC_API_KEY=[redacted]
+  line 1: [redacted]
           looks like dotenv (NAME=VALUE) — .secretless declares names only, never values
   ```
 
-  `scan` now also reads `.secretless`, which nothing did before, so a pasted value is flagged rather than only printed.
+  The first token is echoed only when the WHOLE token is a valid secret name. An earlier form of this fix split a `NAME=VALUE` paste and printed the left side, on the reasoning that in dotenv the left of `=` is the name — but `=` is also base64 padding, so for a secret from `openssl rand -base64 32` the "name" is the entire secret, and it was printed in full.
 
-- **An unreadable file was reported as clean, exit 0 (#116).** The same content, readable, produces a finding. A directory scan dropped the file from the count and a named target printed `No hardcoded credentials found`. Unreadable paths are now listed with a runnable `chmod` fix, counted in `--json` as `summary.unreadable`, and exit 1.
+- **An unreadable file or directory was reported as clean, exit 0 (#116).** The same content, readable, produces a finding. A directory scan dropped the file from the count and a named target printed `No hardcoded credentials found`; a directory whose listing failed vanished with nothing recorded at all. Unreadable paths are now listed with a runnable `chmod` fix, counted in `--json` as `summary.unreadable`, and exit 1. A broken symlink still counts as nothing to scan, but `EACCES`/`ELOOP` on a link target is reported rather than skipped.
+
+- **`status` and `vault scan` discarded the coverage signal.** Both call the same scanner and neither asked for it, so `vault scan` printed the unqualified `No hardcoded credentials found` over a tree it could not fully read — the exact string `scan` was fixed to stop printing — and `status --json` reported `secretsFound: 0` as though it were a verdict. `status --json` gains `scanIncomplete`.
+
+- **`--max-files` accepted a value it then ignored.** `parseInt` stops at the first non-digit, so `--max-files 20abc` silently became a cap of 20 and `--max-files 1e6` a cap of 1: the user believed the cap was raised while the scan covered a fraction of the tree and exited 0. The value must now be all digits.
 
 - **`.env` variants were mostly missed (#116).** `.env` and `.env.local` were detected; `.env.development`, `.env.production`, `.env.staging`, `.env.test` and `.env.prod` were not — the exact set named in the CLAUDE.md block Secretless itself installs. Any unrecognised `.env.*` is now scanned and only known template suffixes (`.example`, `.sample`, `.template`, `.dist`) are skipped, so the unknown case fails closed.
 

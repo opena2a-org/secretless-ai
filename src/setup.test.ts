@@ -188,10 +188,12 @@ describe('runSetup — an unparseable manifest is not a missing-secrets count (#
     const printed = errSpy.mock.calls.flat().join('');
     expect(printed).not.toContain(ANTHROPIC);
     expect(printed).not.toContain(GITHUB);
-    // Still actionable: both lines are located and both declared names shown.
+    // Still actionable: both lines are located, and the line whose NAME position
+    // holds a real name still shows it. The `NAME=VALUE` line does not, because
+    // `=` is also base64 padding and the left side can be the whole secret.
     expect(printed).toContain('line 1');
     expect(printed).toContain('line 2');
-    expect(printed).toContain('ANTHROPIC_API_KEY');
+    expect(printed).toContain('dotenv');
     expect(printed).toContain('GITHUB_TOKEN');
   });
 

@@ -153,11 +153,15 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       const mfIdx = args.indexOf('--max-files');
       if (mfIdx !== -1 && mfIdx + 1 < args.length) {
         const raw = args[mfIdx + 1];
-        const parsed = Number.parseInt(raw, 10);
-        if (Number.isFinite(parsed) && parsed > 0) {
+        // Must be ALL digits. `parseInt` stops at the first non-digit and
+        // returns what it got, so `--max-files 20abc` silently became a cap of
+        // 20 and `--max-files 1e6` a cap of 1 — the user believes the cap was
+        // raised while the scan quietly covers a fraction of the tree.
+        const parsed = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : NaN;
+        if (Number.isSafeInteger(parsed) && parsed > 0) {
           maxFiles = parsed;
         } else {
-          console.error(`  Warning: ignoring invalid --max-files value "${raw}" (must be a positive integer).`);
+          console.error(`  Warning: ignoring invalid --max-files value "${raw}" (must be a positive whole number, e.g. --max-files 20000).`);
         }
       }
       const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence', '--max-files']);

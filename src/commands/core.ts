@@ -145,7 +145,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.error(`Directory not found: ${projectDir}`);
       return 1;
     }
-    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[] };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
     console.log(JSON.stringify({
@@ -161,12 +161,15 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         truncated: stats.truncated,
         maxFiles: capUsed,
         unreadable: stats.unreadable.length,
+        outOfRoot: stats.outOfRoot.length,
       },
       unreadableFiles: stats.unreadable,
+      outOfRootLinks: stats.outOfRoot,
     }, null, 2));
     // An incomplete scan is not a pass. `total: 0` with `truncated: true` or an
     // unreadable file means part of the tree was never read, so exiting 0 would
-    // gate CI on a subset.
+    // gate CI on a subset. An out-of-root link is a deliberate, reported
+    // boundary rather than a failure, so it does not by itself set exit 1.
     return findings.length > 0 || stats.truncated || stats.unreadable.length > 0 ? 1 : 0;
   }
 
@@ -178,8 +181,20 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return 1;
   }
 
-  const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+  const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[] };
   const findings = scan(projectDir, scanOpts, stats);
+
+  // Coverage-gap paths are reported relative to the SCAN ROOT, which is not the
+  // shell's cwd when a path argument was given. Printing them bare produced a
+  // `ls -l config.json` that fails with "No such file or directory" — a fix
+  // command that does not run is a dead end, which is exactly what this whole
+  // release is about.
+  const nodePath = require('path') as typeof import('path');
+  const runnable = (rel: string) => {
+    const abs = nodePath.resolve(projectDir, rel);
+    const fromCwd = nodePath.relative(process.cwd(), abs);
+    return fromCwd && !fromCwd.startsWith('..') ? fromCwd : abs;
+  };
 
   // A walk that stopped at the file cap left tree unvisited, and a file we could
   // not open was never read at all. Either way the findings are a SUBSET, so
@@ -188,21 +203,33 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   const coverageWarnings = () => {
     if (stats.truncated) {
       console.log(`  ${c.boldYellow('Scan incomplete')} — stopped at the ${capUsed}-file cap, so files were left unscanned.`);
-      console.log(`  ${c.dim('This is not a clean result. Raise the cap or scan subtrees:')}`);
-      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan --max-files ${capUsed * 4}`);
-      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ./<subdirectory>\n`);
+      console.log(`  ${c.dim('This is not a clean result. Raise the cap, or scan a subtree at a time:')}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4}`);
+      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4} --json | jq .summary.truncated\n`);
     }
     if (stats.unreadable.length > 0) {
       const n = stats.unreadable.length;
-      console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} could not be read`)} — not scanned, so not known to be clean.`);
+      console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} could not be read`)} — not scanned, so not known to be clean.`);
       for (const f of stats.unreadable.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${f}`)}`);
+        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
-      console.log(`  ${c.cyan('Verify:')} ls -l ${stats.unreadable[0]}`);
-      console.log(`  ${c.cyan('Fix:')}    chmod +r ${stats.unreadable[0]}\n`);
+      console.log(`  ${c.cyan('Verify:')} ls -ld ${runnable(stats.unreadable[0])}`);
+      console.log(`  ${c.cyan('Fix:')}    chmod +r ${runnable(stats.unreadable[0])}\n`);
+    }
+    if (stats.outOfRoot.length > 0) {
+      const n = stats.outOfRoot.length;
+      console.log(`  ${c.boldYellow(`${n} symlink${n > 1 ? 's' : ''} ${n > 1 ? 'point' : 'points'} outside the scan root`)} — not followed.`);
+      for (const f of stats.outOfRoot.slice(0, 10)) {
+        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
+      }
+      if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      console.log(`  ${c.dim('Following them would let a link to $HOME pull the whole home directory into the scan.')}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan "$(readlink -f ${runnable(stats.outOfRoot[0])})"\n`);
     }
   };
+  // An out-of-root link is a reported boundary, not a gap in what we claimed to
+  // cover, so it does not make the result non-clean.
   const anyCoverageGap = () => stats.truncated || stats.unreadable.length > 0;
 
   // When everything (or a real subset) was hidden as a placeholder, say so and
@@ -228,7 +255,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       placeholderHint();
       return 1;
     }
-    console.log('  No hardcoded credentials found.');
+    console.log('  No hardcoded credentials found.\n');
+    // Still report a boundary we chose not to cross. The result IS clean for the
+    // tree we claimed to scan, so this stays exit 0 — but a link we declined to
+    // follow must be visible, or declining becomes its own silent gap.
+    coverageWarnings();
     placeholderHint();
     console.log('  Verify keys are working: npx secretless-ai verify\n');
     return 0;
@@ -449,6 +480,10 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
       denyRuleCount: s.denyRuleCount,
       configuredTools: s.configuredTools,
       secretsFound: s.secretsFound,
+      // `secretsFound: 0` is a lower bound, not a verdict, when the scan behind
+      // it could not read the whole tree. A CI consumer gating on this needs to
+      // tell "found nothing" from "could not look".
+      scanIncomplete: s.scanIncomplete,
       transcriptProtection: tp,
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,
