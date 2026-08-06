@@ -7,6 +7,7 @@ import {
   MacOSKeychainBackend,
   decodeKeychainValue,
   keychainOutputIsHexEncoded,
+  redactSecurityError,
 } from './keychain-macos';
 
 vi.mock('child_process', () => ({
@@ -39,10 +40,10 @@ describe('MacOSKeychainBackend', () => {
   });
 
   describe('store()', () => {
-    it('calls security delete then add with per-key service name', async () => {
+    it('writes with an in-place update and sweeps the legacy entry after', async () => {
       const backend = new MacOSKeychainBackend({ storeDir: dir });
 
-      // delete may throw (not found) — that's ok
+      // legacy delete may throw (not found) — that's ok
       mockExecFileSync.mockImplementation((cmd, args) => {
         if (typeof cmd === 'string' && cmd === 'security' && Array.isArray(args) && args[0] === 'delete-generic-password') {
           throw new Error('not found');
@@ -52,24 +53,26 @@ describe('MacOSKeychainBackend', () => {
 
       await backend.store('mcp/client/server/KEY', 'secret-value');
 
-      // Verify delete with new service name was attempted
+      // `-U` updates in place, so no delete of the live entry precedes the
+      // write. The previous ordering deleted first and lost the credential
+      // outright whenever the add then failed.
       expect(mockExecFileSync).toHaveBeenCalledWith(
+        'security',
+        ['add-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY', '-l', 'Secretless: mcp/client/server/KEY', '-U', '-w', 'secret-value'],
+        expect.any(Object),
+      );
+
+      // The live entry is never deleted as part of a write.
+      expect(mockExecFileSync).not.toHaveBeenCalledWith(
         'security',
         ['delete-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY'],
         expect.any(Object),
       );
 
-      // Verify legacy delete was also attempted
+      // The legacy duplicate is still swept, after the value is committed.
       expect(mockExecFileSync).toHaveBeenCalledWith(
         'security',
         ['delete-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY'],
-        expect.any(Object),
-      );
-
-      // Verify add uses per-key service name
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'security',
-        ['add-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY', '-l', 'Secretless: mcp/client/server/KEY', '-w', 'secret-value'],
         expect.any(Object),
       );
     });
@@ -349,6 +352,110 @@ describe('resolve() hex handling', () => {
       expect(out['secret/MULTILINE']).toBe('line1\nline2');
     } finally {
       fs.rmSync(hexDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * `security add-generic-password` takes the password as `-w <value>`, and
+ * execFileSync puts the whole argv into the thrown message. Observed in a fresh
+ * -user walkthrough of 0.21.0-rc:
+ *
+ *   Error: Command failed: security add-generic-password -s Secretless: NUTEST \
+ *     -a secret/NUTEST -l Secretless: secret/NUTEST -w hello-world-123
+ *
+ * The secret is right there in the terminal, in a tool whose whole purpose is
+ * keeping it out of exactly that kind of output.
+ */
+describe('store() error redaction', () => {
+  const SECRET = 'hello-world-123';
+
+  it('does not leak the value through the thrown error', () => {
+    const err = redactSecurityError(
+      new Error(
+        'Command failed: security add-generic-password -s Secretless: NUTEST ' +
+        `-a secret/NUTEST -w ${SECRET}\n` +
+        'security: SecKeychainItemCreateFromContent (<default>): The authorization was canceled by the user.',
+      ),
+      SECRET,
+      'secret/NUTEST',
+    );
+    expect(err.message).not.toContain(SECRET);
+  });
+
+  it('drops our own argv echo and keeps the part that explains the failure', () => {
+    const err = redactSecurityError(
+      new Error(`Command failed: security add-generic-password -w ${SECRET}\nsecurity: the thing broke`),
+      SECRET,
+      'secret/K',
+    );
+    expect(err.message).not.toMatch(/Command failed:/);
+    expect(err.message).toContain('the thing broke');
+    expect(err.message).toContain('secret/K');
+  });
+
+  it('routes the locked-keychain case to advice the user can act on', () => {
+    const err = redactSecurityError(
+      new Error('security: The authorization was canceled by the user.'),
+      SECRET,
+      'secret/K',
+    );
+    expect(err.message).toMatch(/Verify:\s+security default-keychain/);
+    expect(err.message).toMatch(/backend set local/);
+  });
+
+  it('discards the detail rather than leaking when scrubbing cannot clear it', () => {
+    // A value that survives naive scrubbing because it reappears after
+    // replacement: splitting on "aa" in "aaa" leaves an "a" behind.
+    const tricky = 'aa';
+    const err = redactSecurityError(new Error('security: aaaaa failed'), tricky, 'secret/K');
+    expect(err.message).not.toContain(tricky);
+  });
+
+  it('is actually wired into store(), not merely exported', async () => {
+    const dir2 = tmpDir();
+    try {
+      mockExecFileSync.mockImplementation(((_cmd: string, args: string[]) => {
+        if (Array.isArray(args) && args[0] === 'add-generic-password') {
+          throw new Error(
+            `Command failed: security add-generic-password -w ${SECRET}\n` +
+            'security: The authorization was canceled by the user.',
+          );
+        }
+        return '' as unknown as Buffer;
+      }) as never);
+
+      const backend = new MacOSKeychainBackend({ storeDir: dir2 });
+      await expect(backend.store('secret/NUTEST', SECRET)).rejects.toThrow(
+        /Could not store "secret\/NUTEST"/,
+      );
+      await backend.store('secret/NUTEST', SECRET).catch((e: Error) => {
+        expect(e.message).not.toContain(SECRET);
+      });
+    } finally {
+      cleanup(dir2);
+    }
+  });
+
+  it('updates in place instead of deleting the old value before writing', async () => {
+    const dir2 = tmpDir();
+    try {
+      const calls: string[] = [];
+      mockExecFileSync.mockImplementation(((_cmd: string, args: string[]) => {
+        if (Array.isArray(args)) calls.push(args[0]);
+        return '' as unknown as Buffer;
+      }) as never);
+
+      const backend = new MacOSKeychainBackend({ storeDir: dir2 });
+      await backend.store('secret/K', 'v');
+
+      const addIdx = calls.indexOf('add-generic-password');
+      const delIdx = calls.indexOf('delete-generic-password');
+      expect(addIdx).toBeGreaterThanOrEqual(0);
+      // No delete may precede the write; the legacy sweep runs after it.
+      if (delIdx !== -1) expect(addIdx).toBeLessThan(delIdx);
+    } finally {
+      cleanup(dir2);
     }
   });
 });
