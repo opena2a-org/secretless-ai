@@ -26,6 +26,8 @@ early and the result was reported as clean.
 
   This affected every `CONFIG_FILES` entry at any depth — `.env`, `.mcp.json`, `docker-compose.yml`, `terraform.tfvars` — and a symlinked `.claude/` is exactly what a dotfile manager or a shared monorepo config produces. Entries are now classified by following the link, in all three walkers rather than only the config walk. A visited-realpath cycle guard lands in the same change: no walker has a depth bound, so restoring symlink-following without one would have traded a fail-open for a hang.
 
+  Note this means a symlink whose target lies outside the scan root is read, which is what makes a symlinked shared-config directory work at all. Sockets, FIFOs and device files are never opened. Use `.secretlessignore` to exclude a link you do not want followed.
+
 - **A scan that hit the file cap reported clean.** The walkers stopped at `maxSourceFiles` (default 5000) and returned quietly, so an incomplete scan was indistinguishable from a complete one — fewer findings, no signal, exit 0. Truncation is now reported through `ScanStats.truncated`, surfaced in the human output and in `--json` as `summary.truncated` alongside `summary.maxFiles`, and exits 1. Adds `--max-files <n>` so the warning has a runnable fix.
 
 - **`.secretless` parse errors echoed credential values to stderr, twice.** The manifest is documented safe to commit, and `setup --check` stderr is exactly what lands in CI logs. A `NAME=VALUE` line echoed the whole line; a `NAME VALUE` line echoed it again interpolated into the error reason, which was also unbounded — so a 200 KB token flooded stderr through a field the 120-char line limit did not cover.
