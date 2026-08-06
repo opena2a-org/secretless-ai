@@ -1,8 +1,26 @@
 # Changelog
 
-## [Unreleased]
+## [0.21.0] - 2026-08-05
 
 ### Fixed
+
+- **A configured backend that could not be reached was silently replaced by the local store.** With `backend set 1password` and the 1Password desktop app disconnected, `secret set NAME=value` wrote to the *local* store and printed `Stored: NAME`. `secret get NAME` then read 1Password and reported nothing. `run` executed the command with no credentials injected at all. Each of those reports success at the point of use, and the failure only surfaces later as an authentication error that never mentions secretless.
+
+  `createBackend()` took a `strict` flag that defaulted to false, and `SecretStore` — the code behind `secret set`, `secret get`, `secret list` and `run` — never passed it. Only `backend migrate` did. On the default path an unavailable backend printed two lines to stderr and returned a `LocalBackend`.
+
+  The state that triggers it is ordinary. With the `op` binary installed and an account configured but the desktop app not running, `op --version` and `op account list` both exit 0 (the latter answers from local config), while `op account get` exits 1. Quitting the app, rebooting, or a reset CLI-integration toggle is enough.
+
+  Substituting a store is not a safe degradation for a credential manager, so it no longer happens. An unreachable configured backend now fails closed with an error that names the backend you chose, states that nothing was read from or written to anywhere else, and carries the `Verify:` and `Fix:` commands plus the deliberate `backend migrate` path. The permissive path remains for read-only diagnostics, and now says plainly that it is listing a different store.
+
+  **Behaviour change.** Commands that previously appeared to succeed against the wrong store now exit non-zero. That is the point: if `secret set` was quietly writing somewhere you did not choose, it was never succeeding. If a script depended on the old fallback, switch it deliberately with `secretless-ai backend set local`.
+
+- **Overwriting a 1Password secret could destroy it.** `store()` deleted the existing item before creating the replacement. If `op item create` then failed for any reason — app disconnected mid-command, vault permissions, network — the old value was already gone and the new one was never written. The replacement is now created first and the superseded item retired afterwards, by ID rather than by title, because the two legitimately share a title in the window between the calls.
+
+- **1Password items could land untagged and become invisible to every later read.** The tag was set only inside the JSON template, while `listItems()` filters on it, so an item that did not pick the tag up could never be resolved again. Title and tag are now passed as explicit `--title` and `--tags` flags as well, which take precedence in `op item create`.
+
+- **A pending 1Password approval hung the entire command.** `op` was invoked with no timeout, so an approval dialog waiting on someone who is not at the machine blocked the caller indefinitely with no output. Calls are now bounded (30s default, `SECRETLESS_OP_TIMEOUT_MS` to change it) and report what to check.
+
+- **Errors were buried under a stack trace.** The top-level handler printed the raw error object, so messages carrying `Verify:` and `Fix:` lines arrived underneath our own file paths and read as a crash. It now prints the message; set `SECRETLESS_DEBUG=1` when the stack is what you need.
 
 - **Most 32-hex-character secrets were silently corrupted on read (macOS Keychain).** A HIBP Pro API key stored with `secret set` came back from `secret get` as 16 bytes of binary, and the same corrupted value was injected by `secret run`, so every consumer of that credential authenticated with garbage. The key in the Keychain was never wrong; only the read path was, which is why nothing looked broken until an API rejected the request.
 
