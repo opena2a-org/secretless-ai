@@ -1,6 +1,10 @@
 # Changelog
 
-## [0.21.0] - 2026-08-06
+## [0.21.1] - 2026-08-06
+
+Four defects that shipped in 0.21.0. All were known before that release and are
+fixed here. The `--include-tests` one is the reason to upgrade promptly: it
+reported clean on a tree it never scanned.
 
 ### Fixed
 
@@ -27,6 +31,10 @@
 - **An AWS secret-key preview hid which variable was exposed.** The name-gated pattern's match spans the variable name, so redacting the whole match rendered `AWS_SECRET_ACCESS_KEY = "…"` as a bare `"`. Patterns that capture their value now redact only the value: the preview reads `const AWS_SECRET_ACCESS_KEY = "[AWS Secret Access Key REDACTED]";`. The secret itself is still never shown.
 
 - **The `--explain` footer claimed "147+ checks" for `hackmyagent secure`.** The real figure is over 300 and moves every release. The claim is gone rather than restated — a number in user-facing output has to trace to something measured.
+
+## [0.21.0] - 2026-08-05
+
+### Fixed
 
 - **A configured backend that could not be reached was silently replaced by the local store.** With `backend set 1password` and the 1Password desktop app disconnected, `secret set NAME=value` wrote to the *local* store and printed `Stored: NAME`. `secret get NAME` then read 1Password and reported nothing. `run` executed the command with no credentials injected at all. Each of those reports success at the point of use, and the failure only surfaces later as an authentication error that never mentions secretless.
 
