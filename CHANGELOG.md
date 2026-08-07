@@ -14,6 +14,10 @@ than the 5000-file cap that was passing will now fail until you raise
 `--max-files` or narrow the path. Those passes were not earned: the walk stopped
 early and the result was reported as clean.
 
+### Known issues
+
+- **`init` destroys `.claude/settings.json` when it does not parse as strict JSON, and reports the merge as successful ([#122](https://github.com/opena2a-org/secretless-ai/issues/122)).** Not introduced here — it reproduces identically on 0.21.1 — but disclosed rather than left silent, because it is the same defect class this release is about: a tool reporting success for work it did not do. The trigger is JSONC (`//` comments, trailing commas), which is what VS Code writes and what people hand-edit. A valid JSON settings file merges correctly and preserves every user key; only a parse failure clobbers, and no backup is written. If you keep comments in that file, back it up before running `init`. Fix targeted at 0.21.3.
+
 ### Fixed
 
 - **A symlinked config file or directory was silently skipped (regression in 0.21.1).** `walkConfigFiles` classified entries with `Dirent.isDirectory()` / `isFile()`, which are `lstat`-based — a symlink is neither, so it fell through both branches and was dropped. 0.21.0 reached config files through `existsSync`/`statSync`, which follow links; making the config walk recursive removed symlink support without anything noticing.

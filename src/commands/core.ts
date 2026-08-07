@@ -230,8 +230,15 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      // Do NOT assert the cause. "Unreadable" covers permissions, a symlink
+      // loop (ELOOP) and a too-many-open-files failure, and `chmod +r` is a dead
+      // end for the last two — a Fix that cannot work is worse than none.
+      // `ls -ld` distinguishes them, so it leads. `+rx` not `+r`: a directory
+      // needs the execute bit to be traversed, so `+r` alone leaves the scan
+      // still unable to enter it.
+      console.log(`  ${c.dim('Cause differs by path — permissions, a broken or looping symlink, or an I/O error.')}`);
       console.log(`  ${c.cyan('Verify:')} ls -ld ${runnable(stats.unreadable[0])}`);
-      console.log(`  ${c.cyan('Fix:')}    chmod +r ${runnable(stats.unreadable[0])}\n`);
+      console.log(`  ${c.cyan('Fix:')}    chmod +rx ${runnable(stats.unreadable[0])}   ${c.dim('# if the cause is permissions')}\n`);
     }
     if (stats.outOfRoot.length > 0) {
       const n = stats.outOfRoot.length;
