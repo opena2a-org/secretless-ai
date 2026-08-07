@@ -28,9 +28,13 @@ export interface ManifestEntry {
 export interface ManifestError {
   /** 1-based line number in the manifest file. */
   line: number;
-  /** The offending text, as written. */
+  /**
+   * The offending line, REDACTED — not as written. Only the tokens that can be
+   * shown safely survive (see `redactManifestLine`); a value position renders as
+   * `[redacted]`. Use `line` to locate the original.
+   */
   text: string;
-  /** Why it cannot be a name. */
+  /** Why it cannot be a name. Never contains text copied from the file. */
   reason: string;
 }
 
@@ -85,7 +89,7 @@ export function parseManifestDetailed(content: string): ParsedManifest {
     if (!name) continue;
 
     if (!isValidSecretName(name)) {
-      errors.push({ line: i + 1, text: forDisplay(line), reason: describeInvalidName(name) });
+      errors.push({ line: i + 1, text: redactManifestLine(line), reason: describeInvalidName(name) });
       continue;
     }
 
@@ -96,8 +100,8 @@ export function parseManifestDetailed(content: string): ParsedManifest {
     if (extra.length > 0) {
       errors.push({
         line: i + 1,
-        text: forDisplay(line),
-        reason: `unexpected "${extra[0]}" after the name (only "optional" and a # comment may follow)`,
+        text: redactManifestLine(line),
+        reason: describeUnexpectedExtra(name),
       });
       continue;
     }
@@ -115,11 +119,76 @@ export function parseManifestDetailed(content: string): ParsedManifest {
 /** Longest manifest line echoed back in an error. */
 const MAX_ECHOED_LINE = 120;
 
+/** Stand-in for a token that could be a credential value. */
+const REDACTED = '[redacted]';
+
 /** Trim a line for display so a pathological one cannot flood stderr. */
 function forDisplay(line: string): string {
   return line.length <= MAX_ECHOED_LINE
     ? line
     : `${line.slice(0, MAX_ECHOED_LINE)}… (${line.length} chars)`;
+}
+
+/**
+ * Render a manifest line for an error message without echoing anything that
+ * could be a credential VALUE.
+ *
+ * `.secretless` is documented "safe to commit", so the parse-error path is the
+ * surface users actually see — and it printed the file back verbatim into
+ * `setup --check` stderr, which is exactly what lands in CI logs. The
+ * `NAME VALUE` shape leaked twice: once here and once interpolated into the
+ * reason.
+ *
+ * Redaction is an ALLOWLIST BY POSITION, not a charset test. `SAFE_NAME` is
+ * /^[a-zA-Z0-9_-]+$/, so `ghp_aLiveTokenPastedHere` is a perfectly valid secret
+ * NAME — no character rule can separate a name from a name-shaped value. Only
+ * position can: token 0 is where a name belongs, `optional` is the one keyword
+ * that may follow it, and everything else is dropped. The trailing comment goes
+ * too: it is never the cause of a parse error and may hold anything.
+ */
+function redactManifestLine(line: string): string {
+  const commentIdx = line.indexOf('#');
+  const beforeComment = (commentIdx !== -1 ? line.slice(0, commentIdx) : line).trim();
+  const tokens = beforeComment.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return REDACTED;
+
+  const rendered = tokens.map((token, i) =>
+    i === 0 ? redactFirstToken(token) : (token === 'optional' ? token : REDACTED),
+  );
+  // Still bounded: a 200 KB run of name-charset bytes is a valid NAME, so the
+  // allowlist alone does not cap the length.
+  return forDisplay(rendered.join(' '));
+}
+
+/**
+ * Show the first token only when the whole token is a valid secret name.
+ *
+ * An earlier version split a `NAME=VALUE` paste and echoed the left side, on the
+ * reasoning that in dotenv the left of `=` is the name. That is a leak: `=` is
+ * also base64 PADDING, so for a secret from `openssl rand -base64 32` the "left
+ * side of the `=`" IS the entire secret, and it was printed in full to
+ * `setup --check` stderr. The left side of a separator is not a name just
+ * because a separator appears — the token is only a name if the WHOLE token is
+ * one. `describeInvalidName` still reports the dotenv shape, so the user learns
+ * what is wrong without the value being read back to them.
+ */
+function redactFirstToken(token: string): string {
+  return isValidSecretName(token) ? token : REDACTED;
+}
+
+/**
+ * Why a trailing token is a problem, WITHOUT echoing it — in `GITHUB_TOKEN
+ * ghp_live…` that token is the value, and nothing distinguishes it from a
+ * second name. This also bounds the message: the old form interpolated the
+ * token raw, so a 200 KB token flooded stderr through the reason even though
+ * `MAX_ECHOED_LINE` bounded the sibling text.
+ */
+function describeUnexpectedExtra(name: string): string {
+  if (name === '-') {
+    return 'looks like a YAML list item — .secretless is not YAML; write the name on its own line';
+  }
+  return 'unexpected text after the name (only "optional" and a # comment may follow). '
+    + 'If that was a value, delete it: .secretless declares names, never values';
 }
 
 /**
@@ -131,6 +200,19 @@ function forDisplay(line: string): string {
  * one the store enforces, which is the defect class this file just fixed.
  */
 function describeInvalidName(name: string): string {
+  // Name the SHAPE the user actually wrote. This is strictly more actionable
+  // than a character list AND it cannot leak, which is what makes redacting the
+  // line affordable: the user loses the echo but gains the diagnosis.
+  if (name.includes('=')) {
+    return 'looks like dotenv (NAME=VALUE) — .secretless declares names only, never values; '
+      + 'write just the name and store the value with `secretless-ai secret set <NAME>`';
+  }
+  if (name.endsWith(':')) {
+    return 'looks like a YAML key — .secretless is not YAML; write the name on its own line';
+  }
+  if (name.startsWith('{') || name.startsWith('[') || name.startsWith('"')) {
+    return 'looks like JSON — .secretless is not JSON; write one name per line';
+  }
   const bad = [...new Set(name.split(''))].filter((c) => !isValidSecretName(c));
   if (bad.length > 0) {
     const shown = bad.slice(0, 5).map((c) => `"${c}"`).join(', ');

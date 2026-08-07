@@ -1,5 +1,76 @@
 # Changelog
 
+## [0.21.2] - 2026-08-06
+
+Three defects that shipped in 0.21.1, two of them regressions introduced by that
+release's own fixes. All three are cases where the scanner reported a clean or
+complete result for work it had not done, so upgrade promptly.
+
+**Behavior change worth reading before you upgrade:** a scan that could not read
+everything no longer exits 0. If the file walk stops at the cap, or any file
+cannot be opened, `scan` exits 1 and says `No credentials found in the files
+scanned` instead of `No hardcoded credentials found`. A CI job over a tree larger
+than the 5000-file cap that was passing will now fail until you raise
+`--max-files` or narrow the path. Those passes were not earned: the walk stopped
+early and the result was reported as clean.
+
+### Known issues
+
+- **`init` destroys `.claude/settings.json` when it does not parse as strict JSON, and reports the merge as successful ([#122](https://github.com/opena2a-org/secretless-ai/issues/122)).** Not introduced here — it reproduces identically on 0.21.1 — but disclosed rather than left silent, because it is the same defect class this release is about: a tool reporting success for work it did not do. The trigger is JSONC (`//` comments, trailing commas), which is what VS Code writes and what people hand-edit. A valid JSON settings file merges correctly and preserves every user key; only a parse failure clobbers, and no backup is written. If you keep comments in that file, back it up before running `init`. Fix targeted at 0.21.3.
+
+### Fixed
+
+- **A symlinked config file or directory was silently skipped (regression in 0.21.1).** `walkConfigFiles` classified entries with `Dirent.isDirectory()` / `isFile()`, which are `lstat`-based — a symlink is neither, so it fell through both branches and was dropped. 0.21.0 reached config files through `existsSync`/`statSync`, which follow links; making the config walk recursive removed symlink support without anything noticing.
+
+  ```
+  repo/.claude -> shared-claude/          # settings.json holds a live key
+  0.21.0   exit 1   1 critical credential exposed
+  0.21.1   exit 0   No hardcoded credentials found.
+  ```
+
+  This affected every `CONFIG_FILES` entry at any depth — `.env`, `.mcp.json`, `docker-compose.yml`, `terraform.tfvars` — and a symlinked `.claude/` is exactly what a dotfile manager or a shared monorepo config produces. Entries are now classified by following the link, and the three near-identical tree walks were collapsed onto one shared traversal: they had drifted apart, which is how the config copy gained recursion while losing the symlink handling, and sharing the walk means link handling, cycle safety and coverage reporting cannot diverge again.
+
+  Three bounds come with it, because a repository is an untrusted input to a scanner.
+
+  A directory is treated as a cycle only when it appears in its **own ancestor chain**. A global visited-realpath set also terminates, but it drops a directory reachable by a second path once the first is seen — which silently re-broke this very case whenever the link's target was itself in the tree, and which of the two paths won depended on readdir order.
+
+  A **directory** link resolving outside the scan root is not followed, because otherwise a repo containing `link -> $HOME` makes `scan .` traverse the whole home directory; these are listed with the command to scan the target directly, so declining is never silent. A **file** link is still followed wherever it points: reading one file the repository explicitly names is bounded work, and `pkg/.env -> ../../shared/.env` is what stow, chezmoi and monorepo-root env files actually produce.
+
+  Finally, the number of distinct paths through a lattice of links is exponential — a 15-level fixture reaches one directory 32,767 ways — so the number of routes followed to any one directory is capped, and crossing that cap reports the scan as incomplete rather than passing silently. Sockets, FIFOs and device files are never opened.
+
+  Findings are deduplicated on the resolved file, so a credential reachable by several paths is one finding rather than one per path.
+
+- **A scan that hit the file cap reported clean.** The walkers stopped at `maxSourceFiles` (default 5000) and returned quietly, so an incomplete scan was indistinguishable from a complete one — fewer findings, no signal, exit 0. Truncation is now reported through `ScanStats.truncated`, surfaced in the human output and in `--json` as `summary.truncated` alongside `summary.maxFiles`, and exits 1. Adds `--max-files <n>` so the warning has a runnable fix.
+
+- **`.secretless` parse errors echoed credential values to stderr, twice.** The manifest is documented safe to commit, and `setup --check` stderr is exactly what lands in CI logs. A `NAME=VALUE` line echoed the whole line; a `NAME VALUE` line echoed it again interpolated into the error reason, which was also unbounded — so a 200 KB token flooded stderr through a field the 120-char line limit did not cover.
+
+  Redaction is an allowlist by position rather than a character test. Secret names allow `[a-zA-Z0-9_-]`, so a live token is itself a valid name and no charset rule can tell the two apart; only position can. The reason now names the shape it saw (dotenv, YAML, JSON), which is more actionable than the echo it replaces:
+
+  ```
+  line 1: [redacted]
+          looks like dotenv (NAME=VALUE) — .secretless declares names only, never values
+  ```
+
+  The first token is echoed only when the WHOLE token is a valid secret name. An earlier form of this fix split a `NAME=VALUE` paste and printed the left side, on the reasoning that in dotenv the left of `=` is the name — but `=` is also base64 padding, so for a secret from `openssl rand -base64 32` the "name" is the entire secret, and it was printed in full.
+
+- **An unreadable file or directory was reported as clean, exit 0 (#116).** The same content, readable, produces a finding. A directory scan dropped the file from the count and a named target printed `No hardcoded credentials found`; a directory whose listing failed vanished with nothing recorded at all. Unreadable paths are now listed with a runnable `chmod` fix, counted in `--json` as `summary.unreadable`, and exit 1. A broken symlink still counts as nothing to scan, but `EACCES`/`ELOOP` on a link target is reported rather than skipped.
+
+- **`status` and `vault scan` discarded the coverage signal.** Both call the same scanner and neither asked for it, so `vault scan` printed the unqualified `No hardcoded credentials found` over a tree it could not fully read — the exact string `scan` was fixed to stop printing — and `status --json` reported `secretsFound: 0` as though it were a verdict. `status --json` gains `scanIncomplete`.
+
+- **`--max-files` accepted a value it then ignored.** `parseInt` stops at the first non-digit, so `--max-files 20abc` silently became a cap of 20 and `--max-files 1e6` a cap of 1: the user believed the cap was raised while the scan covered a fraction of the tree and exited 0. The value must now be all digits.
+
+- **`.env` variants were mostly missed (#116).** `.env` and `.env.local` were detected; `.env.development`, `.env.production`, `.env.staging`, `.env.test` and `.env.prod` were not — the exact set named in the CLAUDE.md block Secretless itself installs. Any unrecognised `.env.*` is now scanned and only known template suffixes (`.example`, `.sample`, `.template`, `.dist`) are skipped, so the unknown case fails closed.
+
+- **Config filenames were matched case-sensitively.** On macOS and Windows `Claude.md` and `CLAUDE.md` are the same file to the OS but not to an exact-match lookup, so a file the user could plainly see was skipped.
+
+### Security
+
+- **The `Verify:` and `Fix:` lines quote the paths they print.** Those paths are filenames from the scanned repository — attacker-controlled by definition — and the lines exist to be copy-pasted into a terminal. A symlink named `a"; id; echo "b` previously produced a command that closed the quote and ran `id`.
+
+### Internal
+
+- Two tests asserted nothing and were rewritten. One asserted a pattern that accepted the unfixed value it claimed to guard against; the other computed its expectation by calling the same function as the code under test, so a wrong answer was wrong identically on both sides. Both are now pinned against independent oracles and verified to fail on a mutant.
+
 ## [0.21.1] - 2026-08-06
 
 Four defects that shipped in 0.21.0, plus issues #110, #111 and #112. Two of
@@ -362,6 +433,10 @@ These harden the best-effort Claude Code layers that back the primary tool-level
 - `ScanFinding` interface gained three required fields: `confidence: number`, `confidenceTier: 'high' | 'medium' | 'low'`, `looksLikeFixture: boolean`. Library consumers that destructure `ScanFinding` will need to handle the new fields (additive, not breaking — JSON consumers see strictly more keys).
 - `printFindings` (CLI) renders the confidence tier under each finding. Tier colour mirrors the severity ramp — `high` green, `medium` yellow, `low` dim — so a low-confidence high-severity finding visually de-emphasises without disappearing.
 
+### Security
+
+- **The `Verify:` and `Fix:` lines quote the paths they print.** Those paths are filenames from the scanned repository — attacker-controlled by definition — and the lines exist to be copy-pasted into a terminal. A symlink named `a"; id; echo "b` previously produced a command that closed the quote and ran `id`.
+
 ### Internal
 - New `src/confidence.ts` module + 32-test `confidence.test.ts` covering pattern-specificity escape handling, entropy noise floor, length-tier monotonicity, path-tier classification (Windows path normalisation, mixed-case, `*.test.ts` suffix), composite determinism, monotonicity-on-every-axis, and tier-rendering.
 - New `src/commands/ignore.ts` + 20-test `ignore.test.ts` covering file creation, append behaviour, idempotence (whitespace and `./` normalisation), traversal rejection (Unix absolute, Windows drive prefix, parent traversal, nested `..`), symlink rejection, 1MB size cap, and non-file refusal.
@@ -379,6 +454,10 @@ These harden the best-effort Claude Code layers that back the primary tool-level
 - **`status` output redesigned** per CISO Rule 11. The previous five sub-blocks (top-level metrics, Session, Broker, Transcript Protection, transcript line counts) collapsed into one Observations table. Every warning row ends in `→ <runnable command>` so the user has no dead end. Glyphs differentiate satisfied (`✓`) from needs-action (`⚠`). The Verdict line now reflects the warning count instead of a bare `Protected: Yes` — `Protected — Clean`, `Protected (4 unblocked credentials need review)`, `Not protected. Run secretless-ai init to install hooks.`
 - **Catalog re-pin to `@opena2a/credential-patterns@0.1.1`** with three new false-positive suppression branches (mirrored locally to keep the lockstep test green): block-comment marker recognition for line-level `'''`/`"""`/`<!--`/`-->`/`*` (JSDoc continuation lines now allowlisted when paired with the substring `example`), bare `'fake'` in `PLACEHOLDER_INDICATORS` (replaces `'fake_'` and `'fake-'` — case-insensitive substring match accepts `sk-proj-fake1234567890abcdefghijklmnop`), and a localhost-bound demo-password allowlist for connection strings (`postgres://admin:password123@localhost`/`@127.0.0.1`/`@[::1]` recognized as tutorial fixtures).
 - `init` `InitResult` interface gained `denyRulesAdded` (delta this run) and `denyRulesTotal` (full count after merge). The existing `denyRuleCount` on `StatusResult` is unchanged.
+
+### Security
+
+- **The `Verify:` and `Fix:` lines quote the paths they print.** Those paths are filenames from the scanned repository — attacker-controlled by definition — and the lines exist to be copy-pasted into a terminal. A symlink named `a"; id; echo "b` previously produced a command that closed the quote and ran `id`.
 
 ### Internal
 - New `src/secretlessignore.ts` parser (gitignore-subset glob → regex) plus 18-test `secretlessignore.test.ts` covering defaults, user file, negation, glob semantics, anchor rules, Windows path normalization, and path-traversal rejection. New `scan()` integration tests assert default-ignore suppression of fixture paths and `--no-ignore` round-trip.

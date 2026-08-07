@@ -118,8 +118,8 @@ describe('read-only commands stay silent (no biometric / 1P prompts)', () => {
 describe('cache reports the effective backend', () => {
   it('names the same backend `backend` and SecretStore report', async () => {
     const { runCache } = await import('./backend');
-    const { effectiveBackendName } = await import('../backends/factory');
     const { resolveBackendType } = await import('../backends/config');
+    const { SecretStore } = await import('../secret-store');
 
     const out: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.join(' ')); });
@@ -129,14 +129,25 @@ describe('cache reports the effective backend', () => {
       spy.mockRestore();
     }
 
-    const expected = effectiveBackendName(resolveBackendType());
+    // Independent oracle: the backend SecretStore actually CONSTRUCTED, which is
+    // the value `secret list` prints. The expectation used to be computed by
+    // calling `effectiveBackendName` — the same function `cache` uses — so a
+    // wrong answer was wrong identically on both sides and the assertion could
+    // not fail. Agreement between the two is pinned in effective-name.test.ts.
+    const expected = new SecretStore({ backendType: resolveBackendType() }).backendName;
     const backendLine = out.find(l => l.includes('Backend:')) ?? '';
     expect(backendLine).toContain(expected);
 
     // And the advice must follow from the EFFECTIVE backend, not the config.
+    // Both directions are asserted: the old form only checked the prompting
+    // case, so a regression that reported `local` skipped the branch entirely
+    // and passed — which is the exact defect this test exists for.
     const statusLine = out.find(l => l.includes('Status:')) ?? '';
-    if (expected.startsWith('keychain') || expected === '1password') {
+    const prompts = expected.startsWith('keychain') || expected === '1password';
+    if (prompts) {
       expect(statusLine).not.toContain('no auth prompts');
+    } else {
+      expect(statusLine).toContain('no auth prompts');
     }
   });
 });

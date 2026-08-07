@@ -720,6 +720,353 @@ describe('scan() — config files are found below the root (release-test P1)', (
   });
 });
 
+describe('scan() — a symlinked config file or directory is followed (0.21.1 regression)', () => {
+  // `walkConfigFiles` classifies with Dirent.isDirectory()/isFile(), which are
+  // LSTAT-based: a symlink is neither, so it fell through both branches and was
+  // dropped. 0.21.0 reached config files via existsSync/statSync, which FOLLOW
+  // symlinks — making the walk recursive silently removed symlink support, and a
+  // symlinked `.claude/` (what a dotfile manager or a shared monorepo config
+  // produces) reported "No hardcoded credentials found." with exit 0.
+  const GKEY = ['AIzaSy', 'B7xK2mNvPwQ4tZ8hLcDfGjHkMnOpQrStU'].join('');
+
+  function tmpdir(prefix: string): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  }
+
+  it('follows a symlinked config DIRECTORY', () => {
+    const dir = tmpdir('scan-symdir-');
+    fs.mkdirSync(path.join(dir, 'shared-claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'shared-claude/settings.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync('shared-claude', path.join(dir, '.claude'), 'dir');
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toContain('.claude/settings.json');
+  });
+
+  it('follows a symlinked config FILE', () => {
+    const dir = tmpdir('scan-symfile-');
+    fs.mkdirSync(path.join(dir, 'real'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'real/payload.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync('real/payload.json', path.join(dir, 'config.json'));
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toContain('config.json');
+  });
+
+  it('follows a symlinked config file nested below the root', () => {
+    const dir = tmpdir('scan-symnest-');
+    fs.mkdirSync(path.join(dir, 'real'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'pkg/a'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'real/payload.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(dir, 'real/payload.json'), path.join(dir, 'pkg/a/config.json'));
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toContain('pkg/a/config.json');
+  });
+
+  it('CONTROL: the same file reached without a symlink is found', () => {
+    // Pins that the assertions above measure symlink FOLLOWING and not merely
+    // "the walker finds config.json", which would pass with the fix reverted.
+    const dir = tmpdir('scan-symctl-');
+    fs.writeFileSync(path.join(dir, 'config.json'), `{"key": "${GKEY}"}\n`);
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toEqual(['config.json']);
+  });
+
+  it('a symlink CYCLE terminates and reports the file once', () => {
+    // Note on what this does and does not prove: the OS bounds a symlink loop
+    // with ELOOP after ~32 hops, so a walk with NO cycle guard at all still
+    // terminates (measured at 7ms). The timing bound below is therefore a
+    // smoke check, not the assertion that matters. What the guard buys is the
+    // COUNT: without it the same file is collected once per lap (measured 16).
+    const dir = tmpdir('scan-symloop-');
+    fs.mkdirSync(path.join(dir, 'a'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a/config.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(dir, 'a'), path.join(dir, 'a/loop'), 'dir');
+
+    const started = process.hrtime.bigint();
+    const findings = scan(dir, { scanGlobal: false });
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    // Terminating at all is the assertion; the bound catches a walk that only
+    // ends because it hit the 5000-file cap after thousands of stat calls.
+    expect(elapsedMs).toBeLessThan(5000);
+    expect(findings.map(f => f.file)).toContain('a/config.json');
+    // And it must be reported ONCE, not once per lap around the cycle.
+    expect(findings.filter(f => f.file.endsWith('config.json')).length).toBe(1);
+  });
+
+  it('an out-of-root symlinked FILE is still read', () => {
+    // Containment applies to directories, not files. Reading one file the repo
+    // explicitly names is bounded work, and `pkg/.env -> ../../shared/.env` is
+    // what stow/chezmoi and monorepo-root env files actually produce — refusing
+    // it would drop a credential the repo is asking us to treat as its own.
+    const outside = tmpdir('scan-symout-target-');
+    fs.writeFileSync(path.join(outside, 'payload.json'), `{"key": "${GKEY}"}\n`);
+    const dir = tmpdir('scan-symout-');
+    fs.symlinkSync(path.join(outside, 'payload.json'), path.join(dir, 'config.json'));
+
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    expect(scan(dir, { scanGlobal: false }, stats).map(f => f.file)).toContain('config.json');
+    expect(stats.outOfRoot).toEqual([]);
+  });
+
+  it('an out-of-root symlinked DIRECTORY is not traversed', () => {
+    const outside = tmpdir('scan-symoutdir-target-');
+    fs.mkdirSync(path.join(outside, 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'deep/config.json'), `{"key": "${GKEY}"}\n`);
+    const dir = tmpdir('scan-symoutdir-');
+    fs.symlinkSync(outside, path.join(dir, 'link'), 'dir');
+
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+    expect(stats.outOfRoot).toEqual(['link']);
+  });
+
+  it('follows a symlinked config dir whose TARGET is also inside the tree', () => {
+    // The cycle guard was a GLOBAL visited-realpath set, so whichever path BFS
+    // reached first won and the other was dropped. Here the real directory is
+    // in-tree and sorts first, so it was marked seen and `pkg/.claude` skipped —
+    // and only the `.claude` path matches the `.claude/settings.json` config
+    // entry, because `settings.json` is not a bare basename in CONFIG_FILES.
+    // Result: the exact case the changelog advertises reported clean, exit 0,
+    // and which way it fell depended on readdir order.
+    const dir = tmpdir('scan-symdual-');
+    fs.mkdirSync(path.join(dir, 'shared'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'shared/settings.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(dir, 'shared'), path.join(dir, 'pkg/.claude'), 'dir');
+
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toContain('pkg/.claude/settings.json');
+  });
+
+  it('reports ONE finding for a credential reachable by several in-tree paths', () => {
+    // Following links means the same real file is reachable more than once, and
+    // per-ancestry cycle detection deliberately walks each route. A monorepo
+    // where 12 packages each link to a shared config turned one leaked key into
+    // 13 criticals, so `summary.total` counted PATHS, not credentials.
+    const dir = tmpdir('scan-dupe-');
+    fs.mkdirSync(path.join(dir, 'common'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'common/config.json'), `{"key": "${GKEY}"}\n`);
+    for (const pkg of ['a', 'b', 'c', 'd']) {
+      fs.mkdirSync(path.join(dir, 'packages', pkg), { recursive: true });
+      fs.symlinkSync(path.join(dir, 'common'), path.join(dir, 'packages', pkg, 'shared'), 'dir');
+    }
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.length).toBe(1);
+  });
+
+  it('does NOT report a pruned directory as an out-of-root boundary', () => {
+    // The containment check used to run before the skip filters, so a
+    // `node_modules -> /pnpm-store` link was reported as an unfollowed boundary
+    // and the user was told to go scan their whole package store — about a
+    // directory that was never going to be walked.
+    const outside = tmpdir('scan-store-');
+    fs.writeFileSync(path.join(outside, 'config.json'), `{"key": "${GKEY}"}\n`);
+    const dir = tmpdir('scan-pruned-');
+    fs.symlinkSync(outside, path.join(dir, 'node_modules'), 'dir');
+
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+    expect(stats.outOfRoot).toEqual([]);
+  });
+
+  it('bounds a lattice of links instead of walking exponentially many paths', () => {
+    // A 31-directory link lattice produced 2047 traversals, 45s and 289 MB.
+    // A repo is a hostile input; the multiplicity cap makes this bounded, and
+    // crossing it must SAY so rather than pass silently.
+    const dir = tmpdir('scan-lattice-');
+    let prev = dir;
+    for (let level = 0; level < 12; level++) {
+      const next = path.join(prev, 'd');
+      fs.mkdirSync(next, { recursive: true });
+      fs.symlinkSync(next, path.join(prev, 'l1'), 'dir');
+      fs.symlinkSync(next, path.join(prev, 'l2'), 'dir');
+      prev = next;
+    }
+    fs.writeFileSync(path.join(prev, 'config.json'), `{"key": "${GKEY}"}\n`);
+
+    const started = process.hrtime.bigint();
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(elapsedMs).toBeLessThan(10_000);
+    // One real credential, however many routes reach it.
+    expect(findings.length).toBe(1);
+  });
+
+  it('finds an in-root symlink target when the scan path differs in CASE', () => {
+    // Containment compares resolved paths as strings. If resolution does not
+    // canonicalise case, scanning `ROOT` when the directory is `root` leaves an
+    // in-tree link resolving to a differently-cased string, which fails the
+    // prefix test and silently drops the subtree. On a case-sensitive volume the
+    // uppercase path simply does not exist, so the case is skipped there rather
+    // than asserted the other way.
+    const parent = tmpdir('scan-case-');
+    fs.mkdirSync(path.join(parent, 'root/inner'), { recursive: true });
+    fs.writeFileSync(path.join(parent, 'root/inner/config.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(parent, 'root/inner'), path.join(parent, 'root/link'), 'dir');
+
+    const upper = path.join(parent, 'ROOT');
+    let caseInsensitive = true;
+    try { fs.readdirSync(upper); } catch { caseInsensitive = false; }
+    if (!caseInsensitive) return;
+
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    const findings = scan(upper, { scanGlobal: false }, stats);
+    // The credential is reachable, and the in-root link must not be reported as
+    // pointing outside the root.
+    expect(findings.length).toBeGreaterThan(0);
+    expect(stats.outOfRoot).toEqual([]);
+  });
+
+  it('an unreadable DIRECTORY is reported, not counted as clean', () => {
+    // readdirSync failure used to `continue` with nothing recorded, so the scan
+    // asserted truncated:false / unreadable:0 over a subtree it never opened.
+    if (process.platform === 'win32' || (process.getuid?.() === 0)) return;
+    const dir = tmpdir('scan-noreaddir-');
+    fs.mkdirSync(path.join(dir, 'locked'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'locked/config.json'), `{"key": "${GKEY}"}\n`);
+    fs.chmodSync(path.join(dir, 'locked'), 0o000);
+    try {
+      const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+      expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+      expect(stats.unreadable).toContain('locked');
+    } finally {
+      fs.chmodSync(path.join(dir, 'locked'), 0o755);
+    }
+  });
+
+  it('a BROKEN symlink does not throw and does not report a finding', () => {
+    const dir = tmpdir('scan-symbroken-');
+    fs.symlinkSync(path.join(dir, 'does-not-exist.json'), path.join(dir, 'config.json'));
+    expect(() => scan(dir, { scanGlobal: false })).not.toThrow();
+    expect(scan(dir, { scanGlobal: false })).toEqual([]);
+  });
+});
+
+describe('scan() — an unreadable file is not reported as clean (#116 P2-1)', () => {
+  // "Could not read" is a third state. Rendering it as "clean" is the same
+  // fail-open class as the truncation defect: the same content, readable,
+  // produces a finding, so silence here is an answer we never got.
+  const KEY = ['sk-proj-', 'M1N2B3V4C5X6Z7L8K9J0H1G2F3D4S5A6P7O8I9U0Y1T2'].join('');
+
+  // chmod 000 does not restrict root, and CI often runs as root.
+  const canDenyReads = (() => {
+    if (process.platform === 'win32') return false;
+    try {
+      return typeof process.getuid === 'function' && process.getuid() !== 0;
+    } catch {
+      return false;
+    }
+  })();
+
+  function tmpWithUnreadable(): { dir: string; file: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-noread-'));
+    const file = path.join(dir, 'noread.js');
+    fs.writeFileSync(file, `const k = "${KEY}";\n`);
+    fs.chmodSync(file, 0o000);
+    return { dir, file };
+  }
+
+  it.skipIf(!canDenyReads)('flags an unreadable file in a DIRECTORY scan', () => {
+    const { dir, file } = tmpWithUnreadable();
+    try {
+      const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+      const findings = scan(dir, { scanGlobal: false }, stats);
+      // The credential is genuinely unreachable, so no finding is correct...
+      expect(findings).toEqual([]);
+      // ...but silence about it is not.
+      expect(stats.unreadable.length).toBe(1);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+  });
+
+  it.skipIf(!canDenyReads)('flags an unreadable file named DIRECTLY', () => {
+    const { dir, file } = tmpWithUnreadable();
+    try {
+      const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+      scan(file, { scanGlobal: false }, stats);
+      expect(stats.unreadable.length).toBe(1);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+  });
+
+  it.skipIf(!canDenyReads)('CONTROL: the same file, readable, produces a finding and no warning', () => {
+    // Pins that the assertions above measure READABILITY and not merely "a .js
+    // file exists" — without this the fix could pass by warning on everything.
+    const { dir, file } = tmpWithUnreadable();
+    fs.chmodSync(file, 0o644);
+    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    expect(findings.length).toBe(1);
+    expect(stats.unreadable).toEqual([]);
+  });
+});
+
+describe('scan() — a truncated scan does not render as a clean scan (fail-open)', () => {
+  // walkConfigFiles stops at maxFiles and returns quietly, so an incomplete scan
+  // was indistinguishable from a complete one: fewer findings, no signal, exit 0.
+  const GKEY = ['AIzaSy', 'B7xK2mNvPwQ4tZ8hLcDfGjHkMnOpQrStU'].join('');
+
+  function tmpProjectWith(files: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-trunc-'));
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    return dir;
+  }
+
+  const THREE_CONFIGS = {
+    'a/config.json': `{"key": "${GKEY}"}\n`,
+    'b/config.json': `{"key": "${GKEY}"}\n`,
+    'c/config.json': `{"key": "${GKEY}"}\n`,
+  };
+
+  it('CONTROL: uncapped, all three config files are found and nothing is flagged', () => {
+    const dir = tmpProjectWith(THREE_CONFIGS);
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    expect(findings.length).toBe(3);
+    expect(stats.truncated).toBe(false);
+  });
+
+  it('sets the truncation flag when the config walk hits the cap', () => {
+    const dir = tmpProjectWith(THREE_CONFIGS);
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    const findings = scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+    // The dropped file is the defect; the FLAG is what makes it visible.
+    expect(findings.length).toBeLessThan(3);
+    expect(stats.truncated).toBe(true);
+  });
+
+  it('sets the truncation flag when the SOURCE walk hits the cap', () => {
+    const SKEY = ['sk-proj-', 'M1N2B3V4C5X6Z7L8K9J0H1G2F3D4S5A6P7O8I9U0Y1T2'].join('');
+    const dir = tmpProjectWith({
+      'a.js': `const k = "${SKEY}";\n`,
+      'b.js': `const k = "${SKEY}";\n`,
+      'c.js': `const k = "${SKEY}";\n`,
+    });
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+    expect(stats.truncated).toBe(true);
+  });
+
+  it('sets the truncation flag when the KEY-file walk hits the cap', () => {
+    const dir = tmpProjectWith({
+      'a.pem': 'x\n', 'b.pem': 'x\n', 'c.pem': 'x\n',
+      'd.pem': 'x\n', 'e.pem': 'x\n', 'f.pem': 'x\n',
+    });
+    const stats = { placeholdersSuppressed: 0, truncated: false };
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+    expect(stats.truncated).toBe(true);
+  });
+});
+
 describe('scan() — a single-file finding reports a path that resolves (re-test P2)', () => {
   it('reports the path relative to cwd, not the bare basename', () => {
     // The basename alone does not resolve from the caller's cwd, so a CI job

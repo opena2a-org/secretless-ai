@@ -140,9 +140,18 @@ describe('parseManifestDetailed — an unrecognised manifest is an error, not na
     expect(errors.map(e => e.text)).not.toContain('ANTHROPIC_API_KEY');
   });
 
-  it('names the offending character in the reason', () => {
+  it('names the YAML shape rather than only the offending character', () => {
+    // The reason used to quote the bad character. Naming the shape is both more
+    // actionable and leak-free, which is what makes redacting the line
+    // affordable — the user loses the echo but gains the diagnosis.
     const { errors } = parseManifestDetailed('required:\n');
-    expect(errors[0].reason).toContain('":"');
+    expect(errors[0].reason).toContain('YAML');
+  });
+
+  it('still names the offending character when the shape is not a known one', () => {
+    // The character list is the fallback and must not have been dropped.
+    const { errors } = parseManifestDetailed('BAD!NAME\n');
+    expect(errors[0].reason).toContain('"!"');
   });
 
   it('rejects a dotenv-shaped guess', () => {
@@ -150,7 +159,8 @@ describe('parseManifestDetailed — an unrecognised manifest is an error, not na
     const { entries, errors } = parseManifestDetailed('ANTHROPIC_API_KEY=sk-ant-xxx\n');
     expect(entries).toEqual([]);
     expect(errors).toHaveLength(1);
-    expect(errors[0].reason).toContain('"="');
+    expect(errors[0].reason).toContain('dotenv');
+    expect(errors[0].text).not.toContain('sk-ant-xxx');
   });
 
   it('rejects a JSON-shaped guess', () => {
@@ -163,7 +173,15 @@ describe('parseManifestDetailed — an unrecognised manifest is an error, not na
     // Otherwise the original defect just moves one token to the right.
     const { entries, errors } = parseManifestDetailed('API_KEY required\n');
     expect(entries).toEqual([]);
-    expect(errors[0].reason).toContain('required');
+    expect(errors).toHaveLength(1);
+    // The reason used to interpolate the extra token. In `GITHUB_TOKEN ghp_live…`
+    // that token IS the value, and nothing distinguishes it from a second name,
+    // so it is described rather than echoed.
+    expect(errors[0].reason).toContain('unexpected text after the name');
+    expect(errors[0].reason).not.toContain('required');
+    // The line is still located and the declared name still shown.
+    expect(errors[0].line).toBe(1);
+    expect(errors[0].text).toContain('API_KEY');
   });
 
   it('reports the line number of each bad line, counting comments and blanks', () => {
@@ -233,6 +251,93 @@ describe('checkManifest surfaces manifest errors to library consumers (#112)', (
     expect(result.errors).toEqual([]);
     expect(result.missing.map(e => e.name)).toEqual(['SOME_KEY']);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('parseManifestDetailed — a parse error never echoes a credential VALUE', () => {
+  // `.secretless` is documented "safe to commit" and `scan` does not look inside
+  // it, so the parse-error path is the ONLY surface that reads the file — and it
+  // printed the file back verbatim. `setup --check` stderr is exactly what lands
+  // in CI logs. Two shapes leaked: `NAME=VALUE` echoed the line, and
+  // `NAME VALUE` echoed it TWICE (once as `text`, once interpolated into
+  // `reason`).
+  //
+  // Note the values below are name-shaped (`SAFE_NAME` is /^[a-zA-Z0-9_-]+$/), so
+  // no charset rule can tell them from a name. Only position and role can.
+  const ANTHROPIC = ['sk-ant-api03-', 'FAKEvalueLEAKEDdonotprint'].join('');
+  const GITHUB = ['ghp_', 'FAKEtokenLEAKEDdonotprint'].join('');
+
+  it('does not echo the value from a NAME=VALUE line', () => {
+    const { errors } = parseManifestDetailed(`ANTHROPIC_API_KEY=${ANTHROPIC}\n`);
+    expect(errors.length).toBe(1);
+    expect(JSON.stringify(errors[0])).not.toContain(ANTHROPIC);
+  });
+
+  it('does not echo the value from a NAME VALUE line — in text OR reason', () => {
+    const { errors } = parseManifestDetailed(`GITHUB_TOKEN ${GITHUB}\n`);
+    expect(errors.length).toBe(1);
+    expect(errors[0].text).not.toContain(GITHUB);
+    expect(errors[0].reason).not.toContain(GITHUB);
+  });
+
+  it('does not echo a value hidden in a trailing comment', () => {
+    const { errors } = parseManifestDetailed(`GITHUB_TOKEN oops # ${GITHUB}\n`);
+    expect(errors.length).toBe(1);
+    expect(JSON.stringify(errors[0])).not.toContain(GITHUB);
+  });
+
+  it('still identifies WHICH line and WHICH declared name', () => {
+    // Redaction must not turn the error into a dead end. The name is the part
+    // the user wrote as a name, so it stays; only the value position is dropped.
+    const { errors } = parseManifestDetailed(`OK_NAME\nGITHUB_TOKEN ${GITHUB}\n`);
+    expect(errors[0].line).toBe(2);
+    expect(errors[0].text).toContain('GITHUB_TOKEN');
+  });
+
+  it('names the dotenv shape instead of echoing it', () => {
+    const { errors } = parseManifestDetailed(`ANTHROPIC_API_KEY=${ANTHROPIC}\n`);
+    expect(errors[0].reason.toLowerCase()).toContain('value');
+    expect(errors[0].reason).toContain('dotenv');
+    expect(errors[0].line).toBe(1);
+  });
+
+  it('does not echo a base64 secret whose PADDING looks like a NAME=VALUE split', () => {
+    // The redactor briefly split on `=` and echoed the left side, reasoning that
+    // in dotenv the left of `=` is the name. But `=` is also base64 padding, so
+    // for `openssl rand -base64 32` output the "name" is the entire secret. The
+    // left side of a separator is not a name just because a separator appears.
+    const B64 = ['ZjQ2NmE4YzBkNzFl', 'NGY5M2E4YjJjNWQ2ZTdmMDExMjM='].join('');
+    const payload = B64.slice(0, -1); // everything before the padding
+    const { errors } = parseManifestDetailed(`${B64}\n`);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].text).not.toContain(payload);
+    expect(JSON.stringify(errors[0])).not.toContain(payload);
+  });
+
+  it('does not echo a token that merely ENDS in = (no value after it)', () => {
+    const TOKEN = ['ghp_', 'FAKEliveTOKENvalue123'].join('');
+    const { errors } = parseManifestDetailed(`${TOKEN}=\n`);
+    expect(errors).toHaveLength(1);
+    expect(JSON.stringify(errors[0])).not.toContain(TOKEN);
+  });
+
+  it('bounds the reason as well as the text (a 200 KB token must not flood stderr)', () => {
+    // MAX_ECHOED_LINE bounded `text` but not the sibling `reason`, so a
+    // pathological token still flooded stderr through the second field.
+    const huge = 'A'.repeat(200_000);
+    const { errors } = parseManifestDetailed(`GITHUB_TOKEN ${huge}\n`);
+    expect(errors.length).toBe(1);
+    expect(errors[0].reason.length).toBeLessThan(1000);
+    expect(errors[0].text.length).toBeLessThan(1000);
+  });
+
+  it('CONTROL: a valid manifest still parses, so redaction did not break the happy path', () => {
+    const { entries, errors } = parseManifestDetailed(
+      'GITHUB_TOKEN            # required\nSTRIPE_SECRET_KEY optional  # payments\n',
+    );
+    expect(errors).toEqual([]);
+    expect(entries.map(e => e.name)).toEqual(['GITHUB_TOKEN', 'STRIPE_SECRET_KEY']);
+    expect(entries[1].required).toBe(false);
   });
 });
 

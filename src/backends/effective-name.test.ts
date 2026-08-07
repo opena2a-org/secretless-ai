@@ -8,6 +8,7 @@
  * restated platform mapping.
  */
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'child_process';
 import { effectiveBackendName, createBackend } from './factory';
 import { SecretStore } from '../secret-store';
 
@@ -26,14 +27,38 @@ describe('effectiveBackendName agrees with the constructed backend', () => {
   });
 
   it('names a keychain on a platform that has one', () => {
-    // Guards the direction of the fix: on macOS/Linux with a keychain
-    // available, "local" must NOT be reported as the effective backend.
+    // Guards the DIRECTION of the fix: where a keychain exists, "local" must
+    // not be reported as the effective backend.
+    //
+    // This assertion used to be `toMatch(/^(keychain-(macos|linux)|local)$/)`,
+    // which ACCEPTS the unfixed value `local` — so it passed whether or not the
+    // fix was present and could not fail in the direction its own comment
+    // claimed to guard. Availability is probed here independently (`security`
+    // / `secret-tool` on PATH) rather than by calling the implementation's own
+    // `isKeychainLikely`, which would only restate it.
     const name = effectiveBackendName('local');
-    if (process.platform === 'darwin' || process.platform === 'linux') {
-      expect(name).toMatch(/^(keychain-(macos|linux)|local)$/);
-    } else {
-      expect(name).toBe('local');
+
+    if (process.platform === 'darwin') {
+      // The macOS keychain CLI ships with the OS, so there is no conditional:
+      // this must resolve to the keychain, and `local` is a failure.
+      expect(name).toBe('keychain-macos');
+      return;
     }
+
+    if (process.platform === 'linux') {
+      const hasSecretTool = (() => {
+        try {
+          execFileSync('which', ['secret-tool'], { stdio: 'pipe' });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      expect(name).toBe(hasSecretTool ? 'keychain-linux' : 'local');
+      return;
+    }
+
+    expect(name).toBe('local');
   });
 
   it('leaves every non-local type alone', () => {

@@ -15,6 +15,13 @@ export interface StatusResult {
   hookInstalled: boolean;
   denyRuleCount: number;
   secretsFound: number;
+  /**
+   * True when the scan behind `secretsFound` could not cover the whole tree, so
+   * the count is a lower bound rather than a verdict. `scan()` discards this
+   * when no stats object is passed, which is how `status --json` reported
+   * `secretsFound: 0` over a subtree it never opened.
+   */
+  scanIncomplete: boolean;
   transcriptProtection: {
     stopHookInstalled: boolean;
     watcherRunning: boolean;
@@ -33,6 +40,7 @@ export function status(projectDir: string): StatusResult {
     hookInstalled: false,
     denyRuleCount: 0,
     secretsFound: 0,
+    scanIncomplete: false,
     transcriptProtection: {
       stopHookInstalled: false,
       watcherRunning: false,
@@ -92,8 +100,10 @@ export function status(projectDir: string): StatusResult {
   }
 
   // Scan for secrets (project-level only for status report)
-  const findings = scan(projectDir, { scanGlobal: false });
+  const scanStats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+  const findings = scan(projectDir, { scanGlobal: false }, scanStats);
   result.secretsFound = findings.length;
+  result.scanIncomplete = scanStats.truncated || scanStats.unreadable.length > 0;
 
   // Transcript protection metrics
   try {

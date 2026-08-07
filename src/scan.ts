@@ -138,6 +138,32 @@ export interface ScanOptions {
 export interface ScanStats {
   /** Count of pattern matches suppressed as known examples / placeholders. */
   placeholdersSuppressed: number;
+  /**
+   * True when a file walk stopped at `maxSourceFiles` with tree left unvisited,
+   * so the findings are a SUBSET and "no credentials found" is not a verdict.
+   *
+   * `scan()` writes this unconditionally (false on a complete walk), so a caller
+   * that passes a bare object still gets a correct value rather than
+   * `undefined` — an absent flag reads as falsy, which is the fail-open shape
+   * this exists to close.
+   */
+  truncated: boolean;
+  /**
+   * Paths that matched the scan but could not be read (permissions, I/O). "Could
+   * not read" is a THIRD state: the same content, readable, produces a finding,
+   * so dropping these silently reports a file we never opened as clean.
+   *
+   * Optional so an existing caller still compiles; `scan()` only appends when
+   * the caller supplies the array, and the CLI always does.
+   */
+  unreadable?: string[];
+  /**
+   * Symlinks whose target resolves outside the scan root. These are NOT
+   * followed — otherwise `link -> $HOME` makes `scan .` traverse the whole home
+   * directory — but they are reported, because silently skipping them would be
+   * the same fail-open in a new place.
+   */
+  outOfRoot?: string[];
 }
 
 /**
@@ -273,6 +299,7 @@ function scanSingleFile(
   filePath: string,
   options: ScanOptions | undefined,
   matchOpts: { includeExamples: boolean; onSuppressed: () => void },
+  stats?: ScanStats,
 ): ScanFinding[] {
   const findings: ScanFinding[] = [];
   const name = path.basename(filePath);
@@ -337,7 +364,10 @@ function scanSingleFile(
       }
     }
   } catch {
-    // Unreadable — no findings rather than a crash.
+    // Unreadable — no findings rather than a crash, but say so. A named target
+    // that cannot be opened used to print "No hardcoded credentials found" and
+    // exit 0, which is a green CI gate over a file nobody read.
+    stats?.unreadable?.push(display);
   }
   return findings;
 }
@@ -351,6 +381,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   };
   const findings: ScanFinding[] = [];
   const scanGlobal = options?.scanGlobal !== false;
+  // Written unconditionally so a complete walk actively reports "not truncated"
+  // rather than leaving a stale or absent flag for the caller to misread.
+  if (stats) stats.truncated = false;
 
   // A FILE target is scanned as that file. It used to be accepted, checked for
   // existence, then walked as a directory — which found nothing and reported
@@ -362,7 +395,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   // being noisy, and there is no walk here.
   try {
     if (fs.statSync(projectDir).isFile()) {
-      return scanSingleFile(projectDir, options, matchOpts);
+      return scanSingleFile(projectDir, options, matchOpts, stats);
     }
   } catch {
     // Unreadable/nonexistent — fall through to the directory path, which
@@ -459,7 +492,37 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   // runs first. A scanner that answers "clean" for a tree it never walked is
   // worse than one that errors.
   const scannedConfigFiles: string[] = [];
-  for (const configFile of walkConfigFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTestsOpt, ignore)) {
+  /**
+   * Fold every coverage shortfall a walk reported into the caller's stats.
+   *
+   * Deduplicated: the three walkers cover the same tree with different filters,
+   * so one unreadable directory or one out-of-root link is seen by all three and
+   * would otherwise be reported three times — turning "1 path could not be read"
+   * into "3 paths could not be read" for a single underlying cause.
+   */
+  // Keyed on the RESOLVED path, not the path we walked: one unreadable directory
+  // reachable through eight in-tree links reported nine separate entries, and
+  // since a non-empty list sets exit 1, that is nine lines of noise for one
+  // cause.
+  const seenUnreadable = new Set<string>();
+  const seenOutOfRoot = new Set<string>();
+  const dedupeKey = (p: string) => realpathOrNull(path.resolve(projectDir, p)) ?? p;
+  const absorbWalk = (walk: WalkResult) => {
+    if (!stats) return;
+    if (walk.truncated) stats.truncated = true;
+    for (const p of walk.unreadable) {
+      const k = dedupeKey(p);
+      if (stats.unreadable && !seenUnreadable.has(k)) { seenUnreadable.add(k); stats.unreadable.push(p); }
+    }
+    for (const p of walk.outOfRoot) {
+      const k = dedupeKey(p);
+      if (stats.outOfRoot && !seenOutOfRoot.has(k)) { seenOutOfRoot.add(k); stats.outOfRoot.push(p); }
+    }
+  };
+
+  const configWalk = walkConfigFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTestsOpt, ignore);
+  absorbWalk(configWalk);
+  for (const configFile of configWalk.files) {
     if (ignore && ignore.matches(configFile)) continue;
     const fullPath = path.join(projectDir, configFile);
     if (!fs.existsSync(fullPath)) continue;
@@ -495,7 +558,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         }
       }
     } catch {
-      // Skip unreadable files
+      // Not "clean" — a file we could not open. Silently dropping it from the
+      // count is how an unreadable config rendered as a passing scan.
+      stats?.unreadable?.push(configFile);
     }
   }
 
@@ -504,9 +569,10 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     const configFileSet = new Set(scannedConfigFiles);
     const maxFiles = options?.maxSourceFiles ?? 5000;
     const includeTests = options?.includeTests ?? false;
-    const sourceFiles = walkSourceFiles(projectDir, maxFiles, includeTests, ignore);
+    const sourceWalk = walkSourceFiles(projectDir, maxFiles, includeTests, ignore);
+    absorbWalk(sourceWalk);
 
-    for (const filePath of sourceFiles) {
+    for (const filePath of sourceWalk.files) {
       const relPath = path.relative(projectDir, filePath);
       // Skip files already covered by config scan
       if (configFileSet.has(relPath)) continue;
@@ -546,7 +612,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           }
         }
       } catch {
-        // Skip unreadable files
+        stats?.unreadable?.push(relPath.replace(/\\/g, '/'));
       }
     }
   }
@@ -559,8 +625,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   if (options?.scanSource !== false) {
     const includeTests = options?.includeTests ?? false;
     const pemPattern = CREDENTIAL_PATTERNS.find(p => p.id === 'pem-private-key')!;
-    const keyFiles = walkKeyFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTests, ignore);
-    for (const filePath of keyFiles) {
+    const keyWalk = walkKeyFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTests, ignore);
+    absorbWalk(keyWalk);
+    for (const filePath of keyWalk.files) {
       const relPath = path.relative(projectDir, filePath);
       if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
       try {
@@ -597,7 +664,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           }
         }
       } catch {
-        // Skip unreadable / non-UTF8 files
+        // Non-UTF8 is expected for .p12/.pfx and handled above, so reaching here
+        // means the file could not be opened at all.
+        stats?.unreadable?.push(relPath.replace(/\\/g, '/'));
       }
     }
   }
@@ -611,7 +680,32 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     return a.file.localeCompare(b.file);
   });
 
-  return findings;
+  // One credential, one finding. Following symlinks means the same underlying
+  // file is reachable by more than one path — twelve packages each linking to a
+  // shared config turned one leaked key into thirteen criticals, so `total`
+  // counted PATHS rather than credentials and a triage queue read thirteen
+  // incidents. Deduplicated on the resolved file plus its position, after the
+  // sort, so the surviving path is the highest-confidence one.
+  return dedupeByRealFile(findings, projectDir);
+}
+
+/** Collapse findings that resolve to the same real file, line and pattern. */
+function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFinding[] {
+  const realOf = new Map<string, string>();
+  const seen = new Set<string>();
+  const out: ScanFinding[] = [];
+  for (const f of findings) {
+    let real = realOf.get(f.file);
+    if (real === undefined) {
+      real = realpathOrNull(path.resolve(projectDir, f.file)) ?? f.file;
+      realOf.set(f.file, real);
+    }
+    const key = `${real} ${f.line} ${f.patternId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
 }
 
 /**
@@ -643,6 +737,322 @@ function isTestFile(name: string): boolean {
 /** Private-key file extensions scanned in addition to source/config files. */
 const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx']);
 
+/** What a walker collected, and every reason its coverage fell short. */
+interface WalkResult {
+  files: string[];
+  /**
+   * True when a real candidate was dropped because `maxFiles` was already
+   * reached, or when queued directories were left unvisited. A truncated walk
+   * must never render as a clean scan — see `ScanStats.truncated`.
+   */
+  truncated: boolean;
+  /**
+   * Directories that could not be listed and entries that could not be stat'd.
+   * A `readdirSync` that throws used to `continue` with nothing recorded, so an
+   * unreadable directory produced findings=0 with `truncated:false` — the scan
+   * actively asserted it was complete over a subtree it never opened.
+   */
+  unreadable: string[];
+  /**
+   * Symlinks whose target resolves outside the scan root, which are not
+   * followed. Reported rather than dropped: silently skipping them would be the
+   * same fail-open in a new place.
+   */
+  outOfRoot: string[];
+}
+
+/**
+ * Classify a directory entry, FOLLOWING symlinks.
+ *
+ * `Dirent.isDirectory()` / `isFile()` are lstat-based: a symlink is NEITHER, so
+ * classifying from the Dirent alone drops every symlinked entry on the floor.
+ * 0.21.0 reached config files through `existsSync`/`statSync`, which follow
+ * links; making the config walk recursive in 0.21.1 silently removed symlink
+ * support, so a symlinked `.claude/` — what a dotfile manager or a shared
+ * monorepo config produces — reported "No hardcoded credentials found."
+ *
+ * Returns 'skip' for a broken link, a socket/fifo/device, or anything we cannot
+ * stat, so an unresolvable link is dropped rather than throwing mid-walk.
+ */
+function classifyEntry(entryPath: string, entry: fs.Dirent): 'dir' | 'file' | 'skip' | 'unreadable' {
+  if (entry.isDirectory()) return 'dir';
+  if (entry.isFile()) return 'file';
+  // Sockets, FIFOs and device files are deliberately never opened: a read on a
+  // FIFO blocks forever, so this is what keeps a config-named pipe from hanging
+  // the scan.
+  if (!entry.isSymbolicLink()) return 'skip';
+  try {
+    const target = fs.statSync(entryPath); // follows the link
+    if (target.isDirectory()) return 'dir';
+    if (target.isFile()) return 'file';
+    return 'skip';
+  } catch (err) {
+    // A link we cannot resolve splits two ways. ENOENT is a broken link and
+    // there is nothing to scan, so it is genuinely a skip. EACCES/ELOOP/EMFILE
+    // mean something IS there and we could not look at it, which must be
+    // reported rather than counted as clean.
+    // ENOENT is a broken link and ENOTDIR is a link through a non-directory —
+    // both point at nothing, so there is no content we failed to examine.
+    // EACCES/ELOOP/EMFILE mean something IS there that we could not look at.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'skip' : 'unreadable';
+  }
+}
+
+/**
+ * Cycle guard for a symlink-following walk.
+ *
+ * Following symlinks without one trades a fail-open for a hang: no walker has a
+ * depth bound, so `a/loop -> a` recurses until the file cap and a cross-linked
+ * pair of directories never terminates. Keyed on the RESOLVED real path, so two
+ * routes to the same directory are walked once. Returns false if already seen.
+ */
+/**
+ * `.env` suffixes that hold placeholders by convention and are meant to be
+ * committed. Everything else after `.env.` is treated as a REAL env file.
+ *
+ * The polarity matters: an unrecognised `.env.whatever` is scanned rather than
+ * skipped, so the unknown case fails closed. The previous allowlist named only
+ * `.env` and `.env.local`, which missed `.env.development`, `.env.production`,
+ * `.env.staging`, `.env.test` and `.env.prod` — the exact set the CLAUDE.md
+ * block Secretless itself installs tells the user it protects (#116 P2-3).
+ */
+const ENV_TEMPLATE_SUFFIXES = new Set(['example', 'sample', 'template', 'dist']);
+
+/** True for a real `.env` file; false for a committed template. */
+export function isEnvFile(basename: string): boolean {
+  if (basename === '.env') return true;
+  if (!basename.startsWith('.env.')) return false;
+  // A template marker in ANY segment wins, so `.env.example.local` stays out.
+  return !basename
+    .slice('.env.'.length)
+    .toLowerCase()
+    .split('.')
+    .some(segment => ENV_TEMPLATE_SUFFIXES.has(segment));
+}
+
+interface ConfigNameMatcher {
+  byBasename: Set<string>;
+  bySuffix: string[];
+}
+
+/** Split the config catalogs into basename and path-suffix forms, lowercased once. */
+function buildConfigNameMatcher(): ConfigNameMatcher {
+  const byBasename = new Set<string>();
+  const bySuffix: string[] = [];
+  for (const entry of CONFIG_FILES) {
+    if (entry.includes('/')) bySuffix.push(entry.toLowerCase());
+    else byBasename.add(entry.toLowerCase());
+  }
+  return { byBasename, bySuffix };
+}
+
+/**
+ * Does this entry name a project config file?
+ *
+ * Matched case-insensitively: on a case-insensitive filesystem (macOS, Windows)
+ * `Claude.md` and `CLAUDE.md` are the SAME file to the OS but not to an
+ * exact-match Set, so an exact comparison skipped a file the user can plainly
+ * see. On a case-sensitive filesystem this widens the match to case variants of
+ * the same config name, which is the safe direction for a scanner.
+ */
+function matchesConfigName(
+  basename: string,
+  relFromRoot: string,
+  matcher: ConfigNameMatcher,
+): boolean {
+  if (matcher.byBasename.has(basename.toLowerCase())) return true;
+  if (isEnvFile(basename)) return true;
+  const lowerRel = relFromRoot.toLowerCase();
+  return matcher.bySuffix.some(sfx => lowerRel === sfx || lowerRel.endsWith('/' + sfx));
+}
+
+/**
+ * Upper bound on directories dequeued in one walk.
+ *
+ * Cycle detection is per-ancestry (see `walkTree`), which deliberately allows
+ * the same real directory to be reached by two different paths — but that means
+ * a fan of N links to one subtree costs N traversals. `maxFiles` alone does not
+ * bound this, because a fan of directories yielding no matching files collects
+ * nothing while still walking. Exhausting this budget sets `truncated`, so the
+ * bound is reported rather than silently applied.
+ */
+const MAX_DIRS_VISITED = 50_000;
+
+/**
+ * How many distinct paths to the SAME real directory one walk will follow.
+ *
+ * Per-ancestry cycle detection deliberately allows a directory to be reached by
+ * more than one path — that is what makes `pkg/.claude -> shared/` work when
+ * `shared/` is also in the tree. But the number of paths through a lattice of
+ * links is exponential: a hand-built 31-directory fixture produced 2,047 walks,
+ * 45s of wall clock and 289 MB of RSS. A repo is a hostile input to a scanner,
+ * so the multiplicity is capped. Twelve packages each linking to a shared
+ * directory is the realistic high-water mark; well past that is pathological,
+ * and crossing the cap sets `truncated` rather than passing silently.
+ */
+const MAX_PATHS_PER_DIR = 32;
+
+/**
+ * Is `target` the root itself or inside it? Both must already be real paths.
+ *
+ * `path.sep` is appended for the prefix test so `/tmp/rootx` is not read as
+ * inside `/tmp/root` — but a root of `/` already ends in the separator, and
+ * appending a second one made every absolute path test as OUTSIDE it.
+ *
+ * A pure string comparison is sound here ONLY because both sides come from
+ * `realpathOrNull`, which resolves `..` and every intermediate symlink first: a
+ * traversal string cannot survive that, so `<root>/link -> <root>/../../etc`
+ * arrives as `/etc` and is rejected on its own merits.
+ */
+function isWithinRoot(target: string, rootReal: string): boolean {
+  const prefix = rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep;
+  return target === rootReal || target.startsWith(prefix);
+}
+
+/**
+ * Resolve a path to its real location, or null when it cannot be resolved.
+ *
+ * `realpathSync.native` rather than `realpathSync`, because it also canonicalises
+ * CASE. That matters for `isWithinRoot`: on a case-insensitive volume, scanning
+ * `ROOT` when the directory is `root` otherwise leaves an in-tree link resolving
+ * to a differently-cased string that fails the prefix test, silently dropping
+ * the subtree it reaches.
+ *
+ * This replaced a platform-keyed case-insensitive comparison, which was wrong in
+ * the other direction: macOS can host case-SENSITIVE volumes, where `/repo` and
+ * /REPO` are genuinely different directories and lowercasing would have let a
+ * link escape the root. Asking the filesystem is correct on both volume types;
+ * guessing from `process.platform` is correct on neither reliably.
+ */
+function realpathOrNull(p: string): string | null {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    // `.native` can fail where the portable implementation succeeds (and is
+    // absent on some runtimes), so fall back rather than treating a resolvable
+    // path as unreadable.
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Per-walk behaviour: which directories to descend, which files to keep. */
+interface WalkSpec {
+  /** True to NOT descend into this directory. */
+  skipDir(name: string, relFromRoot: string): boolean;
+  /** True to keep this file. */
+  acceptFile(name: string, relFromRoot: string): boolean;
+  /** What to push into `files` — an absolute path or a root-relative one. */
+  collect(entryPath: string, relFromRoot: string): string;
+}
+
+/**
+ * One breadth-first tree walk, shared by all three walkers.
+ *
+ * The three used to be separate copies of the same loop, and they drifted: the
+ * config copy gained recursion while losing the symlink support the others
+ * never had, which is the defect this release exists to fix. Sharing the
+ * traversal means a fix to link handling, cycle safety or coverage reporting
+ * lands in all three by construction; only the filters differ.
+ *
+ * **Cycle detection is per-ancestry, not global.** A global visited-realpath set
+ * terminates just as well, but it also drops a directory reachable by a SECOND
+ * path once the first has been seen — and which path wins depends on readdir
+ * order. That silently re-broke the headline case: with `pkg/.claude -> shared/`
+ * where `shared/` is also in the tree, BFS reaches `shared/` first, marks the
+ * realpath seen, then skips `pkg/.claude` — and only the `.claude` path matches
+ * the `.claude/settings.json` config entry. A directory is a cycle only when it
+ * appears in its OWN ancestor chain, which is what is checked here.
+ */
+function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
+  const files: string[] = [];
+  const unreadable: string[] = [];
+  const outOfRoot: string[] = [];
+  let truncated = false;
+
+  const rootReal = realpathOrNull(dir) ?? path.resolve(dir);
+  // Each entry carries the realpath chain of the directories above it.
+  const queue: Array<{ dir: string; ancestors: string[] }> = [{ dir, ancestors: [] }];
+  const visitsByReal = new Map<string, number>();
+  let dirsVisited = 0;
+
+  const rel = (p: string) => path.relative(dir, p).replace(/\\/g, '/');
+
+  while (queue.length > 0) {
+    if (files.length >= maxFiles) { truncated = true; break; }
+    if (dirsVisited >= MAX_DIRS_VISITED) { truncated = true; break; }
+    const { dir: current, ancestors } = queue.shift()!;
+
+    const currentReal = realpathOrNull(current);
+    if (currentReal === null) { unreadable.push(rel(current)); continue; }
+    // A directory inside its own ancestry is a genuine loop.
+    if (ancestors.includes(currentReal)) continue;
+    // Bound how many distinct routes to one directory we follow (see the
+    // constant): the path count through a link lattice is exponential.
+    const seenCount = visitsByReal.get(currentReal) ?? 0;
+    if (seenCount >= MAX_PATHS_PER_DIR) { truncated = true; continue; }
+    visitsByReal.set(currentReal, seenCount + 1);
+    const childAncestors = [...ancestors, currentReal];
+    dirsVisited += 1;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      // Was a bare `continue`: an unreadable directory vanished from the result
+      // while the scan still reported itself complete.
+      unreadable.push(rel(current));
+      continue;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      const relFromRoot = rel(entryPath);
+      const kind = classifyEntry(entryPath, entry);
+
+      if (kind === 'unreadable') { unreadable.push(relFromRoot); continue; }
+      if (kind === 'skip') continue;
+
+      if (kind === 'dir') {
+        // Filters run BEFORE containment, so a pruned tree never produces a
+        // coverage warning. Reporting `node_modules -> /pnpm-store` as an
+        // unfollowed boundary — and telling the user to go scan it — is noise
+        // about a directory that was never going to be walked.
+        if (spec.skipDir(entry.name, relFromRoot)) continue;
+
+        // Containment applies to DIRECTORY links only. Following one is
+        // unbounded: a repo holding `link -> $HOME` would pull the whole home
+        // directory into the scan.
+        if (entry.isSymbolicLink()) {
+          const target = realpathOrNull(entryPath);
+          if (target === null) continue;
+          if (!isWithinRoot(target, rootReal)) { outOfRoot.push(relFromRoot); continue; }
+        }
+
+        // Checked AFTER the filters, so only a real candidate trips the cap.
+        if (files.length >= maxFiles) { truncated = true; break; }
+        queue.push({ dir: entryPath, ancestors: childAncestors });
+      } else {
+        if (!spec.acceptFile(entry.name, relFromRoot)) continue;
+        // A symlinked FILE is NOT contained, even out of the root. Reading one
+        // file the repository explicitly names is bounded work, and it is the
+        // shape every dotfile manager produces: `pkg/.env -> ../../shared/.env`
+        // under stow/chezmoi, or a package pointing at the monorepo root env.
+        // Refusing it would drop a credential the repo is asking us to treat as
+        // its own — the opposite of the unbounded-traversal risk above.
+        if (files.length >= maxFiles) { truncated = true; break; }
+        files.push(spec.collect(entryPath, relFromRoot));
+      }
+    }
+  }
+
+  return { files, truncated, unreadable, outOfRoot };
+}
+
 /**
  * Walk a directory tree and return standalone key files (`*.pem`, `*.key`, `*.p12`, ...).
  * Mirrors walkSourceFiles' directory pruning, test-skipping, and ignore semantics so a
@@ -653,103 +1063,40 @@ function walkKeyFiles(
   maxFiles: number,
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
-): string[] {
-  const results: string[] = [];
-  const queue: string[] = [dir];
-
-  while (queue.length > 0 && results.length < maxFiles) {
-    const current = queue.shift()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      if (results.length >= maxFiles) break;
-      const entryPath = path.join(current, entry.name);
-      const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
-
-      if (entry.isDirectory()) {
-        // Unlike source files, key files commonly live in HIDDEN directories (`.ssh/`,
-        // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
-        // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
-        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name === '.git') continue;
-        if (!includeTests && TEST_DIRS.has(entry.name)) continue;
-        if (ignore && ignore.matches(relFromRoot + '/.')) continue;
-        queue.push(entryPath);
-      } else if (entry.isFile()) {
-        if (!KEY_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
-        if (!includeTests && isTestFile(entry.name)) continue;
-        if (ignore && ignore.matches(relFromRoot)) continue;
-        results.push(entryPath);
-      }
-    }
-  }
-
-  return results;
+): WalkResult {
+  return walkTree(dir, maxFiles, {
+    // Unlike source files, key files commonly live in HIDDEN directories (`.ssh/`,
+    // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
+    // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
+    skipDir: (name, rel) =>
+      SOURCE_SKIP_DIRS.has(name) || name === '.git'
+      || (!includeTests && TEST_DIRS.has(name))
+      || !!(ignore && ignore.matches(rel + '/.')),
+    acceptFile: (name, rel) =>
+      KEY_FILE_EXTENSIONS.has(path.extname(name).toLowerCase())
+      && (includeTests || !isTestFile(name))
+      && !(ignore && ignore.matches(rel)),
+    collect: (entryPath) => entryPath,
+  });
 }
 
-/**
- * Walk a directory tree and return paths (relative, POSIX) of project config
- * files at ANY depth.
- *
- * Config files used to be looked up only at the scan root while source files
- * recursed, so a monorepo's per-package config, `deploy/`, and `infra/` were
- * invisible to the root invocation. Entries containing a slash
- * (`.cursor/mcp.json`) match as a path suffix; the rest match on basename.
- *
- * Unlike source files, config files commonly live in HIDDEN directories
- * (`.claude/`, `.cursor/`, `.vscode/`), so dot-dirs are walked — mirroring
- * walkKeyFiles rather than walkSourceFiles.
- */
 function walkConfigFiles(
   dir: string,
   maxFiles: number,
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
-): string[] {
-  const byBasename = new Set<string>();
-  const bySuffix: string[] = [];
-  for (const entry of CONFIG_FILES) {
-    if (entry.includes('/')) bySuffix.push(entry);
-    else byBasename.add(entry);
-  }
-
-  const results: string[] = [];
-  const queue: string[] = [dir];
-
-  while (queue.length > 0 && results.length < maxFiles) {
-    const current = queue.shift()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      if (results.length >= maxFiles) break;
-      const entryPath = path.join(current, entry.name);
-      const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
-
-      if (entry.isDirectory()) {
-        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name === '.git') continue;
-        if (!includeTests && TEST_DIRS.has(entry.name)) continue;
-        if (ignore && ignore.matches(relFromRoot + '/.')) continue;
-        queue.push(entryPath);
-      } else if (entry.isFile()) {
-        const isConfig = byBasename.has(entry.name)
-          || bySuffix.some(sfx => relFromRoot === sfx || relFromRoot.endsWith('/' + sfx));
-        if (!isConfig) continue;
-        if (ignore && ignore.matches(relFromRoot)) continue;
-        results.push(relFromRoot);
-      }
-    }
-  }
-
-  return results;
+): WalkResult {
+  const matcher = buildConfigNameMatcher();
+  return walkTree(dir, maxFiles, {
+    skipDir: (name, rel) =>
+      SOURCE_SKIP_DIRS.has(name) || name === '.git'
+      || (!includeTests && TEST_DIRS.has(name))
+      || !!(ignore && ignore.matches(rel + '/.')),
+    acceptFile: (name, rel) =>
+      matchesConfigName(name, rel, matcher)
+      && !(ignore && ignore.matches(rel)),
+    collect: (_entryPath, rel) => rel,
+  });
 }
 
 function walkSourceFiles(
@@ -757,42 +1104,18 @@ function walkSourceFiles(
   maxFiles: number,
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
-): string[] {
-  const results: string[] = [];
-  const queue: string[] = [dir];
-
-  while (queue.length > 0 && results.length < maxFiles) {
-    const current = queue.shift()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      if (results.length >= maxFiles) break;
-
-      const entryPath = path.join(current, entry.name);
-      const relFromRoot = path.relative(dir, entryPath).replace(/\\/g, '/');
-
-      if (entry.isDirectory()) {
-        if (SOURCE_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
-        if (!includeTests && TEST_DIRS.has(entry.name)) continue;
-        // Prune whole-tree ignored directories. The matcher's directory
-        // patterns end with `/`, so we test the dir path with a trailing
-        // segment; equivalently, append `/dummy`.
-        if (ignore && ignore.matches(relFromRoot + '/.')) continue;
-        queue.push(entryPath);
-      } else if (entry.isFile()) {
-        const ext = path.extname(entry.name);
-        if (!SOURCE_FILE_EXTENSIONS.has(ext)) continue;
-        if (!includeTests && isTestFile(entry.name)) continue;
-        if (ignore && ignore.matches(relFromRoot)) continue;
-        results.push(entryPath);
-      }
-    }
-  }
-
-  return results;
+): WalkResult {
+  return walkTree(dir, maxFiles, {
+    // Prune whole-tree ignored directories. The matcher's directory patterns
+    // end with `/`, so we test the dir path with a trailing segment.
+    skipDir: (name, rel) =>
+      SOURCE_SKIP_DIRS.has(name) || name.startsWith('.')
+      || (!includeTests && TEST_DIRS.has(name))
+      || !!(ignore && ignore.matches(rel + '/.')),
+    acceptFile: (name, rel) =>
+      SOURCE_FILE_EXTENSIONS.has(path.extname(name))
+      && (includeTests || !isTestFile(name))
+      && !(ignore && ignore.matches(rel)),
+    collect: (entryPath) => entryPath,
+  });
 }

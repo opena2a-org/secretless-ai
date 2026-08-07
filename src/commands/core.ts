@@ -123,7 +123,20 @@ export function runInit(projectDir: string): number {
   return 0;
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean }): Promise<number> {
+/**
+ * Quote a path for a shell command we PRINT for the user to copy.
+ *
+ * The paths here are filenames from a scanned repository, i.e. attacker
+ * controlled, and the whole point of a `Fix:` line is that it gets pasted into a
+ * terminal. A link named `a"; id; echo "b` interpolated raw produced a command
+ * that closed the quote and ran `id`. Single quotes with the standard
+ * `'\''` escape make every byte literal.
+ */
+function shellQuote(p: string): string {
+  return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
+}
+
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
   const scanOpts = {
     includeTests: options?.includeTests,
@@ -133,7 +146,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     ignore: options?.noIgnore ? false : undefined,
     minConfidence: options?.minConfidence,
     showPlaceholders: options?.showPlaceholders,
+    maxSourceFiles: options?.maxFiles,
   };
+  const capUsed = options?.maxFiles ?? 5000;
 
   // --json: emit a single valid JSON document to stdout and nothing else, so the
   // output is machine-parseable (issue #63 — the flag previously printed the human
@@ -143,7 +158,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.error(`Directory not found: ${projectDir}`);
       return 1;
     }
-    const stats = { placeholdersSuppressed: 0 };
+    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[] };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
     console.log(JSON.stringify({
@@ -155,9 +170,20 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         critical,
         high: findings.length - critical,
         placeholdersSuppressed: stats.placeholdersSuppressed,
+        // A machine consumer must be able to tell "clean" from "unfinished".
+        truncated: stats.truncated,
+        maxFiles: capUsed,
+        unreadable: stats.unreadable.length,
+        outOfRoot: stats.outOfRoot.length,
       },
+      unreadableFiles: stats.unreadable,
+      outOfRootLinks: stats.outOfRoot,
     }, null, 2));
-    return findings.length > 0 ? 1 : 0;
+    // An incomplete scan is not a pass. `total: 0` with `truncated: true` or an
+    // unreadable file means part of the tree was never read, so exiting 0 would
+    // gate CI on a subset. An out-of-root link is a deliberate, reported
+    // boundary rather than a failure, so it does not by itself set exit 1.
+    return findings.length > 0 || stats.truncated || stats.unreadable.length > 0 ? 1 : 0;
   }
 
   console.log('\n  Secretless Scanner\n');
@@ -168,8 +194,69 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return 1;
   }
 
-  const stats = { placeholdersSuppressed: 0 };
+  const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[] };
   const findings = scan(projectDir, scanOpts, stats);
+
+  // Coverage-gap paths are reported relative to the SCAN ROOT, which is not the
+  // shell's cwd when a path argument was given. Printing them bare produced a
+  // `ls -l config.json` that fails with "No such file or directory" — a fix
+  // command that does not run is a dead end, which is exactly what this whole
+  // release is about.
+  const nodePath = require('path') as typeof import('path');
+  const runnable = (rel: string) => {
+    const abs = nodePath.resolve(projectDir, rel);
+    const fromCwd = nodePath.relative(process.cwd(), abs);
+    // A bare relative path is only usable when it stays inside cwd AND does not
+    // read as a flag; anything else falls back to the absolute path.
+    const chosen = fromCwd && !fromCwd.startsWith('..') && !fromCwd.startsWith('-') ? fromCwd : abs;
+    return shellQuote(chosen);
+  };
+
+  // A walk that stopped at the file cap left tree unvisited, and a file we could
+  // not open was never read at all. Either way the findings are a SUBSET, so
+  // rendering them as "No hardcoded credentials found." is the fail-open these
+  // warnings close: an answer we never got is not a good answer.
+  const coverageWarnings = () => {
+    if (stats.truncated) {
+      console.log(`  ${c.boldYellow('Scan incomplete')} — stopped at the ${capUsed}-file cap, so files were left unscanned.`);
+      console.log(`  ${c.dim('This is not a clean result. Raise the cap, or scan a subtree at a time:')}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4}`);
+      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4} --json | jq .summary.truncated\n`);
+    }
+    if (stats.unreadable.length > 0) {
+      const n = stats.unreadable.length;
+      console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} could not be read`)} — not scanned, so not known to be clean.`);
+      for (const f of stats.unreadable.slice(0, 10)) {
+        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
+      }
+      if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      // Do NOT assert the cause. "Unreadable" covers permissions, a symlink
+      // loop (ELOOP) and a too-many-open-files failure, and `chmod +r` is a dead
+      // end for the last two — a Fix that cannot work is worse than none.
+      // `ls -ld` distinguishes them, so it leads. `+rx` not `+r`: a directory
+      // needs the execute bit to be traversed, so `+r` alone leaves the scan
+      // still unable to enter it.
+      console.log(`  ${c.dim('Cause differs by path — permissions, a broken or looping symlink, or an I/O error.')}`);
+      console.log(`  ${c.cyan('Verify:')} ls -ld ${runnable(stats.unreadable[0])}`);
+      console.log(`  ${c.cyan('Fix:')}    chmod +rx ${runnable(stats.unreadable[0])}   ${c.dim('# if the cause is permissions')}\n`);
+    }
+    if (stats.outOfRoot.length > 0) {
+      const n = stats.outOfRoot.length;
+      console.log(`  ${c.boldYellow(`${n} symlink${n > 1 ? 's' : ''} ${n > 1 ? 'point' : 'points'} outside the scan root`)} — not followed.`);
+      for (const f of stats.outOfRoot.slice(0, 10)) {
+        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
+      }
+      if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      console.log(`  ${c.dim('Following them would let a link to $HOME pull the whole home directory into the scan.')}`);
+      // No `$(...)` here: the path is attacker-controlled (it is a filename in a
+      // scanned repo), and a command substitution around it hands a
+      // copy-pasting user an execution primitive.
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable(nodeFs.realpathSync(nodePath.resolve(projectDir, stats.outOfRoot[0])))}\n`);
+    }
+  };
+  // An out-of-root link is a reported boundary, not a gap in what we claimed to
+  // cover, so it does not make the result non-clean.
+  const anyCoverageGap = () => stats.truncated || stats.unreadable.length > 0;
 
   // When everything (or a real subset) was hidden as a placeholder, say so and
   // point at the flag that reveals them. A silent "No credentials found" makes a
@@ -186,7 +273,19 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   };
 
   if (findings.length === 0) {
-    console.log('  No hardcoded credentials found.');
+    if (anyCoverageGap()) {
+      // Deliberately NOT "No hardcoded credentials found" — nothing was found in
+      // the part we reached, which is a different claim.
+      console.log('  No credentials found in the files scanned.\n');
+      coverageWarnings();
+      placeholderHint();
+      return 1;
+    }
+    console.log('  No hardcoded credentials found.\n');
+    // Still report a boundary we chose not to cross. The result IS clean for the
+    // tree we claimed to scan, so this stays exit 0 — but a link we declined to
+    // follow must be visible, or declining becomes its own silent gap.
+    coverageWarnings();
     placeholderHint();
     console.log('  Verify keys are working: npx secretless-ai verify\n');
     return 0;
@@ -194,12 +293,15 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
 
   // If --explain requested, use NanoMind engine for rich context
   if (options?.explain) {
-    return runScanWithExplanations(findings);
+    const code = await runScanWithExplanations(findings);
+    coverageWarnings();
+    return code;
   }
 
   printFindings(findings);
+  coverageWarnings();
   placeholderHint();
-  return findings.length > 0 ? 1 : 0;
+  return 1;
 }
 
 function printFindings(findings: ReturnType<typeof scan>): void {
@@ -404,6 +506,10 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
       denyRuleCount: s.denyRuleCount,
       configuredTools: s.configuredTools,
       secretsFound: s.secretsFound,
+      // `secretsFound: 0` is a lower bound, not a verdict, when the scan behind
+      // it could not read the whole tree. A CI consumer gating on this needs to
+      // tell "found nothing" from "could not look".
+      scanIncomplete: s.scanIncomplete,
       transcriptProtection: tp,
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,

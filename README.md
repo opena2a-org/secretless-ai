@@ -8,7 +8,7 @@ Keep API keys and other secrets invisible to AI coding tools. Works with Claude 
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1101%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![Tests](https://img.shields.io/badge/tests-1333%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
 
 [Website](https://opena2a.org/secretless) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
 
@@ -19,7 +19,7 @@ npx secretless-ai init
 ```
 
 ```
-  Secretless v0.18.3
+  Secretless v0.21.2
   Keeping secrets out of AI
 
   Configured: Claude Code (1 of 1 detected)
@@ -152,6 +152,7 @@ npx secretless-ai mcp-unprotect                     # restore original configs f
 
 ```bash
 npx secretless-ai scan --min-confidence 0.85   # high-confidence findings only
+npx secretless-ai scan --max-files 20000       # raise the per-walk file cap (default 5000)
 npx secretless-ai ignore docs/migration.md     # append a path to .secretlessignore
 npx secretless-ai ignore --pattern '*.golden.txt'
 npx secretless-ai diff main                    # audit secretless-managed file changes vs a git ref
@@ -160,6 +161,18 @@ npx secretless-ai status --json                # protection state for CI (gate o
 ```
 
 `scan` renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so they stay visible without being re-suppressed.
+
+### Incomplete scans do not report clean
+
+A scan that could not read everything is not a passing scan. If the walk stops at the file cap, or a path cannot be opened, `scan` prints what it missed, exits 1, and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`. In `--json`, `summary.truncated` and `summary.unreadable` carry the same signal, so CI can tell "clean" from "unfinished".
+
+Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed -- otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan -- and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
+
+```bash
+npx secretless-ai scan --json | jq '.summary'
+# { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
+#   "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0 }
+```
 
 ## Architecture
 
