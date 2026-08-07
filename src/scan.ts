@@ -132,6 +132,13 @@ export interface ScanOptions {
    * hidden. Backs the `scan --show-placeholders` flag.
    */
   showPlaceholders?: boolean;
+  /**
+   * Per-file size cap in bytes, applied to config AND source files alike.
+   * Defaults to `CONFIG_FILE_CAP_BYTES` / `SOURCE_FILE_CAP_BYTES` respectively.
+   * Backs `scan --max-file-size`, so a user told a file was skipped for size
+   * has a way to scan it rather than only a way to learn it was missed.
+   */
+  maxFileSizeBytes?: number;
 }
 
 /** Optional out-param: counters the scan populates as a side channel. */
@@ -164,7 +171,22 @@ export interface ScanStats {
    * the same fail-open in a new place.
    */
   outOfRoot?: string[];
+  /**
+   * Files skipped for exceeding the per-file size cap (10 MB for config files,
+   * 1 MB for source files).
+   *
+   * Same third state as `unreadable`: the cap is a resource guard, not a
+   * judgement about content, and the same bytes under the cap produce a
+   * finding. Before this was reported, an 11 MB `config.json` with a live key
+   * on line 1 scanned to `total: 0`, `truncated: false`, exit 0 — a file we
+   * never opened rendered as a clean scan (#120).
+   */
+  oversize?: Array<{ path: string; bytes: number; capBytes: number }>;
 }
+
+/** Per-file size caps. A file above the cap is skipped and reported, never dropped silently. */
+export const CONFIG_FILE_CAP_BYTES = 10 * 1024 * 1024;
+export const SOURCE_FILE_CAP_BYTES = 1 * 1024 * 1024;
 
 /**
  * Demo-tier passwords that combine with localhost-bound DB connection strings
@@ -325,7 +347,14 @@ function scanSingleFile(
 
   try {
     const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size > 10 * 1024 * 1024) return findings;
+    if (!stat.isFile()) return findings;
+    const singleCap = options?.maxFileSizeBytes ?? CONFIG_FILE_CAP_BYTES;
+    if (stat.size > singleCap) {
+      // Skipping is fine; skipping silently is not. A named target over the
+      // cap used to return zero findings and exit 0.
+      stats?.oversize?.push({ path: display, bytes: stat.size, capBytes: singleCap });
+      return findings;
+    }
     const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
 
     for (let i = 0; i < lines.length; i++) {
@@ -381,6 +410,10 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   };
   const findings: ScanFinding[] = [];
   const scanGlobal = options?.scanGlobal !== false;
+  // One user-supplied cap overrides both defaults: `--max-file-size 20mb` means
+  // "scan files up to 20 MB", not "20 MB for config and still 1 MB for source".
+  const configCap = options?.maxFileSizeBytes ?? CONFIG_FILE_CAP_BYTES;
+  const sourceCap = options?.maxFileSizeBytes ?? SOURCE_FILE_CAP_BYTES;
   // Written unconditionally so a complete walk actively reports "not truncated"
   // rather than leaving a stale or absent flag for the caller to misread.
   if (stats) stats.truncated = false;
@@ -464,7 +497,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     if (!fs.existsSync(fullPath)) continue;
     try {
       const stat = fs.statSync(fullPath);
-      if (stat.size > 10 * 1024 * 1024 || !stat.isFile()) continue;
+      if (!stat.isFile()) continue;
+      if (stat.size > configCap) {
+        stats?.oversize?.push({ path: global.label, bytes: stat.size, capBytes: configCap });
+        continue;
+      }
       const content = fs.readFileSync(fullPath, 'utf-8');
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {
@@ -530,8 +567,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
 
     try {
       const stat = fs.statSync(fullPath);
-      if (stat.size > 10 * 1024 * 1024) continue;
       if (!stat.isFile()) continue;
+      if (stat.size > configCap) {
+        stats?.oversize?.push({ path: configFile, bytes: stat.size, capBytes: configCap });
+        continue;
+      }
 
       const content = fs.readFileSync(fullPath, 'utf-8');
       const lines = content.split('\n');
@@ -582,7 +622,15 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
 
       try {
         const stat = fs.statSync(filePath);
-        if (stat.size > 1 * 1024 * 1024 || !stat.isFile()) continue; // 1MB limit for source
+        if (!stat.isFile()) continue;
+        if (stat.size > sourceCap) {
+          stats?.oversize?.push({
+            path: relPath.replace(/\\/g, '/'),
+            bytes: stat.size,
+            capBytes: sourceCap,
+          });
+          continue;
+        }
 
         const content = fs.readFileSync(filePath, 'utf-8');
         const lines = content.split('\n');
@@ -632,7 +680,16 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
       try {
         const stat = fs.statSync(filePath);
-        if (!stat.isFile() || stat.size > 1 * 1024 * 1024) continue;
+        if (!stat.isFile()) continue;
+        if (stat.size > sourceCap) {
+          // A private-key file over the cap is exactly the case worth naming.
+          stats?.oversize?.push({
+            path: relPath.replace(/\\/g, '/'),
+            bytes: stat.size,
+            capBytes: sourceCap,
+          });
+          continue;
+        }
         const ext = path.extname(filePath).toLowerCase();
 
         if (ext === '.p12' || ext === '.pfx') {
@@ -700,7 +757,7 @@ function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFind
       real = realpathOrNull(path.resolve(projectDir, f.file)) ?? f.file;
       realOf.set(f.file, real);
     }
-    const key = `${real} ${f.line} ${f.patternId}`;
+    const key = `${real}\u0000${f.line}\u0000${f.patternId}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(f);

@@ -771,6 +771,151 @@ describe('init', () => {
     expect(result.toolsConfigured).toContain('claude-code');
     expect(result.toolsConfigured).toContain('cursor');
   });
+
+  // #122. `init` used to collapse "absent" and "present but unparseable" into
+  // the same `null`, turn it into `{}`, and write a Secretless-only document
+  // over the user's file — every key gone, no backup — while reporting
+  // "added 96 deny patterns". These tests pin both directions: a file we CAN
+  // merge into is still merged and preserved, and a file we cannot is left
+  // byte-identical and reported as a failure.
+  describe('a settings.json we cannot merge into is never overwritten (#122)', () => {
+    const settingsPath = (): string => path.join(dir, '.claude', 'settings.json');
+
+    function seed(content: string): string {
+      fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+      fs.writeFileSync(settingsPath(), content);
+      return content;
+    }
+
+    // The trigger from the field: JSONC, i.e. what VS Code writes and what
+    // people hand-edit into Claude Code settings.
+    const JSONC = `{
+  // Team-wide settings - do not delete
+  "model": "opus",
+  "permissions": {
+    "allow": ["Bash(npm test:*)"],
+    "deny": ["Read(prod-secrets.json)"],
+  },
+  "statusLine": { "type": "command", "command": "./sl.sh" }
+}`;
+
+    // Every top-level shape that is valid JSON but not a mergeable object.
+    // Each reached a distinct failure before the fix: `null` took the same
+    // overwrite path as a parse error; an array had its assigned properties
+    // silently dropped by JSON.stringify, so init reported 96 deny patterns
+    // added and wrote back an array holding none; a string threw a raw
+    // TypeError ("Cannot create property 'hooks' on string") at the user.
+    const NON_OBJECT: Array<[string, string]> = [
+      ['null', 'null'],
+      ['an array', '["model", "statusLine"]'],
+      ['a string', '"myCustomKey"'],
+      ['a number', '42'],
+    ];
+
+    it('preserves every user key when the file IS valid JSON', () => {
+      seed(JSON.stringify({
+        model: 'opus',
+        myCustomKey: 1,
+        permissions: { allow: ['Bash(npm test:*)'], deny: ['Read(prod-secrets.json)'] },
+        statusLine: { type: 'command', command: './sl.sh' },
+      }, null, 2));
+
+      const result = init(dir);
+      const after = JSON.parse(fs.readFileSync(settingsPath(), 'utf-8'));
+
+      expect(result.settingsUnusable).toBeUndefined();
+      expect(after.model).toBe('opus');
+      expect(after.myCustomKey).toBe(1);
+      expect(after.statusLine).toEqual({ type: 'command', command: './sl.sh' });
+      expect(after.permissions.allow).toContain('Bash(npm test:*)');
+      // The user's own deny entry survives alongside the ones we add.
+      expect(after.permissions.deny).toContain('Read(prod-secrets.json)');
+      expect(after.permissions.deny).toContain('Read(.env)');
+      expect(result.denyRulesAdded).toBeGreaterThan(0);
+      expect(result.filesModified).toContain('.claude/settings.json');
+    });
+
+    it('leaves a JSONC settings.json byte-identical instead of clobbering it', () => {
+      const before = seed(JSONC);
+
+      const result = init(dir);
+
+      expect(fs.readFileSync(settingsPath(), 'utf-8')).toBe(before);
+      expect(result.settingsUnusable?.path).toBe('.claude/settings.json');
+      // Every user key is still there, in the original text.
+      for (const marker of ['"model": "opus"', 'Bash(npm test:*)', 'Read(prod-secrets.json)', 'statusLine']) {
+        expect(fs.readFileSync(settingsPath(), 'utf-8')).toContain(marker);
+      }
+    });
+
+    it('does not report deny patterns it did not add', () => {
+      seed(JSONC);
+
+      const result = init(dir);
+
+      // The reported line is the aggravating half of #122: "added 96 deny
+      // patterns" told the user an additive merge had happened.
+      expect(result.denyRulesAdded).toBe(0);
+      expect(result.denyRulesRemoved).toBe(0);
+      expect(result.denyRulesTotal).toBe(0);
+      expect(result.filesModified).not.toContain('.claude/settings.json');
+    });
+
+    it('does not claim the tool was configured', () => {
+      seed(JSONC);
+
+      const result = init(dir);
+
+      // The guard script on disk is inert until settings.json wires it into
+      // PreToolUse, so listing claude-code as configured would be a second
+      // false success in the same output.
+      expect(result.toolsConfigured).not.toContain('claude-code');
+    });
+
+    it.each(NON_OBJECT)('leaves settings.json untouched when the top level is %s', (_label, content) => {
+      const before = seed(content);
+
+      const result = init(dir);
+
+      expect(fs.readFileSync(settingsPath(), 'utf-8')).toBe(before);
+      expect(result.settingsUnusable).toBeDefined();
+      expect(result.denyRulesAdded).toBe(0);
+      expect(result.toolsConfigured).not.toContain('claude-code');
+    });
+
+    it('still configures a file that is empty, which cannot hold user content', () => {
+      seed('   \n');
+
+      const result = init(dir);
+      const after = JSON.parse(fs.readFileSync(settingsPath(), 'utf-8'));
+
+      expect(result.settingsUnusable).toBeUndefined();
+      expect(after.permissions.deny).toContain('Read(.env)');
+      expect(result.denyRulesAdded).toBeGreaterThan(0);
+    });
+
+    it('reports the parse error so the user can find it', () => {
+      seed(JSONC);
+
+      const result = init(dir);
+
+      // Naming the file without naming the fault is a dead end.
+      expect(result.settingsUnusable?.reason).toMatch(/JSON|position|token/i);
+    });
+
+    it('status reports unreadable settings as unknown, not as zero rules', () => {
+      seed(JSONC);
+      init(dir);
+
+      const s = status(dir);
+
+      // "0 deny patterns" and "could not read the deny patterns" are different
+      // answers. Reporting the first for the second made an unprotected
+      // project look identical to a healthy one.
+      expect(s.settingsUnreadable?.path).toBe('.claude/settings.json');
+      expect(s.isProtected).toBe(false);
+    });
+  });
 });
 
 describe('scan', () => {

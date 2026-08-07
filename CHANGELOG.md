@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.21.3] - unreleased
+
+Closes the `init` data-loss defect disclosed as a known issue in 0.21.2, plus
+three more places where the same shape appeared: a file we could not parse or
+could not open was treated as a file with nothing in it.
+
+**Behavior change worth reading before you upgrade:** `init` now exits 1 and
+changes nothing when `.claude/settings.json` cannot be merged into, instead of
+replacing it. `scan` now exits 1 when a file was skipped for exceeding the
+per-file size cap, the same way it already does for the file-count cap and for
+unreadable paths. Both were previously exit 0.
+
+### Fixed
+
+- **`init` destroyed `.claude/settings.json` when it did not parse as strict JSON, and reported the merge as successful ([#122](https://github.com/opena2a-org/secretless-ai/issues/122)).** The read helper collapsed "file absent" and "file present but unparseable" into the same `null`; the caller turned that into `{}` and wrote it back, so every user key was replaced by a Secretless-only document with no backup — while the run printed `added 96 deny patterns` and exited 0. The trigger is JSONC (`//` comments, trailing commas), which is what VS Code writes and what people hand-edit into that file, so the failure landed on files that looked normal to their owner.
+
+  `init` now leaves such a file byte-identical, names the parse error, states that no deny patterns and no hook wiring were installed, and exits 1. It does not list Claude Code as configured, because the guard script on disk is inert until settings.json references it — reporting it as configured would have been the same false success one line further down.
+
+  Three neighbouring shapes reached the same write path and are fixed with it. A settings file containing valid JSON `null` took the overwrite branch. An **array** was worse than data loss: properties assigned to an array are dropped by `JSON.stringify`, so `init` wrote the array back unchanged while reporting 96 deny patterns added — a project left completely unprotected with a success message and nothing destroyed to prompt a second look. A **string** or number threw a raw `Cannot create property 'hooks' on string` at the user with no file named and no fix. A file that is empty or whitespace-only is still configured normally: it provably holds no user content.
+
+- **`status` reported an unparseable `.claude/settings.json` as zero deny patterns.** "No rules configured" and "could not read the rules" rendered identically, so a project whose protection was never wired up looked exactly like a healthy one — and the ✓ next to `Claude Code hook installed` was keyed on the guard script merely existing on disk, not on anything having wired it in. `status` now reports the parse failure as a warning with a verify command, exposes `settingsUnreadable` in `--json`, and does not claim `isProtected`.
+
+- **Setting the backend or the cache TTL silently reset the other one when `~/.secretless-ai/config.json` did not parse.** Same collapse as #122 in a smaller file: the read-modify-write started from `{}` on a parse failure, so `backend set` dropped `cacheTtl` and `cache set` reverted the backend to `local`. For a tool that decides where credentials get written, quietly resetting that choice is the defect, not the recovery. Both writers now refuse, name the file and the parse error, and leave it unchanged.
+
+- **Files over the per-file size cap were skipped with no warning ([#120](https://github.com/opena2a-org/secretless-ai/issues/120)).** A config file over 10 MB or a source file over 1 MB was dropped with no `truncated`, no `unreadable` and no output of any kind. Measured: an 11 MB `config.json` with a live-shaped Google key on line 1 scanned to `total: 0`, `truncated: false`, exit 0. The cap bounds memory use and says nothing about the contents — the same bytes under it produce a finding — so this was the last coverage gap of the class 0.21.2 otherwise closed. Skipped files are now listed with their size and the cap, counted in `summary.oversize` and `oversizeFiles` in `--json`, and set exit 1.
+
+### Added
+
+- **`scan --max-file-size <size>`** raises the per-file cap (`20mb`, `500kb`, or a byte count), so a reported skip has a fix and not only a name. One value applies to config and source files alike. An unparseable value is refused with a warning rather than silently falling back — `--max-files` had shown that `parseInt` turns `1e6` into a cap of 1 while the user believes it was raised.
+- **The scan triage flags are now listed in `--help`.** `--max-files`, `--max-file-size`, `--min-confidence`, `--show-placeholders`, `--no-ignore` and `--include-tests` were all absent, including the two that coverage warnings tell the user to run.
+
+### Internal
+
+- The finding-dedup key in `src/scan.ts` held two raw NUL bytes written directly into the source rather than as escapes. The compiled string is unchanged; the source is no longer classified as binary by `grep`, `rg` and every diff viewer.
+
 ## [0.21.2] - 2026-08-06
 
 Three defects that shipped in 0.21.1, two of them regressions introduced by that

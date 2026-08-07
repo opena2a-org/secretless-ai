@@ -47,24 +47,65 @@ export function readBackendConfig(): SelectableBackendType | undefined {
   }
 }
 
+/**
+ * Read the existing config for a read-modify-write.
+ *
+ * "Missing" and "present but unparseable" are different answers and must not
+ * collapse into the same `{}`. Starting fresh over a file we failed to parse
+ * silently drops every sibling key — set the backend and `cacheTtl` is gone,
+ * set the TTL and the backend reverts to `local`. For a tool that decides
+ * where credentials get written, quietly resetting that choice is the same
+ * class of defect as `init` clobbering settings.json (#122): a destructive
+ * write reported as a success.
+ *
+ * Throws when the file exists and cannot be parsed. Callers surface the
+ * message; nothing is written.
+ */
+function readConfigForUpdate(fp: string): SecretlessConfig {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(fp, 'utf-8');
+  } catch {
+    return {}; // No existing config — a fresh document is correct here.
+  }
+
+  if (raw.trim() === '') return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `${fp} is not valid JSON, so it was left unchanged (${(err as Error).message}). `
+      + `Fix or delete the file, then retry.`,
+    );
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(
+      `${fp} does not contain a JSON object, so it was left unchanged. `
+      + `Fix or delete the file, then retry.`,
+    );
+  }
+
+  return parsed as SecretlessConfig;
+}
+
+function writeConfig(fp: string, config: SecretlessConfig): void {
+  const tmpPath = fp + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmpPath, fp);
+}
+
 /** Write the backend preference to the config file. */
 export function writeBackendConfig(backend: SelectableBackendType): void {
   const dir = configDir();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   const fp = configPath();
-  let config: SecretlessConfig = {};
-  try {
-    const raw = fs.readFileSync(fp, 'utf-8');
-    config = JSON.parse(raw) as SecretlessConfig;
-  } catch {
-    // No existing config or invalid JSON — start fresh
-  }
-
+  const config = readConfigForUpdate(fp);
   config.backend = backend;
-  const tmpPath = fp + '.tmp';
-  fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmpPath, fp);
+  writeConfig(fp, config);
 }
 
 /**
@@ -99,18 +140,9 @@ export function writeCacheTtl(ttlSeconds: number): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   const fp = configPath();
-  let config: SecretlessConfig = {};
-  try {
-    const raw = fs.readFileSync(fp, 'utf-8');
-    config = JSON.parse(raw) as SecretlessConfig;
-  } catch {
-    // No existing config or invalid JSON — start fresh
-  }
-
+  const config = readConfigForUpdate(fp);
   config.cacheTtl = ttlSeconds;
-  const tmpPath = fp + '.tmp';
-  fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmpPath, fp);
+  writeConfig(fp, config);
 }
 
 /**

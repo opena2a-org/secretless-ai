@@ -210,3 +210,84 @@ describe('formatTtl', () => {
     expect(formatTtl(86400)).toBe('1d');
   });
 });
+
+// Same class as #122: a read-modify-write that collapses "missing" and
+// "present but unparseable" into `{}` does not start fresh, it deletes. Here
+// the casualty is the sibling key — setting the backend dropped `cacheTtl`,
+// setting the TTL reverted the backend to `local`. For a tool that decides
+// where credentials get written, silently resetting that choice is the defect,
+// not the recovery.
+describe('a config file we cannot parse is never silently reset', () => {
+  let tmpHome: string;
+  let originalHome: string | undefined;
+
+  const configFile = (): string => path.join(tmpHome, '.secretless-ai', 'config.json');
+
+  function seedConfig(content: string): string {
+    fs.mkdirSync(path.join(tmpHome, '.secretless-ai'), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(configFile(), content);
+    return content;
+  }
+
+  beforeEach(() => {
+    tmpHome = setup();
+    originalHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+  });
+
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    cleanup(tmpHome);
+  });
+
+  it('keeps the sibling key when the config IS valid JSON', () => {
+    seedConfig(JSON.stringify({ backend: 'keychain', cacheTtl: 900 }, null, 2));
+
+    writeCacheTtl(60);
+
+    // The control direction: a mergeable file still merges.
+    expect(readBackendConfig()).toBe('keychain');
+    expect(readCacheTtl()).toBe(60);
+  });
+
+  it('refuses to write over an unparseable config instead of dropping cacheTtl', () => {
+    const before = seedConfig('{ "backend": "keychain", "cacheTtl": 900, }'); // trailing comma
+
+    expect(() => writeBackendConfig('local')).toThrow(/not valid JSON/);
+    expect(fs.readFileSync(configFile(), 'utf-8')).toBe(before);
+  });
+
+  it('refuses to write over an unparseable config instead of dropping the backend', () => {
+    const before = seedConfig('{ "backend": "1password" // chosen deliberately\n}');
+
+    expect(() => writeCacheTtl(60)).toThrow(/not valid JSON/);
+    expect(fs.readFileSync(configFile(), 'utf-8')).toBe(before);
+  });
+
+  it.each([
+    ['null', 'null'],
+    ['an array', '["keychain"]'],
+    ['a string', '"keychain"'],
+  ])('refuses when the config top level is %s', (_label, content) => {
+    const before = seedConfig(content);
+
+    expect(() => writeBackendConfig('local')).toThrow(/does not contain a JSON object/);
+    expect(fs.readFileSync(configFile(), 'utf-8')).toBe(before);
+  });
+
+  it('names a runnable next step in the error', () => {
+    seedConfig('{ "backend": "keychain", }');
+
+    // A refusal that does not say what to do next is a dead end.
+    expect(() => writeBackendConfig('local')).toThrow(/Fix or delete the file/);
+  });
+
+  it('still writes a fresh config when the file is absent or empty', () => {
+    writeBackendConfig('keychain');
+    expect(readBackendConfig()).toBe('keychain');
+
+    seedConfig('  \n');
+    writeBackendConfig('vault');
+    expect(readBackendConfig()).toBe('vault');
+  });
+});

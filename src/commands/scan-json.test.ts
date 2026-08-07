@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { runScan } from './core';
+import { runScan, parseFileSize } from './core';
 
 function tmpProjectWith(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-json-'));
@@ -56,5 +56,37 @@ describe('runScan --json', () => {
 
     await runScan(dir, { json: true });
     expect(lines.join('\n')).not.toContain('Secretless Scanner');
+  });
+});
+
+describe('parseFileSize (--max-file-size)', () => {
+  it('parses a bare byte count', () => {
+    expect(parseFileSize('2048')).toBe(2048);
+  });
+
+  it.each([
+    ['20mb', 20 * 1024 * 1024],
+    ['20MB', 20 * 1024 * 1024],
+    ['20m', 20 * 1024 * 1024],
+    ['500kb', 500 * 1024],
+    ['1gb', 1024 * 1024 * 1024],
+    ['1.5mb', Math.floor(1.5 * 1024 * 1024)],
+    [' 20 mb ', 20 * 1024 * 1024],
+  ])('parses %s', (input, expected) => {
+    expect(parseFileSize(input)).toBe(expected);
+  });
+
+  it.each([
+    ['0'],            // a zero cap would skip everything
+    ['-5mb'],
+    ['20abc'],        // parseInt would have silently returned 20
+    ['1e6'],          // parseInt would have silently returned 1
+    ['mb'],
+    [''],
+    ['20 mb extra'],
+  ])('returns null for %s rather than guessing', (input) => {
+    // Returning a default here would ignore the flag without saying so, which
+    // is the same silent-shortfall class the flag exists to fix.
+    expect(parseFileSize(input)).toBeNull();
   });
 });
