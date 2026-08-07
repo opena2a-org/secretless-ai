@@ -652,7 +652,14 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
   console.log();
   console.log(`  ── Verdict ${headerLine.slice(0, Math.max(0, 49))}`);
   if (!s.isProtected) {
-    console.log('  Not protected. Run `secretless-ai init` to install hooks.');
+    if (s.settingsUnreadable) {
+      // `init` refuses on this project, so sending the user there is a dead
+      // end — the same defect as pointing at a command that no-ops for the
+      // very state that printed it. Name the blocking step instead.
+      console.log(`  Not protected. Fix the JSON in ${s.settingsUnreadable.path}, then run \`secretless-ai init\`.`);
+    } else {
+      console.log('  Not protected. Run `secretless-ai init` to install hooks.');
+    }
   } else if (warningCount === 0) {
     console.log('  Protected — Clean');
   } else {

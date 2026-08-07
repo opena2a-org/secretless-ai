@@ -1086,3 +1086,25 @@ describe('status', () => {
     expect(s.secretsFound).toBe(1);
   });
 });
+
+// A next step that no-ops for the very state that printed it is a dead end.
+// `status` used to send a project with an unparseable settings.json to
+// `init`, which now refuses on exactly that project.
+describe('status next steps stay runnable when settings.json does not parse', () => {
+  let dir: string;
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('does not claim protection from a guard script nothing wires in', () => {
+    fs.mkdirSync(path.join(dir, '.claude', 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{\n // c\n "model": "opus"\n}\n');
+    // The script exists on disk but settings.json never references it.
+    fs.writeFileSync(path.join(dir, '.claude', 'hooks', 'secretless-guard.sh'), '#!/bin/sh\n', { mode: 0o755 });
+
+    const s = status(dir);
+
+    expect(s.hookInstalled).toBe(true);      // the file is really there
+    expect(s.isProtected).toBe(false);       // but it is not wired in
+    expect(s.settingsUnreadable).toBeDefined();
+  });
+});
