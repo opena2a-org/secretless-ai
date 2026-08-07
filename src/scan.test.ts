@@ -895,6 +895,31 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     expect(findings.length).toBe(1);
   });
 
+  it('finds an in-root symlink target when the scan path differs in CASE', () => {
+    // Containment compares resolved paths as strings. If resolution does not
+    // canonicalise case, scanning `ROOT` when the directory is `root` leaves an
+    // in-tree link resolving to a differently-cased string, which fails the
+    // prefix test and silently drops the subtree. On a case-sensitive volume the
+    // uppercase path simply does not exist, so the case is skipped there rather
+    // than asserted the other way.
+    const parent = tmpdir('scan-case-');
+    fs.mkdirSync(path.join(parent, 'root/inner'), { recursive: true });
+    fs.writeFileSync(path.join(parent, 'root/inner/config.json'), `{"key": "${GKEY}"}\n`);
+    fs.symlinkSync(path.join(parent, 'root/inner'), path.join(parent, 'root/link'), 'dir');
+
+    const upper = path.join(parent, 'ROOT');
+    let caseInsensitive = true;
+    try { fs.readdirSync(upper); } catch { caseInsensitive = false; }
+    if (!caseInsensitive) return;
+
+    const stats = { placeholdersSuppressed: 0, truncated: false, outOfRoot: [] as string[] };
+    const findings = scan(upper, { scanGlobal: false }, stats);
+    // The credential is reachable, and the in-root link must not be reported as
+    // pointing outside the root.
+    expect(findings.length).toBeGreaterThan(0);
+    expect(stats.outOfRoot).toEqual([]);
+  });
+
   it('an unreadable DIRECTORY is reported, not counted as clean', () => {
     // readdirSync failure used to `continue` with nothing recorded, so the scan
     // asserted truncated:false / unreadable:0 over a subtree it never opened.

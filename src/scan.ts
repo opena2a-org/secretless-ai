@@ -900,26 +900,43 @@ const MAX_PATHS_PER_DIR = 32;
  * inside `/tmp/root` — but a root of `/` already ends in the separator, and
  * appending a second one made every absolute path test as OUTSIDE it.
  *
- * On a case-insensitive filesystem `realpathSync` does NOT canonicalise case, so
- * scanning `ROOT` when the directory is `root` leaves an in-tree link resolving
- * to a path that fails a case-sensitive prefix test — and the subtree it reaches
- * would be dropped. Compare case-insensitively where the platform is.
+ * A pure string comparison is sound here ONLY because both sides come from
+ * `realpathOrNull`, which resolves `..` and every intermediate symlink first: a
+ * traversal string cannot survive that, so `<root>/link -> <root>/../../etc`
+ * arrives as `/etc` and is rejected on its own merits.
  */
 function isWithinRoot(target: string, rootReal: string): boolean {
   const prefix = rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep;
-  if (target === rootReal || target.startsWith(prefix)) return true;
-  if (process.platform !== 'darwin' && process.platform !== 'win32') return false;
-  const t = target.toLowerCase();
-  const r = rootReal.toLowerCase();
-  return t === r || t.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+  return target === rootReal || target.startsWith(prefix);
 }
 
-/** Resolve a path to its real location, or null when it cannot be resolved. */
+/**
+ * Resolve a path to its real location, or null when it cannot be resolved.
+ *
+ * `realpathSync.native` rather than `realpathSync`, because it also canonicalises
+ * CASE. That matters for `isWithinRoot`: on a case-insensitive volume, scanning
+ * `ROOT` when the directory is `root` otherwise leaves an in-tree link resolving
+ * to a differently-cased string that fails the prefix test, silently dropping
+ * the subtree it reaches.
+ *
+ * This replaced a platform-keyed case-insensitive comparison, which was wrong in
+ * the other direction: macOS can host case-SENSITIVE volumes, where `/repo` and
+ * /REPO` are genuinely different directories and lowercasing would have let a
+ * link escape the root. Asking the filesystem is correct on both volume types;
+ * guessing from `process.platform` is correct on neither reliably.
+ */
 function realpathOrNull(p: string): string | null {
   try {
-    return fs.realpathSync(p);
+    return fs.realpathSync.native(p);
   } catch {
-    return null;
+    // `.native` can fail where the portable implementation succeeds (and is
+    // absent on some runtimes), so fall back rather than treating a resolvable
+    // path as unreadable.
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return null;
+    }
   }
 }
 
