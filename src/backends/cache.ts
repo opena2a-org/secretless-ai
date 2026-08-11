@@ -23,10 +23,79 @@ const SALT_FILE = '.salt';
 interface CacheEntry {
   value: string;
   cachedAt: number; // epoch ms
+  /** Writer stamp — see WRITER_STAMP. Absent on entries written before 0.21.4. */
+  writer?: string;
+  /**
+   * On a prefix marker only: how many entries the resolve that wrote this marker
+   * actually cached. The marker claims "this prefix is fully resolved"; without
+   * the count it cannot tell a complete cache from one whose entries are gone.
+   */
+  count?: number;
 }
 
 interface CacheStore {
   entries: Record<string, CacheEntry>;
+}
+
+/**
+ * Identity of the build that wrote a cache entry. A cached value is only served
+ * back to the same build that produced it.
+ *
+ * A TTL bounds how STALE a value may be; it says nothing about how it was READ.
+ * #107 fixed a read path that corrupted most 32-hex secrets, and the fix changed
+ * no file format at all — so a format-version constant would not have been
+ * bumped, and the corrupted value would still have been served. The build
+ * boundary is the one place a value's provenance actually changes, which makes
+ * it the thing to record (#118).
+ *
+ * Version alone is not the build: a working tree, a global install and an `npx`
+ * unpack can all report the same version while running different code, and the
+ * working tree is where a read path is most likely to be mid-fix. The install
+ * root is folded in (hashed, so no path is written into the file) to separate
+ * them. The cost of that precision is at most one extra unlock prompt when a
+ * user alternates between two installs of the same version; the cost of missing
+ * it is serving a credential read by code we already know was wrong.
+ */
+const WRITER_STAMP: string = computeWriterStamp();
+
+function computeWriterStamp(): string {
+  let version = 'unknown';
+  try {
+    version = String((require('../../package.json') as { version: string }).version);
+  } catch {
+    // Version is unreadable only in an unpacked-wrong install; an "unknown"
+    // stamp is stable within that install and still separates it from a real
+    // one, which is the property that matters.
+  }
+  const root = path.resolve(__dirname, '..', '..');
+  const rootHash = crypto.createHash('sha256').update(root).digest('hex').slice(0, 8);
+  return `${version}+${rootHash}`;
+}
+
+/**
+ * The stamp production actually uses. Exported so a test can assert the default
+ * is derived from the real package version rather than from whatever a test
+ * injected — an injected stamp proves the comparison works, not that the thing
+ * being compared is real.
+ */
+export function defaultWriterStamp(): string {
+  return WRITER_STAMP;
+}
+
+/** Default cache directory. Shared so `clearCacheFile` cannot drift off it. */
+function defaultCacheDir(): string {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
+  return path.join(home, '.secretless-ai', 'cache');
+}
+
+/**
+ * Where the cache lived until 0.12.3, alongside the store itself. Still cleared,
+ * because a machine that ran an older build is carrying an encrypted file full
+ * of credential values that nothing reads and nothing expires.
+ */
+function legacyCacheDir(): string {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
+  return path.join(home, '.secretless-ai', 'store');
 }
 
 /**
@@ -54,20 +123,28 @@ export class CachedBackend implements WritableSecretBackend {
   private readonly cacheDir: string;
   private readonly encryptionKey: Buffer;
   private readonly ttlMs: number;
+  /**
+   * Overridable ONLY so a test can play two builds against one cache file.
+   * Production never passes it — `defaultWriterStamp` pins the default to the
+   * real package version, so an injected stamp cannot make a broken default
+   * look correct.
+   */
+  private readonly writerStamp: string;
 
   /** In-memory mirror — avoids decrypting the file on every resolve(). */
   private memCache: CacheStore | null = null;
 
   constructor(
     inner: WritableSecretBackend,
-    options?: { ttlMs?: number; storeDir?: string },
+    options?: { ttlMs?: number; storeDir?: string; writerStamp?: string },
   ) {
     this.inner = inner;
     this.name = `cached(${inner.name})`;
     this.ttlMs = options?.ttlMs ?? 5 * 60 * 1000; // default 5 minutes
+    this.writerStamp = options?.writerStamp ?? WRITER_STAMP;
 
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
-    const storeDir = options?.storeDir ?? path.join(home, '.secretless-ai', 'cache');
+    const storeDir = options?.storeDir ?? defaultCacheDir();
     fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
     this.cacheDir = storeDir;
     this.cachePath = path.join(storeDir, CACHE_FILENAME);
@@ -77,8 +154,7 @@ export class CachedBackend implements WritableSecretBackend {
     const salt = loadOrCreateCacheSalt(storeDir);
     this.encryptionKey = crypto.scryptSync(keyMaterial, salt, 32, { N: 16384, r: 8, p: 1 });
 
-    // Migration: try to read existing cache with legacy SHA-256 key
-    this.migrateCacheIfNeeded(keyMaterial);
+    this.discardUnreadableCache();
   }
 
   /** Zero the encryption key buffer. Call when the backend is no longer needed. */
@@ -87,37 +163,22 @@ export class CachedBackend implements WritableSecretBackend {
   }
 
   /**
-   * If cache file exists but cannot be decrypted with the new key,
-   * try the legacy SHA-256 key and re-encrypt if successful.
+   * Drop a cache file this build cannot read.
+   *
+   * This used to re-encrypt a cache written under the pre-scrypt SHA-256 key so
+   * its entries survived the key change. That migration is now unreachable by
+   * construction: every entry it recovered was written by an older build, and
+   * `loadCache` drops entries whose writer stamp is not ours — so the recovered
+   * plaintext could never be served. What it did do was keep a second decryption
+   * path over live credential values alive for no observable gain. A cache is
+   * disposable; the whole cost of discarding one is a single unlock prompt.
    */
-  private migrateCacheIfNeeded(keyMaterial: string): void {
+  private discardUnreadableCache(): void {
     if (!fs.existsSync(this.cachePath)) return;
-
     try {
-      const data = fs.readFileSync(this.cachePath);
-      this.decrypt(data);
-      // New key works — no migration needed
+      this.decrypt(fs.readFileSync(this.cachePath));
     } catch {
-      try {
-        const data = fs.readFileSync(this.cachePath);
-        const legacyKey = crypto.createHash('sha256').update(keyMaterial).digest();
-        const iv = data.subarray(0, 16);
-        const tag = data.subarray(16, 32);
-        const ciphertext = data.subarray(32);
-        const decipher = crypto.createDecipheriv('aes-256-gcm', legacyKey, iv);
-        decipher.setAuthTag(tag);
-        const plaintext = decipher.update(ciphertext) + decipher.final('utf-8');
-        legacyKey.fill(0);
-
-        // Re-encrypt with new key
-        const encrypted = this.encrypt(plaintext);
-        const tmpPath = this.cachePath + '.tmp';
-        fs.writeFileSync(tmpPath, encrypted, { mode: 0o600 });
-        fs.renameSync(tmpPath, this.cachePath);
-      } catch {
-        // Neither key works — discard corrupted cache
-        try { fs.unlinkSync(this.cachePath); } catch { /* ignore */ }
-      }
+      try { fs.unlinkSync(this.cachePath); } catch { /* ignore */ }
     }
   }
 
@@ -148,9 +209,20 @@ export class CachedBackend implements WritableSecretBackend {
 
     // If we have a cache marker indicating this prefix was fully resolved,
     // we can trust the cached entries. The marker is the prefix itself.
+    //
+    // The marker's claim is completeness, so it has to carry the count it was
+    // written with. The old condition here was `matchingCached.length >= 0` —
+    // true for every possible value — so a surviving marker over missing entries
+    // reported "fully resolved" and returned {}. That is the worst shape this
+    // class has: `run` would inject NOTHING and still exit 0. Any shortfall is
+    // now a miss.
     const prefixMarker = `__resolved__${secretPath}`;
     const markerEntry = cache.entries[prefixMarker];
-    if (markerEntry && now - markerEntry.cachedAt < this.ttlMs && matchingCached.length >= 0) {
+    if (
+      markerEntry &&
+      now - markerEntry.cachedAt < this.ttlMs &&
+      matchingCached.length === (markerEntry.count ?? -1)
+    ) {
       allCached = true;
       for (const [key, entry] of matchingCached) {
         cachedResults[key] = entry.value;
@@ -165,11 +237,18 @@ export class CachedBackend implements WritableSecretBackend {
     const results = await this.inner.resolve(secretPath);
 
     // Store results in cache
+    let cachedCount = 0;
     for (const [key, value] of Object.entries(results)) {
-      cache.entries[key] = { value, cachedAt: now };
+      cache.entries[key] = { value, cachedAt: now, writer: this.writerStamp };
+      cachedCount++;
     }
     // Mark the prefix as fully resolved
-    cache.entries[prefixMarker] = { value: '', cachedAt: now };
+    cache.entries[prefixMarker] = {
+      value: '',
+      cachedAt: now,
+      writer: this.writerStamp,
+      count: cachedCount,
+    };
 
     this.saveCache(cache);
     return results;
@@ -180,7 +259,7 @@ export class CachedBackend implements WritableSecretBackend {
 
     // Update cache with new value
     const cache = this.loadCache();
-    cache.entries[key] = { value, cachedAt: Date.now() };
+    cache.entries[key] = { value, cachedAt: Date.now(), writer: this.writerStamp };
     // Invalidate prefix markers that cover this key
     this.invalidatePrefixMarkers(cache, key);
     this.saveCache(cache);
@@ -254,10 +333,16 @@ export class CachedBackend implements WritableSecretBackend {
       const decrypted = this.decrypt(encrypted);
       this.memCache = JSON.parse(decrypted) as CacheStore;
 
-      // Evict expired entries on load
+      // Evict on load: too old, or not written by this build.
+      //
+      // Both checks live here, at the single point every read and write goes
+      // through, so no caller can consult a stale entry by taking a different
+      // route. Markers are entries too and are dropped by the same rule — a
+      // marker that outlived its entries is the fail-open described in
+      // resolve().
       const now = Date.now();
       for (const [key, entry] of Object.entries(this.memCache.entries)) {
-        if (now - entry.cachedAt >= this.ttlMs) {
+        if (now - entry.cachedAt >= this.ttlMs || entry.writer !== this.writerStamp) {
           delete this.memCache.entries[key];
         }
       }
@@ -303,19 +388,30 @@ export class CachedBackend implements WritableSecretBackend {
 /**
  * Clear the secret cache file without needing a backend instance.
  * Used by the CLI `cache clear` command.
+ *
+ * The default directory has to be the one `CachedBackend` actually writes to.
+ * It was not: the cache moved to `cache/` in 0.12.3 and this function was left
+ * pointing at `store/`, so from 0.12.3 to 0.21.3 `cache clear` deleted the
+ * abandoned pre-0.12.3 file, printed "Cache cleared", and left every live entry
+ * in place. #118 names `cache clear` as the remedy for a stale cached
+ * credential, which made the one documented workaround a no-op that reported
+ * success. Both paths are cleared now, and both share `CachedBackend`'s own
+ * default so they cannot drift apart again.
  */
 export function clearCacheFile(storeDir?: string): boolean {
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
-  const dir = storeDir ?? path.join(home, '.secretless-ai', 'store');
-  const cachePath = path.join(dir, CACHE_FILENAME);
+  const dirs = storeDir ? [storeDir] : [defaultCacheDir(), legacyCacheDir()];
 
-  try {
-    if (fs.existsSync(cachePath)) {
-      fs.unlinkSync(cachePath);
-      return true;
+  let removed = false;
+  for (const dir of dirs) {
+    const cachePath = path.join(dir, CACHE_FILENAME);
+    try {
+      if (fs.existsSync(cachePath)) {
+        fs.unlinkSync(cachePath);
+        removed = true;
+      }
+    } catch {
+      // Best effort per path — an unreadable directory must not stop the others.
     }
-    return false;
-  } catch {
-    return false;
   }
+  return removed;
 }
