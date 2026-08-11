@@ -42,6 +42,11 @@ with the exit-code table.
 - **`scan --max-file-size <size>`** raises the per-file cap (`20mb`, `500kb`, or a byte count), so a reported skip has a fix and not only a name. One value applies to config and source files alike. An unparseable value is refused with a warning rather than silently falling back — `--max-files` had shown that `parseInt` turns `1e6` into a cap of 1 while the user believes it was raised.
 - **The scan triage flags are now listed in `--help`.** `--max-files`, `--max-file-size`, `--min-confidence`, `--show-placeholders`, `--no-ignore` and `--include-tests` were all absent, including the two that coverage warnings tell the user to run.
 
+### Documentation
+
+- **The README's sample `init` output claimed 86 deny patterns; the build writes 96.** A number in a sample output is read as the tool's actual behavior, so a stale one misdescribes the build the reader just installed. Corrected, and pinned by a test that compares the README's figure against the count `init` returns, both derived at run time so neither side can drift silently.
+- **`docs/use-cases/team-setup.md` no longer wires `init` into a `postinstall` hook.** See the upgrade note above; the guide now uses an explicit `npm run protect` script and documents `init`'s exit codes.
+
 ### Internal
 
 - The finding-dedup key in `src/scan.ts` held two raw NUL bytes written directly into the source rather than as escapes. The compiled string is unchanged; the source is no longer classified as binary by `grep`, `rg` and every diff viewer.

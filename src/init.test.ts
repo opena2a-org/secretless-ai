@@ -1108,3 +1108,32 @@ describe('status next steps stay runnable when settings.json does not parse', ()
     expect(s.settingsUnreadable).toBeDefined();
   });
 });
+
+/**
+ * The README publishes a sample `init` run. Its numbers are read as the tool's
+ * actual behavior, so a stale one is a false claim about the build a user just
+ * installed — and nothing else in the suite compares the two.
+ *
+ * Caught in the 0.21.3 release test: the README showed "added 86 deny patterns"
+ * while init wrote 96. Both sides here are derived from real artifacts (the
+ * published README, and the count init actually returns), so the assertion
+ * cannot drift into restating one of them.
+ */
+describe('README sample output matches the build', () => {
+  let dir: string;
+
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('states the deny-pattern count init actually writes', () => {
+    const result = init(dir);
+    const readme = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf-8');
+
+    const claimed = readme.match(/added (\d+) deny patterns/);
+    // If the sample line is renamed or removed, fail loudly rather than passing
+    // vacuously on a regex that stopped matching anything.
+    expect(claimed, 'README no longer contains an "added N deny patterns" sample').not.toBeNull();
+    expect(result.denyRulesAdded).toBeGreaterThan(0);
+    expect(Number(claimed![1])).toBe(result.denyRulesAdded);
+  });
+});
