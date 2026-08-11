@@ -91,7 +91,7 @@ interface InitResult {
    * `runInit` reports this and exits non-zero — an init that configured
    * nothing is not a pass.
    */
-  settingsUnusable?: { path: string; reason: string };
+  settingsUnusable?: { path: string; kind: SettingsUnusableKind; reason: string };
 }
 
 /**
@@ -219,6 +219,7 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
   if (read.status === 'unusable') {
     result.settingsUnusable = {
       path: '.claude/settings.json',
+      kind: read.kind,
       reason: read.reason,
     };
     addSecretlessInstructions(path.join(projectDir, 'CLAUDE.md'), 'claude-code', result);
@@ -973,10 +974,23 @@ function quickScan(projectDir: string): number {
  * author, and we cannot merge into it. The only safe action is to leave it
  * alone and say so.
  */
+/**
+ * Why a settings file could not be merged into. The three kinds need three
+ * different remediations, and collapsing them produced a dead end: a file whose
+ * top level is `null`, an array or a string parses as perfectly valid JSON, so
+ * the `JSON.parse` verify command printed for all of them exits 0 and tells the
+ * user the file is fine, under advice to remove comments it does not contain.
+ *
+ * Carried as a discriminator rather than recovered from `reason` at the point of
+ * display: the caller would be re-deriving the kind by matching on prose it does
+ * not own, and a rule per spelling never converges.
+ */
+export type SettingsUnusableKind = 'unreadable' | 'parse-error' | 'not-an-object';
+
 type SettingsRead =
   | { status: 'absent' }
   | { status: 'ok'; data: any }
-  | { status: 'unusable'; reason: string };
+  | { status: 'unusable'; kind: SettingsUnusableKind; reason: string };
 
 function describeJsonTopLevel(value: unknown): string {
   if (value === null) return 'null';
@@ -1009,7 +1023,7 @@ function readSettingsFile(filePath: string): SettingsRead {
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
   } catch (err) {
-    return { status: 'unusable', reason: `could not be read (${(err as Error).message})` };
+    return { status: 'unusable', kind: 'unreadable', reason: `could not be read (${(err as Error).message})` };
   }
 
   if (raw.trim() === '') return { status: 'absent' };
@@ -1018,12 +1032,13 @@ function readSettingsFile(filePath: string): SettingsRead {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    return { status: 'unusable', reason: (err as Error).message };
+    return { status: 'unusable', kind: 'parse-error', reason: (err as Error).message };
   }
 
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {
       status: 'unusable',
+      kind: 'not-an-object',
       reason: `its top level is ${describeJsonTopLevel(parsed)}, but Claude Code settings must be a JSON object`,
     };
   }

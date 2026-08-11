@@ -119,21 +119,43 @@ export function runInit(projectDir: string): number {
   // parse error, and end on a runnable verb. Exiting 0 here would repeat the
   // defect this path exists to fix — reporting success for work not done.
   if (result.settingsUnusable) {
-    const { path: rel, reason } = result.settingsUnusable;
+    const { path: rel, kind, reason } = result.settingsUnusable;
     console.log();
     console.log(`  ${c.yellow('Could not update')} ${rel}`);
     console.log();
     console.log(`    Secretless did not modify the file, so nothing was lost:`);
     console.log(`      ${reason}`);
     console.log();
-    console.log(`    Claude Code settings must be strict JSON. Comments (${'//'}) and`);
-    console.log(`    trailing commas are not valid, though some editors write them.`);
+
+    // The three failure kinds need three remediations. A file whose top level is
+    // `null`, an array or a string is VALID JSON, so the JSON.parse check below
+    // exits 0 on it — printing that as the verify step for every kind told the
+    // user their file was fine, under advice to remove comments it did not have.
+    if (kind === 'parse-error') {
+      console.log(`    Claude Code settings must be strict JSON. Comments (${'//'}) and`);
+      console.log(`    trailing commas are not valid, though some editors write them.`);
+    } else if (kind === 'not-an-object') {
+      console.log(`    The file is valid JSON, so a syntax check will pass. Claude Code`);
+      console.log(`    settings must be a JSON object — a mapping wrapped in { }.`);
+    } else {
+      console.log(`    Secretless could not open the file at all, so its contents are`);
+      console.log(`    unknown. This is usually permissions or a broken symlink.`);
+    }
     console.log();
     console.log(`    No deny patterns and no hook wiring were installed, so Claude Code`);
     console.log(`    is not protected in this project yet.`);
     console.log();
-    console.log(`  ${c.cyan('Verify:')} node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' ${rel}`);
-    console.log(`  ${c.cyan('Fix:')}    remove the comments and trailing commas, then re-run: secretless-ai init`);
+
+    if (kind === 'parse-error') {
+      console.log(`  ${c.cyan('Verify:')} node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' ${rel}`);
+      console.log(`  ${c.cyan('Fix:')}    remove the comments and trailing commas, then re-run: secretless-ai init`);
+    } else if (kind === 'not-an-object') {
+      console.log(`  ${c.cyan('Verify:')} node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(Object.prototype.toString.call(v)!=="[object Object]"){console.error("top level is "+(v===null?"null":Array.isArray(v)?"an array":typeof v));process.exit(1)}' ${rel}`);
+      console.log(`  ${c.cyan('Fix:')}    replace the contents with a JSON object (\`{}\` if you have no settings of your own), then re-run: secretless-ai init`);
+    } else {
+      console.log(`  ${c.cyan('Verify:')} ls -l ${rel}`);
+      console.log(`  ${c.cyan('Fix:')}    restore read permission on the file, then re-run: secretless-ai init`);
+    }
     console.log();
     return 1;
   }
