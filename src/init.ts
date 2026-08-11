@@ -83,6 +83,15 @@ interface InitResult {
    * outdated hook would persist across upgrades.
    */
   hookRefreshed: boolean;
+  /**
+   * Set when `.claude/settings.json` exists but could not be merged into, so
+   * `init` deliberately left it untouched. Its presence means the deny rules
+   * and the guard-hook wiring were NOT installed: the guard script on disk is
+   * inert until settings.json references it, so the project is unprotected.
+   * `runInit` reports this and exits non-zero — an init that configured
+   * nothing is not a pass.
+   */
+  settingsUnusable?: { path: string; kind: SettingsUnusableKind; reason: string };
 }
 
 /**
@@ -156,6 +165,10 @@ export function init(projectDir: string): InitResult {
         configureAider(projectDir, result);
         break;
     }
+    // A tool whose settings file we refused to touch was not configured.
+    // Listing it under "Configured:" would restore the defect this release
+    // exists to fix, one line further down the same output.
+    if (tool.tool === 'claude-code' && result.settingsUnusable) continue;
     result.toolsConfigured.push(tool.tool);
   }
 
@@ -195,9 +208,24 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
     result.hookRefreshed = true;
   }
 
-  // 2. Update settings.json with hook config and deny rules
+  // 2. Update settings.json with hook config and deny rules.
+  //
+  // A settings file we cannot merge into is never overwritten. Writing a
+  // Secretless-only document over it would discard every user key with no
+  // backup, so `init` reports the refusal and leaves the file byte-identical
+  // (#122). CLAUDE.md handling below still runs — it is additive and safe.
   const settingsPath = path.join(claudeDir, 'settings.json');
-  const settings = readJsonFile(settingsPath) || {};
+  const read = readSettingsFile(settingsPath);
+  if (read.status === 'unusable') {
+    result.settingsUnusable = {
+      path: '.claude/settings.json',
+      kind: read.kind,
+      reason: read.reason,
+    };
+    addSecretlessInstructions(path.join(projectDir, 'CLAUDE.md'), 'claude-code', result);
+    return;
+  }
+  const settings = read.status === 'ok' ? read.data : {};
 
   // Add hooks config
   if (!settings.hooks) settings.hooks = {};
@@ -933,13 +961,89 @@ function quickScan(projectDir: string): number {
   return count;
 }
 
-function readJsonFile(filePath: string): any {
-  if (!fs.existsSync(filePath)) return null;
+/**
+ * Result of reading a settings file we intend to merge into and write back.
+ *
+ * The distinction is load-bearing. The old `readJsonFile` collapsed "absent"
+ * and "present but unreadable" into `null`, the caller turned that into `{}`,
+ * and the write-back then replaced the user's file with a Secretless-only
+ * document — every user key gone, no backup, while `init` printed
+ * "added 96 deny patterns" (#122).
+ *
+ * `unusable` therefore means: there is a file here, it holds bytes we did not
+ * author, and we cannot merge into it. The only safe action is to leave it
+ * alone and say so.
+ */
+/**
+ * Why a settings file could not be merged into. The three kinds need three
+ * different remediations, and collapsing them produced a dead end: a file whose
+ * top level is `null`, an array or a string parses as perfectly valid JSON, so
+ * the `JSON.parse` verify command printed for all of them exits 0 and tells the
+ * user the file is fine, under advice to remove comments it does not contain.
+ *
+ * Carried as a discriminator rather than recovered from `reason` at the point of
+ * display: the caller would be re-deriving the kind by matching on prose it does
+ * not own, and a rule per spelling never converges.
+ */
+export type SettingsUnusableKind = 'unreadable' | 'parse-error' | 'not-an-object';
+
+type SettingsRead =
+  | { status: 'absent' }
+  | { status: 'ok'; data: any }
+  | { status: 'unusable'; kind: SettingsUnusableKind; reason: string };
+
+function describeJsonTopLevel(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  return `a ${typeof value}`;
+}
+
+/**
+ * Read a settings file for an additive merge.
+ *
+ * A file that is empty or entirely whitespace is reported as `absent`: it
+ * provably carries no user content, so writing a fresh document over it loses
+ * nothing. Anything else that does not parse as a JSON **object** is
+ * `unusable` — including a valid-JSON `null`, array, string or number, each of
+ * which reached the destructive path before this change:
+ *
+ *   - `null`   -> `null || {}` -> full overwrite.
+ *   - array    -> properties assigned to an array are dropped by
+ *                 `JSON.stringify`, so `init` wrote the array back untouched
+ *                 while reporting 96 deny patterns added. Nothing was
+ *                 destroyed and nothing was configured — a fail-open with a
+ *                 success message.
+ *   - string   -> `Cannot create property 'hooks' on string` escaped to the
+ *                 user as a raw TypeError with no file named and no fix.
+ */
+function readSettingsFile(filePath: string): SettingsRead {
+  if (!fs.existsSync(filePath)) return { status: 'absent' };
+
+  let raw: string;
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
-    return null;
+    raw = fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    return { status: 'unusable', kind: 'unreadable', reason: `could not be read (${(err as Error).message})` };
   }
+
+  if (raw.trim() === '') return { status: 'absent' };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { status: 'unusable', kind: 'parse-error', reason: (err as Error).message };
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      status: 'unusable',
+      kind: 'not-an-object',
+      reason: `its top level is ${describeJsonTopLevel(parsed)}, but Claude Code settings must be a JSON object`,
+    };
+  }
+
+  return { status: 'ok', data: parsed };
 }
 
 function writeJsonFile(filePath: string, data: any): void {

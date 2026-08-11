@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   if (backendType === 'local') {
     if (!fs.existsSync(args.vaultDir)) {
       process.stderr.write(`secretless-mcp: Vault directory not found: ${args.vaultDir}\n`);
-      process.stderr.write(`secretless-mcp: Run 'npx secretless-ai mcp-protect' to set up MCP secret protection.\n`);
+      process.stderr.write(`secretless-mcp: Run 'npx secretless-ai protect-mcp' to set up MCP secret protection.\n`);
       process.exit(1);
     }
   }

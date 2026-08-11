@@ -771,6 +771,151 @@ describe('init', () => {
     expect(result.toolsConfigured).toContain('claude-code');
     expect(result.toolsConfigured).toContain('cursor');
   });
+
+  // #122. `init` used to collapse "absent" and "present but unparseable" into
+  // the same `null`, turn it into `{}`, and write a Secretless-only document
+  // over the user's file — every key gone, no backup — while reporting
+  // "added 96 deny patterns". These tests pin both directions: a file we CAN
+  // merge into is still merged and preserved, and a file we cannot is left
+  // byte-identical and reported as a failure.
+  describe('a settings.json we cannot merge into is never overwritten (#122)', () => {
+    const settingsPath = (): string => path.join(dir, '.claude', 'settings.json');
+
+    function seed(content: string): string {
+      fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+      fs.writeFileSync(settingsPath(), content);
+      return content;
+    }
+
+    // The trigger from the field: JSONC, i.e. what VS Code writes and what
+    // people hand-edit into Claude Code settings.
+    const JSONC = `{
+  // Team-wide settings - do not delete
+  "model": "opus",
+  "permissions": {
+    "allow": ["Bash(npm test:*)"],
+    "deny": ["Read(prod-secrets.json)"],
+  },
+  "statusLine": { "type": "command", "command": "./sl.sh" }
+}`;
+
+    // Every top-level shape that is valid JSON but not a mergeable object.
+    // Each reached a distinct failure before the fix: `null` took the same
+    // overwrite path as a parse error; an array had its assigned properties
+    // silently dropped by JSON.stringify, so init reported 96 deny patterns
+    // added and wrote back an array holding none; a string threw a raw
+    // TypeError ("Cannot create property 'hooks' on string") at the user.
+    const NON_OBJECT: Array<[string, string]> = [
+      ['null', 'null'],
+      ['an array', '["model", "statusLine"]'],
+      ['a string', '"myCustomKey"'],
+      ['a number', '42'],
+    ];
+
+    it('preserves every user key when the file IS valid JSON', () => {
+      seed(JSON.stringify({
+        model: 'opus',
+        myCustomKey: 1,
+        permissions: { allow: ['Bash(npm test:*)'], deny: ['Read(prod-secrets.json)'] },
+        statusLine: { type: 'command', command: './sl.sh' },
+      }, null, 2));
+
+      const result = init(dir);
+      const after = JSON.parse(fs.readFileSync(settingsPath(), 'utf-8'));
+
+      expect(result.settingsUnusable).toBeUndefined();
+      expect(after.model).toBe('opus');
+      expect(after.myCustomKey).toBe(1);
+      expect(after.statusLine).toEqual({ type: 'command', command: './sl.sh' });
+      expect(after.permissions.allow).toContain('Bash(npm test:*)');
+      // The user's own deny entry survives alongside the ones we add.
+      expect(after.permissions.deny).toContain('Read(prod-secrets.json)');
+      expect(after.permissions.deny).toContain('Read(.env)');
+      expect(result.denyRulesAdded).toBeGreaterThan(0);
+      expect(result.filesModified).toContain('.claude/settings.json');
+    });
+
+    it('leaves a JSONC settings.json byte-identical instead of clobbering it', () => {
+      const before = seed(JSONC);
+
+      const result = init(dir);
+
+      expect(fs.readFileSync(settingsPath(), 'utf-8')).toBe(before);
+      expect(result.settingsUnusable?.path).toBe('.claude/settings.json');
+      // Every user key is still there, in the original text.
+      for (const marker of ['"model": "opus"', 'Bash(npm test:*)', 'Read(prod-secrets.json)', 'statusLine']) {
+        expect(fs.readFileSync(settingsPath(), 'utf-8')).toContain(marker);
+      }
+    });
+
+    it('does not report deny patterns it did not add', () => {
+      seed(JSONC);
+
+      const result = init(dir);
+
+      // The reported line is the aggravating half of #122: "added 96 deny
+      // patterns" told the user an additive merge had happened.
+      expect(result.denyRulesAdded).toBe(0);
+      expect(result.denyRulesRemoved).toBe(0);
+      expect(result.denyRulesTotal).toBe(0);
+      expect(result.filesModified).not.toContain('.claude/settings.json');
+    });
+
+    it('does not claim the tool was configured', () => {
+      seed(JSONC);
+
+      const result = init(dir);
+
+      // The guard script on disk is inert until settings.json wires it into
+      // PreToolUse, so listing claude-code as configured would be a second
+      // false success in the same output.
+      expect(result.toolsConfigured).not.toContain('claude-code');
+    });
+
+    it.each(NON_OBJECT)('leaves settings.json untouched when the top level is %s', (_label, content) => {
+      const before = seed(content);
+
+      const result = init(dir);
+
+      expect(fs.readFileSync(settingsPath(), 'utf-8')).toBe(before);
+      expect(result.settingsUnusable).toBeDefined();
+      expect(result.denyRulesAdded).toBe(0);
+      expect(result.toolsConfigured).not.toContain('claude-code');
+    });
+
+    it('still configures a file that is empty, which cannot hold user content', () => {
+      seed('   \n');
+
+      const result = init(dir);
+      const after = JSON.parse(fs.readFileSync(settingsPath(), 'utf-8'));
+
+      expect(result.settingsUnusable).toBeUndefined();
+      expect(after.permissions.deny).toContain('Read(.env)');
+      expect(result.denyRulesAdded).toBeGreaterThan(0);
+    });
+
+    it('reports the parse error so the user can find it', () => {
+      seed(JSONC);
+
+      const result = init(dir);
+
+      // Naming the file without naming the fault is a dead end.
+      expect(result.settingsUnusable?.reason).toMatch(/JSON|position|token/i);
+    });
+
+    it('status reports unreadable settings as unknown, not as zero rules', () => {
+      seed(JSONC);
+      init(dir);
+
+      const s = status(dir);
+
+      // "0 deny patterns" and "could not read the deny patterns" are different
+      // answers. Reporting the first for the second made an unprotected
+      // project look identical to a healthy one.
+      expect(s.settingsUnreadable?.path).toBe('.claude/settings.json');
+      expect(s.isProtected).toBe(false);
+    });
+  });
 });
 
 describe('scan', () => {
@@ -939,5 +1084,85 @@ describe('status', () => {
 
     const s = status(dir);
     expect(s.secretsFound).toBe(1);
+  });
+});
+
+// A next step that no-ops for the very state that printed it is a dead end.
+// `status` used to send a project with an unparseable settings.json to
+// `init`, which now refuses on exactly that project.
+describe('status next steps stay runnable when settings.json does not parse', () => {
+  let dir: string;
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('does not claim protection from a guard script nothing wires in', () => {
+    fs.mkdirSync(path.join(dir, '.claude', 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{\n // c\n "model": "opus"\n}\n');
+    // The script exists on disk but settings.json never references it.
+    fs.writeFileSync(path.join(dir, '.claude', 'hooks', 'secretless-guard.sh'), '#!/bin/sh\n', { mode: 0o755 });
+
+    const s = status(dir);
+
+    expect(s.hookInstalled).toBe(true);      // the file is really there
+    expect(s.isProtected).toBe(false);       // but it is not wired in
+    expect(s.settingsUnreadable).toBeDefined();
+  });
+});
+
+/**
+ * The README publishes a sample `init` run. Its numbers are read as the tool's
+ * actual behavior, so a stale one is a false claim about the build a user just
+ * installed — and nothing else in the suite compares the two.
+ *
+ * Caught in the 0.21.3 release test: the README showed "added 86 deny patterns"
+ * while init wrote 96. Both sides here are derived from real artifacts (the
+ * published README, and the count init actually returns), so the assertion
+ * cannot drift into restating one of them.
+ */
+describe('README sample output matches the build', () => {
+  let dir: string;
+
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  const README = (): string => fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf-8');
+
+  it('states the deny-pattern count init actually writes', () => {
+    const result = init(dir);
+
+    const claimed = README().match(/added (\d+) deny patterns/);
+    // If the sample line is renamed or removed, fail loudly rather than passing
+    // vacuously on a regex that stopped matching anything.
+    expect(claimed, 'README no longer contains an "added N deny patterns" sample').not.toBeNull();
+    expect(result.denyRulesAdded).toBeGreaterThan(0);
+    expect(Number(claimed![1])).toBe(result.denyRulesAdded);
+  });
+
+  it('states the number of file patterns the hook layer actually blocks', () => {
+    init(dir);
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'),
+    );
+    // File patterns are the Read() rules. Bash() rules are command patterns and
+    // are counted separately by the README sentence above this one.
+    const readRules = (settings.permissions.deny as string[]).filter(r => r.startsWith('Read('));
+
+    const claimed = README().match(/(\d+) file patterns enforced/);
+    expect(claimed, 'README no longer contains an "N file patterns enforced" claim').not.toBeNull();
+    expect(readRules.length).toBeGreaterThan(0);
+    expect(Number(claimed![1])).toBe(readRules.length);
+  });
+
+  it('shows the version this package actually ships', () => {
+    // The quickstart sample prints a version banner. `npm version` bumps
+    // package.json and nothing else, so without this the sample goes stale on
+    // every release — and it is the first output a new user compares against
+    // their own terminal.
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8'),
+    );
+    const claimed = README().match(/Secretless v(\d+\.\d+\.\d+)/);
+    expect(claimed, 'README no longer contains a "Secretless vX.Y.Z" sample banner').not.toBeNull();
+    expect(claimed![1]).toBe(pkg.version);
   });
 });

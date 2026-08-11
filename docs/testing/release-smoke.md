@@ -63,7 +63,7 @@ PLANT="sk-ant-api03-$(openssl rand -base64 48 | tr -d '/+=' | head -c 51)"
 echo "const k = \"$PLANT\";" > config.js
 
 $SL status .        # "Not protected" verdict; every ⚠ row ends in a → command
-$SL init .          # Configured: Claude Code; Created: hook + CLAUDE.md; Modified: settings.json (~86 deny patterns)
+$SL init .          # Configured: Claude Code; Created: hook + CLAUDE.md; Modified: settings.json (96 deny patterns)
 $SL scan .          # 1 credential found: HIGH Anthropic API Key, config.js:1, value REDACTED in preview; exit 1
 $SL status .        # verdict flips to "Protected (...)"
 $SL verify .        # scope disclosure line + PASS/WARN with next steps
@@ -287,6 +287,19 @@ silent doc errors into hard failures. Precedent (0.21.0): making `init` reject
 unknown flags (#62) meant the team-setup guide's documented postinstall hook
 (which passed `--ci` to `init`) began exiting 2, failing `npm install` for
 every developer on a team that followed it.
+
+**The same hook broke a second time in 0.21.3, and the first fix could not have
+caught it.** #122 made `init` exit 1 on a `.claude/settings.json` it cannot
+parse. No flag is involved, so the flag guard added in 0.21.0 stayed green while
+`npm install` failed again for anyone whose settings file had a comment in it.
+
+The root cause was never the flag. `init` is *allowed* to fail — that is the
+whole point of the #122 fix — and an npm install-time lifecycle hook converts any
+non-zero exit into a failed install. So the guard is now on the coupling:
+`docs-commands.test.ts` fails if any doc wires a `secretless-ai` command into
+`preinstall`, `install`, `postinstall`, `prepare` or `prepublish`. When you make
+a command stricter, ask which documented automation consumes its exit code, not
+only which documented command names still parse.
 
 ---
 

@@ -80,6 +80,14 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} scope list             Show all stored baselines
     ${CLI} scope reset <name>     Clear baseline for re-baseline
 
+  Scan Coverage (raise a cap the scan reports it hit):
+    ${CLI} scan --max-files <n>          Raise the file-count cap (default 5000)
+    ${CLI} scan --max-file-size <size>   Raise the per-file size cap (e.g. 20mb)
+    ${CLI} scan --min-confidence <0-1>   Drop findings below a confidence score
+    ${CLI} scan --show-placeholders      Show values hidden as placeholders
+    ${CLI} scan --no-ignore              Ignore .secretlessignore and defaults
+    ${CLI} scan --include-tests          Include test files in the source scan
+
   Shell History:
     ${CLI} scan --history         Scan shell history for credentials
     ${CLI} scan-history           Scan shell history for credentials

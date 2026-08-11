@@ -78,7 +78,9 @@ export function runInit(projectDir: string): number {
   }
 
   // No-op case: nothing created, nothing modified — already up to date.
-  if (result.filesCreated.length === 0 && !settingsModified && otherModified.length === 0) {
+  // Not reachable when settings.json was refused: that is a failure, not a no-op.
+  if (!result.settingsUnusable
+      && result.filesCreated.length === 0 && !settingsModified && otherModified.length === 0) {
     console.log();
     console.log('  Already up to date. No files changed.');
   }
@@ -112,6 +114,52 @@ export function runInit(projectDir: string): number {
     console.log(`  repeated ${backendName} auth prompts.`);
   }
 
+  // A settings file we could not merge into means no deny rules and no hook
+  // wiring: the guard script on disk never runs. Say that plainly, name the
+  // parse error, and end on a runnable verb. Exiting 0 here would repeat the
+  // defect this path exists to fix — reporting success for work not done.
+  if (result.settingsUnusable) {
+    const { path: rel, kind, reason } = result.settingsUnusable;
+    console.log();
+    console.log(`  ${c.yellow('Could not update')} ${rel}`);
+    console.log();
+    console.log(`    Secretless did not modify the file, so nothing was lost:`);
+    console.log(`      ${reason}`);
+    console.log();
+
+    // The three failure kinds need three remediations. A file whose top level is
+    // `null`, an array or a string is VALID JSON, so the JSON.parse check below
+    // exits 0 on it — printing that as the verify step for every kind told the
+    // user their file was fine, under advice to remove comments it did not have.
+    if (kind === 'parse-error') {
+      console.log(`    Claude Code settings must be strict JSON. Comments (${'//'}) and`);
+      console.log(`    trailing commas are not valid, though some editors write them.`);
+    } else if (kind === 'not-an-object') {
+      console.log(`    The file is valid JSON, so a syntax check will pass. Claude Code`);
+      console.log(`    settings must be a JSON object — a mapping wrapped in { }.`);
+    } else {
+      console.log(`    Secretless could not open the file at all, so its contents are`);
+      console.log(`    unknown. This is usually permissions or a broken symlink.`);
+    }
+    console.log();
+    console.log(`    No deny patterns and no hook wiring were installed, so Claude Code`);
+    console.log(`    is not protected in this project yet.`);
+    console.log();
+
+    if (kind === 'parse-error') {
+      console.log(`  ${c.cyan('Verify:')} node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' ${rel}`);
+      console.log(`  ${c.cyan('Fix:')}    remove the comments and trailing commas, then re-run: secretless-ai init`);
+    } else if (kind === 'not-an-object') {
+      console.log(`  ${c.cyan('Verify:')} node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(Object.prototype.toString.call(v)!=="[object Object]"){console.error("top level is "+(v===null?"null":Array.isArray(v)?"an array":typeof v));process.exit(1)}' ${rel}`);
+      console.log(`  ${c.cyan('Fix:')}    replace the contents with a JSON object (\`{}\` if you have no settings of your own), then re-run: secretless-ai init`);
+    } else {
+      console.log(`  ${c.cyan('Verify:')} ls -l ${rel}`);
+      console.log(`  ${c.cyan('Fix:')}    restore read permission on the file, then re-run: secretless-ai init`);
+    }
+    console.log();
+    return 1;
+  }
+
   // Next steps block — every action ends in a runnable verb.
   console.log();
   console.log('  Next steps:');
@@ -136,7 +184,39 @@ function shellQuote(p: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number }): Promise<number> {
+/** Human-readable byte size for coverage warnings ("11.2 MB", "1 MB"). */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    const mb = bytes / (1024 * 1024);
+    return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
+/**
+ * Parse a `--max-file-size` value into bytes. Accepts a bare byte count or a
+ * `kb`/`mb`/`gb` suffix (case-insensitive, `k`/`m`/`g` also accepted).
+ *
+ * Returns null for anything unparseable or non-positive so the caller can
+ * refuse rather than silently fall back to the default cap — a size flag that
+ * is ignored without saying so is the same class of defect as the silent skip
+ * it exists to fix.
+ */
+export function parseFileSize(input: string): number | null {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|k|m|g)?\s*$/i.exec(input);
+  if (!m) return null;
+  const value = parseFloat(m[1]);
+  if (!isFinite(value) || value <= 0) return null;
+  const unit = (m[2] ?? 'b').toLowerCase();
+  const mult = unit.startsWith('g') ? 1024 ** 3
+    : unit.startsWith('m') ? 1024 ** 2
+      : unit.startsWith('k') ? 1024
+        : 1;
+  return Math.floor(value * mult);
+}
+
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
   const scanOpts = {
     includeTests: options?.includeTests,
@@ -147,6 +227,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     minConfidence: options?.minConfidence,
     showPlaceholders: options?.showPlaceholders,
     maxSourceFiles: options?.maxFiles,
+    maxFileSizeBytes: options?.maxFileSizeBytes,
   };
   const capUsed = options?.maxFiles ?? 5000;
 
@@ -158,7 +239,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.error(`Directory not found: ${projectDir}`);
       return 1;
     }
-    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[] };
+    const stats = {
+      placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
+      oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>,
+    };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
     console.log(JSON.stringify({
@@ -175,15 +259,21 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         maxFiles: capUsed,
         unreadable: stats.unreadable.length,
         outOfRoot: stats.outOfRoot.length,
+        // Files skipped for size were never opened, so they are coverage lost,
+        // not content judged clean.
+        oversize: stats.oversize.length,
       },
       unreadableFiles: stats.unreadable,
       outOfRootLinks: stats.outOfRoot,
+      oversizeFiles: stats.oversize,
     }, null, 2));
-    // An incomplete scan is not a pass. `total: 0` with `truncated: true` or an
-    // unreadable file means part of the tree was never read, so exiting 0 would
-    // gate CI on a subset. An out-of-root link is a deliberate, reported
-    // boundary rather than a failure, so it does not by itself set exit 1.
-    return findings.length > 0 || stats.truncated || stats.unreadable.length > 0 ? 1 : 0;
+    // An incomplete scan is not a pass. `total: 0` with `truncated: true`, an
+    // unreadable file, or a file skipped for size means part of the tree was
+    // never read, so exiting 0 would gate CI on a subset. An out-of-root link
+    // is a deliberate, reported boundary rather than a failure, so it does not
+    // by itself set exit 1.
+    return findings.length > 0 || stats.truncated
+      || stats.unreadable.length > 0 || stats.oversize.length > 0 ? 1 : 0;
   }
 
   console.log('\n  Secretless Scanner\n');
@@ -194,7 +284,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return 1;
   }
 
-  const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[] };
+  const stats = {
+    placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
+    oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>,
+  };
   const findings = scan(projectDir, scanOpts, stats);
 
   // Coverage-gap paths are reported relative to the SCAN ROOT, which is not the
@@ -253,10 +346,25 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       // copy-pasting user an execution primitive.
       console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable(nodeFs.realpathSync(nodePath.resolve(projectDir, stats.outOfRoot[0])))}\n`);
     }
+    if (stats.oversize.length > 0) {
+      const n = stats.oversize.length;
+      console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} skipped for size`)} — not scanned, so not known to be clean.`);
+      for (const f of stats.oversize.slice(0, 10)) {
+        console.log(`  ${c.dim(`  ${runnable(f.path)} (${formatBytes(f.bytes)}, cap ${formatBytes(f.capBytes)})`)}`);
+      }
+      if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      // The cap is a resource guard, not a judgement — the same bytes under it
+      // produce a finding, so an 11 MB config with a key on line 1 scanned to
+      // zero and exited 0 before this was reported (#120).
+      console.log(`  ${c.dim('The cap bounds memory use; it says nothing about the contents.')}`);
+      console.log(`  ${c.cyan('Verify:')} head -c 4096 ${runnable(stats.oversize[0].path)}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-file-size ${Math.ceil(stats.oversize[0].bytes / (1024 * 1024)) + 1}mb\n`);
+    }
   };
   // An out-of-root link is a reported boundary, not a gap in what we claimed to
-  // cover, so it does not make the result non-clean.
-  const anyCoverageGap = () => stats.truncated || stats.unreadable.length > 0;
+  // cover, so it does not make the result non-clean. A file skipped for size
+  // IS such a gap: we said we scan config files, and did not scan that one.
+  const anyCoverageGap = () => stats.truncated || stats.unreadable.length > 0 || stats.oversize.length > 0;
 
   // When everything (or a real subset) was hidden as a placeholder, say so and
   // point at the flag that reveals them. A silent "No credentials found" makes a
@@ -425,7 +533,18 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
   const addRow = (row: Row): void => { rows[rows.length] = row; };
 
   // Protection / hook.
-  if (s.hookInstalled) {
+  //
+  // The guard script on disk is inert until settings.json wires it into
+  // PreToolUse. When settings.json does not parse we cannot read that wiring,
+  // and `hookInstalled` alone only says the script file exists — so a ✓ here
+  // would be a green claim about something never verified.
+  if (s.settingsUnreadable) {
+    addRow({
+      glyph: '⚠',
+      label: `${s.settingsUnreadable.path} does not parse — deny patterns and hook wiring cannot be read`,
+      action: `node -e 'JSON.parse(require("fs").readFileSync("${s.settingsUnreadable.path}","utf8"))'`,
+    });
+  } else if (s.hookInstalled) {
     const denyText = s.denyRuleCount > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
     addRow({ glyph: '✓', label: `Claude Code hook installed (.claude/settings.json${denyText})` });
   } else {
@@ -470,10 +589,23 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
   }
 
   // Transcript files + secrets within them.
+  //
+  // `transcriptFiles` is a DISCOVERY count; `transcriptFilesScanned` is what was
+  // actually read. Rendering the first as "N files scanned" turned a three-file
+  // sample into a clean verdict over everything — measured on a real machine,
+  // "Transcripts clean (8850 files scanned)" alongside `clean --dry-run` finding
+  // 882 credentials in 168 of those files. Say what was read, and say what was
+  // not, the same way the scan coverage warnings do.
   if (tp.transcriptSecretsFound > 0) {
-    addRow({ glyph: '⚠', label: `${tp.transcriptSecretsFound} credential${tp.transcriptSecretsFound === 1 ? '' : 's'} in recent transcripts`, action: 'secretless-ai clean' });
-  } else if (tp.transcriptFiles > 0) {
-    addRow({ glyph: '✓', label: `Transcripts clean (${tp.transcriptFiles} file${tp.transcriptFiles === 1 ? '' : 's'} scanned)` });
+    addRow({ glyph: '⚠', label: `${tp.transcriptSecretsFound} credential${tp.transcriptSecretsFound === 1 ? '' : 's'} in the ${tp.transcriptFilesScanned} most recent transcript${tp.transcriptFilesScanned === 1 ? '' : 's'}`, action: 'secretless-ai clean' });
+  } else if (tp.transcriptFilesScanned > 0 && tp.transcriptFilesScanned < tp.transcriptFiles) {
+    addRow({
+      glyph: '✓',
+      label: `No credentials in the ${tp.transcriptFilesScanned} most recent transcripts (${tp.transcriptFiles} found; the rest were not read)`,
+      action: 'secretless-ai clean --dry-run',
+    });
+  } else if (tp.transcriptFilesScanned > 0) {
+    addRow({ glyph: '✓', label: `Transcripts clean (${tp.transcriptFilesScanned} file${tp.transcriptFilesScanned === 1 ? '' : 's'} scanned)` });
   }
 
   // Broker daemon.
@@ -510,6 +642,10 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
       // it could not read the whole tree. A CI consumer gating on this needs to
       // tell "found nothing" from "could not look".
       scanIncomplete: s.scanIncomplete,
+      // Present only when `.claude/settings.json` exists and does not parse as
+      // a JSON object. `denyRuleCount: 0` alongside it means "could not read",
+      // not "none configured".
+      settingsUnreadable: s.settingsUnreadable ?? null,
       transcriptProtection: tp,
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,
@@ -551,7 +687,14 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
   console.log();
   console.log(`  ── Verdict ${headerLine.slice(0, Math.max(0, 49))}`);
   if (!s.isProtected) {
-    console.log('  Not protected. Run `secretless-ai init` to install hooks.');
+    if (s.settingsUnreadable) {
+      // `init` refuses on this project, so sending the user there is a dead
+      // end — the same defect as pointing at a command that no-ops for the
+      // very state that printed it. Name the blocking step instead.
+      console.log(`  Not protected. Fix the JSON in ${s.settingsUnreadable.path}, then run \`secretless-ai init\`.`);
+    } else {
+      console.log('  Not protected. Run `secretless-ai init` to install hooks.');
+    }
   } else if (warningCount === 0) {
     console.log('  Protected — Clean');
   } else {

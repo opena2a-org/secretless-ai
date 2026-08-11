@@ -1108,3 +1108,126 @@ describe('scan() — a single-file finding reports a path that resolves (re-test
     }
   });
 });
+
+// #120. A file over the per-file size cap was dropped with no `truncated`, no
+// `unreadable` and no warning: an 11 MB config.json with a live-shaped key on
+// line 1 scanned to `total: 0`, `truncated: false`, exit 0. The cap is a
+// resource guard, not a judgement about content — the same bytes under it
+// produce a finding — so a skip has to be reported like any other coverage gap.
+describe('scan() — files skipped for size are reported, not dropped (#120)', () => {
+  const GOOGLE_KEY = ['AIzaSy', 'D-1234567890abcdefghijklmnopqrstuv'].join('');
+
+  function freshStats() {
+    return {
+      placeholdersSuppressed: 0, truncated: false,
+      unreadable: [] as string[], outOfRoot: [] as string[],
+      oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>,
+    };
+  }
+
+  function projectWith(fileName: string, padBytes: number): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-oversize-'));
+    fs.writeFileSync(
+      path.join(dir, fileName),
+      `{"googleKey": "${GOOGLE_KEY}",\n"pad": "${'x'.repeat(padBytes)}"}\n`,
+    );
+    return dir;
+  }
+
+  it('finds the credential when the same file is UNDER the cap', () => {
+    const dir = projectWith('config.json', 1024);
+    const stats = freshStats();
+
+    const findings = scan(dir, { scanGlobal: false }, stats);
+
+    // The control direction: nothing about this file is unscannable, so a
+    // report of "skipped for size" below is about the cap and nothing else.
+    expect(findings.some(f => f.patternId === 'google')).toBe(true);
+    expect(stats.oversize).toHaveLength(0);
+  });
+
+  it('reports a config file over the default 10MB cap instead of dropping it', () => {
+    const dir = projectWith('config.json', 11 * 1024 * 1024);
+    const stats = freshStats();
+
+    const findings = scan(dir, { scanGlobal: false }, stats);
+
+    // Zero findings is the pre-existing behaviour and is fine on its own. What
+    // was missing is any signal that a file went unread.
+    expect(findings.some(f => f.patternId === 'google')).toBe(false);
+    expect(stats.oversize).toHaveLength(1);
+    expect(stats.oversize[0].path).toBe('config.json');
+    expect(stats.oversize[0].bytes).toBeGreaterThan(10 * 1024 * 1024);
+    expect(stats.oversize[0].capBytes).toBe(10 * 1024 * 1024);
+    // Not conflated with the other two coverage gaps — each has its own fix.
+    expect(stats.truncated).toBe(false);
+    expect(stats.unreadable).toHaveLength(0);
+  });
+
+  it('reports a source file over the 1MB source cap', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-oversize-src-'));
+    fs.writeFileSync(
+      path.join(dir, 'big.js'),
+      `const k = "${GOOGLE_KEY}";\n// ${'x'.repeat(2 * 1024 * 1024)}\n`,
+    );
+    const stats = freshStats();
+
+    const findings = scan(dir, { scanGlobal: false }, stats);
+
+    expect(findings.some(f => f.patternId === 'google')).toBe(false);
+    expect(stats.oversize.map(o => o.path)).toContain('big.js');
+    expect(stats.oversize[0].capBytes).toBe(1 * 1024 * 1024);
+  });
+
+  it('scans the file once --max-file-size raises the cap above it', () => {
+    const dir = projectWith('config.json', 11 * 1024 * 1024);
+    const stats = freshStats();
+
+    // The `Fix:` line the coverage warning prints must actually work; a fix
+    // command that does not change the outcome is a dead end.
+    const findings = scan(dir, { scanGlobal: false, maxFileSizeBytes: 13 * 1024 * 1024 }, stats);
+
+    expect(findings.some(f => f.patternId === 'google')).toBe(true);
+    expect(stats.oversize).toHaveLength(0);
+  });
+
+  it('applies one --max-file-size to source files too, not just config', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-oversize-both-'));
+    fs.writeFileSync(
+      path.join(dir, 'big.js'),
+      `const k = "${GOOGLE_KEY}";\n// ${'x'.repeat(2 * 1024 * 1024)}\n`,
+    );
+    const stats = freshStats();
+
+    // "Scan files up to 4 MB" must not leave source still capped at 1 MB.
+    const findings = scan(dir, { scanGlobal: false, maxFileSizeBytes: 4 * 1024 * 1024 }, stats);
+
+    expect(findings.some(f => f.patternId === 'google')).toBe(true);
+    expect(stats.oversize).toHaveLength(0);
+  });
+
+  it('reports an explicitly named file that is over the cap', () => {
+    const dir = projectWith('config.json', 11 * 1024 * 1024);
+    const stats = freshStats();
+
+    const findings = scan(path.join(dir, 'config.json'), { scanGlobal: false }, stats);
+
+    // A named target used to return zero findings and exit 0 — a green CI gate
+    // over a file nobody read.
+    expect(findings).toHaveLength(0);
+    expect(stats.oversize).toHaveLength(1);
+  });
+
+  it('lowering the cap below a normal file reports it, proving the cap is read', () => {
+    const dir = projectWith('config.json', 1024);
+    const stats = freshStats();
+
+    // Guards against a cap that is plumbed but never consulted: the same file
+    // that produced a finding above must now be reported as skipped.
+    const findings = scan(dir, { scanGlobal: false, maxFileSizeBytes: 64 }, stats);
+
+    expect(findings.some(f => f.patternId === 'google')).toBe(false);
+    expect(stats.oversize.map(o => o.path)).toContain('config.json');
+    expect(stats.oversize[0].capBytes).toBe(64);
+  });
+});

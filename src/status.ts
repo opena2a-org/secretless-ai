@@ -9,6 +9,14 @@ import { scan } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
 
+/**
+ * How many of the most recent transcripts `status` reads. A full pass is a
+ * `clean --dry-run` job (tens of seconds over thousands of files); `status` is
+ * expected to answer immediately. Exported so the renderer and the tests state
+ * the same number rather than each hardcoding their own.
+ */
+export const TRANSCRIPT_SAMPLE_SIZE = 3;
+
 export interface StatusResult {
   isProtected: boolean;
   configuredTools: AITool[];
@@ -22,10 +30,31 @@ export interface StatusResult {
    * `secretsFound: 0` over a subtree it never opened.
    */
   scanIncomplete: boolean;
+  /**
+   * Set when `.claude/settings.json` exists but does not parse as a JSON
+   * object, so `denyRuleCount` and `stopHookInstalled` describe nothing that
+   * was read. Without it, an unparseable settings file is indistinguishable
+   * from an unconfigured project — both render as "0 deny patterns" — which
+   * is the same "an answer we never got is not a good answer" gap that
+   * `truncated` closes for scan coverage.
+   */
+  settingsUnreadable?: { path: string; reason: string };
   transcriptProtection: {
     stopHookInstalled: boolean;
     watcherRunning: boolean;
     transcriptFiles: number;
+    /**
+     * How many of `transcriptFiles` were actually read. `status` samples the
+     * most recent few so it stays sub-second; `transcriptFiles` is a discovery
+     * count and was being rendered as "N files scanned", which turned a
+     * three-file sample into a clean verdict over everything. Measured on a real
+     * machine: `status` reported 0 secrets in "8850 files scanned" while
+     * `clean --dry-run` found 882 credentials in 168 of those same files.
+     *
+     * Same "an answer we never got is not a good answer" gap as
+     * `settingsUnreadable` above and as `truncated` for scan coverage.
+     */
+    transcriptFilesScanned: number;
     transcriptSecretsFound: number;
   };
 }
@@ -45,6 +74,7 @@ export function status(projectDir: string): StatusResult {
       stopHookInstalled: false,
       watcherRunning: false,
       transcriptFiles: 0,
+      transcriptFilesScanned: 0,
       transcriptSecretsFound: 0,
     },
   };
@@ -56,8 +86,28 @@ export function status(projectDir: string): StatusResult {
   // Check Claude Code deny rules and Stop hook
   const settingsPath = path.join(projectDir, '.claude', 'settings.json');
   if (fs.existsSync(settingsPath)) {
+    // A settings file we cannot read is not a settings file with no rules in
+    // it. Both used to render as "0 deny patterns", so a project whose
+    // protection had never been wired up looked exactly like a healthy one.
+    let settings: any;
     try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        result.settingsUnreadable = {
+          path: '.claude/settings.json',
+          reason: 'its top level is not a JSON object',
+        };
+      } else {
+        settings = parsed;
+      }
+    } catch (err) {
+      result.settingsUnreadable = {
+        path: '.claude/settings.json',
+        reason: (err as Error).message,
+      };
+    }
+
+    if (settings) {
       result.denyRuleCount = settings?.permissions?.deny?.length || 0;
 
       // Check for Stop hook
@@ -65,8 +115,6 @@ export function status(projectDir: string): StatusResult {
       result.transcriptProtection.stopHookInstalled = stopHooks.some(
         (h: any) => h.hooks?.some((hh: any) => hh.command?.includes('secretless-ai'))
       );
-    } catch {
-      // Invalid JSON
     }
   }
 
@@ -112,18 +160,28 @@ export function status(projectDir: string): StatusResult {
     result.transcriptProtection.transcriptFiles = jsonlFiles.length;
     result.transcriptProtection.watcherRunning = isWatchRunning();
 
-    // Quick scan of 3 most recent transcripts
-    const recentFiles = jsonlFiles.slice(0, 3);
+    // Sample the most recent transcripts so `status` stays sub-second — a full
+    // pass over every transcript takes tens of seconds and belongs in `clean`.
+    // `discoverTranscripts` sorts by mtime descending, so these really are the
+    // most recent. The count of what was read is recorded and reported: a zero
+    // over three files is not a statement about the other 8847.
+    const recentFiles = jsonlFiles.slice(0, TRANSCRIPT_SAMPLE_SIZE);
     for (const file of recentFiles) {
       const { findings: transcriptFindings } = scanTranscriptFile(file, true);
       result.transcriptProtection.transcriptSecretsFound += transcriptFindings.length;
+      result.transcriptProtection.transcriptFilesScanned += 1;
     }
   } catch {
     // Transcript scanning is best-effort
   }
 
   // Protected if hook is installed OR instructions are present in at least one tool
-  result.isProtected = result.hookInstalled || result.configuredTools.length > 0;
+  // An unreadable `.claude/settings.json` means the deny rules and the
+  // PreToolUse wiring could not be read at all. The guard script existing on
+  // disk is not protection on its own, so claiming `isProtected` here would be
+  // asserting something we never verified — fail closed instead.
+  result.isProtected = !result.settingsUnreadable
+    && (result.hookInstalled || result.configuredTools.length > 0);
 
   return result;
 }

@@ -10,7 +10,7 @@ import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode':
 import { VERSION, CLI_BARE } from './commands/utils';
 // @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
 // so they're loaded via dynamic import() inside the async main().
-import { runInit, runScan, runStatus, runVerify, runDoctor } from './commands/core';
+import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize } from './commands/core';
 import { runClean, runWatch, runScanHistory, runCleanHistory } from './commands/transcript';
 import { runSecret } from './commands/secrets';
 import { runRun, runEnv, runImport, runSetupCommand } from './commands/env-run';
@@ -164,13 +164,27 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
           console.error(`  Warning: ignoring invalid --max-files value "${raw}" (must be a positive whole number, e.g. --max-files 20000).`);
         }
       }
-      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence', '--max-files']);
+      // --max-file-size <size>  Raise the per-file size cap (10MB config, 1MB
+      // source). Without it, "skipped for size" is a dead end in exactly the
+      // way hitting the file cap was before --max-files existed.
+      let maxFileSizeBytes: number | undefined;
+      const fsIdx = args.indexOf('--max-file-size');
+      if (fsIdx !== -1 && fsIdx + 1 < args.length) {
+        const raw = args[fsIdx + 1];
+        const parsed = parseFileSize(raw);
+        if (parsed !== null) {
+          maxFileSizeBytes = parsed;
+        } else {
+          console.error(`  Warning: ignoring invalid --max-file-size value "${raw}" (e.g. --max-file-size 20mb, 500kb, or a byte count).`);
+        }
+      }
+      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence', '--max-files', '--max-file-size']);
       const positionalArgs: string[] = [];
       const unknownFlags: string[] = [];
       for (let k = 1; k < args.length; k++) {
         const a = args[k];
         if (flagFlag.has(a)) {
-          if (a === '--min-confidence' || a === '--max-files') k++;
+          if (a === '--min-confidence' || a === '--max-files' || a === '--max-file-size') k++;
           continue;
         }
         // Warn (don't fail) on an unrecognized flag so a typo like `--show-placeholder`
@@ -181,7 +195,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       if (unknownFlags.length > 0) {
         console.error(`  Warning: ignoring unknown flag${unknownFlags.length > 1 ? 's' : ''} ${unknownFlags.join(', ')}.`);
-        console.error(`  Run \`${CLI_BARE} scan\` for supported flags (--json, --show-placeholders, --min-confidence, --max-files, --no-ignore, --include-tests, --explain).`);
+        console.error(`  Run \`${CLI_BARE} scan\` for supported flags (--json, --show-placeholders, --min-confidence, --max-files, --max-file-size, --no-ignore, --include-tests, --explain).`);
       }
       // Refuse extra paths rather than silently scanning only the first. A
       // second path used to be dropped with no warning, and since the first
@@ -197,7 +211,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders, maxFiles });
+      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders, maxFiles, maxFileSizeBytes });
     }
     case 'status': {
       const json = args.includes('--json');

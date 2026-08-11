@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.21.3] - unreleased
+
+Closes the `init` data-loss defect disclosed as a known issue in 0.21.2, plus
+three more places where the same shape appeared: a file we could not parse or
+could not open was treated as a file with nothing in it.
+
+**Behavior change worth reading before you upgrade:** `init` now exits 1 and
+changes nothing when `.claude/settings.json` cannot be merged into, instead of
+replacing it. `scan` now exits 1 when a file was skipped for exceeding the
+per-file size cap, the same way it already does for the file-count cap and for
+unreadable paths. Both were previously exit 0.
+
+**If you run `init` from a `postinstall` hook, move it before you upgrade.** Our
+own team-setup guide recommended that wiring until this release. Because `init`
+now exits 1 on a `.claude/settings.json` it cannot parse, and `npm` fails the
+whole install when `postinstall` exits non-zero, a single developer's JSONC
+settings file will stop `npm install` from completing for them. Run it as an
+explicit script instead (`"protect": "secretless-ai init"`, then `npm run
+protect`), so the failure is visible and actionable without blocking dependency
+installation. Do not paper over it with `|| true` — that restores exactly the
+silent success this release removes. `docs/use-cases/team-setup.md` is updated
+with the exit-code table.
+
+### Fixed
+
+- **`init` destroyed `.claude/settings.json` when it did not parse as strict JSON, and reported the merge as successful ([#122](https://github.com/opena2a-org/secretless-ai/issues/122)).** The read helper collapsed "file absent" and "file present but unparseable" into the same `null`; the caller turned that into `{}` and wrote it back, so every user key was replaced by a Secretless-only document with no backup — while the run printed `added 96 deny patterns` and exited 0. The trigger is JSONC (`//` comments, trailing commas), which is what VS Code writes and what people hand-edit into that file, so the failure landed on files that looked normal to their owner.
+
+  `init` now leaves such a file byte-identical, names the parse error, states that no deny patterns and no hook wiring were installed, and exits 1. The `Verify:` and `Fix:` lines are specific to which of the three failures occurred — a syntax error, valid JSON that is not an object, or a file that could not be opened at all. They have to be: a settings file whose top level is `null`, an array or a string is *valid JSON*, so a `JSON.parse` check exits 0 on it, and printing that as the verify step for every refusal would tell the user their file was fine while `init` refused it, under advice to remove comments the file does not contain. Each printed command is now executed by the test suite against the shape it is printed for, and against a healthy file, rather than asserted as a string. It does not list Claude Code as configured, because the guard script on disk is inert until settings.json references it — reporting it as configured would have been the same false success one line further down.
+
+  Three neighbouring shapes reached the same write path and are fixed with it. A settings file containing valid JSON `null` took the overwrite branch. An **array** was worse than data loss: properties assigned to an array are dropped by `JSON.stringify`, so `init` wrote the array back unchanged while reporting 96 deny patterns added — a project left completely unprotected with a success message and nothing destroyed to prompt a second look. A **string** or number threw a raw `Cannot create property 'hooks' on string` at the user with no file named and no fix. A file that is empty or whitespace-only is still configured normally: it provably holds no user content.
+
+- **`status` reported an unparseable `.claude/settings.json` as zero deny patterns.** "No rules configured" and "could not read the rules" rendered identically, so a project whose protection was never wired up looked exactly like a healthy one — and the ✓ next to `Claude Code hook installed` was keyed on the guard script merely existing on disk, not on anything having wired it in. `status` now reports the parse failure as a warning with a verify command, exposes `settingsUnreadable` in `--json`, and does not claim `isProtected`.
+
+- **Setting the backend or the cache TTL silently reset the other one when `~/.secretless-ai/config.json` did not parse.** Same collapse as #122 in a smaller file: the read-modify-write started from `{}` on a parse failure, so `backend set` dropped `cacheTtl` and `cache set` reverted the backend to `local`. For a tool that decides where credentials get written, quietly resetting that choice is the defect, not the recovery. Both writers now refuse, name the file and the parse error, and leave it unchanged.
+
+- **Files over the per-file size cap were skipped with no warning ([#120](https://github.com/opena2a-org/secretless-ai/issues/120)).** A config file over 10 MB or a source file over 1 MB was dropped with no `truncated`, no `unreadable` and no output of any kind. Measured: an 11 MB `config.json` with a live-shaped Google key on line 1 scanned to `total: 0`, `truncated: false`, exit 0. The cap bounds memory use and says nothing about the contents — the same bytes under it produce a finding — so this closes the size-cap gap in the class 0.21.2 was working through. It is not the last one: see the `status` transcript fix below, and the open scope gap in `Known issues`. Skipped files are now listed with their size and the cap, counted in `summary.oversize` and `oversizeFiles` in `--json`, and set exit 1.
+
+- **`status` reported every discovered transcript as scanned, turning a three-file sample into a clean verdict.** It printed `Transcripts clean (8850 files scanned)` while having read three of them — `transcriptFiles` was a discovery count rendered as a scanned count. Measured on a real machine during this release's testing: that line printed while `clean --dry-run`, over the same 8850 files, found 882 credentials in 168 of them. Sampling is deliberate and stays (a full pass takes tens of seconds; `status` answers immediately), but the scope is now stated: `No credentials in the 3 most recent transcripts (8850 found; the rest were not read)`, with `clean --dry-run` offered as the full check. `--json` gains `transcriptFilesScanned` alongside `transcriptFiles`. Present in 0.21.2 and earlier; it is the same confident-zero-over-unread-content defect as the rest of this release, on the headline verdict surface.
+
+- **The MCP wrapper told users to run a command that does not exist.** When the vault directory was missing, `secretless-mcp` printed `Run 'npx secretless-ai mcp-protect' to set up MCP secret protection` and exited 1. The command is `protect-mcp`, so following the instruction printed `Unknown command: mcp-protect` and exited 1 again — a dead end on an error path, where the user is already stuck. Present in 0.21.2 and every earlier version. Fixed, and the class is now covered: a test cross-references every command the tool suggests in its own output against the commands `cli.ts` actually dispatches. Markdown was already checked this way; the tool's own output strings were not, which is why this survived.
+
+### Added
+
+- **`scan --max-file-size <size>`** raises the per-file cap (`20mb`, `500kb`, or a byte count), so a reported skip has a fix and not only a name. One value applies to config and source files alike. An unparseable value is refused with a warning rather than silently falling back — `--max-files` had shown that `parseInt` turns `1e6` into a cap of 1 while the user believes it was raised.
+- **The scan triage flags are now listed in `--help`.** `--max-files`, `--max-file-size`, `--min-confidence`, `--show-placeholders`, `--no-ignore` and `--include-tests` were all absent, including the two that coverage warnings tell the user to run.
+
+### Documentation
+
+- **Three stale numbers in the README, all corrected and pinned.** A number in a sample output is read as the tool's actual behavior, so a stale one misdescribes the build the reader just installed. The sample `init` output claimed 86 deny patterns where the build writes 96; the feature list claimed 21 blocked file patterns where the hook layer enforces 18; and the test badge was a hardcoded `1333 passing` that had to be edited by hand to stay true, so it is now the live CI badge instead. The two counts and the sample version banner are pinned by tests that read the README and compare it against what the code actually produces, both sides derived at run time so neither can drift silently.
+- **`docs/use-cases/team-setup.md` no longer wires `init` into a `postinstall` hook.** See the upgrade note above; the guide now uses an explicit `npm run protect` script and documents `init`'s exit codes.
+
+### Known issues
+
+- **`scan <dir>` skips every config file whose name is not on a 33-entry allowlist, and reports the result as clean ([#124](https://github.com/opena2a-org/secretless-ai/issues/124)).** Found by this release's own testing, in the same defect class the release is about, so it is called out here rather than left silent. 14 files in one directory each holding the identical key produced `total: 4` with `truncated: false` and no exclusion notice; `secrets.json`, `settings.json`, `creds.json`, `appsettings.json`, `.npmrc`, `Dockerfile`, `serverless.yml`, `values.yaml`, `app.toml` and `app.ini` were never read, while `config.json` and `config.yaml` were. Each missed file is detected correctly when named directly (`secretless-ai scan secrets.json` finds it), so this is file selection, not detection. Reproduces identically on 0.21.2 and earlier — not a regression in this release.
+
+  Until it is fixed, `secretless-ai scan <file>` on a specific config file is reliable, and a directory scan should not be read as covering config formats beyond the allowlist. **This blocks 1.0.0**: the version will not ship with it open, per the v1 burndown, and widening the file set has to be measured in both directions because a noisier scan is its own failure mode.
+
+### Internal
+
+- The finding-dedup key in `src/scan.ts` held two raw NUL bytes written directly into the source rather than as escapes. The compiled string is unchanged; the source is no longer classified as binary by `grep`, `rg` and every diff viewer.
+
 ## [0.21.2] - 2026-08-06
 
 Three defects that shipped in 0.21.1, two of them regressions introduced by that
