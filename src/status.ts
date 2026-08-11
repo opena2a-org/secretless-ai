@@ -9,6 +9,14 @@ import { scan } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
 
+/**
+ * How many of the most recent transcripts `status` reads. A full pass is a
+ * `clean --dry-run` job (tens of seconds over thousands of files); `status` is
+ * expected to answer immediately. Exported so the renderer and the tests state
+ * the same number rather than each hardcoding their own.
+ */
+export const TRANSCRIPT_SAMPLE_SIZE = 3;
+
 export interface StatusResult {
   isProtected: boolean;
   configuredTools: AITool[];
@@ -35,6 +43,18 @@ export interface StatusResult {
     stopHookInstalled: boolean;
     watcherRunning: boolean;
     transcriptFiles: number;
+    /**
+     * How many of `transcriptFiles` were actually read. `status` samples the
+     * most recent few so it stays sub-second; `transcriptFiles` is a discovery
+     * count and was being rendered as "N files scanned", which turned a
+     * three-file sample into a clean verdict over everything. Measured on a real
+     * machine: `status` reported 0 secrets in "8850 files scanned" while
+     * `clean --dry-run` found 882 credentials in 168 of those same files.
+     *
+     * Same "an answer we never got is not a good answer" gap as
+     * `settingsUnreadable` above and as `truncated` for scan coverage.
+     */
+    transcriptFilesScanned: number;
     transcriptSecretsFound: number;
   };
 }
@@ -54,6 +74,7 @@ export function status(projectDir: string): StatusResult {
       stopHookInstalled: false,
       watcherRunning: false,
       transcriptFiles: 0,
+      transcriptFilesScanned: 0,
       transcriptSecretsFound: 0,
     },
   };
@@ -139,11 +160,16 @@ export function status(projectDir: string): StatusResult {
     result.transcriptProtection.transcriptFiles = jsonlFiles.length;
     result.transcriptProtection.watcherRunning = isWatchRunning();
 
-    // Quick scan of 3 most recent transcripts
-    const recentFiles = jsonlFiles.slice(0, 3);
+    // Sample the most recent transcripts so `status` stays sub-second — a full
+    // pass over every transcript takes tens of seconds and belongs in `clean`.
+    // `discoverTranscripts` sorts by mtime descending, so these really are the
+    // most recent. The count of what was read is recorded and reported: a zero
+    // over three files is not a statement about the other 8847.
+    const recentFiles = jsonlFiles.slice(0, TRANSCRIPT_SAMPLE_SIZE);
     for (const file of recentFiles) {
       const { findings: transcriptFindings } = scanTranscriptFile(file, true);
       result.transcriptProtection.transcriptSecretsFound += transcriptFindings.length;
+      result.transcriptProtection.transcriptFilesScanned += 1;
     }
   } catch {
     // Transcript scanning is best-effort

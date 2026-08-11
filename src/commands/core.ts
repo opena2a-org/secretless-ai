@@ -567,10 +567,23 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
   }
 
   // Transcript files + secrets within them.
+  //
+  // `transcriptFiles` is a DISCOVERY count; `transcriptFilesScanned` is what was
+  // actually read. Rendering the first as "N files scanned" turned a three-file
+  // sample into a clean verdict over everything — measured on a real machine,
+  // "Transcripts clean (8850 files scanned)" alongside `clean --dry-run` finding
+  // 882 credentials in 168 of those files. Say what was read, and say what was
+  // not, the same way the scan coverage warnings do.
   if (tp.transcriptSecretsFound > 0) {
-    addRow({ glyph: '⚠', label: `${tp.transcriptSecretsFound} credential${tp.transcriptSecretsFound === 1 ? '' : 's'} in recent transcripts`, action: 'secretless-ai clean' });
-  } else if (tp.transcriptFiles > 0) {
-    addRow({ glyph: '✓', label: `Transcripts clean (${tp.transcriptFiles} file${tp.transcriptFiles === 1 ? '' : 's'} scanned)` });
+    addRow({ glyph: '⚠', label: `${tp.transcriptSecretsFound} credential${tp.transcriptSecretsFound === 1 ? '' : 's'} in the ${tp.transcriptFilesScanned} most recent transcript${tp.transcriptFilesScanned === 1 ? '' : 's'}`, action: 'secretless-ai clean' });
+  } else if (tp.transcriptFilesScanned > 0 && tp.transcriptFilesScanned < tp.transcriptFiles) {
+    addRow({
+      glyph: '✓',
+      label: `No credentials in the ${tp.transcriptFilesScanned} most recent transcripts (${tp.transcriptFiles} found; the rest were not read)`,
+      action: 'secretless-ai clean --dry-run',
+    });
+  } else if (tp.transcriptFilesScanned > 0) {
+    addRow({ glyph: '✓', label: `Transcripts clean (${tp.transcriptFilesScanned} file${tp.transcriptFilesScanned === 1 ? '' : 's'} scanned)` });
   }
 
   // Broker daemon.
