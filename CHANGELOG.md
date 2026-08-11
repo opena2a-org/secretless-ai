@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.21.3] - unreleased
+## [0.21.3] - 2026-08-11
 
 Closes the `init` data-loss defect disclosed as a known issue in 0.21.2, plus
 three more places where the same shape appeared: a file we could not parse or
