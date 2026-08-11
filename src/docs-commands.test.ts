@@ -68,6 +68,28 @@ function commandReferences(line: string): string[] {
   return verbs;
 }
 
+/**
+ * npm lifecycle scripts that run as part of an ordinary `npm install`. Anything
+ * here that exits non-zero fails the install itself, so a command wired into one
+ * of them must be one that cannot fail — and `init` is not, by design.
+ */
+const INSTALL_LIFECYCLE_HOOKS = ['preinstall', 'install', 'postinstall', 'prepare', 'prepublish'];
+
+/**
+ * A JSON script entry that runs a secretless-ai command from an install-time
+ * lifecycle hook. Returns the hook name, or null.
+ *
+ * Matching the hook and the command on one line is deliberate: this is the shape
+ * docs actually publish (`"postinstall": "npx secretless-ai init"`), and a
+ * predicate that tried to track JSON structure across lines would be a parser,
+ * which is the thing that keeps producing defects here.
+ */
+function installHookWiring(line: string): string | null {
+  const m = line.match(/"(\w+)"\s*:\s*"([^"]*secretless-ai[^"]*)"/);
+  if (!m) return null;
+  return INSTALL_LIFECYCLE_HOOKS.includes(m[1]) ? m[1] : null;
+}
+
 /** Markdown the project publishes to users. */
 function docFiles(): string[] {
   const files: string[] = [];
@@ -125,6 +147,37 @@ describe('documented commands exist', () => {
       text.split('\n').forEach((line, i) => {
         if (/secretless-ai\s+init\s+--/.test(line)) {
           offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: ${line.trim()}`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('distinguishes an install-time lifecycle hook from an ordinary script', () => {
+    // Pin the predicate in BOTH directions before running it over the real docs,
+    // or a green result below says nothing about whether it can fire at all.
+    expect(installHookWiring('    "postinstall": "npx secretless-ai init"')).toBe('postinstall');
+    expect(installHookWiring('    "prepare": "secretless-ai init"')).toBe('prepare');
+    // A named script a user runs deliberately is the recommended shape, not a defect.
+    expect(installHookWiring('    "protect": "secretless-ai init"')).toBeNull();
+    // A lifecycle hook that does not run this tool is none of our business.
+    expect(installHookWiring('    "postinstall": "npm run build"')).toBeNull();
+  });
+
+  it('never wires a secretless-ai command into an install-time lifecycle hook', () => {
+    // The 0.21.0 breakage (a rejected `--ci` flag) and the 0.21.3 breakage (`init`
+    // exiting 1 on an unparseable settings.json) are the same defect reached two
+    // different ways, in the same documented hook. The flag was never the cause:
+    // `init` is allowed to fail, and `postinstall` turns any failure into a failed
+    // `npm install` for the whole team. Guard the coupling, not the spelling —
+    // a rule per flag never converges.
+    const offenders: string[] = [];
+    for (const file of files) {
+      const text = fs.readFileSync(file, 'utf-8');
+      text.split('\n').forEach((line, i) => {
+        const hook = installHookWiring(line);
+        if (hook) {
+          offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: "${hook}" — ${line.trim()}`);
         }
       });
     }

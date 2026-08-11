@@ -12,6 +12,17 @@ replacing it. `scan` now exits 1 when a file was skipped for exceeding the
 per-file size cap, the same way it already does for the file-count cap and for
 unreadable paths. Both were previously exit 0.
 
+**If you run `init` from a `postinstall` hook, move it before you upgrade.** Our
+own team-setup guide recommended that wiring until this release. Because `init`
+now exits 1 on a `.claude/settings.json` it cannot parse, and `npm` fails the
+whole install when `postinstall` exits non-zero, a single developer's JSONC
+settings file will stop `npm install` from completing for them. Run it as an
+explicit script instead (`"protect": "secretless-ai init"`, then `npm run
+protect`), so the failure is visible and actionable without blocking dependency
+installation. Do not paper over it with `|| true` — that restores exactly the
+silent success this release removes. `docs/use-cases/team-setup.md` is updated
+with the exit-code table.
+
 ### Fixed
 
 - **`init` destroyed `.claude/settings.json` when it did not parse as strict JSON, and reported the merge as successful ([#122](https://github.com/opena2a-org/secretless-ai/issues/122)).** The read helper collapsed "file absent" and "file present but unparseable" into the same `null`; the caller turned that into `{}` and wrote it back, so every user key was replaced by a Secretless-only document with no backup — while the run printed `added 96 deny patterns` and exited 0. The trigger is JSONC (`//` comments, trailing commas), which is what VS Code writes and what people hand-edit into that file, so the failure landed on files that looked normal to their owner.

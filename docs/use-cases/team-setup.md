@@ -58,23 +58,52 @@ npx secretless-ai backend set gcp-sm
 
 ## Step 3: Add to your project
 
-Add secretless as a dev dependency and configure a `postinstall` hook so new team members get protection automatically:
+Add secretless as a dev dependency:
 
 ```bash
 npm install --save-dev secretless-ai
 ```
 
-Add to `package.json`:
+Then add an explicit setup script that new team members run once:
 
 ```json
 {
   "scripts": {
-    "postinstall": "npx secretless-ai init"
+    "protect": "secretless-ai init"
   }
 }
 ```
 
-Now every `npm install` configures AI tool protections automatically.
+```bash
+npm run protect
+```
+
+### Why this is not a `postinstall` hook
+
+Earlier versions of this guide wired `secretless-ai init` into `postinstall`. Do not do
+that. `init` exits non-zero when it cannot safely configure the project, and anything in
+`postinstall` that exits non-zero fails the whole `npm install`.
+
+`init` exits 1 when `.claude/settings.json` exists but cannot be parsed as strict JSON —
+comments and trailing commas are the common cause, and they are what VS Code writes and
+what people hand-edit into that file. It refuses rather than replacing a file it could not
+read, which is correct on its own terms, but in a `postinstall` hook it means one
+developer's editor formatting blocks dependency installation for them entirely.
+
+Exit codes, so you can wire `init` into automation deliberately:
+
+| Situation | Exit |
+|---|---|
+| No `.claude/settings.json`, or the file is empty | 0 — configures normally |
+| Valid JSON, including a file with your own keys | 0 — merges, your keys preserved |
+| Already configured (re-run) | 0 — idempotent |
+| File is not parseable JSON (comments, trailing commas) | 1 — changes nothing, names the parse error |
+| File parses but is `null`, an array, a string or a number | 1 — changes nothing |
+
+If you do want it automatic, run it in a step whose failure is visible and does not block
+installing dependencies — a CI job, or a `prepare` script you are willing to have fail
+loudly. Never suppress the exit code with `|| true`: that restores the silent-success
+behavior this check exists to remove.
 
 ## Step 4: Define required secrets
 
@@ -175,12 +204,17 @@ For new team members, the workflow is:
 
 ```bash
 git clone <repo>
-npm install              # postinstall runs secretless-ai init
+npm install              # dependencies only
+npm run protect          # configures AI tool protections
 npx secretless-ai setup  # prompts for missing secrets
 npx secretless-ai verify # confirms everything works
 ```
 
-Three commands after cloning. No `.env` files to copy from Slack. No credentials in the repo.
+Four commands after cloning. No `.env` files to copy from Slack. No credentials in the repo.
+
+If `npm run protect` exits 1, it names the reason and changes nothing — the usual cause is
+a `.claude/settings.json` with comments or a trailing comma. Fix the file and re-run; the
+rest of the checklist is unaffected.
 
 ## Next steps
 
