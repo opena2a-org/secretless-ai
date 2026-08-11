@@ -90,6 +90,55 @@ function installHookWiring(line: string): string | null {
   return INSTALL_LIFECYCLE_HOOKS.includes(m[1]) ? m[1] : null;
 }
 
+/**
+ * Source files whose strings reach a user's terminal. The docs checks above cover
+ * markdown; nothing covered the commands the tool suggests in its OWN output, and
+ * that is where a dead end costs the most — the user is already stuck when they
+ * read it.
+ */
+function sourceFiles(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (d: string): void => {
+    if (!fs.existsSync(d)) return;
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) out.push(full);
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+/**
+ * The output conventions this CLI uses to present a runnable command. A bare
+ * mention of the package name inside a sentence ("Cannot locate secretless-ai
+ * package root") is prose and must not be read as an invocation; a purely
+ * syntactic rule cannot tell the two apart, because both are a word followed by
+ * a word. So the discriminator is the presenting context, and it is pinned in
+ * both directions by the test below rather than trusted.
+ */
+function suggestedCommand(line: string): string | null {
+  const trimmed = line.trim();
+  if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
+
+  for (const m of line.matchAll(/(.)?secretless-ai\s+([a-z][a-z-]*)/g)) {
+    const before = m[1] ?? '';
+    // A URL path segment or a scoped package name is never an invocation.
+    if (before === '/' || before === '@' || before === '-') continue;
+
+    // The optional leading character is part of the match, so step past it to
+    // get the text that actually precedes the package name.
+    const upTo = line.slice(0, m.index + (m[1] ? 1 : 0));
+    const invoked =
+      /npx\s+$/.test(upTo) ||                            // npx secretless-ai <verb>
+      /[`'"]$/.test(upTo) ||                             // `secretless-ai <verb>`
+      /(Usage|Fix|Verify|Run|Try|Suggestion|Next)\W*$/i.test(upTo); // labelled next step
+    if (invoked) return m[2];
+  }
+  return null;
+}
+
 /** Markdown the project publishes to users. */
 function docFiles(): string[] {
   const files: string[] = [];
@@ -178,6 +227,41 @@ describe('documented commands exist', () => {
         const hook = installHookWiring(line);
         if (hook) {
           offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: "${hook}" — ${line.trim()}`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('tells an invocation from prose that merely names the package', () => {
+    // The real defect this check was written for.
+    expect(suggestedCommand(`Run 'npx secretless-ai protect-mcp' to set up MCP.`)).toBe('protect-mcp');
+    expect(suggestedCommand('  Fix:    secretless-ai scan --max-file-size 3mb')).toBe('scan');
+    expect(suggestedCommand('Usage: secretless-ai vault <subcommand>')).toBe('vault');
+    expect(suggestedCommand('`npx secretless-ai doctor`')).toBe('doctor');
+
+    // Every prose shape actually present in this source tree. These are the
+    // cases that make a naive matcher report four dead ends that do not exist,
+    // and a check that cries wolf gets deleted rather than fixed.
+    expect(suggestedCommand("'# See https://opena2a.org/secretless-ai for syntax.'")).toBeNull();
+    expect(suggestedCommand("const HOOK_MARKER = '# secretless-ai pre-commit hook';")).toBeNull();
+    expect(suggestedCommand("'install-wrapper: Cannot locate secretless-ai package root. '")).toBeNull();
+    expect(suggestedCommand(' * so secretless-ai works without it (just shows a message).')).toBeNull();
+  });
+
+  it('never suggests a command the CLI does not dispatch', () => {
+    // Shipped in 0.21.2 and every version before it: the MCP wrapper told the
+    // user to run `npx secretless-ai mcp-protect` when the vault directory was
+    // missing. The command is `protect-mcp`, so following the instruction
+    // printed "Unknown command: mcp-protect" and exited 1 — a dead end on an
+    // error path, which is the worst place for one.
+    const offenders: string[] = [];
+    for (const file of sourceFiles(path.join(REPO_ROOT, 'src'))) {
+      const text = fs.readFileSync(file, 'utf-8');
+      text.split('\n').forEach((line, i) => {
+        const verb = suggestedCommand(line);
+        if (verb && !commands.has(verb)) {
+          offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: "${verb}" — ${line.trim()}`);
         }
       });
     }
