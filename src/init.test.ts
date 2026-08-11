@@ -1125,15 +1125,44 @@ describe('README sample output matches the build', () => {
   beforeEach(() => { dir = tmpDir(); });
   afterEach(() => { cleanup(dir); });
 
+  const README = (): string => fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf-8');
+
   it('states the deny-pattern count init actually writes', () => {
     const result = init(dir);
-    const readme = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf-8');
 
-    const claimed = readme.match(/added (\d+) deny patterns/);
+    const claimed = README().match(/added (\d+) deny patterns/);
     // If the sample line is renamed or removed, fail loudly rather than passing
     // vacuously on a regex that stopped matching anything.
     expect(claimed, 'README no longer contains an "added N deny patterns" sample').not.toBeNull();
     expect(result.denyRulesAdded).toBeGreaterThan(0);
     expect(Number(claimed![1])).toBe(result.denyRulesAdded);
+  });
+
+  it('states the number of file patterns the hook layer actually blocks', () => {
+    init(dir);
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'),
+    );
+    // File patterns are the Read() rules. Bash() rules are command patterns and
+    // are counted separately by the README sentence above this one.
+    const readRules = (settings.permissions.deny as string[]).filter(r => r.startsWith('Read('));
+
+    const claimed = README().match(/(\d+) file patterns enforced/);
+    expect(claimed, 'README no longer contains an "N file patterns enforced" claim').not.toBeNull();
+    expect(readRules.length).toBeGreaterThan(0);
+    expect(Number(claimed![1])).toBe(readRules.length);
+  });
+
+  it('shows the version this package actually ships', () => {
+    // The quickstart sample prints a version banner. `npm version` bumps
+    // package.json and nothing else, so without this the sample goes stale on
+    // every release — and it is the first output a new user compares against
+    // their own terminal.
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8'),
+    );
+    const claimed = README().match(/Secretless v(\d+\.\d+\.\d+)/);
+    expect(claimed, 'README no longer contains a "Secretless vX.Y.Z" sample banner').not.toBeNull();
+    expect(claimed![1]).toBe(pkg.version);
   });
 });

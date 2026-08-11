@@ -44,7 +44,7 @@ with the exit-code table.
 
 ### Documentation
 
-- **The README's sample `init` output claimed 86 deny patterns; the build writes 96.** A number in a sample output is read as the tool's actual behavior, so a stale one misdescribes the build the reader just installed. Corrected, and pinned by a test that compares the README's figure against the count `init` returns, both derived at run time so neither side can drift silently.
+- **Three stale numbers in the README, all corrected and pinned.** A number in a sample output is read as the tool's actual behavior, so a stale one misdescribes the build the reader just installed. The sample `init` output claimed 86 deny patterns where the build writes 96; the feature list claimed 21 blocked file patterns where the hook layer enforces 18; and the test badge was a hardcoded `1333 passing` that had to be edited by hand to stay true, so it is now the live CI badge instead. The two counts and the sample version banner are pinned by tests that read the README and compare it against what the code actually produces, both sides derived at run time so neither can drift silently.
 - **`docs/use-cases/team-setup.md` no longer wires `init` into a `postinstall` hook.** See the upgrade note above; the guide now uses an explicit `npm run protect` script and documents `init`'s exit codes.
 
 ### Internal

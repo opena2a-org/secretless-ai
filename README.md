@@ -8,7 +8,7 @@ Keep API keys and other secrets invisible to AI coding tools. Works with Claude 
 
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1333%20passing-brightgreen)](https://github.com/opena2a-org/secretless-ai)
+[![CI](https://github.com/opena2a-org/secretless-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/opena2a-org/secretless-ai/actions/workflows/ci.yml)
 
 [Website](https://opena2a.org/secretless) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
 
@@ -81,7 +81,7 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 
 1. **Scans** your project for hardcoded credentials in config files and source code. 57 credential patterns from [`@opena2a/credential-patterns@0.1.3`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
-3. **Blocks** AI tools from reading credential files. 21 file patterns enforced at the AI-tool hook layer.
+3. **Blocks** AI tools from reading credential files. 18 file patterns enforced at the AI-tool hook layer.
 4. **Brokers** access through environment variables. Secrets never enter AI context.
 
 ## Store secrets and use them in AI sessions
