@@ -193,8 +193,12 @@ describe('run never writes a secret value to stderr (#117)', () => {
   }
 
   it('refuses to run and prints no part of the value', async () => {
-    const store = new SecretStore({ backend });
-    await store.setSecret('HIBP_PRO', SECRET);
+    // Written straight to the backend, not via setSecret, because setSecret now
+    // refuses this value (#104). That is the realistic path anyway: a
+    // null-bearing value reaches the store from a backend read — macOS returns
+    // binary passwords hex-encoded and they decode to bytes containing 0x00 —
+    // or from a store an older build wrote.
+    await backend.store('secret/HIBP_PRO', SECRET);
 
     const marker = path.join(tmpDir, 'child-ran');
     const { code, stderr } = await stderrOf(
@@ -217,10 +221,9 @@ describe('run never writes a secret value to stderr (#117)', () => {
   });
 
   it('names every unusable secret, not just the first one Node reaches', async () => {
-    const store = new SecretStore({ backend });
-    await store.setSecret('ALPHA', 'aa' + NUL);
-    await store.setSecret('BETA', 'bb' + NUL);
-    await store.setSecret('FINE', 'ordinary-value');
+    await backend.store('secret/ALPHA', 'aa' + NUL);
+    await backend.store('secret/BETA', 'bb' + NUL);
+    await backend.store('secret/FINE', 'ordinary-value');
 
     const { code, stderr } = await stderrOf('node', ['-e', 'process.exit(0)']);
     expect(stderr).toContain('ALPHA');

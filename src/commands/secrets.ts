@@ -2,6 +2,7 @@ import * as path from 'path';
 import { SecretStore } from '../secret-store';
 import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
 import { CLI, CLI_BARE } from './utils';
+import { describeSecretShape } from '../secret-value';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -76,7 +77,9 @@ export async function runSecret(args: string[]): Promise<number> {
         const store = new SecretStore();
         try {
           await store.setSecret(name, value);
-          console.log(`  Stored: ${name}`);
+          // Shape, never content. A capture that lost most of the value reads
+          // as "19 chars" next to a token the user knows is 40 (#104).
+          console.log(`  Stored: ${name} (${describeSecretShape(value)})`);
           ensureShellHook();
           return 0;
         } catch (err) {
@@ -102,7 +105,7 @@ export async function runSecret(args: string[]): Promise<number> {
       const store = new SecretStore();
       try {
         await store.setSecret(name, value);
-        console.log(`  Stored: ${name}`);
+        console.log(`  Stored: ${name} (${describeSecretShape(value)})`);
         ensureShellHook();
         return 0;
       } catch (err) {
