@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.22.0] - 2026-08-12
 
 Credential disclosure and integrity. Three defects a credential manager should
 not carry, plus what sweeping their shape across the code turned up.
@@ -46,11 +46,17 @@ backend. Expect one extra unlock prompt.
 
 - **The redaction backstop missed escaped and truncated values.** It compared whole values and whole lines, and runtimes embed neither: Node escapes control bytes and truncates long values, `JSON.parse` quotes the first ten characters. Measured against all three throws this tool actually hits, whole-value containment reports no leak over a message displaying most of the credential. Detection now works on runs of the value, in any escaping, and the macOS Keychain write path uses the same detector.
 
+- **`diff` printed credential values verbatim.** It renders the git diff of secretless-managed files — which is exactly where a credential gets added, and exactly the output someone pastes into a chat to ask whether the change is safe — while `scan` redacted the same bytes in the same file. Found by this release's own walkthrough. It uses `scan`'s redactor and `scan`'s pattern list now, so the two cannot drift apart.
+
 - **A mangled paste was stored without comment ([#104](https://github.com/opena2a-org/secretless-ai/issues/104)).** A 40-character hex token pasted at the interactive prompt was stored as 19 bytes of control characters and U+FFFD — the terminal's own bracketed-paste sequences captured into the value — and surfaced much later as a type error inside an unrelated consumer. Values are validated at the store boundary, so `set`, `import` and the MCP write path are all covered. Every successful write now prints the shape: length and character class, never content.
 
 ### Known issues
 
-- On Linux, `secret-tool` failures are still read as "not found". Separating that from "could not read" needs exit codes that could not be measured on the machine this was fixed on, and a guessed mapping is worse than a recorded gap. The macOS path is fixed.
+Found by this release's own walkthrough, each reproduced against published 0.21.3 and carried rather than fixed. First carry for all three, and all three are fixed in **0.23.0**.
+
+- **Redaction leaves the tail of a token longer than its pattern's fixed length ([#133](https://github.com/opena2a-org/secretless-ai/issues/133)).** A correctly-shaped classic GitHub PAT redacts cleanly; a value one character longer prints that character, and the residue grows with the overshoot. This is the same detector/redactor gap this release fixes for error messages, still present in the scan preview path, so it is named here rather than left for a reader to discover in a release about disclosure.
+- **`broker start` reports success for a daemon that is not running ([#132](https://github.com/opena2a-org/secretless-ai/issues/132)).** It prints "Broker is running" and a PID; `broker status` immediately reports it is not, and the PID does not exist. `warm` auto-starts the broker, so this is on a default path.
+- **On Linux, `secret-tool` failures are still read as "not found" ([#130](https://github.com/opena2a-org/secretless-ai/issues/130)).** Separating that from "could not read" needs exit codes that could not be measured on the machine this was fixed on, and a guessed mapping is worse than a recorded gap. The macOS path is fixed.
 
 ## [0.21.3] - 2026-08-11
 
