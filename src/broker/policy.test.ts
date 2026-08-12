@@ -442,3 +442,98 @@ describe('isWithinTimeWindow', () => {
     expect(isWithinTimeWindow('09:00', '17:00')).toBe(true);
   });
 });
+
+/**
+ * A constraint the engine cannot apply must REFUSE the rule, never widen it.
+ *
+ * Measured on 0.22.0 before this landed: each malformed shape below loaded as a
+ * rule with `constraints: {}` and `evaluate()` returned
+ * `{allowed: true, reason: 'Allowed by rule "r1"'}` — the restrictive half of
+ * the operator's rule dropped, the permissive half kept, and `loadPolicies()`
+ * reporting 1 so every status surface showed the policy as loaded.
+ */
+describe('PolicyEngine — an unappliable constraint refuses the rule', () => {
+  const tmpFiles: string[] = [];
+
+  function policyFile(constraints: unknown): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-'));
+    const file = path.join(dir, 'p.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        rules: [
+          {
+            id: 'r1',
+            agentSelector: '*',
+            credentialSelector: '*',
+            effect: 'allow',
+            constraints,
+          },
+        ],
+      }),
+    );
+    tmpFiles.push(file);
+    return file;
+  }
+
+  afterEach(() => {
+    for (const f of tmpFiles.splice(0)) {
+      try {
+        fs.rmSync(path.dirname(f), { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  // Each row is a shape a YAML-to-JSON conversion, a templating layer or an
+  // env-var substitution actually produces.
+  const MALFORMED: Array<[string, unknown]> = [
+    ['timeWindow as numbers', { timeWindow: { start: 0, end: 1 } }],
+    ['timeWindow not "HH:MM"', { timeWindow: { start: '0:00', end: 'noon' } }],
+    ['rateLimit as a numeric string', { rateLimit: { maxPerMinute: '1' } }],
+    ['rateLimit zero', { rateLimit: { maxPerMinute: 0 } }],
+    ['minTrustScore as a string', { minTrustScore: '80' }],
+    ['requireCapability as a number', { requireCapability: 7 }],
+    ['scopeCheck as a string', { scopeCheck: 'true' }],
+    ['an unknown constraint key', { maxUses: 5 }],
+    ['constraints as an array', ['timeWindow']],
+  ];
+
+  for (const [label, constraints] of MALFORMED) {
+    it(`refuses to load: ${label}`, () => {
+      const e = new PolicyEngine({ policyFile: policyFile(constraints) });
+      expect(() => e.loadPolicies()).toThrow();
+    });
+
+    /**
+     * The security property, asserted separately from the throw.
+     *
+     * A rule that cannot be applied must never end up granting. Checking the
+     * throw alone would still pass if some later change caught the error and
+     * carried on with a widened rule, which is exactly the shape being fixed.
+     */
+    it(`never grants after: ${label}`, () => {
+      const e = new PolicyEngine({ policyFile: policyFile(constraints) });
+      try {
+        e.loadPolicies();
+      } catch {
+        /* refusing to load is the fix; the assertion below is the invariant */
+      }
+      expect(e.evaluate('agent-x', 'STRIPE_SECRET_KEY').allowed).toBe(false);
+    });
+  }
+
+  it('still loads and still ENFORCES a well-formed constraint', () => {
+    // The negative direction: refusing malformed input must not have been
+    // bought by refusing everything.
+    const e = new PolicyEngine({ policyFile: policyFile({ timeWindow: { start: '00:00', end: '00:01' } }) });
+    expect(e.loadPolicies()).toBe(1);
+    expect(e.getRules()[0].constraints).toEqual({ timeWindow: { start: '00:00', end: '00:01' } });
+  });
+
+  it('accepts a rule with no constraints at all', () => {
+    const e = new PolicyEngine({ policyFile: policyFile(undefined) });
+    expect(e.loadPolicies()).toBe(1);
+  });
+});

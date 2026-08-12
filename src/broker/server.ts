@@ -86,12 +86,23 @@ export class BrokerServer {
    * Start the broker server on both Unix socket and HTTP port.
    */
   async start(): Promise<void> {
-    // Load policies
-    try {
-      this.policy.loadPolicies();
-    } catch {
-      // No policies is fine — default deny applies
-    }
+    // A policy file that EXISTS and cannot be loaded is a hard startup failure.
+    //
+    // This used to be swallowed, under a comment reading "No policies is fine —
+    // default deny applies". That premise is false: `loadPolicies()` returns 0
+    // WITHOUT throwing when the file is absent, so the catch was reachable only
+    // in the one case it claimed to be handling safely — a policy file the
+    // operator wrote that failed to parse or validate. The broker then started
+    // serving credentials with zero rules.
+    //
+    // Refusing to start is deliberate and is the other half of the constraint
+    // validation in policy.ts. With that validation throwing and this catch
+    // still in place, a malformed constraint would turn a silent fail-OPEN into
+    // a silent deny-everything with no diagnosis, and the operator's rational
+    // next move is to delete the policy file — which is a fail-open again, by
+    // hand. A daemon that cannot apply the policy it was given must say so and
+    // stop, not pick a direction quietly.
+    this.policy.loadPolicies();
 
     // Generate and persist bearer token for caller authentication
     const tokenFile = this.config.tokenFile ?? TOKEN_FILE;

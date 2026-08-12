@@ -269,6 +269,26 @@ function parseTimeToMinutes(time: string): number {
   return hours * 60 + minutes;
 }
 
+/**
+ * Every constraint this build knows how to ENFORCE.
+ *
+ * Derived by hand and pinned by a test against `PolicyConstraints`, so a new
+ * constraint added to the type without being added here fails the suite rather
+ * than being silently refused at runtime — and one added here without an
+ * enforcement branch in `checkConstraints` fails too. The set is a promise
+ * about what is applied, not a list of what parses.
+ */
+const KNOWN_CONSTRAINT_KEYS = new Set([
+  'timeWindow',
+  'rateLimit',
+  'minTrustScore',
+  'requireCapability',
+  'scopeCheck',
+]);
+
+/** "HH:MM", 00:00-23:59. */
+const TIME_OF_DAY = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+
 function validateRule(raw: unknown): PolicyRule {
   if (!raw || typeof raw !== 'object') {
     throw new Error('Policy rule must be an object');
@@ -289,33 +309,100 @@ function validateRule(raw: unknown): PolicyRule {
     throw new Error(`Rule "${r.id}": effect must be "allow" or "deny"`);
   }
 
+  /**
+   * Constraint parsing REFUSES what it cannot apply.
+   *
+   * This block used to accept a rule and silently drop any constraint it could
+   * not type-match, which is the worst possible reading of an unrecognised
+   * policy: the RESTRICTIVE half of the operator's rule evaporated and the
+   * PERMISSIVE half survived. Measured on 0.22.0 — a `timeWindow` written with
+   * numeric hours instead of "HH:MM" strings, or `rateLimit.maxPerMinute` as
+   * the string "1", produced `constraints: {}` and `evaluate()` returned
+   * `allowed: true, reason: 'Allowed by rule "r1"'`, while `loadPolicies()`
+   * returned 1 and `getRules()` showed the rule present. Every surface the
+   * operator could check reported the policy as loaded.
+   *
+   * A numeric string is not a hypothetical: it is what a YAML-to-JSON
+   * conversion, a templating layer or an env-var substitution produces. The
+   * sharpest case is `minTrustScore: "80"` — the trust floor vanishes and any
+   * agent matching the selector is served.
+   *
+   * The surrounding function already throws on a malformed `id`,
+   * `agentSelector`, `credentialSelector` or `effect`. This block is now
+   * consistent with the rest of its own function rather than the exception
+   * inside it, and `checkConstraints` — which is correctly fail-closed — is no
+   * longer defeated by its own input layer.
+   */
   const constraints: PolicyConstraints = {};
-  if (r.constraints && typeof r.constraints === 'object') {
+  if (r.constraints !== undefined && r.constraints !== null) {
+    if (typeof r.constraints !== 'object' || Array.isArray(r.constraints)) {
+      throw new Error(`Rule "${r.id}": constraints must be an object`);
+    }
     const c = r.constraints as Record<string, unknown>;
 
-    if (c.timeWindow && typeof c.timeWindow === 'object') {
-      const tw = c.timeWindow as Record<string, unknown>;
-      if (typeof tw.start === 'string' && typeof tw.end === 'string') {
-        constraints.timeWindow = { start: tw.start, end: tw.end };
+    for (const key of Object.keys(c)) {
+      if (!KNOWN_CONSTRAINT_KEYS.has(key)) {
+        throw new Error(
+          `Rule "${r.id}": unknown constraint "${key}". ` +
+          `Known constraints: ${[...KNOWN_CONSTRAINT_KEYS].join(', ')}. ` +
+          `A constraint this build cannot apply is refused rather than ignored, ` +
+          `because ignoring it would widen the rule.`,
+        );
       }
     }
 
-    if (c.rateLimit && typeof c.rateLimit === 'object') {
-      const rl = c.rateLimit as Record<string, unknown>;
-      if (typeof rl.maxPerMinute === 'number' && rl.maxPerMinute > 0) {
-        constraints.rateLimit = { maxPerMinute: rl.maxPerMinute };
+    if (c.timeWindow !== undefined) {
+      const tw = c.timeWindow;
+      if (typeof tw !== 'object' || tw === null || Array.isArray(tw)) {
+        throw new Error(`Rule "${r.id}": timeWindow must be an object with "start" and "end"`);
       }
+      const { start, end } = tw as Record<string, unknown>;
+      if (typeof start !== 'string' || typeof end !== 'string') {
+        throw new Error(
+          `Rule "${r.id}": timeWindow.start and timeWindow.end must be "HH:MM" strings ` +
+          `(got ${typeof start} and ${typeof end})`,
+        );
+      }
+      if (!TIME_OF_DAY.test(start) || !TIME_OF_DAY.test(end)) {
+        throw new Error(`Rule "${r.id}": timeWindow.start and timeWindow.end must be "HH:MM", 00:00-23:59`);
+      }
+      constraints.timeWindow = { start, end };
     }
 
-    if (typeof c.minTrustScore === 'number') {
+    if (c.rateLimit !== undefined) {
+      const rl = c.rateLimit;
+      if (typeof rl !== 'object' || rl === null || Array.isArray(rl)) {
+        throw new Error(`Rule "${r.id}": rateLimit must be an object with "maxPerMinute"`);
+      }
+      const { maxPerMinute } = rl as Record<string, unknown>;
+      if (typeof maxPerMinute !== 'number' || !Number.isFinite(maxPerMinute) || maxPerMinute <= 0) {
+        throw new Error(
+          `Rule "${r.id}": rateLimit.maxPerMinute must be a positive number (got ${JSON.stringify(maxPerMinute)})`,
+        );
+      }
+      constraints.rateLimit = { maxPerMinute };
+    }
+
+    if (c.minTrustScore !== undefined) {
+      if (typeof c.minTrustScore !== 'number' || !Number.isFinite(c.minTrustScore)) {
+        throw new Error(
+          `Rule "${r.id}": minTrustScore must be a number (got ${JSON.stringify(c.minTrustScore)})`,
+        );
+      }
       constraints.minTrustScore = c.minTrustScore;
     }
 
-    if (typeof c.requireCapability === 'string') {
+    if (c.requireCapability !== undefined) {
+      if (typeof c.requireCapability !== 'string') {
+        throw new Error(`Rule "${r.id}": requireCapability must be a string`);
+      }
       constraints.requireCapability = c.requireCapability;
     }
 
-    if (typeof c.scopeCheck === 'boolean') {
+    if (c.scopeCheck !== undefined) {
+      if (typeof c.scopeCheck !== 'boolean') {
+        throw new Error(`Rule "${r.id}": scopeCheck must be a boolean`);
+      }
       constraints.scopeCheck = c.scopeCheck;
     }
   }
