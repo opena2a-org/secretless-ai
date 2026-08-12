@@ -1,5 +1,57 @@
 # Changelog
 
+## [Unreleased]
+
+Credential disclosure and integrity. Three defects a credential manager should
+not carry, plus what sweeping their shape across the code turned up.
+
+**Behavior change worth reading before you upgrade.** Reads that used to return
+"nothing" on failure now fail closed. If the local store cannot be decrypted, if
+the keychain will not answer, or if the name index is malformed, the command
+exits non-zero and says so instead of reporting an empty store. If you have
+automation that treats "no secrets" as a normal outcome, it will now see an
+error in the cases where the tool never actually read anything.
+
+**`secret set` now refuses a mangled value.** Null bytes, U+FFFD and control
+characters other than tab, newline and carriage return are rejected rather than
+stored. Multi-line secrets (PEM keys, service-account JSON) are unaffected.
+
+**Your cache is invalidated once on upgrade.** Cached values are now tied to the
+build that read them, so the first resolve after upgrading re-reads from the
+backend. Expect one extra unlock prompt.
+
+### Fixed
+
+- **The on-disk cache served values written by a previous build ([#118](https://github.com/opena2a-org/secretless-ai/issues/118)).** Upgrading specifically to fix a corrupted credential returned the corrupted credential for another five minutes, because the cache had no idea which build wrote what. The TTL bounds how stale a value may be and says nothing about how it was read; #107 fixed a read path that corrupted most 32-hex secrets and changed no file format, so nothing invalidated what the broken build had cached. A fix the user cannot observe is indistinguishable from no fix, and this one actively taught them the tool was broken. Entries now carry the identity of the build that wrote them and are dropped unless it matches. Version alone is not the build — a working tree, a global install and an `npx` unpack can report the same version while running different code — so the install location is folded in.
+
+- **`cache clear` cleared a directory the cache stopped using in 0.12.3.** It deleted the abandoned file, printed `Cache cleared`, and left every live entry in place. It is also the workaround #118 documents, so the one published remedy for a stale cached credential was a no-op that reported success. Both locations are cleared now, off the same default the backend writes to. Clearing the pre-0.12.3 file matters on its own: it is an encrypted file of credential values that nothing reads and nothing expires.
+
+- **A cache marker that outlived its entries reported a successful resolve of nothing.** The marker asserts "this prefix is fully resolved" and was guarded by a condition that is true for every possible value, so `run` could inject no secrets at all and exit 0. Measured on 0.21.3. The marker now carries the count it was written with.
+
+- **An unreadable local store was read as an empty one ([#104](https://github.com/opena2a-org/secretless-ai/issues/104)).** `resolve` caught every failure and returned nothing, so `run`, `status`, `verify` and manifest checks all reported success over a credential set they never saw, with exit 0 and empty stderr. Empty and unreadable are different states and the code cannot tell them apart by guessing. A store that is absent is still empty — that is a real first-run state — but one that is present and will not decrypt now fails closed, naming the store, the reason, and the two inputs its key derives from.
+
+- **`secret set` destroyed the store when it could not read it.** The read failure was swallowed with "start fresh" and a one-entry store was written over the top. Measured: three secrets stored, then one `set` from an account that could not decrypt the store, and all three are gone — while the command printed `Stored: NAME` and exited 0. The original account's key still worked right up to that write, so the data was recoverable until the tool destroyed it.
+
+- **The store format version was written on every save and checked nowhere.** A store written in a format this build does not understand would be decrypted, parsed as whatever it parsed as, and served. It is now checked before the decrypt, and a store with no version file is still read — that is a store from a build that never wrote one, not a mismatch.
+
+- **`doctor` and `verify` called the local store healthy because the file existed.** Presence was the entire check, so the one state it exists to catch — a store that is there and unreadable — was the state it called healthy. `secret rm` likewise reported "no such secret" against a store it could not read.
+
+- **A locked keychain made every secret read as missing.** `security` exits 44 for "the specified item could not be found"; every other failure, including a locked login keychain and a dismissed approval dialog, was read the same way. Only 44 means absent now.
+
+- **A malformed name index reported an empty keychain.** The index is how the backends answer "what secrets exist", since the OS keychain has no such query. Any failure reading it returned an empty list, so `secret list` printed nothing and `run` injected nothing over a keychain that still held every secret. Only a missing file means "no secrets yet".
+
+- **A keychain read that could not establish the encoding returned the raw value.** macOS hex-encodes binary passwords, and `-w` output alone cannot say whether it did. When the check that settles it does not complete, returning the raw value hands back the hex transcript of the credential rather than the credential — silently, exit 0. There are three answers to that question, not two, and the third is now a refusal.
+
+- **`run` printed a secret value to stderr ([#117](https://github.com/opena2a-org/secretless-ai/issues/117)).** Node rejects an environment value containing a null byte and puts the value in the message. The throw is synchronous, so the handler meant to catch spawn failures never saw it, and the message went to stderr unredacted — which is what CI logs capture. Such a value is not exotic: macOS returns binary passwords hex-encoded, and they decode to bytes containing a null. Values are now checked before the spawn, so the error names every unusable secret and only its name, and the spawn is wrapped for anything a different Node version rejects that we did not anticipate.
+
+- **The redaction backstop missed escaped and truncated values.** It compared whole values and whole lines, and runtimes embed neither: Node escapes control bytes and truncates long values, `JSON.parse` quotes the first ten characters. Measured against all three throws this tool actually hits, whole-value containment reports no leak over a message displaying most of the credential. Detection now works on runs of the value, in any escaping, and the macOS Keychain write path uses the same detector.
+
+- **A mangled paste was stored without comment ([#104](https://github.com/opena2a-org/secretless-ai/issues/104)).** A 40-character hex token pasted at the interactive prompt was stored as 19 bytes of control characters and U+FFFD — the terminal's own bracketed-paste sequences captured into the value — and surfaced much later as a type error inside an unrelated consumer. Values are validated at the store boundary, so `set`, `import` and the MCP write path are all covered. Every successful write now prints the shape: length and character class, never content.
+
+### Known issues
+
+- On Linux, `secret-tool` failures are still read as "not found". Separating that from "could not read" needs exit codes that could not be measured on the machine this was fixed on, and a guessed mapping is worse than a recorded gap. The macOS path is fixed.
+
 ## [0.21.3] - 2026-08-11
 
 Closes the `init` data-loss defect disclosed as a known issue in 0.21.2, plus

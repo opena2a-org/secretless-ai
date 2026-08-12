@@ -17,6 +17,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { WritableSecretBackend, BackendHealth } from './types';
+import { readKeyIndex } from './key-index';
 
 const LEGACY_SERVICE_NAME = 'secretless';
 const INDEX_FILENAME = 'keychain-index.json';
@@ -160,13 +161,7 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
   }
 
   private readIndex(): string[] {
-    try {
-      const raw = fs.readFileSync(this.indexPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+    return readKeyIndex(this.indexPath);
   }
 
   private writeIndex(keys: string[]): void {

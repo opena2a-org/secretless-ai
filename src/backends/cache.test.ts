@@ -2,11 +2,50 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CachedBackend, clearCacheFile } from './cache';
+import * as crypto from 'crypto';
+import { CachedBackend, clearCacheFile, defaultWriterStamp } from './cache';
 import type { WritableSecretBackend, BackendHealth } from './types';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-cache-test-'));
+}
+
+/**
+ * Write a cache file by hand, in the on-disk format, so a test can stage a
+ * cache state that no single run of the current code produces — an entry from
+ * before writer stamps existed, or a marker that outlived its entries.
+ *
+ * This mirrors the implementation's key derivation deliberately: it is building
+ * an INPUT, not computing an expected output. If the derivation ever changes,
+ * these tests fail loudly rather than quietly staging a file nothing reads.
+ */
+function writeCacheFile(dir: string, store: unknown): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const saltPath = path.join(dir, '.salt');
+  let salt: Buffer;
+  try {
+    salt = fs.readFileSync(saltPath);
+    if (salt.length !== 16) throw new Error('bad salt');
+  } catch {
+    salt = crypto.randomBytes(16);
+    fs.writeFileSync(saltPath, salt, { mode: 0o600 });
+  }
+
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
+  const keyMaterial = `${home}-secretless-cache-${process.env.USER ?? 'default'}`;
+  const key = crypto.scryptSync(keyMaterial, salt, 32, { N: 16384, r: 8, p: 1 });
+
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const body = Buffer.concat([
+    cipher.update(JSON.stringify(store), 'utf-8'),
+    cipher.final(),
+  ]);
+  fs.writeFileSync(
+    path.join(dir, '.secret-cache'),
+    Buffer.concat([iv, cipher.getAuthTag(), body]),
+    { mode: 0o600 },
+  );
 }
 
 function cleanup(dir: string): void {
@@ -273,5 +312,165 @@ describe('clearCacheFile', () => {
 
   it('returns false when no cache file exists', () => {
     expect(clearCacheFile(dir)).toBe(false);
+  });
+});
+
+/**
+ * #118 — a cached value written by a different build is a value read by code we
+ * may already have fixed. The TTL bounds staleness in time; nothing bounded it
+ * across an upgrade, so upgrading to fix a corrupted credential returned the
+ * corrupted credential for another five minutes.
+ */
+describe('CachedBackend writer provenance (#118)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = tmpDir();
+  });
+
+  afterEach(() => {
+    cleanup(dir);
+  });
+
+  it('does not serve an entry written by a different build', async () => {
+    const secrets = { 'secret/HIBP_PRO': 'corrupted-by-the-old-read-path' };
+
+    // The build with the broken read path caches what it read.
+    const before = new CachedBackend(createMockBackend(secrets), {
+      ttlMs: 60_000,
+      storeDir: dir,
+      writerStamp: '0.18.2+aaaaaaaa',
+    });
+    expect(await before.resolve('secret')).toEqual({
+      'secret/HIBP_PRO': 'corrupted-by-the-old-read-path',
+    });
+
+    // The user upgrades. The backend now reads the value correctly — which is
+    // the entire reason they upgraded.
+    secrets['secret/HIBP_PRO'] = '0123456789abcdef0123456789abcdef';
+    const inner = createMockBackend(secrets);
+    const after = new CachedBackend(inner, {
+      ttlMs: 60_000,
+      storeDir: dir,
+      writerStamp: '0.21.4+bbbbbbbb',
+    });
+
+    expect(await after.resolve('secret')).toEqual({
+      'secret/HIBP_PRO': '0123456789abcdef0123456789abcdef',
+    });
+    expect(inner.resolveCalls).toBe(1);
+  });
+
+  it('still serves an entry written by this same build', async () => {
+    // The other direction. Without it, a "fix" that simply never reads the
+    // cache would pass the test above while deleting the feature.
+    const secrets = { 'secret/K': 'v1' };
+    const inner = createMockBackend(secrets);
+    const opts = { ttlMs: 60_000, storeDir: dir, writerStamp: '0.21.4+bbbbbbbb' };
+
+    await new CachedBackend(inner, opts).resolve('secret');
+    expect(inner.resolveCalls).toBe(1);
+
+    secrets['secret/K'] = 'v2-not-yet-visible';
+    const second = new CachedBackend(inner, opts);
+    expect(await second.resolve('secret')).toEqual({ 'secret/K': 'v1' });
+    expect(inner.resolveCalls).toBe(1);
+  });
+
+  it('treats an entry with no writer stamp as a miss', async () => {
+    // Every entry on disk today is one of these. The upgrade that introduces
+    // the stamp has to invalidate what the previous build left behind, or the
+    // fix does not take effect until the caches happen to expire.
+    const legacyCache = {
+      entries: {
+        'secret/K': { value: 'written-before-stamps-existed', cachedAt: Date.now() },
+        '__resolved__secret': { value: '', cachedAt: Date.now() },
+      },
+    };
+    writeCacheFile(dir, legacyCache);
+
+    const inner = createMockBackend({ 'secret/K': 'current' });
+    const cached = new CachedBackend(inner, { ttlMs: 60_000, storeDir: dir });
+
+    expect(await cached.resolve('secret')).toEqual({ 'secret/K': 'current' });
+    expect(inner.resolveCalls).toBe(1);
+  });
+
+  it('pins the default stamp to the real package version', () => {
+    // The tests above inject a stamp. That proves the comparison works, not
+    // that the value being compared is the build. This is the wire to reality:
+    // production passes no stamp, so the default is what actually ships.
+    const pkgVersion = String(
+      (JSON.parse(
+        fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8'),
+      ) as { version: string }).version,
+    );
+    expect(defaultWriterStamp().startsWith(pkgVersion + '+')).toBe(true);
+    expect(defaultWriterStamp()).not.toBe(pkgVersion);
+  });
+
+  it('treats a resolved-marker with missing entries as a miss, not an empty success', async () => {
+    // The marker asserts "this prefix is fully resolved". The condition guarding
+    // it was `matchingCached.length >= 0`, true for every possible value, so a
+    // marker that outlived its entries reported success and returned {} —
+    // `run` would inject nothing and exit 0.
+    const stamp = '0.21.4+bbbbbbbb';
+    writeCacheFile(dir, {
+      entries: {
+        '__resolved__secret': { value: '', cachedAt: Date.now(), writer: stamp, count: 2 },
+      },
+    });
+
+    const inner = createMockBackend({ 'secret/A': 'a', 'secret/B': 'b' });
+    const cached = new CachedBackend(inner, { ttlMs: 60_000, storeDir: dir, writerStamp: stamp });
+
+    expect(await cached.resolve('secret')).toEqual({ 'secret/A': 'a', 'secret/B': 'b' });
+    expect(inner.resolveCalls).toBe(1);
+  });
+});
+
+/**
+ * #118 — `cache clear` is the workaround the issue documents for a stale cached
+ * credential. It cleared a directory the cache stopped using in 0.12.3.
+ */
+describe('clearCacheFile default location', () => {
+  let home: string;
+  let originalHome: string | undefined;
+
+  beforeEach(() => {
+    home = tmpDir();
+    originalHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    cleanup(home);
+  });
+
+  it('clears the cache the backend actually writes', async () => {
+    const secrets = { 'secret/K': 'stale' };
+    // No storeDir — this is the production path, the one that has to match.
+    const first = new CachedBackend(createMockBackend(secrets), { ttlMs: 60_000 });
+    await first.resolve('secret');
+
+    expect(clearCacheFile()).toBe(true);
+
+    secrets['secret/K'] = 'fresh';
+    const inner = createMockBackend(secrets);
+    const second = new CachedBackend(inner, { ttlMs: 60_000 });
+    expect(await second.resolve('secret')).toEqual({ 'secret/K': 'fresh' });
+    expect(inner.resolveCalls).toBe(1);
+  });
+
+  it('also clears the pre-0.12.3 cache left beside the store', () => {
+    const legacyDir = path.join(home, '.secretless-ai', 'store');
+    fs.mkdirSync(legacyDir, { recursive: true, mode: 0o700 });
+    const legacyFile = path.join(legacyDir, '.secret-cache');
+    fs.writeFileSync(legacyFile, Buffer.from('abandoned encrypted credential cache'));
+
+    expect(clearCacheFile()).toBe(true);
+    expect(fs.existsSync(legacyFile)).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import { createBackend } from './backends/factory';
 import { resolveBackendType } from './backends/config';
 import type { WritableSecretBackend } from './backends/types';
 import type { SelectableBackendType } from './backends/config';
+import { findSecretValueProblem, unstorableSecretError } from './secret-value';
 
 const SECRET_PREFIX = 'secret';
 
@@ -47,9 +48,17 @@ export class SecretStore {
     return this.backend.name.replace(/^cached\((.*)\)$/, '$1');
   }
 
-  /** Store a secret by name. */
+  /**
+   * Store a secret by name.
+   *
+   * Validated here rather than in the prompt: `secret set`, `import` and the
+   * MCP write path all arrive at this method, and a rule enforced in one of
+   * three places is a rule with two ways around it (#104).
+   */
   async setSecret(name: string, value: string): Promise<void> {
     validateSecretName(name);
+    const problem = findSecretValueProblem(value);
+    if (problem) throw unstorableSecretError(name, problem);
     const key = `${SECRET_PREFIX}/${name}`;
     await this.backend.store(key, value);
   }

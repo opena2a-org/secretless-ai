@@ -15,6 +15,8 @@ import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { WritableSecretBackend, BackendHealth } from './types';
+import { readKeyIndex } from './key-index';
+import { leaksAny, redactValues } from '../redact';
 
 const LEGACY_SERVICE_NAME = 'secretless';
 const INDEX_FILENAME = 'keychain-index.json';
@@ -56,33 +58,66 @@ function serviceNameFor(key: string): string {
  * So: take the exact bytes from `-w`, and consult `-g` only when the shape is
  * ambiguous, which leaves the common case at one `security` call.
  *
- * Fails CLOSED on any doubt: if `-g` cannot be read, or does not clearly say
- * `0x`, the raw `-w` value is returned unchanged. Handing back a secret verbatim
- * is always safe; decoding one that was never encoded is the bug being fixed.
+ * There are THREE answers, not two. `-g` can say encoded, say not encoded, or
+ * not complete at all — and the third is not the second. This used to return
+ * the raw `-w` value whenever the probe failed, reasoning that "handing back a
+ * secret verbatim is always safe". That reasoning holds against #107, which was
+ * over-decoding, and fails in the other direction: when the value IS encoded
+ * and the probe cannot say so, the raw value is the hex transcript of the
+ * credential, not the credential. Injecting it is `run` handing a command a
+ * value that is not the stored one, silently, exit 0 — the #104 complaint
+ * exactly.
+ *
+ * So the old rationale is kept as a hazard rather than a rule: never decode on
+ * an unanswered question. This code does not decode. It refuses.
+ *
+ * The refusal is narrow by construction. It needs a value shaped like hex AND a
+ * `-g` that will not complete on an entry `-w` just read successfully — which
+ * on a working machine does not happen.
  */
 function looksLikeKeychainHex(raw: string): boolean {
   return raw.length >= 2 && raw.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(raw);
 }
 
+/**
+ * @param isHexEncoded true / false / null, where null means "could not
+ *   determine". Required, not optional: an omitted probe was a door back to
+ *   guessing, and only tests ever went through it.
+ */
 export function decodeKeychainValue(
   raw: string,
-  isHexEncoded?: () => boolean,
+  isHexEncoded: () => boolean | null,
+  key?: string,
 ): string {
   if (!looksLikeKeychainHex(raw)) return raw;
-  if (!isHexEncoded) return raw;
-  // The probe shells out, so it can throw for reasons that have nothing to do
-  // with this secret (keychain locked, `security` missing, spawn limit). Any of
-  // those must leave the value alone rather than decode on an unanswered
-  // question. Caught here as well as inside the probe: this function is
-  // exported and its contract should not depend on who supplies the callback.
-  let encoded = false;
+
+  let encoded: boolean | null;
   try {
+    // Caught here as well as inside the probe: this function is exported and
+    // its contract should not depend on who supplies the callback.
     encoded = isHexEncoded();
   } catch {
-    return raw;
+    encoded = null;
   }
-  if (!encoded) return raw;
-  return Buffer.from(raw, 'hex').toString('utf-8');
+
+  if (encoded === null) throw undeterminedEncodingError(key);
+  return encoded ? Buffer.from(raw, 'hex').toString('utf-8') : raw;
+}
+
+function undeterminedEncodingError(key?: string): Error {
+  return new Error(
+    [
+      `Could not determine how the macOS Keychain stored ${key ? `"${key}"` : 'this secret'}.`,
+      '',
+      '  Nothing was read. The stored value is shaped like the hex transcript',
+      '  macOS returns for a binary secret, and the check that settles it did not',
+      '  complete. Returned either way, it may not be the value you stored.',
+      '',
+      '  Verify:  security default-keychain',
+      '  Fix:     unlock the login keychain and retry, or run',
+      '           secretless-ai backend set local  to use the encrypted file store',
+    ].join('\n'),
+  );
 }
 
 /**
@@ -111,36 +146,16 @@ export function keychainOutputIsHexEncoded(stderrAndStdout: string): boolean {
  * from whatever remains. The final guard is unconditional: if the value can
  * still be found in the message, the message is discarded rather than trimmed.
  */
-/**
- * True if `detail` still contains the whole value, or any individual line of a
- * multi-line value.
- *
- * Defence in depth behind the scrub: `security` can echo part of a value back
- * in a form that no longer matches it byte for byte, and a per-line check
- * catches the fragment the whole-value comparison would miss. Lines shorter
- * than four characters are ignored, or a secret containing a line like "1"
- * would blank every error message the backend ever produces.
- */
-function leaksAnyLineOf(detail: string, value: string): boolean {
-  if (detail.includes(value)) return true;
-  for (const line of value.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.length >= 4 && detail.includes(trimmed)) return true;
-  }
-  return false;
-}
-
 export function redactSecurityError(err: unknown, value: string, key: string): Error {
   const raw = err instanceof Error ? err.message : String(err);
+  const values = value.length > 0 ? [value] : [];
 
   // Scrub BEFORE any line filtering. A secret may contain newlines — that is
   // exactly why the read path has to handle hex-encoded values — and dropping
   // lines first can split the value across the boundary, leaving a fragment
   // that no longer matches `value` and so survives both the replace and the
   // containment backstop. Replace it while it is still contiguous.
-  let detail = value.length > 0
-    ? raw.split(value).join('[REDACTED]')
-    : raw;
+  let detail = redactValues(raw, values);
 
   detail = detail
     .split('\n')
@@ -148,10 +163,11 @@ export function redactSecurityError(err: unknown, value: string, key: string): E
     .join('\n')
     .trim();
 
-  // Unconditional backstop, checked against every line the value could have
-  // been split across. Any path that would still expose it loses the detail
-  // instead — a vaguer error is always preferable to a leaked one.
-  if (value.length > 0 && leaksAnyLineOf(detail, value)) {
+  // Unconditional backstop. Any path that would still expose the value loses
+  // the detail instead — a vaguer error is always preferable to a leaked one.
+  // The line-based check this used to run missed escaped and truncated forms;
+  // `leaksAny` works on runs, so it does not. See src/redact.ts.
+  if (leaksAny(detail, values)) {
     detail = '';
   }
 
@@ -177,6 +193,52 @@ export function redactSecurityError(err: unknown, value: string, key: string): E
   }
 
   return new Error(lines.join('\n'));
+}
+
+/**
+ * macOS `security` exit status for "The specified item could not be found in
+ * the keychain". Measured, not assumed:
+ *
+ *   $ security find-generic-password -s no-such -a no-such -w; echo $?
+ *   security: SecKeychainSearchCopyNext: The specified item could not be found...
+ *   44
+ *
+ * The other statuses this tool can see are a locked or declined Keychain
+ * (-25308 "User interaction is not allowed", -128 "User canceled"), and a usage
+ * error (2). None of those mean the entry is absent.
+ */
+const SECURITY_ITEM_NOT_FOUND = 44;
+
+function isItemNotFound(err: unknown): boolean {
+  return (err as { status?: unknown } | null)?.status === SECURITY_ITEM_NOT_FOUND;
+}
+
+/**
+ * The Keychain would not answer for this entry.
+ *
+ * Carries no `security` output: the failing command is `find-generic-password`,
+ * whose argv holds no value, but its stderr is not ours to reason about and the
+ * entry name says everything the user needs.
+ */
+function keychainUnreadableError(account: string, err: unknown): Error {
+  const status = (err as { status?: unknown } | null)?.status;
+  return new Error(
+    [
+      `The macOS Keychain would not return "${account}".`,
+      '',
+      '  Nothing was read. Refusing to report the secret as missing, because a',
+      '  Keychain that will not answer is not a Keychain without the entry.',
+      '',
+      `  security exit status: ${typeof status === 'number' ? status : 'unknown'}`,
+      '',
+      '  The login keychain is usually locked, or an approval dialog was',
+      '  dismissed or could not be shown.',
+      '',
+      '  Verify:  security default-keychain',
+      '  Fix:     unlock the login keychain and retry, or run',
+      '           secretless-ai backend set local  to use the encrypted file store',
+    ].join('\n'),
+  );
 }
 
 export class MacOSKeychainBackend implements WritableSecretBackend {
@@ -253,7 +315,7 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
       }
       if (raw !== null) {
         const from = service;
-        results[key] = decodeKeychainValue(raw, () => this.isHexEncoded(from, key));
+        results[key] = decodeKeychainValue(raw, () => this.isHexEncoded(from, key), key);
       }
     }
     return results;
@@ -318,9 +380,13 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
    * `-g` password line. Only called when `-w` output is ambiguously shaped.
    *
    * `-g` prints the password line to STDERR, so both streams are captured.
-   * Any failure returns false, which leaves the value undecoded.
+   *
+   * Returns null for "could not determine". A non-zero exit means `security`
+   * did not answer the question — it did not answer "no". Reading a failed
+   * probe as "not encoded" is how a binary secret came back as its own hex
+   * transcript, with nothing to indicate it.
    */
-  private isHexEncoded(service: string, account: string): boolean {
+  private isHexEncoded(service: string, account: string): boolean | null {
     try {
       const res = spawnSync('security', [
         'find-generic-password',
@@ -328,13 +394,27 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
         '-a', account,
         '-g',
       ], { encoding: 'utf-8' });
-      if (res.error) return false;
+      if (res.error) return null;
+      if (res.status !== 0) return null;
       return keychainOutputIsHexEncoded(`${res.stderr ?? ''}\n${res.stdout ?? ''}`);
     } catch {
-      return false;
+      return null;
     }
   }
 
+  /**
+   * The stored value, or null when the entry genuinely is not there.
+   *
+   * `catch { return null }` conflated "no such entry" with "could not read this
+   * entry", and the second is the one that matters: a locked Keychain, or a
+   * dismissed approval dialog, made every secret read as absent. `resolve`
+   * returned {}, `run` injected nothing, exit 0 — over a Keychain holding every
+   * credential (#104).
+   *
+   * Measured on macOS: `security` exits 44 for "The specified item could not be
+   * found in the keychain". Only 44 is absence; every other status is a
+   * question we did not get an answer to.
+   */
   private findPassword(service: string, account: string): string | null {
     try {
       return execFileSync('security', [
@@ -343,19 +423,14 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
         '-a', account,
         '-w',
       ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' }).trimEnd();
-    } catch {
-      return null;
+    } catch (err) {
+      if (isItemNotFound(err)) return null;
+      throw keychainUnreadableError(account, err);
     }
   }
 
   private readIndex(): string[] {
-    try {
-      const raw = fs.readFileSync(this.indexPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+    return readKeyIndex(this.indexPath);
   }
 
   private writeIndex(keys: string[]): void {

@@ -140,18 +140,42 @@ describe('MacOSKeychainBackend', () => {
       expect(result).toEqual({});
     });
 
-    it('skips keys that fail to retrieve', async () => {
+    it('skips keys the Keychain says are absent', async () => {
+      const backend = new MacOSKeychainBackend({ storeDir: dir });
+
+      const indexPath = path.join(dir, 'keychain-index.json');
+      fs.writeFileSync(indexPath, JSON.stringify(['mcp/client/server/KEY1']));
+
+      // 44 is what `security` exits with for "The specified item could not be
+      // found in the keychain". This one really is absent.
+      mockExecFileSync.mockImplementation(() => {
+        throw Object.assign(new Error('item could not be found'), { status: 44 });
+      });
+
+      const result = await backend.resolve('mcp/client/server');
+      expect(result).toEqual({});
+    });
+
+    it('refuses to report a key absent when the Keychain would not answer', async () => {
+      // This test replaces one titled "skips keys that fail to retrieve", which
+      // asserted {} for ANY failure — the fail-open in #104 written down as the
+      // expected behaviour. A locked Keychain, or a dismissed approval dialog,
+      // made every secret read as missing with exit 0.
       const backend = new MacOSKeychainBackend({ storeDir: dir });
 
       const indexPath = path.join(dir, 'keychain-index.json');
       fs.writeFileSync(indexPath, JSON.stringify(['mcp/client/server/KEY1']));
 
       mockExecFileSync.mockImplementation(() => {
-        throw new Error('not found');
+        throw Object.assign(
+          new Error('User interaction is not allowed'),
+          { status: 51 },
+        );
       });
 
-      const result = await backend.resolve('mcp/client/server');
-      expect(result).toEqual({});
+      await expect(backend.resolve('mcp/client/server')).rejects.toThrow(
+        /would not return "mcp\/client\/server\/KEY1"/,
+      );
     });
   });
 
@@ -252,14 +276,39 @@ describe('decodeKeychainValue', () => {
     expect(decodeKeychainValue(encoded, () => true)).toBe('line1\nline2');
   });
 
-  it('fails closed when the encoding cannot be established', () => {
-    // No probe available, and a probe that throws, both leave the value alone.
-    expect(decodeKeychainValue(HEX32_TOKEN, undefined)).toBe(HEX32_TOKEN);
-    expect(
+  it('refuses when the encoding cannot be established', () => {
+    // This test used to be called "fails closed" and asserted the raw value was
+    // returned. Returning the raw value is not failing closed, it is answering
+    // "not encoded" to a question nobody answered — and when the value IS
+    // encoded, that answer hands back the hex transcript of the credential
+    // instead of the credential.
+    expect(() => decodeKeychainValue(HEX32_TOKEN, () => null, 'secret/K'))
+      .toThrow(/Could not determine how the macOS Keychain stored "secret\/K"/);
+    expect(() =>
       decodeKeychainValue(HEX32_TOKEN, () => {
         throw new Error('security unavailable');
-      }),
-    ).toBe(HEX32_TOKEN);
+      }, 'secret/K'),
+    ).toThrow(/Could not determine/);
+  });
+
+  it('does not refuse a value that is not shaped like hex, even when unanswered', () => {
+    // The other direction: an unanswered probe only matters for a value the
+    // probe would have been asked about. Refusing more widely would turn every
+    // read on a locked Keychain into a failure for no gain.
+    expect(decodeKeychainValue('not-hex-at-all', () => null, 'secret/K'))
+      .toBe('not-hex-at-all');
+  });
+
+  it('never puts the value in the refusal', () => {
+    try {
+      decodeKeychainValue(HEX32_TOKEN, () => null, 'secret/K');
+      throw new Error('expected decodeKeychainValue to throw');
+    } catch (err) {
+      const message = (err as Error).message;
+      for (let i = 0; i + 4 <= HEX32_TOKEN.length; i++) {
+        expect(message).not.toContain(HEX32_TOKEN.slice(i, i + 4));
+      }
+    }
   });
 
   it('never probes a value that is not shaped like hex output', () => {
@@ -314,6 +363,9 @@ describe('resolve() hex handling', () => {
       });
       // macOS reports it as plain text (quoted, no 0x), so it must not decode.
       mockSpawnSync.mockReturnValue({
+        // A real successful spawnSync sets status 0. The mock omitted it, and a
+        // probe that cannot report success is a probe that did not complete.
+        status: 0,
         stdout: '',
         stderr: `password: "${HEX32_TOKEN}"`,
       } as unknown as ReturnType<typeof child_process.spawnSync>);
@@ -344,6 +396,9 @@ describe('resolve() hex handling', () => {
         throw new Error('not found');
       });
       mockSpawnSync.mockReturnValue({
+        // A real successful spawnSync sets status 0. The mock omitted it, and a
+        // probe that cannot report success is a probe that did not complete.
+        status: 0,
         stdout: '',
         stderr: `password: 0x${encoded.toUpperCase()}  "line1\\012line2"`,
       } as unknown as ReturnType<typeof child_process.spawnSync>);
