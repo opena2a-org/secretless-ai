@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { CREDENTIAL_PATTERNS } from './patterns';
+import { redactMatches } from './redact';
 
 export interface TranscriptFinding {
   file: string;
@@ -152,10 +153,12 @@ function scanString(
   let result = value;
   for (const pattern of CREDENTIAL_PATTERNS) {
     if (pattern.regex.test(result)) {
-      // Use global regex to replace ALL occurrences, not just the first
-      const flags = pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g';
-      const globalRegex = new RegExp(pattern.regex.source, flags);
-      const preview = result.replace(globalRegex, `[REDACTED:${pattern.id}]`).substring(0, 80);
+      // redactMatches replaces ALL occurrences AND extends across the tail of a
+      // value longer than the pattern's fixed quantifier. Plain String.replace
+      // wrote the tail of an over-length credential back into the user's
+      // transcript while reporting the line as redacted.
+      const redacted = redactMatches(result, pattern.regex, `[REDACTED:${pattern.id}]`);
+      const preview = redacted.substring(0, 80);
       findings.push({
         file: fileInfo.file,
         line: fileInfo.line,
@@ -164,7 +167,7 @@ function scanString(
         patternName: pattern.name,
         preview,
       });
-      result = result.replace(globalRegex, `[REDACTED:${pattern.id}]`);
+      result = redacted;
     }
   }
 
