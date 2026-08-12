@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.22.0] - 2026-08-12
 
 Credential disclosure and integrity. Three defects a credential manager should
 not carry, plus what sweeping their shape across the code turned up.
