@@ -52,7 +52,7 @@ backend. Expect one extra unlock prompt.
 
 ### Known issues
 
-Found by this release's own walkthrough, each reproduced against published 0.21.3 and carried rather than fixed. First carry for all three; the next release fixes them.
+Found by this release's own walkthrough, each reproduced against published 0.21.3 and carried rather than fixed. First carry for all three, and all three are fixed in **0.23.0**.
 
 - **Redaction leaves the tail of a token longer than its pattern's fixed length ([#133](https://github.com/opena2a-org/secretless-ai/issues/133)).** A correctly-shaped classic GitHub PAT redacts cleanly; a value one character longer prints that character, and the residue grows with the overshoot. This is the same detector/redactor gap this release fixes for error messages, still present in the scan preview path, so it is named here rather than left for a reader to discover in a release about disclosure.
 - **`broker start` reports success for a daemon that is not running ([#132](https://github.com/opena2a-org/secretless-ai/issues/132)).** It prints "Broker is running" and a PID; `broker status` immediately reports it is not, and the PID does not exist. `warm` auto-starts the broker, so this is on a default path.
