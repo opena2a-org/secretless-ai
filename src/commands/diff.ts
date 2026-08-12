@@ -25,6 +25,29 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { maskLine } from '../scan';
+import { CREDENTIAL_PATTERNS } from '../patterns';
+
+/**
+ * Redact every credential shape in a diff line before printing it.
+ *
+ * `diff` renders the git diff of secretless-managed files — `.claude/settings.json`,
+ * `.mcp.json`, agent configs — which is exactly where a credential gets added,
+ * and exactly the output a user pastes into a chat to ask whether the change is
+ * safe. It printed those values verbatim while `scan` redacted the same bytes in
+ * the same files.
+ *
+ * Uses `scan`'s own `maskLine` against `scan`'s own pattern list rather than a
+ * second redactor, so the two cannot drift: any shape the scanner learns to
+ * detect, this hides on the same day.
+ */
+export function maskCredentials(line: string): string {
+  let out = line;
+  for (const pattern of CREDENTIAL_PATTERNS) {
+    out = maskLine(out, pattern);
+  }
+  return out;
+}
 
 /**
  * Git repo-discovery environment variables. When `secretless diff` runs inside a
@@ -293,7 +316,7 @@ export function runDiff(args: string[]): number {
     }
     // Indent each diff line by 4 spaces for readability.
     for (const line of change.unified.split('\n')) {
-      console.log(`     ${line}`);
+      console.log(`     ${maskCredentials(line)}`);
     }
   }
   console.log();
