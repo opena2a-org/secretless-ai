@@ -1,5 +1,113 @@
 # Changelog
 
+## [0.22.1] - 2026-08-12
+
+A security patch. Three defects where the tool did something other than what it
+was asked, and reported success: a broker policy that authorized more than the
+operator wrote, a credential selector that injected the whole store when it was
+spelled with an equals sign, and a redaction that reported a completed removal
+over material still on disk.
+
+**Behavior change worth reading before you upgrade.** A command line the tool
+cannot bind is now refused with exit 2 instead of being partly ignored. This
+affects three shapes: an unrecognised flag on a command that WRITES (`clean`,
+`clean-history`, `run`, `backend`, `migrate`, `vault`, `init`, and the rest),
+a flag given a value it cannot use (`scan --max-files abc`), and a value-taking
+flag given no value at all. Read-only `scan` still warns and continues on an
+unknown flag, as it has since #81. If you have automation passing a flag this
+tool does not implement, it will now stop rather than run with a scope you did
+not choose.
+
+**`--json` is unchanged in this release.** It is still accepted and ignored by
+the commands that do not implement it. Making that an error is a consumer-
+visible change and belongs to its own release.
+
+### Security
+
+- **The broker authorized more than the policy said.** The policy engine
+  silently dropped any constraint it could not type-match, so the restrictive
+  half of an operator's rule evaporated and the permissive half survived, while
+  `loadPolicies()`, `getRules()` and `/health` all reported the rule loaded.
+  A `timeWindow` written with numeric hours instead of `"HH:MM"` strings, or
+  `rateLimit.maxPerMinute` as the string `"1"`, produced no constraints at all
+  and an unconditional allow. A numeric string is not a hypothetical: it is what
+  a YAML-to-JSON conversion, a templating layer or an env-var substitution
+  produces. The sharpest case is `minTrustScore: "80"`, where the trust floor
+  disappears and any agent matching the selector is served. A constraint this
+  build cannot apply is now refused rather than ignored, and a policy file that
+  exists but will not validate is a startup failure rather than a warning — a
+  daemon warning is a silent failure with extra steps. Affects 0.9.2 through
+  0.22.0.
+
+- **`run --only=NAME` injected every credential in the store.** The parser
+  compared `args[i] === '--only'` by exact equality, so the GNU equals spelling
+  was an unrecognised argument, silently discarded — and with no selector, the
+  child process receives everything. Nothing was printed on stdout or stderr and
+  the exit code was the child's. The refusal `env` prints when it detects an AI
+  agent runtime recommends `secretless-ai run --only NAME -- <command>` as the
+  safe alternative, so the tool's own recommended remedy was defeated by a
+  one-character difference in how it was typed. `env --only=NAME`, and `env
+  --only` with no value, exported the whole store the same way.
+
+### Fixed
+
+- **`clean --dryrun` performed the irreversible write it was asked to preview.**
+  `clean` is destructive by default and `--dry-run` is the only thing that makes
+  it a preview; the flag was read with `args.includes('--dry-run')` and nothing
+  validated the rest of the command line, so any misspelling silently degraded
+  to the destructive path and exited 0. The only signal was a missing "Mode:
+  dry-run" line, printed after the file had already been rewritten — and unlike
+  `clean-history`, this path writes no `.bak`. `clean-history --dryrun` had the
+  identical shape and targets your real shell history, which has no path flag at
+  all.
+
+- **`clean --path=DIR` cleaned every transcript on the machine.** The equals
+  spelling was unparsed, and the fallback for a missing scope is the maximum
+  scope. Measured: a target holding one file, against 9,119 files discovered and
+  205 that would have been rewritten in place. The header printed the unscoped
+  "Scanning Claude Code transcripts..." with no mention that the `--path` given
+  had been discarded. `--path` with no value did the same.
+
+- **`scan --max-files <path>` scanned the working directory instead.** The flag
+  consumed the path as its value, leaving no positional, so the scan silently
+  retargeted and printed "No hardcoded credentials found." over a tree it never
+  opened, with exit 0 and every coverage counter reading zero. The warning named
+  the invalid value; nothing said the path had been eaten or named the directory
+  actually scanned. A rejected flag value now refuses the run rather than
+  falling back to a default you did not ask for.
+
+- **`--min-confidence=`, `--max-files=` and `--max-file-size=` were dropped.**
+  Each was warned about as an unknown flag and the scan ran at the default, so
+  a raised cap was not raised and a confidence threshold was not applied.
+
+- **Redaction left the tail of a credential longer than its pattern's fixed
+  length ([#133](https://github.com/opena2a-org/secretless-ai/issues/133)).**
+  The redactors replaced what the DETECTOR matched, and the detector's patterns
+  carry fixed quantifiers, so a value longer than the canonical shape kept its
+  overshoot — while the output read as fully redacted. This is a remediation
+  defect, not a preview defect: `clean` wrote the residue back into the
+  transcript and reported the redaction complete, `clean-history` did the same
+  to your shell history, and `diff` printed it to stdout under a "REDACTED"
+  label with no length cap. The replacement span is now derived from the
+  credential rather than from the pattern match, and every write and display
+  path routes through the same primitive. Vendors document GitHub, AWS and Slack
+  token lengths as variable, so a fixed quantifier is wrong regardless of
+  today's value. Listed in 0.22.0 as a known issue fixed in 0.23.0; it is fixed
+  here instead.
+
+- **`secretless-mcp` read credentials from the wrong place.** The second
+  published bin carried the same parse idiom and had never been swept:
+  `--vault-dir=` fell back to the default vault and `--backend=` to the
+  configured backend, so the wrapper loaded credentials from somewhere other
+  than where it was told to. An empty `--server` or `--client` now refuses
+  rather than starting an MCP server with none of the credentials the wrapper
+  exists to inject.
+
+- **`verify --alll` answered a narrower question than the one asked.** Any
+  misspelling of `--all` was resolved as the project directory, so every project
+  context file was skipped and the short report was printed as though it were
+  the full one.
+
 ## [0.22.0] - 2026-08-12
 
 Credential disclosure and integrity. Three defects a credential manager should
