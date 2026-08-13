@@ -271,12 +271,34 @@ describe('scan warns on unknown flags / secret usage (regression: #80, #81)', ()
     });
   }
 
-  itIfBuilt('`scan --show-placeholder` (typo) warns instead of silently no-opping (#81)', () => {
+  itIfBuilt('`scan --show-placeholder` (typo) is refused, not answered (#81, #137)', () => {
+    // The tree is CLEAN and that is the point. Under the previous
+    // warn-and-continue this exited 0 with "No hardcoded credentials found." —
+    // the strongest clean claim the tool makes, over a scan whose scope the
+    // user asked to change and did not get. The earlier evidence that warning
+    // was safe read exit 1, but that 1 came from a tree that happened to hold a
+    // credential; it was never the flag.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scan-flag-'));
     try {
       const res = runCliSpawn(['scan', '.', '--show-placeholder'], tmp);
-      expect(res.stderr).toMatch(/ignoring unknown flag --show-placeholder/);
-      expect(res.status).toBe(0); // warning is non-fatal; clean dir still exits 0
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/--show-placeholder/);
+      expect(res.stderr).toMatch(/did you mean --show-placeholders/);
+      // Nothing may read as a verdict on a run that did not happen.
+      expect(res.stdout).not.toMatch(/No hardcoded credentials found/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('CONTROL: the same clean tree with NO typo still answers, exit 0', () => {
+    // Without this, the test above passes just as well against a scan that
+    // refuses everything.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scan-clean-'));
+    try {
+      const res = runCliSpawn(['scan', '.'], tmp);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toMatch(/No hardcoded credentials found/);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

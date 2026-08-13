@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { init } from '../init';
-import { scan } from '../scan';
+import { scan, emptySkips } from '../scan';
 import { status } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName } from '../detect';
@@ -241,7 +241,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     }
     const stats = {
       placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
-      oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>,
+      oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
     };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
@@ -262,10 +262,22 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         // Files skipped for size were never opened, so they are coverage lost,
         // not content judged clean.
         oversize: stats.oversize.length,
+        // DECLARED BOUNDARIES, not broken claims — so, like outOfRoot, these do
+        // NOT set the exit code. A count that is non-zero on every repository
+        // is not a signal; gating on it would turn every clean scan into a
+        // failure. A consumer who wants to gate on a boundary gates on these
+        // explicitly.
+        skippedUnsupported: stats.skips.fileCount,
+        notEntered: stats.skips.dirCount,
       },
       unreadableFiles: stats.unreadable,
       outOfRootLinks: stats.outOfRoot,
       oversizeFiles: stats.oversize,
+      // Samples, capped. The counts above carry the magnitude; these carry the
+      // REASON, because `notEntered: 171` on a repo with dependencies installed
+      // is not something a human can act on without knowing which 171.
+      skippedUnsupportedFiles: stats.skips.files,
+      notEnteredDirs: stats.skips.dirs,
     }, null, 2));
     // An incomplete scan is not a pass. `total: 0` with `truncated: true`, an
     // unreadable file, or a file skipped for size means part of the tree was
@@ -286,7 +298,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
 
   const stats = {
     placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
-    oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>,
+    oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
   };
   const findings = scan(projectDir, scanOpts, stats);
 
@@ -359,6 +371,33 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.log(`  ${c.dim('The cap bounds memory use; it says nothing about the contents.')}`);
       console.log(`  ${c.cyan('Verify:')} head -c 4096 ${runnable(stats.oversize[0].path)}`);
       console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-file-size ${Math.ceil(stats.oversize[0].bytes / (1024 * 1024)) + 1}mb\n`);
+    }
+
+    // Declared boundaries. Reported in the same place as the gaps above and
+    // deliberately NOT in the same class: these do not change the exit code and
+    // do not stop the scan reading as clean, because the scanner never claimed
+    // to open a `.png` or to walk `node_modules`.
+    //
+    // A directory is named rather than counted because the count alone is not
+    // actionable — the entry that matters on a real repo is a hidden directory
+    // like `.claude/`, and it is invisible inside a single total. Each line is
+    // followed by the command that scans it, so naming a gap is never a dead
+    // end.
+    if (stats.skips.dirCount > 0) {
+      const n = stats.skips.dirCount;
+      console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered`)} — declared boundaries, not findings.`);
+      for (const d of stats.skips.dirs.slice(0, 8)) {
+        console.log(`  ${c.dim(`  ${runnable(d.path)} — ${d.reason}`)}`);
+      }
+      if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
+      const first = stats.skips.dirs[0];
+      if (first) {
+        console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(first.path)}`);
+      }
+      if (stats.skips.fileCount > 0) {
+        console.log(`  ${c.dim(`${stats.skips.fileCount} file(s) were not opened (unsupported type, or a test file).`)}`);
+      }
+      console.log();
     }
   };
   // An out-of-root link is a reported boundary, not a gap in what we claimed to

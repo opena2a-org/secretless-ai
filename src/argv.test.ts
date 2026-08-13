@@ -139,15 +139,46 @@ describe('prepareArgv: the child command after `--` is untouched', () => {
   });
 });
 
-describe('prepareArgv: read-only verbs warn and keep running', () => {
-  // #81 shipped this warning for `scan` and CI consumers read its exit code.
-  // Moving scan to a hard refusal would be a breaking change this release does
-  // not make; the warning moved to the shared layer, the behaviour did not.
-  it('scan warns on an unknown flag and still runs', () => {
+describe('prepareArgv: a verb whose output is the answer refuses a flag it cannot bind', () => {
+  /**
+   * #81's intent survives and is strengthened. It complained that `scan`
+   * silently swallowed a typo'd flag and asked for the typo to be surfaced;
+   * it settled for a warning because it was scoped as polish, on a build with
+   * no exit-2 contract to reach for. It even cited `init`'s refusal as the
+   * consistent behaviour.
+   *
+   * What retired the warning was measuring what it does on a CLEAN tree:
+   * exit 0 and `No hardcoded credentials found.` over a scan whose scope the
+   * user asked to change and did not get. The earlier evidence that this was
+   * safe recorded exit 1 — but that 1 was the FINDING, from a tree that
+   * happened to contain a credential, not the flag.
+   */
+  it('scan refuses a typo\'d flag rather than answering with a narrowed scope', () => {
     const p = prepareArgv('scan', ['scan', '--show-placeholder', './src']);
+    expect(p.warnings).toEqual([]);
+    expect(p.errors).toHaveLength(1);
+    // #81's actual ask: the typo is surfaced and the intended flag is named.
+    expect(p.errors[0]).toContain('--show-placeholder');
+    expect(p.errors[0]).toContain('--show-placeholders');
+  });
+
+  it('the pre-commit gate refuses too — it has no JSON channel and stderr is swallowed', () => {
+    const p = prepareArgv('scan-staged', ['scan-staged', '--no-ignoree']);
+    expect(p.warnings).toEqual([]);
+    expect(p.errors).toHaveLength(1);
+    expect(p.errors[0]).toContain('--no-ignore');
+  });
+
+  it('CONTROL: a verb that reports no verdict still warns and runs', () => {
+    const p = prepareArgv('diff', ['diff', '--nosuchflag']);
     expect(p.errors).toEqual([]);
     expect(p.warnings).toHaveLength(1);
-    expect(p.warnings[0]).toContain('--show-placeholders');
+  });
+
+  it('CONTROL: a flag the verb DOES accept produces neither', () => {
+    const p = prepareArgv('scan', ['scan', '--show-placeholders', './src']);
+    expect(p.errors).toEqual([]);
+    expect(p.warnings).toEqual([]);
   });
 
   it('an unknown verb is left entirely alone for the dispatcher to report', () => {
@@ -264,6 +295,40 @@ describe('the registry is derived from the source, not from itself', () => {
       expect(VERBS[verb], `${verb} has no registry row`).toBeDefined();
       expect(VERBS[verb].unknownFlags, `${verb} must reject unknown flags`).toBe('reject');
     }
+  });
+
+  /**
+   * The policy, pinned in BOTH directions.
+   *
+   * A test that only asserts the refusing verbs passes when the whole table is
+   * flipped to `reject`, which would break every hand-edited MCP client config
+   * — so the exceptions are asserted as exceptions. A test that only asserts
+   * the exceptions passes when a verdict verb is demoted. Both lists are named
+   * rather than derived, because this is the release's claim and a predicate
+   * that drifts with the table cannot check it.
+   */
+  it('the unknown-flag policy is pinned per verb, presence AND absence', () => {
+    // Verdict-emitting: their output is the answer, so a dropped flag is a
+    // wrong verdict rather than a wasted run.
+    for (const verb of ['scan', 'scan-staged', 'scan-history', 'status', 'verify']) {
+      expect(VERBS[verb], `${verb} has no registry row`).toBeDefined();
+      expect(VERBS[verb].unknownFlags, `${verb} must refuse an unknown flag`).toBe('reject');
+    }
+    // The ONLY verbs that may warn, each for a recorded reason. `mcp-status` is
+    // a deliberately temporary entry, carried with its sibling defect.
+    const mayWarn = ['mcp-status', 'feedback', 'diff'];
+    for (const verb of mayWarn) {
+      expect(VERBS[verb].unknownFlags, `${verb} is a documented warn exception`).toBe('warn');
+    }
+    // Nothing else warns. Derived, so a NEW verb added with 'warn' fails here
+    // rather than joining the exception list silently.
+    const warning = Object.keys(VERBS).filter((v) => VERBS[v].unknownFlags === 'warn');
+    expect(warning.sort()).toEqual([...mayWarn].sort());
+
+    // The second bin keeps `warn` on purpose: its argv lines live in
+    // hand-edited MCP client configs, where a refusal is a server that will not
+    // start. Flipping the table wholesale must fail here.
+    expect(MCP_WRAPPER.unknownFlags).toBe('warn');
   });
 });
 

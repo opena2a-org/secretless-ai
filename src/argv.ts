@@ -59,16 +59,37 @@ export const EXIT_USAGE = 2;
 export type UnknownFlagPolicy =
   /** Refuse to run, exit EXIT_USAGE, before any side effect. */
   | 'reject'
-  /** Print a warning and continue — the behaviour `scan` has shipped since #81. */
+  /** Print a warning and continue. */
   | 'warn';
 
 export interface VerbSpec {
   /** Flag spelling -> whether it consumes the FOLLOWING argv token as its value. */
   flags: Record<string, boolean>;
   /**
-   * What to do with a flag not in `flags`. `reject` on every verb that can
-   * write, because a misspelled safety flag there is a destroyed file; `warn`
-   * on read-only verbs, where the cost of a typo is a wasted run.
+   * What to do with a flag not in `flags`.
+   *
+   * THE AXIS IS WHETHER THE VERB EMITS A VERDICT, not whether it can write.
+   * The write-based axis was inherited from the harm model of a file-mutation
+   * tool, and it is wrong for a scanner: the cost of a dropped flag here is not
+   * a wasted run, it is a wrong answer the user acts on.
+   *
+   * Measured — the same dropped flag, two trees, and the exit code that made
+   * this look safe came from somewhere else entirely:
+   *
+   *   scan <tree WITH a credential>   --nosuchflag  -> exit 1, "1 credential found"
+   *   scan <tree WITHOUT a credential> --nosuchflag -> exit 0, "No hardcoded credentials found."
+   *
+   * The 1 was the finding. On a clean tree, warn-and-continue emits the
+   * strongest clean claim the tool can make over a scan whose scope the user
+   * asked to change and did not get. `scan-staged --no-ignoree` is the same
+   * shape on the PRE-COMMIT GATE: exit 0, empty stdout, a warning on the one
+   * stream a git hook reliably swallows.
+   *
+   * So `reject` on the verdict-emitting verbs, and `warn` only where a refusal
+   * would be worse than a wrong answer — `feedback` and `diff`, which report no
+   * verdict, and the `secretless-mcp` wrapper, whose argv lines live in
+   * hand-edited client configs where a refusal is a server that will not start.
+   * That failure is loud, and loud is not the class this guards against.
    */
   unknownFlags: UnknownFlagPolicy;
   /**
@@ -123,19 +144,26 @@ const GLOBAL_FLAGS: Readonly<Record<string, boolean>> = {
 /**
  * Every verb the dispatcher accepts, with the flags it actually reads.
  *
- * `unknownFlags` is keyed on whether the verb can WRITE — mutate a file, the
- * credential store, or system state — not on how dangerous it feels. `clean`
- * and `clean-history` are the sharpest cases: both are destructive by default
- * and `--dry-run` is the only thing that makes either a preview, so a
- * misspelling of that flag has to stop the run rather than degrade to it.
+ * `unknownFlags` is `reject` by default and `warn` only by exception. The
+ * exceptions are listed with their reason, because an unexplained `warn` is how
+ * a verdict-emitting verb quietly rejoins the warn-and-continue class.
+ *
+ * It used to be keyed on whether the verb can WRITE. That axis came from the
+ * harm model of a file-mutation tool and was wrong here — see `UnknownFlagPolicy`
+ * for the measurement that retired it. Writing verbs still reject, but they
+ * reject because a dropped flag is a wrong action, not because writing is the
+ * test. `clean` and `clean-history` remain the sharpest of those: destructive by
+ * default, with `--dry-run` the only thing that makes either a preview.
  *
  * A verb whose flag list is incomplete would reject a working command, so
  * `argv.test.ts` derives the flag literals from the source and asserts this
  * table covers them. The test reads the source, not this table, so the two
- * cannot agree by construction.
+ * cannot agree by construction. A second test pins the POLICY per verb, in both
+ * directions, so neither flipping the table wholesale nor demoting one verb can
+ * pass quietly.
  */
 export const VERBS: Readonly<Record<string, VerbSpec>> = {
-  // --- read-only: a typo costs a wasted run, so warn and continue -----------
+  // --- verbs whose output IS the answer: a dropped flag is a wrong verdict ---
   scan: {
     flags: {
       '--history': false,
@@ -148,7 +176,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--max-file-size': true,
       '--json': false,
     },
-    unknownFlags: 'warn',
+    unknownFlags: 'reject',
     honorsJson: true,
   },
   // `status` already refuses an unknown flag today, via
@@ -161,9 +189,20 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   // short report, and the user reads "36 known env vars not set (use --all to
   // list)" believing they ran the full listing.
   verify: { flags: { '--all': false }, unknownFlags: 'reject' },
-  'scan-staged': { flags: { '--no-ignore': false }, unknownFlags: 'warn' },
-  'scan-history': { flags: {}, unknownFlags: 'warn' },
+  // The pre-commit gate, and the reason the whole axis changed. Measured with a
+  // CLEAN staged set: `scan-staged --no-ignoree` exited 0 with EMPTY stdout and
+  // the warning on stderr — the one stream a git hook reliably swallows. It has
+  // no `--json` channel, so an exit code is the only signal that path has.
+  // (Our own installed hook body passes no flags — `git-hook.ts:19` — so this
+  // cannot refuse an existing installation under version skew.)
+  'scan-staged': { flags: { '--no-ignore': false }, unknownFlags: 'reject' },
+  'scan-history': { flags: {}, unknownFlags: 'reject' },
+  // EXCEPTION, and a deliberately temporary one. By the verdict test this
+  // belongs on `reject`, but its sibling defect (clean-over-unparsed) is
+  // assigned to the next release and reclassifying it here would widen this one.
+  // It is swept with that fix, and the unit names it so it is not lost.
   'mcp-status': { flags: {}, unknownFlags: 'warn' },
+  // EXCEPTION: reports no verdict. A typo costs a wasted run, nothing more.
   feedback: { flags: {}, unknownFlags: 'warn' },
   // No flags of its own: `diff` reads one positional ref (commands/diff.ts:292).
   // The `--no-color`, `--verify` and `--show-toplevel` literals in that file are
