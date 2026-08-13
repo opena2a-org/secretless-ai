@@ -163,6 +163,31 @@ would be dropping.
   context file was skipped and the short report was printed as though it were
   the full one.
 
+### Known issues
+
+Found by this release's own walkthrough, each reproduced against published 0.22.0
+and carried rather than fixed. First carry for both. Named here because this
+release is about the tool telling the truth about what it did, and both of these
+are cases where it does not.
+
+- **`scan` has three ignore layers and one of them is unreachable by any flag
+  ([#136](https://github.com/opena2a-org/secretless-ai/issues/136)).** A tree whose
+  only credential sits in `dist/`, `build/`, `node_modules/`, `coverage/` or
+  `vendor/` reports `No hardcoded credentials found.` with exit 0 under every
+  documented flag combination. Worse, `--no-ignore` and `--include-tests` each
+  widen coverage on their own and, given together, narrow it back to the no-flag
+  baseline. `--help` describes the two layers that flags do reach and is silent
+  about the third. Fixed in **0.24.0**, with the rest of the selection work.
+
+- **A typo in a `scan` coverage flag yields a confident clean
+  ([#137](https://github.com/opena2a-org/secretless-ai/issues/137)).**
+  `scan --include-testss` warns on stderr, names the flag you meant, and then exits
+  0 with `No hardcoded credentials found.` over a tree it narrowed. The `--json`
+  summary carries no trace of the dropped flag, so a CI job gating on
+  `summary.total` cannot see it. `scan` warns rather than refuses by design — see
+  the behaviour note above — and the case that survives that design is the
+  coverage flags specifically. Fixed in **0.23.0**.
+
 ### Corrections to the 0.22.0 notes
 
 Found while re-checking the issues that release closed. Neither is fixed here —
