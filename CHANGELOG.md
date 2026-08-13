@@ -108,6 +108,24 @@ visible change and belongs to its own release.
   context file was skipped and the short report was printed as though it were
   the full one.
 
+### Corrections to the 0.22.0 notes
+
+Found while re-checking the issues that release closed. Neither is fixed here —
+0.22.1 is deliberately narrow — but a release note that claims more than the
+code does is the same defect class this release is about.
+
+- **"Values are validated at the store boundary, so `set`, `import` and the MCP
+  write path are all covered" is wider than the code.** The MCP write path does
+  not end at `setSecret`: `src/mcp/vault.ts` calls the backend directly and
+  bypasses the check, as does the backend migration path. Measured by storing a
+  value carrying bracketed-paste escape bytes through `McpVault` and reading it
+  back unchanged. The source comment asserting the same coverage is wrong in the
+  same way. Tracked on [#104](https://github.com/opena2a-org/secretless-ai/issues/104).
+
+- **"Every successful write now prints the shape" is only true of `secret set`.**
+  `setup` prompts for values interactively and prints no shape line; `import`
+  prints names only.
+
 ## [0.22.0] - 2026-08-12
 
 Credential disclosure and integrity. Three defects a credential manager should
