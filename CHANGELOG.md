@@ -59,6 +59,20 @@ would be dropping.
   now carry only `id`, `agentSelector`, `credentialSelector`, `constraints` and
   `effect`, and anything else refuses the file.
 
+- **The same silent drop existed at three further levels of the policy file.**
+  A pre-tag pass asked one question at every level of operator-authored input
+  rather than at the level the last defect turned up, and found: a sibling of
+  `rules` in the file envelope (`{"rules": [allow], "denyRules": [deny-all]}`
+  loaded the allow set, ignored the deny set, and served the credential); a
+  sub-key inside a structured constraint (`rateLimit` read `maxPerMinute` and
+  dropped `maxPerHour`, so a cap of 1/hour permitted 3600/hour, and a mistyped
+  `End` left a time window open); and an empty value that deletes the
+  restriction (`requireCapability: ""` skipped the capability check entirely,
+  including its fail-closed no-identity branch, because that branch tested
+  truthiness while its sibling tests `!== undefined`). An empty `agentSelector`
+  or `credentialSelector` matches nothing, so a deny rule carrying one never
+  fired. All refuse now.
+
 - **`scopeCheck` was documented as a deny and could not deny.** It was listed as
   "deny if credential permissions expanded since last baseline", counted among
   the loaded constraints, and advertised in the broker guide — while the
