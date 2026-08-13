@@ -168,6 +168,20 @@ A scan that could not read everything is not a passing scan. If the walk stops a
 
 Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed -- otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan -- and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
 
+### A flag never widens scope
+
+A command line the tool cannot bind is refused with exit 2 before anything runs, rather than partly ignored. That covers an unrecognised flag on a command that writes, a flag given a value it cannot use, and a value-taking flag given no value at all. `--only=NAME`, `--path=DIR` and every other `--flag=value` spelling binds the same way as the spaced form.
+
+Exit codes: `0` clean, `1` credentials found (or an incomplete scan), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
+
+```bash
+npx secretless-ai clean --dryrun --path ./transcripts
+#   Unknown option: --dryrun (did you mean --dry-run?)
+#   `clean` was not run. Nothing was changed.
+#   Supported: --dry-run, --help, --json, --last, --path <value>
+#   Run `secretless-ai clean --help` for usage.
+```
+
 ```bash
 npx secretless-ai scan --json | jq '.summary'
 # { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
