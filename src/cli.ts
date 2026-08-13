@@ -27,6 +27,7 @@ import { runIgnore } from './commands/ignore';
 import { runDiff } from './commands/diff';
 import { printHelp, OWN_HELP } from './commands/help';
 import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } from './argv';
+import { nearestMatch } from './near-miss';
 
 /**
  * The stderr block for a refused command.
@@ -55,6 +56,12 @@ function formatArgvErrors(verb: string, errors: string[]): string[] {
 }
 
 const TOOL = 'secretless-ai';
+/**
+ * Mirrors `TelemetryAction` in @opena2a/cli-ui, which is a type and therefore
+ * erased at compile — so it cannot validate anything at runtime. A test pins
+ * this list against the helper's own accepted set.
+ */
+const TELEMETRY_ACTIONS = ['on', 'off', 'status'];
 // Subcommands we don't track: pure-help / pure-config calls don't represent
 // the user actually using the tool, and tracking 'telemetry' itself creates
 // confusing self-referential events.
@@ -115,7 +122,23 @@ async function main(): Promise<number> {
 
   // telemetry subcommand
   if (command === 'telemetry') {
-    console.log(runTelemetryCommand(args[1] as TelemetryAction, {
+    // The action is validated HERE rather than left to the helper. Measured on
+    // 0.22.1: `telemetry bogus` printed "Unknown action 'bogus'" to STDOUT and
+    // returned 0, so a caller checking the exit code was told the opt-out had
+    // been applied when nothing was called. Third instance of the same shape as
+    // `cache` and `backend` — a token we do not recognise answered with
+    // success — and the only one whose message came from a dependency, which
+    // is why it is caught before the call rather than parsed out of the reply.
+    const action = args[1];
+    if (action !== undefined && !TELEMETRY_ACTIONS.includes(action)) {
+      const near = nearestMatch(action, TELEMETRY_ACTIONS);
+      console.error(`\n  Unknown telemetry action: ${action}${near ? ` (did you mean \`${near}\`?)` : ''}`);
+      console.error('  Telemetry was NOT changed.');
+      console.log(`  Usage: ${CLI_BARE} telemetry <${TELEMETRY_ACTIONS.join('|')}>`);
+      console.log(`  Run \`${CLI_BARE} telemetry\` with no action to see the current setting.\n`);
+      return EXIT_USAGE;
+    }
+    console.log(runTelemetryCommand(action as TelemetryAction, {
       tool: TOOL,
       getStatus: tele.status,
       setOptOut: tele.setOptOut,

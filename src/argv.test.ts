@@ -186,7 +186,10 @@ describe('the registry is derived from the source, not from itself', () => {
   const NOT_OURS = new Map<string, string>([
     ['--version', 'top-level, handled before dispatch (cli.ts:65)'],
     ['--help', 'global, in GLOBAL_FLAGS'],
-    ['--json', 'global, in GLOBAL_FLAGS'],
+    // `--json` is deliberately NOT excused here any more. As of 0.23.0 it is
+    // declared by the verbs that implement it, so it must be found in the
+    // registry like any other flag — which is what makes the guard below able
+    // to catch a verb that starts reading `--json` without declaring it.
   ]);
 
   /**

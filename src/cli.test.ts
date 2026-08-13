@@ -523,3 +523,132 @@ describe('a flag never widens scope (0.22.1 argv layer)', () => {
     expect(res.stderr).toContain(ABSENT);
   });
 });
+
+/**
+ * An unrecognised SUBCOMMAND is refused, not answered with the default view.
+ *
+ * `cache` and `backend` were the last two subcommand dispatchers in the tree
+ * that fell through to their status page on a token they did not recognise —
+ * eight siblings already refused it. `telemetry` was a third instance wearing a
+ * different coat: it printed "Unknown action" to STDOUT and returned 0, so the
+ * message existed and the exit code still said success.
+ *
+ * Measured on 0.22.1, every row exit 0: `cache zzz`, `cache clea`, `cache ttls`,
+ * `backend lst`, `backend sett`, `backend purg`. The last is the sharp one — a
+ * near miss of the DESTRUCTIVE `purge`, where nothing in the output or the exit
+ * code separated "purged" from "never ran".
+ */
+describe('an unknown subcommand is refused rather than answered', () => {
+  const CLI_PATH2 = path.resolve(__dirname, '..', 'dist', 'cli.js');
+  const hasBuild = fs.existsSync(CLI_PATH2);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  function run(args: string[]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-subcmd-'));
+    try {
+      return spawnSync(process.execPath, [CLI_PATH2, ...args], {
+        encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], cwd: tmp,
+        env: { ...process.env, OPENA2A_TELEMETRY: 'off', NO_COLOR: '1' },
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  // CONTROLS FIRST. Absent is not the same as unrecognised: a bare verb is an
+  // exploration and still prints its status view at exit 0. If these went red,
+  // the guard below would be "refuses everything" rather than "refuses what it
+  // does not know", and every row under it would pass for the wrong reason.
+  itIfBuilt.each(['cache', 'backend', 'telemetry'])(
+    'CONTROL: bare `%s` still prints its status view at exit 0',
+    (verb) => {
+      const res = run([verb]);
+      expect(res.status, `${verb} bare must stay exit 0`).toBe(0);
+      expect(res.stderr).not.toMatch(/Unknown/);
+    },
+  );
+
+  itIfBuilt('`cache zzz` is refused instead of showing the cache status', () => {
+    const res = run(['cache', 'zzz']);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toMatch(/Unknown cache command: zzz/);
+    expect(res.stdout).not.toMatch(/Secret Cache/);
+  });
+
+  itIfBuilt('`cache clea` names the command it nearly matched', () => {
+    const res = run(['cache', 'clea']);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toMatch(/did you mean `clear`/);
+  });
+
+  itIfBuilt('`backend purg` — a near miss of a DESTRUCTIVE verb — is refused and named', () => {
+    const res = run(['backend', 'purg']);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toMatch(/did you mean `purge`/);
+    expect(res.stdout).not.toMatch(/Secretless Backend/);
+  });
+
+  itIfBuilt('`telemetry bogus` refuses and says the setting was not changed', () => {
+    const res = run(['telemetry', 'bogus']);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toMatch(/Unknown telemetry action: bogus/);
+    // The whole point: the exit code used to be 0 while nothing was applied.
+    expect(res.stderr).toMatch(/NOT changed/);
+  });
+
+  /**
+   * The class, not the instances. Named rather than derived, so a dispatcher
+   * added later with a silent fall-through has to show up here as a deliberate
+   * edit instead of slipping past a predicate.
+   *
+   * Every verb below is safe to invoke with an unrecognised token precisely
+   * BECAUSE it refuses first — that is the property under test. None is ever
+   * invoked bare, which for `install` would install a launch agent.
+   */
+  itIfBuilt.each([
+    'secret', 'broker', 'vault', 'scope', 'hook', 'rules', 'watch', 'install', 'cache', 'backend',
+  ])('%s refuses an unrecognised subcommand and does not act on it', (verb) => {
+    const res = run([verb, 'zzz-not-a-subcommand']);
+    expect(res.status, `${verb} answered an unknown subcommand with success`).not.toBe(0);
+    expect(`${res.stdout}${res.stderr}`).toMatch(/Unknown/);
+  });
+});
+
+/**
+ * `secret list` takes no argument. It used to accept one and ignore it —
+ * measured on 0.22.1, `secret list <token>` returned every stored name,
+ * byte-identical to the unfiltered run, at exit 0. A user who believes they
+ * filtered and sees every name reads that as "these all match".
+ */
+describe('secret list does not accept a filter it will not apply', () => {
+  const CLI_PATH3 = path.resolve(__dirname, '..', 'dist', 'cli.js');
+  const hasBuild = fs.existsSync(CLI_PATH3);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  function run(args: string[]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-seclist-'));
+    try {
+      return spawnSync(process.execPath, [CLI_PATH3, ...args], {
+        encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], cwd: tmp,
+        env: { ...process.env, OPENA2A_TELEMETRY: 'off', NO_COLOR: '1' },
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  itIfBuilt('refuses a positional rather than silently listing everything', () => {
+    const res = run(['secret', 'list', 'ZZZ_NO_SUCH_PREFIX']);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toMatch(/takes no arguments/);
+    expect(res.stderr).toMatch(/NOT filtered/);
+    // It must not have printed the store contents anyway.
+    expect(res.stdout).not.toMatch(/secret\(s\):/);
+  });
+
+  itIfBuilt('CONTROL: `secret list` with no argument still lists, exit 0', () => {
+    const res = run(['secret', 'list']);
+    expect(res.status).toBe(0);
+    expect(res.stderr).not.toMatch(/takes no arguments/);
+  });
+});

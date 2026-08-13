@@ -80,12 +80,15 @@ export interface VerbSpec {
   /**
    * True when this verb actually implements `--json`.
    *
-   * Acceptance of `--json` is global and unchanged (see GLOBAL_FLAGS); this
-   * governs only whether we NAME it as supported when refusing a command line.
-   * Naming it on the 30 verbs that ignore it would advertise a machine-readable
-   * mode that does not exist, in the text a user reads at the moment they hit
-   * an error — the same false-clean class this release exists to close, and it
-   * would contradict this release's own note that `--json` is unchanged.
+   * It is now the single source of truth for that, in both directions: the verb
+   * declares `--json` in its own `flags` AND sets this, and `jsonVerbs()` reads
+   * it to name the honoring verbs in the refusal every other verb produces. A
+   * test pins it against the `--json` read sites in `cli.ts`, so a verb that
+   * starts or stops implementing JSON cannot leave this behind.
+   *
+   * Before 0.23.0 this governed only whether a refusal message NAMED `--json`
+   * as supported, because acceptance was global. That half-measure is gone: the
+   * flag is either implemented or not a flag.
    */
   honorsJson?: boolean;
 }
@@ -93,21 +96,28 @@ export interface VerbSpec {
 /**
  * Accepted by every verb.
  *
- * `--json` is here because 20 verbs accept and silently ignore it today. The
- * 2026-08-12 `[CHIEF-CPO]` ruling is that a flag the tool accepts is a flag the
- * tool honors, and that `--json` on a verb that does not implement it must exit
- * 2 naming the verbs that do. That is a consumer-visible exit-code change and
- * belongs to its own release, so it is NOT made here. Listing `--json` keeps
- * this release's behaviour byte-identical and leaves the ruling exactly one
- * place to land: delete this entry and give the implementing verbs their own.
+ * `--json` USED TO BE HERE, and that is what 0.23.0 changes. It is now declared
+ * by the two verbs that implement it, so on every other verb it is simply not a
+ * flag — which is the honest description of what it was all along.
  *
- * ACCEPTING it globally is not the same as ADVERTISING it globally. Only verbs
- * marked `honorsJson` name it in a refusal message — see `supportedFlags`.
+ * The 2026-08-12 `[CHIEF-CPO]` ruling: a flag the tool accepts is a flag the
+ * tool honors. `--json` on a verb that does not implement it exits 2 naming the
+ * verbs that do, rather than warning, because a machine consumer reading exit 0
+ * plus human text is the same false-clean class the rest of this file closes.
+ *
+ * Measured on 0.22.1 across all 32 verbs: 2 honor it, and of the other 30, 15
+ * truly ignored it, 11 mistook it for a SUBCOMMAND (`cache` and `backend`
+ * silently falling through to a normal-looking status page at exit 0), and 4
+ * mistook it for a POSITIONAL. The last group is why this is not cosmetic:
+ * `verify --json` resolved `--json` as the project directory, so the AI-context
+ * scan ran against a path that does not exist and printed `AI context: clean
+ * (no credentials found)` for a directory whose `CLAUDE.md` held a live
+ * Anthropic key. That is not accept-and-ignore; it is answering a different
+ * question and reporting it as clean.
  */
 const GLOBAL_FLAGS: Readonly<Record<string, boolean>> = {
   '--help': false,
   '-h': false,
-  '--json': false,
 };
 
 /**
@@ -136,6 +146,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--min-confidence': true,
       '--max-files': true,
       '--max-file-size': true,
+      '--json': false,
     },
     unknownFlags: 'warn',
     honorsJson: true,
@@ -144,7 +155,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   // `rejectUnknownFlagAsDirArg` — the flag falls through as its directory
   // argument. Keeping it at `reject` preserves that exit code while replacing a
   // message that called the flag a bad path with one that calls it a bad flag.
-  status: { flags: {}, unknownFlags: 'reject', honorsJson: true },
+  status: { flags: { '--json': false }, unknownFlags: 'reject', honorsJson: true },
   // `verify` is the one read-only verb where a swallowed flag changes the
   // ANSWER rather than wasting the run: `verify --alll` silently returns the
   // short report, and the user reads "36 known env vars not set (use --all to
@@ -287,12 +298,21 @@ export function supportedFlags(spec: VerbSpec): string[] {
   const all = { ...GLOBAL_FLAGS, ...spec.flags };
   return Object.keys(all)
     .filter((f) => f !== '-h')
-    // `--json` is accepted by every verb and implemented by two. Listing it as
-    // "Supported" everywhere promises a machine-readable mode that does not
-    // exist — and promises it in the one place a user reads after a refusal.
-    .filter((f) => f !== '--json' || spec.honorsJson === true)
     .sort()
     .map((f) => usageOf(f, all[f]));
+}
+
+/**
+ * The verbs that implement `--json`, derived from the registry rather than
+ * written out, so the refusal message cannot name a verb that stopped
+ * implementing it — or omit one that started.
+ *
+ * Computed on call, not at module load: `VERBS` is initialised below this
+ * point and a module-level constant here would read it in its temporal dead
+ * zone.
+ */
+export function jsonVerbs(): string[] {
+  return Object.keys(VERBS).filter((v) => VERBS[v].honorsJson === true).sort();
 }
 
 /**
@@ -307,7 +327,7 @@ export function prepareArgv(verb: string | undefined, args: string[]): PreparedA
   // output. Rewriting argv for a command that will not run helps nobody.
   if (!verb || !spec) return { args, positionals: [], warnings: [], errors: [] };
   // args[0] is the verb; flags start at 1.
-  return prepareWithSpec(spec, args, 1);
+  return prepareWithSpec(spec, args, 1, true);
 }
 
 /**
@@ -315,10 +335,20 @@ export function prepareArgv(verb: string | undefined, args: string[]): PreparedA
  * `secretless-mcp` wrapper, whose first token is already a flag.
  */
 export function prepareBinArgv(spec: VerbSpec, args: string[]): PreparedArgv {
-  return prepareWithSpec(spec, args, 0);
+  // `isVerb: false`. The `--json` refusal is a statement about THIS CLI's verb
+  // contract; `secretless-mcp` has no such contract, its argv lines are written
+  // into MCP client configs and hand-edited afterwards, and its `warn` policy
+  // is a deliberate decision with a different blast radius. An unrecognised
+  // `--json` there takes the ordinary unknown-flag path.
+  return prepareWithSpec(spec, args, 0, false);
 }
 
-function prepareWithSpec(spec: VerbSpec, args: string[], firstFlagIndex: number): PreparedArgv {
+function prepareWithSpec(
+  spec: VerbSpec,
+  args: string[],
+  firstFlagIndex: number,
+  isVerb: boolean,
+): PreparedArgv {
   // Split at the first bare `--` BEFORE touching anything, so the child's argv
   // is preserved byte for byte.
   const sepIdx = spec.passthrough ? args.indexOf('--') : -1;
@@ -352,6 +382,28 @@ function prepareWithSpec(spec: VerbSpec, args: string[], firstFlagIndex: number)
     const takesValue = known[name];
 
     if (takesValue === undefined) {
+      // `--json` is refused rather than warned about, on EVERY verb that does
+      // not implement it, whatever that verb's unknown-flag policy says.
+      //
+      // This deliberately overrides `unknownFlags: 'warn'`. Routing `--json`
+      // through the ordinary unknown-flag path would refuse it on the twelve
+      // verbs that reject and merely WARN on the six read-only ones — and a
+      // warning on stderr beside exit 0 and human text on stdout is precisely
+      // the false-clean shape a machine consumer cannot see. `--json` is the
+      // one flag whose entire audience is a machine, so it is the one flag
+      // where warn-and-continue is not available as an answer.
+      if (isVerb && name === '--json') {
+        const honoring = jsonVerbs().map((v) => `\`${v}\``);
+        const list = honoring.length > 1
+          ? `${honoring.slice(0, -1).join(', ')} and ${honoring[honoring.length - 1]}`
+          : honoring.join('');
+        errors.push(
+          `--json is not implemented by this command, so it would have printed human text ` +
+          `and exited as though it had answered. Only ${list} produce JSON.`,
+        );
+        out.push(name);
+        continue;
+      }
       // Left WHOLE on purpose. Splitting an unregistered `--foo=bar` would push
       // `bar` into the positional list, and for `scan` or `clean` a stray
       // positional is a path — a token the user never typed becoming a target.

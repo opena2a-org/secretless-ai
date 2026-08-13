@@ -5,6 +5,42 @@ import { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl
 import { clearCacheFile } from '../backends/cache';
 import { migrateSecrets } from '../backends/migrate';
 import type { SelectableBackendType } from '../backends/config';
+import { nearestMatch } from '../near-miss';
+import { CLI_BARE } from './utils';
+
+/**
+ * The subcommands each dispatcher answers to, named once so the refusal below
+ * and the usage line cannot drift apart.
+ */
+const BACKEND_SUBCOMMANDS = ['list', 'set', 'purge'];
+const CACHE_SUBCOMMANDS = ['clear', 'ttl'];
+
+/**
+ * Refuse a subcommand token we do not recognise, instead of falling through to
+ * the status page.
+ *
+ * `cache` and `backend` were the only two subcommand dispatchers in this tree
+ * that answered an unrecognised token with a normal-looking report at exit 0 —
+ * eight siblings (`secret`, `broker`, `vault`, `scope`, `hook`, `install`,
+ * `rules`, `watch`) already refused it. Measured on 0.22.1: `cache clea`,
+ * `cache ttls`, `backend lst` and `backend sett` all printed the status page
+ * and exited 0. The sharp one is `backend purg`, a near-miss of the
+ * DESTRUCTIVE `purge`: exit 0 and a status page, with nothing in the output or
+ * the exit code separating "purged" from "never ran".
+ *
+ * ABSENT is not the same as UNRECOGNISED, and that distinction is the whole
+ * guard: a bare `cache` or `backend` is an exploration and still prints the
+ * status page at exit 0, exactly as it does today. Six of the eight siblings
+ * behave the same way, so this matches the tree rather than inventing a third
+ * convention.
+ */
+function refuseUnknownSubcommand(verb: string, token: string, known: string[]): number {
+  const near = nearestMatch(token, known);
+  console.error(`\n  Unknown ${verb} command: ${token}${near ? ` (did you mean \`${near}\`?)` : ''}`);
+  console.log(`  Usage: ${CLI_BARE} ${verb} <${known.join('|')}>`);
+  console.log(`  Run \`${CLI_BARE} ${verb}\` with no arguments to see current status.\n`);
+  return 1;
+}
 
 export async function runBackend(args: string[]): Promise<number> {
   const subcommand = args[0];
@@ -169,6 +205,10 @@ export async function runBackend(args: string[]): Promise<number> {
     console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
     console.log('  Or use `npx secretless-ai migrate` to migrate existing secrets.\n');
     return 0;
+  }
+
+  if (subcommand !== undefined) {
+    return refuseUnknownSubcommand('backend', subcommand, BACKEND_SUBCOMMANDS);
   }
 
   // Default: show current backend status.
@@ -359,6 +399,10 @@ export function runCache(args: string[]): number {
       console.log(`\n  Cache TTL set to ${formatTtl(seconds)}.\n`);
     }
     return 0;
+  }
+
+  if (subcommand !== undefined) {
+    return refuseUnknownSubcommand('cache', subcommand, CACHE_SUBCOMMANDS);
   }
 
   // Default: show cache status
