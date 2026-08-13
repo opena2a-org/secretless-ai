@@ -243,10 +243,21 @@ export function matchGlob(pattern: string, value: string): boolean {
   if (pattern === value) return true;
 
   // Convert glob to regex: escape special chars, then convert * and ?
+  //
+  // `[\s\S]` and `[^]`-style classes rather than `.`, because `.` does not match
+  // a line terminator: `matchGlob('AWS_*', 'AWS_KEY\n')` was FALSE while
+  // `matchGlob('*', 'AWS_KEY\n')` was true (the `*` fast path above skips the
+  // regex entirely). A glob DENY rule therefore missed any value carrying \n,
+  // \r, U+2028 or U+2029 while a wildcard ALLOW matched it — the deny rule the
+  // operator wrote silently did not fire. Measured; also measured that such a
+  // name does not currently resolve to a credential, because `getSecret`
+  // rejects it at `SAFE_NAME` before any lookup. So this is the policy decision
+  // being wrong rather than a credential being served, and it is fixed here so
+  // that it stays that way if name validation ever moves.
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.');
+    .replace(/\*/g, '[\\s\\S]*')
+    .replace(/\?/g, '[\\s\\S]');
 
   const regex = new RegExp(`^${escaped}$`);
   return regex.test(value);

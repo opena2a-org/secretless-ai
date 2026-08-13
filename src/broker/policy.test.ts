@@ -887,3 +887,51 @@ describe('the key allowlists are pinned to the type declarations', () => {
     }
   });
 });
+
+/**
+ * A glob DENY rule must not be defeated by a line terminator.
+ *
+ * `.` does not match `\n`, and `pattern === '*'` short-circuits before the
+ * regex, so a wildcard ALLOW matched a newline-bearing value that every glob
+ * DENY missed. Measured: `deny AWS_*` + `allow *` against `"AWS_KEY\n"`
+ * returned allowed=true, matching the allow rule, while the same policy against
+ * `"AWS_KEY"` correctly denied.
+ *
+ * Not exploitable today for a credential — `getSecret` rejects such a name at
+ * SAFE_NAME before the store, the MCP vault or the env fallback is reached, so
+ * nothing resolves. It is the authorization DECISION that was wrong, and this
+ * pins it so it stays right if name validation ever moves.
+ */
+describe('matchGlob is not defeated by a line terminator', () => {
+  it.each([
+    ['newline', '\n'],
+    ['carriage return', '\r'],
+    ['line separator U+2028', ' '],
+    ['paragraph separator U+2029', ' '],
+  ])('a glob matches a value containing a %s, as `*` already did', (_label, ch) => {
+    // The asymmetry IS the defect: these two must agree.
+    expect(matchGlob('*', `AWS_KEY${ch}`)).toBe(true);
+    expect(matchGlob('AWS_*', `AWS_KEY${ch}`)).toBe(true);
+    expect(matchGlob('?', ch)).toBe(true);
+  });
+
+  it('a deny rule fires on a newline-bearing credential name', () => {
+    const engine = new PolicyEngine({ rateLimiter: new RateLimiter() });
+    engine.loadRules([
+      { id: 'deny-aws', agentSelector: '*', credentialSelector: 'AWS_*', constraints: {}, effect: 'deny' },
+      { id: 'allow-all', agentSelector: '*', credentialSelector: '*', constraints: {}, effect: 'allow' },
+    ]);
+    // CONTROL: the ordinary name is denied, so the policy is doing its job.
+    expect(engine.evaluate('agent-1', 'AWS_KEY').matchedRuleId).toBe('deny-aws');
+    // ARM: pre-fix this returned allowed=true, matched by allow-all.
+    expect(engine.evaluate('agent-1', 'AWS_KEY\n').allowed).toBe(false);
+    expect(engine.evaluate('agent-1\n', 'AWS_KEY').allowed).toBe(false);
+  });
+
+  it('CONTROL: a glob still does NOT match a value it should not', () => {
+    // Widening the character class must not widen the match itself.
+    expect(matchGlob('AWS_*', 'GCP_KEY')).toBe(false);
+    expect(matchGlob('a.b', 'aXb')).toBe(false);
+    expect(matchGlob('?', 'ab')).toBe(false);
+  });
+});
