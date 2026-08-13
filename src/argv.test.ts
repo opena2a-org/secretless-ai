@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { prepareArgv, prepareBinArgv, VERBS, MCP_WRAPPER, EXIT_USAGE } from './argv';
+import { prepareArgv, prepareBinArgv, supportedFlags, VERBS, MCP_WRAPPER, EXIT_USAGE } from './argv';
 
 /**
  * The argv layer, unit level.
@@ -335,5 +335,43 @@ describe('EXIT_USAGE matches the code the CLI already uses for a usage error', (
     // 1 means "credentials found" for scan; a usage error must not be readable
     // as a finding by a CI consumer.
     expect(EXIT_USAGE).toBe(2);
+  });
+});
+
+/**
+ * A refusal message may not advertise a flag the verb does not implement.
+ *
+ * `supportedFlags` unioned GLOBAL_FLAGS into every verb, so refusing a command
+ * line printed `Supported: ..., --json, ...` for all 32 verbs while two honor
+ * it — and `verify --json` prints human text and exits 0. That is a promise of
+ * a machine-readable mode that does not exist, made in the one place a user
+ * reads after hitting an error, and it contradicted this release's own note
+ * that `--json` is unchanged. Accepting the flag is unchanged; naming it is not.
+ */
+describe('supportedFlags names only what the verb honors', () => {
+  it('exactly the verbs implementing --json advertise it', () => {
+    const advertising = Object.entries(VERBS)
+      .filter(([, spec]) => supportedFlags(spec).includes('--json'))
+      .map(([verb]) => verb)
+      .sort();
+    // Oracle is the SOURCE: the verbs whose dispatch actually reads the flag.
+    const cli = fs.readFileSync(path.join(path.resolve(__dirname), 'cli.ts'), 'utf-8');
+    const implementing = cli.split('\n').filter((l) => l.includes("includes('--json')")).length;
+    expect(implementing).toBe(2);
+    expect(advertising).toEqual(['scan', 'status']);
+  });
+
+  it('a destructive verb does not offer --json in its refusal', () => {
+    const p = prepareArgv('clean', ['clean', '--dryrun']);
+    expect(p.errors).toHaveLength(1);
+    expect(supportedFlags(VERBS.clean)).not.toContain('--json');
+  });
+
+  it('CONTROL: the flags a verb DOES honor are still all named', () => {
+    // The filter must remove one flag, not shrink the list generally.
+    const listed = supportedFlags(VERBS.clean);
+    for (const f of ['--dry-run', '--last', '--path <value>', '--help']) {
+      expect(listed).toContain(f);
+    }
   });
 });

@@ -77,6 +77,17 @@ export interface VerbSpec {
    * the command the user is wrapping.
    */
   passthrough?: boolean;
+  /**
+   * True when this verb actually implements `--json`.
+   *
+   * Acceptance of `--json` is global and unchanged (see GLOBAL_FLAGS); this
+   * governs only whether we NAME it as supported when refusing a command line.
+   * Naming it on the 30 verbs that ignore it would advertise a machine-readable
+   * mode that does not exist, in the text a user reads at the moment they hit
+   * an error — the same false-clean class this release exists to close, and it
+   * would contradict this release's own note that `--json` is unchanged.
+   */
+  honorsJson?: boolean;
 }
 
 /**
@@ -89,6 +100,9 @@ export interface VerbSpec {
  * belongs to its own release, so it is NOT made here. Listing `--json` keeps
  * this release's behaviour byte-identical and leaves the ruling exactly one
  * place to land: delete this entry and give the implementing verbs their own.
+ *
+ * ACCEPTING it globally is not the same as ADVERTISING it globally. Only verbs
+ * marked `honorsJson` name it in a refusal message — see `supportedFlags`.
  */
 const GLOBAL_FLAGS: Readonly<Record<string, boolean>> = {
   '--help': false,
@@ -124,12 +138,13 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--max-file-size': true,
     },
     unknownFlags: 'warn',
+    honorsJson: true,
   },
   // `status` already refuses an unknown flag today, via
   // `rejectUnknownFlagAsDirArg` — the flag falls through as its directory
   // argument. Keeping it at `reject` preserves that exit code while replacing a
   // message that called the flag a bad path with one that calls it a bad flag.
-  status: { flags: {}, unknownFlags: 'reject' },
+  status: { flags: {}, unknownFlags: 'reject', honorsJson: true },
   // `verify` is the one read-only verb where a swallowed flag changes the
   // ANSWER rather than wasting the run: `verify --alll` silently returns the
   // short report, and the user reads "36 known env vars not set (use --all to
@@ -272,6 +287,10 @@ export function supportedFlags(spec: VerbSpec): string[] {
   const all = { ...GLOBAL_FLAGS, ...spec.flags };
   return Object.keys(all)
     .filter((f) => f !== '-h')
+    // `--json` is accepted by every verb and implemented by two. Listing it as
+    // "Supported" everywhere promises a machine-readable mode that does not
+    // exist — and promises it in the one place a user reads after a refusal.
+    .filter((f) => f !== '--json' || spec.honorsJson === true)
     .sort()
     .map((f) => usageOf(f, all[f]));
 }

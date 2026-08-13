@@ -151,6 +151,13 @@ would be dropping.
   rather than starting an MCP server with none of the credentials the wrapper
   exists to inject.
 
+  **Migration consequence, if you hand-edited an MCP config.** A wrapper line
+  carrying `--vault-dir=/path` was reading the DEFAULT vault and will now read
+  the directory you named — which may be empty, in which case the server starts
+  without its secrets. The same applies to `--backend=`: it now uses the backend
+  named rather than the configured default. Configs written by `protect-mcp`
+  use the spaced form and are unaffected.
+
 - **`verify --alll` answered a narrower question than the one asked.** Any
   misspelling of `--all` was resolved as the project directory, so every project
   context file was skipped and the short report was printed as though it were

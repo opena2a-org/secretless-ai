@@ -178,7 +178,7 @@ Exit codes: `0` clean, `1` credentials found (or an incomplete scan), `2` the co
 npx secretless-ai clean --dryrun --path ./transcripts
 #   Unknown option: --dryrun (did you mean --dry-run?)
 #   `clean` was not run. Nothing was changed.
-#   Supported: --dry-run, --help, --json, --last, --path <value>
+#   Supported: --dry-run, --help, --last, --path <value>
 #   Run `secretless-ai clean --help` for usage.
 ```
 
