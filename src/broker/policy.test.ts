@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { PolicyEngine, matchGlob, isWithinTimeWindow } from './policy';
+import { PolicyEngine, matchGlob, isWithinTimeWindow, KNOWN_RULE_KEYS, KNOWN_CONSTRAINT_KEYS, KNOWN_ENVELOPE_KEYS } from './policy';
 import { RateLimiter } from './rate-limiter';
 import type { PolicyRule, AgentIdentity } from './types';
 
@@ -734,5 +734,156 @@ describe('no test constructs BrokerServer against the machine policy file', () =
     // exists. Pin it on there being something to check.
     expect(constructions).toBeGreaterThan(0);
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * The same predicate at every nesting level of operator-authored input.
+ *
+ * This defect has now been found four times, each a level further out or in:
+ * a constraint VALUE we could not type-match; the constraints CONTAINER
+ * misspelled; a sibling of `rules` in the ENVELOPE; and a SUB-KEY inside a
+ * structured constraint. Each fix matched the last instance rather than the
+ * class, which is why there was always another one. The question these assert
+ * is level-independent: is there an input that makes the rule WIDER than the
+ * operator wrote, while every surface reports it loaded?
+ */
+describe('PolicyEngine — no level of policy input silently drops what it cannot read', () => {
+  const tmpDirs: string[] = [];
+
+  function engineFor(doc: unknown): PolicyEngine {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-levels-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'p.json');
+    fs.writeFileSync(file, JSON.stringify(doc));
+    return new PolicyEngine({ policyFile: file });
+  }
+
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
+  const ALLOW_ALL = { id: 'a1', agentSelector: '*', credentialSelector: '*', effect: 'allow' };
+  const DENY_ALL = { id: 'deny-all', agentSelector: '*', credentialSelector: '*', effect: 'deny' };
+
+  describe('the envelope', () => {
+    it('CONTROL: a deny rule under the real key denies', () => {
+      const engine = engineFor({ version: 1, rules: [DENY_ALL] });
+      expect(engine.loadPolicies()).toBe(1);
+      expect(engine.evaluate('agent-1', 'AWS_KEY').allowed).toBe(false);
+    });
+
+    it('refuses a sibling of `rules` rather than loading only half the policy', () => {
+      // Measured pre-fix: loaded=1, allowed=true, matched the allow rule. The
+      // operator's deny rules were never in the engine and nothing said so.
+      const engine = engineFor({ rules: [ALLOW_ALL], denyRules: [DENY_ALL] });
+      expect(() => engine.loadPolicies()).toThrow(/denyRules/);
+    });
+
+    it('a bare array is still accepted', () => {
+      const engine = engineFor([DENY_ALL]);
+      expect(engine.loadPolicies()).toBe(1);
+    });
+  });
+
+  describe('a constraint sub-key', () => {
+    const base = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow' };
+
+    it('CONTROL: the sub-keys we do read still load and still enforce', () => {
+      const engine = engineFor({ rules: [{ ...base, constraints: { timeWindow: { start: '00:00', end: '00:01' } } }] });
+      expect(engine.loadPolicies()).toBe(1);
+      expect(engine.evaluate('agent-1', 'AWS_KEY').allowed).toBe(false);
+    });
+
+    it.each([
+      ['rateLimit.maxPerHour — a cap we would silently drop', { rateLimit: { maxPerMinute: 60, maxPerHour: 1 } }],
+      ['timeWindow.End — a near-miss of end', { timeWindow: { start: '00:00', end: '23:59', End: '00:01' } }],
+      ['timeWindow.days — a restriction we do not implement', { timeWindow: { start: '00:00', end: '23:59', days: ['sun'] } }],
+      ['timeWindow.timezone — the window is server-local', { timeWindow: { start: '00:00', end: '23:59', timezone: 'UTC' } }],
+    ])('refuses %s', (_label, constraints) => {
+      const engine = engineFor({ rules: [{ ...base, constraints }] });
+      expect(() => engine.loadPolicies()).toThrow();
+    });
+  });
+
+  describe('an empty value that deletes the restriction', () => {
+    const base = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow' };
+
+    it('CONTROL: a named capability with no identity denies', () => {
+      const engine = engineFor({ rules: [{ ...base, constraints: { requireCapability: 'deploy' } }] });
+      expect(engine.loadPolicies()).toBe(1);
+      expect(engine.evaluate('agent-1', 'AWS_KEY').allowed).toBe(false);
+    });
+
+    it('refuses requireCapability: "" rather than skipping the gate', () => {
+      // Pre-fix the enforcement branch guarded on truthiness, so "" skipped the
+      // whole block INCLUDING its fail-closed no-identity arm: allowed=true.
+      const engine = engineFor({ rules: [{ ...base, constraints: { requireCapability: '' } }] });
+      expect(() => engine.loadPolicies()).toThrow(/must not be empty/);
+    });
+
+    it('refuses an empty selector, which matches nothing and so never denies', () => {
+      const engine = engineFor({ rules: [{ ...DENY_ALL, agentSelector: '' }] });
+      expect(() => engine.loadPolicies()).toThrow(/non-empty/);
+    });
+  });
+});
+
+/**
+ * The pin CISO found claimed but absent.
+ *
+ * `KNOWN_CONSTRAINT_KEYS` carried a comment stating it was "pinned by a test
+ * against PolicyConstraints". No such test existed — the symbol appeared in one
+ * file and no test file. A source comment asserting a test we do not have is
+ * the same class as a scanner reporting clean without looking, and it was
+ * shipped inside the commit fixing an authorization fail-open.
+ *
+ * The oracle is the TYPE DECLARATION, read from source. Deriving it from the
+ * runtime Set would let the two agree by construction and pin nothing.
+ */
+describe('the key allowlists are pinned to the type declarations', () => {
+  const TYPES = fs.readFileSync(path.resolve(__dirname, 'types.ts'), 'utf-8');
+
+  function fieldsOf(interfaceName: string): string[] {
+    const start = TYPES.indexOf(`export interface ${interfaceName} {`);
+    expect(start, `${interfaceName} not found in types.ts`).toBeGreaterThan(-1);
+    const body = TYPES.slice(start, TYPES.indexOf('\n}', start));
+    return [...body.matchAll(/^\s{2}([a-zA-Z][a-zA-Z0-9]*)\??:/gm)].map((m) => m[1]);
+  }
+
+  it('KNOWN_RULE_KEYS is exactly the fields of PolicyRule', () => {
+    const declared = fieldsOf('PolicyRule');
+    // Guard the guard: a regex that stopped matching would make this vacuous.
+    expect(declared.length).toBe(5);
+    expect([...KNOWN_RULE_KEYS].sort()).toEqual(declared.sort());
+  });
+
+  it('KNOWN_CONSTRAINT_KEYS is exactly the fields of PolicyConstraints', () => {
+    const declared = fieldsOf('PolicyConstraints');
+    expect(declared.length).toBeGreaterThan(0);
+    expect([...KNOWN_CONSTRAINT_KEYS].sort()).toEqual(declared.sort());
+  });
+
+  it('a constraint in the promise set has an enforcement branch', () => {
+    // The set's own comment calls it "a promise about what is applied, not a
+    // list of what parses". scopeCheck sat in it for thirteen published
+    // versions while its branch could not deny. This asserts the promise.
+    const impl = fs.readFileSync(path.resolve(__dirname, 'policy.ts'), 'utf-8');
+    const checkConstraints = impl.slice(impl.indexOf('private checkConstraints('), impl.indexOf('export function matchGlob'));
+    for (const key of KNOWN_CONSTRAINT_KEYS) {
+      expect(checkConstraints, `${key} is promised but never read in checkConstraints`).toContain(`constraints.${key}`);
+    }
+  });
+
+  it('KNOWN_ENVELOPE_KEYS covers what the documented example writes', () => {
+    const doc = fs.readFileSync(path.resolve(__dirname, '..', '..', 'docs', 'use-cases', 'run-broker.md'), 'utf-8');
+    // The example a user copies must load. If the docs grow a key, this fails
+    // before an operator's file does.
+    for (const key of ['version', 'rules']) {
+      expect(doc).toContain(`"${key}"`);
+      expect(KNOWN_ENVELOPE_KEYS.has(key)).toBe(true);
+    }
   });
 });

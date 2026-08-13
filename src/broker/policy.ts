@@ -54,6 +54,25 @@ export class PolicyEngine {
         throw new Error('Policy file must contain a "rules" array or be a JSON array');
       }
 
+      // The ENVELOPE gets the same treatment as a rule. Measured: a file with
+      // `{"rules": [allow], "denyRules": [deny-all]}` loaded the allow set,
+      // ignored the deny set, and served the credential — the operator's deny
+      // rules were never in the engine and nothing said so. This defect has now
+      // been found at four nesting levels, so the check goes at every level
+      // rather than at the one where the last instance turned up.
+      if (!Array.isArray(parsed)) {
+        for (const key of Object.keys(parsed)) {
+          if (KNOWN_ENVELOPE_KEYS.has(key)) continue;
+          const near = nearestMatch(key, [...KNOWN_ENVELOPE_KEYS]);
+          throw new Error(
+            `Policy file has an unknown top-level key "${key}"${near ? ` (did you mean "${near}"?)` : ''}. ` +
+            `A policy file may carry: ${[...KNOWN_ENVELOPE_KEYS].join(', ')}. ` +
+            `Rules under a key this build does not read would never be loaded, and nothing ` +
+            `downstream could tell that from a file that declared no such rules.`,
+          );
+        }
+      }
+
       this.rules = rules.map((r: unknown) => validateRule(r));
       return this.rules.length;
     } catch (err) {
@@ -182,8 +201,9 @@ export class PolicyEngine {
     // here. Real enforcement needs live permission discovery in the resolve
     // path — latency, egress and error semantics — and is its own unit.
 
-    // Capability check
-    if (constraints.requireCapability) {
+    // Capability check. `!== undefined`, not truthiness — see the load-time
+    // check: an empty string is falsy and used to skip this whole block.
+    if (constraints.requireCapability !== undefined) {
       if (!agentIdentity) {
         return {
           passed: false,
@@ -274,7 +294,7 @@ function parseTimeToMinutes(time: string): number {
  * enforcement branch in `checkConstraints` fails too. The set is a promise
  * about what is applied, not a list of what parses.
  */
-const KNOWN_CONSTRAINT_KEYS = new Set([
+export const KNOWN_CONSTRAINT_KEYS = new Set([
   'timeWindow',
   'rateLimit',
   'minTrustScore',
@@ -301,13 +321,47 @@ const KNOWN_CONSTRAINT_KEYS = new Set([
  * a key the operator did not write is a guess about intent inside the
  * authorization path; the error names the likely intent instead.
  */
-const KNOWN_RULE_KEYS = new Set([
+export const KNOWN_RULE_KEYS = new Set([
   'id',
   'agentSelector',
   'credentialSelector',
   'constraints',
   'effect',
 ]);
+
+/** Top-level keys of the policy FILE. `version` is in the documented example. */
+export const KNOWN_ENVELOPE_KEYS = new Set(['version', 'rules']);
+
+/**
+ * Sub-keys of each structured constraint.
+ *
+ * The destructuring below reads `{start, end}` and `{maxPerMinute}` and drops
+ * everything else, so `rateLimit: {maxPerMinute: 60, maxPerHour: 1}` silently
+ * discarded the hourly cap and permitted 3600/hour, and `timeWindow` with a
+ * mistyped `End` kept the open window the operator meant to close. Same defect
+ * as the container, one level further in.
+ */
+const KNOWN_CONSTRAINT_SUBKEYS = new Map<string, Set<string>>([
+  ['timeWindow', new Set(['start', 'end'])],
+  ['rateLimit', new Set(['maxPerMinute'])],
+]);
+
+/** Refuse a structured constraint carrying a sub-key we would silently drop. */
+function checkSubKeys(ruleId: string, constraint: string, value: object): void {
+  const known = KNOWN_CONSTRAINT_SUBKEYS.get(constraint);
+  if (!known) return;
+  for (const key of Object.keys(value)) {
+    if (known.has(key)) continue;
+    const near = nearestMatch(key, [...known]);
+    throw new Error(
+      `Rule "${ruleId}": ${constraint} has an unknown field "${key}"` +
+      `${near ? ` (did you mean "${near}"?)` : ''}. ` +
+      `${constraint} takes: ${[...known].join(', ')}. ` +
+      `A field this build does not read is refused rather than dropped, because dropping ` +
+      `it would loosen the limit the operator wrote.`,
+    );
+  }
+}
 
 /**
  * Constraints this build parses but does not enforce, with the reason.
@@ -361,11 +415,20 @@ function validateRule(raw: unknown): PolicyRule {
       `without it.`,
     );
   }
-  if (typeof r.agentSelector !== 'string') {
-    throw new Error(`Rule "${r.id}": agentSelector must be a string`);
+  // Non-empty, and the DENY direction is why: an empty selector matches nothing,
+  // so a deny rule written with one never fires while a sibling `allow: *`
+  // does — the restriction disappears and the permission survives. Measured.
+  if (typeof r.agentSelector !== 'string' || r.agentSelector === '') {
+    throw new Error(
+      `Rule "${r.id}": agentSelector must be a non-empty string. An empty selector matches ` +
+      `no agent, so a deny rule carrying one silently never fires. Use "*" to match every agent.`,
+    );
   }
-  if (typeof r.credentialSelector !== 'string') {
-    throw new Error(`Rule "${r.id}": credentialSelector must be a string`);
+  if (typeof r.credentialSelector !== 'string' || r.credentialSelector === '') {
+    throw new Error(
+      `Rule "${r.id}": credentialSelector must be a non-empty string. An empty selector matches ` +
+      `no credential, so a deny rule carrying one silently never fires. Use "*" to match every one.`,
+    );
   }
   if (r.effect !== 'allow' && r.effect !== 'deny') {
     throw new Error(`Rule "${r.id}": effect must be "allow" or "deny"`);
@@ -432,6 +495,7 @@ function validateRule(raw: unknown): PolicyRule {
       if (!TIME_OF_DAY.test(start) || !TIME_OF_DAY.test(end)) {
         throw new Error(`Rule "${r.id}": timeWindow.start and timeWindow.end must be "HH:MM", 00:00-23:59`);
       }
+      checkSubKeys(r.id, 'timeWindow', tw);
       constraints.timeWindow = { start, end };
     }
 
@@ -446,6 +510,7 @@ function validateRule(raw: unknown): PolicyRule {
           `Rule "${r.id}": rateLimit.maxPerMinute must be a positive number (got ${JSON.stringify(maxPerMinute)})`,
         );
       }
+      checkSubKeys(r.id, 'rateLimit', rl);
       constraints.rateLimit = { maxPerMinute };
     }
 
@@ -461,6 +526,20 @@ function validateRule(raw: unknown): PolicyRule {
     if (c.requireCapability !== undefined) {
       if (typeof c.requireCapability !== 'string') {
         throw new Error(`Rule "${r.id}": requireCapability must be a string`);
+      }
+      // Non-empty, because the enforcement branch guards on TRUTHINESS: an
+      // empty string skipped the whole capability check, including its
+      // fail-closed "no agent identity" arm, so the gate vanished while
+      // getRules() still showed `requireCapability: ""`. Measured: "deploy"
+      // with no identity denies, "" with no identity allows. `${VAR}` with the
+      // variable unset is exactly how a templating layer produces it — the same
+      // substitution story as the numeric strings this function already refuses.
+      if (c.requireCapability === '') {
+        throw new Error(
+          `Rule "${r.id}": requireCapability must not be empty. An empty capability is not ` +
+          `a capability that everything satisfies — it removes the check. Name the capability, ` +
+          `or omit requireCapability entirely.`,
+        );
       }
       constraints.requireCapability = c.requireCapability;
     }
