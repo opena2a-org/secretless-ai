@@ -277,7 +277,7 @@ describe('PolicyEngine', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it('loads policies from a JSON file', () => {
+    it('loads policies from a JSON file', async () => {
       const policies = {
         rules: [{
           id: 'test-rule',
@@ -290,24 +290,24 @@ describe('PolicyEngine', () => {
       fs.writeFileSync(policyFile, JSON.stringify(policies));
 
       const fileEngine = new PolicyEngine({ policyFile });
-      const count = fileEngine.loadPolicies();
+      const count = await fileEngine.loadPolicies();
       expect(count).toBe(1);
       expect(fileEngine.evaluate('agent', 'CRED').allowed).toBe(true);
     });
 
-    it('returns zero when policy file does not exist', () => {
+    it('returns zero when policy file does not exist', async () => {
       const fileEngine = new PolicyEngine({ policyFile: path.join(tmpDir, 'nonexistent.json') });
-      const count = fileEngine.loadPolicies();
+      const count = await fileEngine.loadPolicies();
       expect(count).toBe(0);
     });
 
-    it('throws on invalid policy file', () => {
+    it('throws on invalid policy file', async () => {
       fs.writeFileSync(policyFile, 'not json');
       const fileEngine = new PolicyEngine({ policyFile });
-      expect(() => fileEngine.loadPolicies()).toThrow('Failed to load policies');
+      await expect(fileEngine.loadPolicies()).rejects.toThrow('Failed to load policies');
     });
 
-    it('loads policies from a bare JSON array', () => {
+    it('loads policies from a bare JSON array', async () => {
       const policies = [{
         id: 'bare-rule',
         agentSelector: 'scanner-*',
@@ -318,22 +318,22 @@ describe('PolicyEngine', () => {
       fs.writeFileSync(policyFile, JSON.stringify(policies));
 
       const fileEngine = new PolicyEngine({ policyFile });
-      const count = fileEngine.loadPolicies();
+      const count = await fileEngine.loadPolicies();
       expect(count).toBe(1);
       expect(fileEngine.evaluate('scanner-01', 'GITHUB_TOKEN').allowed).toBe(true);
       expect(fileEngine.evaluate('deploy-agent', 'GITHUB_TOKEN').allowed).toBe(false);
     });
 
-    it('throws on missing rules array', () => {
+    it('throws on missing rules array', async () => {
       fs.writeFileSync(policyFile, JSON.stringify({ notRules: [] }));
       const fileEngine = new PolicyEngine({ policyFile });
-      expect(() => fileEngine.loadPolicies()).toThrow('must contain a "rules" array');
+      await expect(fileEngine.loadPolicies()).rejects.toThrow('must contain a "rules" array');
     });
 
-    it('validates rule structure', () => {
+    it('validates rule structure', async () => {
       fs.writeFileSync(policyFile, JSON.stringify({ rules: [{ invalid: true }] }));
       const fileEngine = new PolicyEngine({ policyFile });
-      expect(() => fileEngine.loadPolicies()).toThrow('non-empty "id"');
+      await expect(fileEngine.loadPolicies()).rejects.toThrow('non-empty "id"');
     });
   });
 
@@ -501,9 +501,9 @@ describe('PolicyEngine — an unappliable constraint refuses the rule', () => {
   ];
 
   for (const [label, constraints] of MALFORMED) {
-    it(`refuses to load: ${label}`, () => {
+    it(`refuses to load: ${label}`, async () => {
       const e = new PolicyEngine({ policyFile: policyFile(constraints) });
-      expect(() => e.loadPolicies()).toThrow();
+      await expect(e.loadPolicies()).rejects.toThrow();
     });
 
     /**
@@ -513,10 +513,10 @@ describe('PolicyEngine — an unappliable constraint refuses the rule', () => {
      * throw alone would still pass if some later change caught the error and
      * carried on with a widened rule, which is exactly the shape being fixed.
      */
-    it(`never grants after: ${label}`, () => {
+    it(`never grants after: ${label}`, async () => {
       const e = new PolicyEngine({ policyFile: policyFile(constraints) });
       try {
-        e.loadPolicies();
+        await e.loadPolicies();
       } catch {
         /* refusing to load is the fix; the assertion below is the invariant */
       }
@@ -524,17 +524,17 @@ describe('PolicyEngine — an unappliable constraint refuses the rule', () => {
     });
   }
 
-  it('still loads and still ENFORCES a well-formed constraint', () => {
+  it('still loads and still ENFORCES a well-formed constraint', async () => {
     // The negative direction: refusing malformed input must not have been
     // bought by refusing everything.
     const e = new PolicyEngine({ policyFile: policyFile({ timeWindow: { start: '00:00', end: '00:01' } }) });
-    expect(e.loadPolicies()).toBe(1);
+    expect(await e.loadPolicies()).toBe(1);
     expect(e.getRules()[0].constraints).toEqual({ timeWindow: { start: '00:00', end: '00:01' } });
   });
 
-  it('accepts a rule with no constraints at all', () => {
+  it('accepts a rule with no constraints at all', async () => {
     const e = new PolicyEngine({ policyFile: policyFile(undefined) });
-    expect(e.loadPolicies()).toBe(1);
+    expect(await e.loadPolicies()).toBe(1);
   });
 });
 
@@ -575,18 +575,18 @@ describe('PolicyEngine — a rule field we do not read refuses the rule', () => 
 
   // POSITIVE CONTROLS. Both pass before and after the fix. Without them a
   // validator that refused every rule would satisfy the arms below.
-  it('CONTROL: the correctly spelled container still loads and still denies', () => {
+  it('CONTROL: the correctly spelled container still loads and still denies', async () => {
     const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE, constraints: CLOSED_WINDOW }) });
-    expect(engine.loadPolicies()).toBe(1);
+    expect(await engine.loadPolicies()).toBe(1);
     expect(engine.getRules()[0].constraints.timeWindow).toEqual(CLOSED_WINDOW.timeWindow);
     expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(false);
   });
 
-  it('CONTROL: a rule with no constraints at all is still legitimate', () => {
+  it('CONTROL: a rule with no constraints at all is still legitimate', async () => {
     // "constraints absent" cannot itself be an error — an unconstrained allow
     // rule is a real thing an operator writes.
     const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE }) });
-    expect(engine.loadPolicies()).toBe(1);
+    expect(await engine.loadPolicies()).toBe(1);
     expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(true);
   });
 
@@ -598,15 +598,15 @@ describe('PolicyEngine — a rule field we do not read refuses the rule', () => 
     ['effect misspelled, so the real effect is absent', { ...BASE, efect: 'deny' }],
   ];
 
-  it.each(UNKNOWN_FIELDS)('refuses a rule carrying %s', (_label, rule) => {
+  it.each(UNKNOWN_FIELDS)('refuses a rule carrying %s', async (_label, rule) => {
     const engine = new PolicyEngine({ policyFile: policyFileFor(rule) });
-    expect(() => engine.loadPolicies()).toThrow();
+    await expect(engine.loadPolicies()).rejects.toThrow();
   });
 
-  it('the refusal names the offending field and the legal set', () => {
+  it('the refusal names the offending field and the legal set', async () => {
     const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE, contraints: CLOSED_WINDOW }) });
     let message = '';
-    try { engine.loadPolicies(); } catch (err) { message = (err as Error).message; }
+    try { await engine.loadPolicies(); } catch (err) { message = (err as Error).message; }
     expect(message).toContain('contraints');
     expect(message).toContain('did you mean "constraints"');
     for (const key of ['id', 'agentSelector', 'credentialSelector', 'constraints', 'effect']) {
@@ -617,9 +617,9 @@ describe('PolicyEngine — a rule field we do not read refuses the rule', () => 
   // The property, stated once: no rule that carries an unreadable field may
   // ever load. Asserting the rule SET rather than an error string, because a
   // refusal that loaded the rule anyway would still throw somewhere.
-  it('nothing is loaded when a rule is refused', () => {
+  it('nothing is loaded when a rule is refused', async () => {
     const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE, contraints: CLOSED_WINDOW }) });
-    try { engine.loadPolicies(); } catch { /* expected */ }
+    try { await engine.loadPolicies(); } catch { /* expected */ }
     expect(engine.getRules()).toEqual([]);
     expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(false);
   });
@@ -659,24 +659,24 @@ describe('PolicyEngine — an unenforced constraint refuses the rule', () => {
     ['true', true],
     ['false', false],
     ['a string', 'true'],
-  ])('refuses scopeCheck: %s rather than reporting a gate that is not there', (_label, value) => {
+  ])('refuses scopeCheck: %s rather than reporting a gate that is not there', async (_label, value) => {
     const engine = engineFor({ scopeCheck: value });
-    expect(() => engine.loadPolicies()).toThrow(/does not enforce scopeCheck/);
+    await expect(engine.loadPolicies()).rejects.toThrow(/does not enforce scopeCheck/);
   });
 
-  it('says it is unenforced, not that it is unknown', () => {
+  it('says it is unenforced, not that it is unknown', async () => {
     // The distinction is the whole point: "unknown constraint" would tell an
     // operator they typed it wrong. They did not — we removed it.
     const engine = engineFor({ scopeCheck: true });
     let message = '';
-    try { engine.loadPolicies(); } catch (err) { message = (err as Error).message; }
+    try { await engine.loadPolicies(); } catch (err) { message = (err as Error).message; }
     expect(message).toContain('does not enforce');
     expect(message).not.toContain('unknown constraint');
   });
 
-  it('CONTROL: the constraints that ARE enforced still load', () => {
+  it('CONTROL: the constraints that ARE enforced still load', async () => {
     const engine = engineFor({ timeWindow: { start: '00:00', end: '23:59' }, minTrustScore: 80 });
-    expect(engine.loadPolicies()).toBe(1);
+    expect(await engine.loadPolicies()).toBe(1);
     expect(engine.getRules()[0].constraints.minTrustScore).toBe(80);
   });
 });
@@ -769,31 +769,31 @@ describe('PolicyEngine — no level of policy input silently drops what it canno
   const DENY_ALL = { id: 'deny-all', agentSelector: '*', credentialSelector: '*', effect: 'deny' };
 
   describe('the envelope', () => {
-    it('CONTROL: a deny rule under the real key denies', () => {
+    it('CONTROL: a deny rule under the real key denies', async () => {
       const engine = engineFor({ version: 1, rules: [DENY_ALL] });
-      expect(engine.loadPolicies()).toBe(1);
+      expect(await engine.loadPolicies()).toBe(1);
       expect(engine.evaluate('agent-1', 'AWS_KEY').allowed).toBe(false);
     });
 
-    it('refuses a sibling of `rules` rather than loading only half the policy', () => {
+    it('refuses a sibling of `rules` rather than loading only half the policy', async () => {
       // Measured pre-fix: loaded=1, allowed=true, matched the allow rule. The
       // operator's deny rules were never in the engine and nothing said so.
       const engine = engineFor({ rules: [ALLOW_ALL], denyRules: [DENY_ALL] });
-      expect(() => engine.loadPolicies()).toThrow(/denyRules/);
+      await expect(engine.loadPolicies()).rejects.toThrow(/denyRules/);
     });
 
-    it('a bare array is still accepted', () => {
+    it('a bare array is still accepted', async () => {
       const engine = engineFor([DENY_ALL]);
-      expect(engine.loadPolicies()).toBe(1);
+      expect(await engine.loadPolicies()).toBe(1);
     });
   });
 
   describe('a constraint sub-key', () => {
     const base = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow' };
 
-    it('CONTROL: the sub-keys we do read still load and still enforce', () => {
+    it('CONTROL: the sub-keys we do read still load and still enforce', async () => {
       const engine = engineFor({ rules: [{ ...base, constraints: { timeWindow: { start: '00:00', end: '00:01' } } }] });
-      expect(engine.loadPolicies()).toBe(1);
+      expect(await engine.loadPolicies()).toBe(1);
       expect(engine.evaluate('agent-1', 'AWS_KEY').allowed).toBe(false);
     });
 
@@ -802,31 +802,31 @@ describe('PolicyEngine — no level of policy input silently drops what it canno
       ['timeWindow.End — a near-miss of end', { timeWindow: { start: '00:00', end: '23:59', End: '00:01' } }],
       ['timeWindow.days — a restriction we do not implement', { timeWindow: { start: '00:00', end: '23:59', days: ['sun'] } }],
       ['timeWindow.timezone — the window is server-local', { timeWindow: { start: '00:00', end: '23:59', timezone: 'UTC' } }],
-    ])('refuses %s', (_label, constraints) => {
+    ])('refuses %s', async (_label, constraints) => {
       const engine = engineFor({ rules: [{ ...base, constraints }] });
-      expect(() => engine.loadPolicies()).toThrow();
+      await expect(engine.loadPolicies()).rejects.toThrow();
     });
   });
 
   describe('an empty value that deletes the restriction', () => {
     const base = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow' };
 
-    it('CONTROL: a named capability with no identity denies', () => {
+    it('CONTROL: a named capability with no identity denies', async () => {
       const engine = engineFor({ rules: [{ ...base, constraints: { requireCapability: 'deploy' } }] });
-      expect(engine.loadPolicies()).toBe(1);
+      expect(await engine.loadPolicies()).toBe(1);
       expect(engine.evaluate('agent-1', 'AWS_KEY').allowed).toBe(false);
     });
 
-    it('refuses requireCapability: "" rather than skipping the gate', () => {
+    it('refuses requireCapability: "" rather than skipping the gate', async () => {
       // Pre-fix the enforcement branch guarded on truthiness, so "" skipped the
       // whole block INCLUDING its fail-closed no-identity arm: allowed=true.
       const engine = engineFor({ rules: [{ ...base, constraints: { requireCapability: '' } }] });
-      expect(() => engine.loadPolicies()).toThrow(/must not be empty/);
+      await expect(engine.loadPolicies()).rejects.toThrow(/must not be empty/);
     });
 
-    it('refuses an empty selector, which matches nothing and so never denies', () => {
+    it('refuses an empty selector, which matches nothing and so never denies', async () => {
       const engine = engineFor({ rules: [{ ...DENY_ALL, agentSelector: '' }] });
-      expect(() => engine.loadPolicies()).toThrow(/non-empty/);
+      await expect(engine.loadPolicies()).rejects.toThrow(/non-empty/);
     });
   });
 });
@@ -908,7 +908,7 @@ describe('matchGlob is not defeated by a line terminator', () => {
     ['carriage return', '\r'],
     ['line separator U+2028', ' '],
     ['paragraph separator U+2029', ' '],
-  ])('a glob matches a value containing a %s, as `*` already did', (_label, ch) => {
+  ])('a glob matches a value containing a %s, as `*` already did', async (_label, ch) => {
     // The asymmetry IS the defect: these two must agree.
     expect(matchGlob('*', `AWS_KEY${ch}`)).toBe(true);
     expect(matchGlob('AWS_*', `AWS_KEY${ch}`)).toBe(true);

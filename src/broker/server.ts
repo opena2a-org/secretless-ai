@@ -102,7 +102,14 @@ export class BrokerServer {
     // next move is to delete the policy file — which is a fail-open again, by
     // hand. A daemon that cannot apply the policy it was given must say so and
     // stop, not pick a direction quietly.
-    this.policy.loadPolicies();
+    // Awaited, and deliberately unguarded: `loadPolicies()` became async in
+    // 0.23.0 so it could scan the raw file for duplicate members before
+    // JSON.parse collapses them. An un-awaited call would resolve to a Promise
+    // and leave the engine at zero rules, so the throw has to reach here.
+    // Everything below — including the bearer token write — is downstream, so a
+    // refused policy file leaves no socket and no token for a client to
+    // authenticate against.
+    await this.policy.loadPolicies();
 
     // Generate and persist bearer token for caller authentication
     const tokenFile = this.config.tokenFile ?? TOKEN_FILE;
@@ -407,8 +414,31 @@ export class BrokerServer {
       // fold-colliding case variant — refuses the request. Dynamic import:
       // @opena2a/atx-verify is ESM-only and this package is CJS (same pattern
       // as the cli-ui/telemetry consumers in src/cli.ts).
+      // The module resolution and the scan get SEPARATE arms. One `catch` used
+      // to cover both, and its comment named only `StrictParseError` — so if
+      // `@opena2a/atx-verify` ever failed to resolve, every grant request
+      // returned `400 Invalid JSON` and told each caller their body was
+      // malformed while the security module was silently absent. Nothing
+      // anywhere said the check had not run. That is an undiagnosable outage,
+      // and the rational operator response to one is to disable whatever looks
+      // broken. Our fault and the caller's fault are different answers.
+      let firstDuplicateMember: (text: string) => string | null;
       try {
-        const { firstDuplicateMember } = await import('@opena2a/atx-verify');
+        ({ firstDuplicateMember } = await import('@opena2a/atx-verify'));
+      } catch (err) {
+        this.audit.logEvent(
+          'error', 'broker', '', '', 'denied',
+          `Duplicate-member scanner (@opena2a/atx-verify) failed to load; every grant request is ` +
+          `refused until it resolves: ${err instanceof Error ? err.message : String(err)}`,
+          0,
+        );
+        this.sendJson(res, 503, {
+          error: 'Credential authorization is unavailable on this broker (see the broker audit log)',
+        });
+        return;
+      }
+
+      try {
         const dup = firstDuplicateMember(body);
         if (dup !== null) {
           this.sendJson(res, 400, {

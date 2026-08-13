@@ -37,15 +37,86 @@ export class PolicyEngine {
   /**
    * Load policies from the policy file. Safe to call multiple times (reloads).
    * Returns the number of rules loaded.
+   *
+   * ASYNC because the duplicate-member scan it depends on lives in
+   * `@opena2a/atx-verify`, which is ESM-only while this package is CommonJS —
+   * the same dynamic-import mechanism the `/grant` path already uses in
+   * `server.ts`. The whole chain above this call is already async
+   * (`commands/broker.ts` -> `daemon.ts` -> `server.start()`), so the await
+   * costs one keyword at the single call site. The signature change IS
+   * consumer-visible for anyone using `PolicyEngine` as a library; a call left
+   * un-awaited leaves the engine at zero rules, which is default-deny.
    */
-  loadPolicies(): number {
+  async loadPolicies(): Promise<number> {
     if (!fs.existsSync(this.policyFile)) {
       this.rules = [];
       return 0;
     }
 
+    // Resolved BEFORE the load block and with its OWN message, because a module
+    // that will not load is an installation fault and not a fault in the
+    // operator's file. Reporting it as "Failed to load policies from <their
+    // file>" would send them to debug the wrong artifact.
+    //
+    // There is deliberately no catch that continues without the scan. Falling
+    // back to a bare JSON.parse here is not a degraded mode — it is the
+    // pre-0.23.0 code path verbatim, the one this check exists to close. A
+    // security check that cannot run must withhold, not wave the input through.
+    let firstDuplicateMember: (text: string) => string | null;
+    try {
+      ({ firstDuplicateMember } = await import('@opena2a/atx-verify'));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Cannot load policies from ${this.policyFile}: the duplicate-member scanner ` +
+        `(@opena2a/atx-verify) could not be loaded, so the policy file was NOT applied and no ` +
+        `credential will be served. This is an installation fault, not a fault in your policy ` +
+        `file — do not edit or delete the file to clear it.\n` +
+        `  Verify: node -e "import('@opena2a/atx-verify').then(() => console.log('ok'))"\n` +
+        `  Fix:    npm install   # and check node -v is >= 20.19.0\n` +
+        `  Cause:  ${detail}`,
+      );
+    }
+
     try {
       const raw = fs.readFileSync(this.policyFile, 'utf-8');
+
+      // Scanned on the RAW TEXT, and on the SAME binding `JSON.parse` consumes
+      // below — never a re-read and never a normalised copy, or the two would
+      // be judging different bytes.
+      //
+      // It has to happen out here because `JSON.parse` resolves a duplicated
+      // key before any consumer of the parsed object can see it: a reviver is
+      // handed each member exactly once, already collapsed. Issue #140's filed
+      // direction proposed that reviver; it cannot work, and the control it
+      // would produce never fires.
+      let duplicate: string | null;
+      try {
+        duplicate = firstDuplicateMember(raw);
+      } catch {
+        // StrictParseError. The scanner is lax on scalar tokens but strict on
+        // structure, so this is text it cannot vouch for as a single JSON
+        // value. Refusing here rather than letting JSON.parse decide keeps the
+        // accept-set of the file and the accept-set of the check identical.
+        throw new Error(
+          `Policy file is not a single well-formed JSON value that the duplicate-member ` +
+          `scanner can vouch for, so it was not applied. Check the file for truncation, ` +
+          `trailing content after the closing brace, or a malformed string escape.`,
+        );
+      }
+      if (duplicate !== null) {
+        throw new Error(
+          `Policy file has a duplicate member "${duplicate}". A member name that collides with ` +
+          `another member of the same object is refused rather than resolved: where the collision ` +
+          `is exact, JSON.parse keeps the LAST occurrence, so the half of the rule that RESTRICTS ` +
+          `is the half that disappears — while the rule count, getRules() and /health all report ` +
+          `it loaded. ` +
+          `The colliding member may be spelled differently in the file than it reads here: names ` +
+          `are compared after JSON escape decoding and case folding, so a case variant or an ` +
+          `escaped spelling collides too. Remove the duplicate and keep the one you meant.`,
+        );
+      }
+
       const parsed = JSON.parse(raw);
 
       // Accept both { rules: [...] } and bare array [...] formats
