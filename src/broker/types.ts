@@ -67,8 +67,13 @@ export interface PolicyConstraints {
   minTrustScore?: number;
   /** AIM capability the agent must possess. */
   requireCapability?: string;
-  /** Block if credential scope has expanded beyond baseline. */
-  scopeCheck?: boolean;
+  // No `scopeCheck`. It was documented as "block if credential scope has
+  // expanded beyond baseline" and could not block: the enforcement path
+  // compared an empty current-permission list against the baseline, so
+  // expansion was false for every baseline. The key is refused at policy load
+  // rather than accepted and not applied — see UNENFORCED_CONSTRAINT_KEYS in
+  // ./policy. Reinstating it means implementing live permission discovery
+  // first, and the type should stay silent about it until then.
 }
 
 /** Audit log entry for credential access attempts. */

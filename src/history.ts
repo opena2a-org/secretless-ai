@@ -10,6 +10,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, type CredentialPattern } from './patterns';
+import { redactMatches } from './redact';
 
 export interface HistoryFinding {
   /** Display path with ~ for home directory */
@@ -207,8 +208,12 @@ export async function cleanHistory(dryRun = false): Promise<HistoryCleanResult> 
         modified = true;
 
         if (!dryRun) {
-          // Replace the credential value with a redaction marker
-          lines[i] = rawLine.replace(match.regex, `[REDACTED:${match.id}]`);
+          // Replace the credential value with a redaction marker.
+          // redactMatches, not String.replace: the pattern's quantifier is not
+          // the credential's length, so replacing exactly the match left the
+          // tail of an over-length value in the file this function REWRITES,
+          // under a line that says it was redacted.
+          lines[i] = redactMatches(rawLine, match.regex, `[REDACTED:${match.id}]`);
         }
       }
     }

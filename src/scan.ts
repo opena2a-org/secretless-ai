@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, type CredentialPattern } from './patterns';
+import { redactMatches } from './redact';
 import { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceTier } from './confidence';
 
@@ -85,19 +86,12 @@ export function fixFor(pattern: Pick<CredentialPattern, 'id' | 'name' | 'envPref
  * whole-match redaction.
  */
 export function maskLine(line: string, pattern: Pick<CredentialPattern, 'name' | 'regex'>): string {
-  const flags = pattern.regex.flags.includes('g') ? pattern.regex.flags : pattern.regex.flags + 'g';
-  const globalRegex = new RegExp(pattern.regex.source, flags);
-  const label = `[${pattern.name} REDACTED]`;
-  return line.replace(globalRegex, (full: string, ...rest: unknown[]) => {
-    // A replacer's trailing args are (offset, wholeString[, groups]); a string
-    // in slot 0 means the pattern has at least one capture group.
-    const value = typeof rest[0] === 'string' ? rest[0] : undefined;
-    if (!value) return label;
-    if (!full.includes(value)) return label;
-    // EVERY occurrence, not just the first or last: a match that spans the
-    // value twice would otherwise leave a copy of the secret in the preview.
-    // No pattern does that today; redacting all of them means none can.
-    return full.split(value).join(label);
+  // Shared with the transcript and shell-history redactors, so the preview and
+  // the file rewrite cannot drift: all three used to replace exactly the regex
+  // match, which left the tail of any value longer than the pattern's fixed
+  // quantifier (#133 — `ghp_` + 37 chars printed the 37th verbatim).
+  return redactMatches(line, pattern.regex, `[${pattern.name} REDACTED]`, {
+    preferCaptureGroup: true,
   });
 }
 

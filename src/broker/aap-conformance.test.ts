@@ -202,7 +202,13 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     });
 
     server = new BrokerServer(
-      { socketPath, httpPort: 0, auditLog: auditPath, tokenFile: tokenPath },
+      // policyFile is pinned into the test's own tmpdir. Omitted, PolicyEngine
+      // falls back to ~/.secretless-ai/broker-policies.json, so this suite's
+      // result depended on the machine's real policy file — it passed here
+      // because that file happened to validate, and started failing the moment
+      // policy validation got stricter. A conformance suite must not read
+      // developer state.
+      { socketPath, httpPort: 0, auditLog: auditPath, tokenFile: tokenPath, policyFile: path.join(tmpDir, 'broker-policies.json') },
       { aimClient: null, grantResolver },
     );
     await server.start();

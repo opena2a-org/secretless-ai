@@ -1,5 +1,211 @@
 # Changelog
 
+## [0.22.1] - 2026-08-12
+
+A security patch. Three defects where the tool did something other than what it
+was asked, and reported success: a broker policy that authorized more than the
+operator wrote, a credential selector that injected the whole store when it was
+spelled with an equals sign, and a redaction that reported a completed removal
+over material still on disk.
+
+**Behavior change worth reading before you upgrade.** A command line the tool
+cannot bind is now refused with exit 2 instead of being partly ignored. This
+affects three shapes: an unrecognised flag on a command that WRITES (`clean`,
+`clean-history`, `run`, `backend`, `migrate`, `vault`, `init`, and the rest),
+a flag given a value it cannot use (`scan --max-files abc`), and a value-taking
+flag given no value at all. Read-only `scan` still warns and continues on an
+unknown flag, as it has since #81. If you have automation passing a flag this
+tool does not implement, it will now stop rather than run with a scope you did
+not choose.
+
+**`--json` is unchanged in this release.** It is still accepted and ignored by
+the commands that do not implement it. Making that an error is a consumer-
+visible change and belongs to its own release.
+
+**A broker policy file with an unrecognised field now refuses to load, and the
+daemon will not start.** This includes documentation keys: a `comment` or
+`description` sitting beside `id` in a rule is refused. That is not
+hypothetical — it is what one hand-annotated policy file on our own machine
+carried, and it is how we found this. The remedy is to delete the key; the
+error names it and lists the five fields a rule may carry. An `x-` prefixed
+annotation namespace is planned so that notes have a supported home, and it is
+deliberately not being designed inside a security patch. The refusal is the
+strict direction on purpose: a field we do not read is a field whose meaning we
+would be dropping.
+
+### Security
+
+- **The broker authorized more than the policy said.** The policy engine
+  silently dropped any constraint it could not type-match, so the restrictive
+  half of an operator's rule evaporated and the permissive half survived, while
+  `loadPolicies()`, `getRules()` and `/health` all reported the rule loaded.
+  A `timeWindow` written with numeric hours instead of `"HH:MM"` strings, or
+  `rateLimit.maxPerMinute` as the string `"1"`, produced no constraints at all
+  and an unconditional allow. A numeric string is not a hypothetical: it is what
+  a YAML-to-JSON conversion, a templating layer or an env-var substitution
+  produces. The sharpest case is `minTrustScore: "80"`, where the trust floor
+  disappears and any agent matching the selector is served. A constraint this
+  build cannot apply is now refused rather than ignored, and a policy file that
+  exists but will not validate is a startup failure rather than a warning — a
+  daemon warning is a silent failure with extra steps. Affects 0.9.2 through
+  0.22.0.
+
+- **The same fail-open was reachable one level up, through a typo.** The check
+  above refuses a constraint it cannot apply, but nothing validated a rule's
+  top-level fields — so misspelling the container (`contraints`, `constraint`)
+  discarded the whole constraint block, and the rule loaded as an unconstrained
+  allow with every surface reporting it loaded. Measured with a control: the
+  correct spelling plus a closed time window denies; the typo allows. A rule may
+  now carry only `id`, `agentSelector`, `credentialSelector`, `constraints` and
+  `effect`, and anything else refuses the file.
+
+- **The same silent drop existed at three further levels of the policy file.**
+  A pre-tag pass asked one question at every level of operator-authored input
+  rather than at the level the last defect turned up, and found: a sibling of
+  `rules` in the file envelope (`{"rules": [allow], "denyRules": [deny-all]}`
+  loaded the allow set, ignored the deny set, and served the credential); a
+  sub-key inside a structured constraint (`rateLimit` read `maxPerMinute` and
+  dropped `maxPerHour`, so a cap of 1/hour permitted 3600/hour, and a mistyped
+  `End` left a time window open); and an empty value that deletes the
+  restriction (`requireCapability: ""` skipped the capability check entirely,
+  including its fail-closed no-identity branch, because that branch tested
+  truthiness while its sibling tests `!== undefined`). An empty `agentSelector`
+  or `credentialSelector` matches nothing, so a deny rule carrying one never
+  fired. All refuse now.
+
+- **`scopeCheck` was documented as a deny and could not deny.** It was listed as
+  "deny if credential permissions expanded since last baseline", counted among
+  the loaded constraints, and advertised in the broker guide — while the
+  enforcement path compared an *empty* current-permission list against the
+  baseline, so expansion was false for every baseline and the deny branch was
+  unreachable. Measured: the same comparison reports an expansion when handed
+  real permissions, so the call site was what disabled it. An operator's
+  scope-drift gate was inert while every surface reported it enforced. The
+  constraint is removed rather than left accepted-and-unapplied: a rule naming
+  it is now refused with an error saying this build does not enforce it, so a
+  policy that depended on it fails visibly instead of appearing to hold. Real
+  enforcement needs live permission discovery in the resolve path and is
+  tracked separately.
+
+- **`run --only=NAME` injected every credential in the store.** The parser
+  compared `args[i] === '--only'` by exact equality, so the GNU equals spelling
+  was an unrecognised argument, silently discarded — and with no selector, the
+  child process receives everything. Nothing was printed on stdout or stderr and
+  the exit code was the child's. The refusal `env` prints when it detects an AI
+  agent runtime recommends `secretless-ai run --only NAME -- <command>` as the
+  safe alternative, so the tool's own recommended remedy was defeated by a
+  one-character difference in how it was typed. `env --only=NAME`, and `env
+  --only` with no value, exported the whole store the same way.
+
+### Fixed
+
+- **`clean --dryrun` performed the irreversible write it was asked to preview.**
+  `clean` is destructive by default and `--dry-run` is the only thing that makes
+  it a preview; the flag was read with `args.includes('--dry-run')` and nothing
+  validated the rest of the command line, so any misspelling silently degraded
+  to the destructive path and exited 0. The only signal was a missing "Mode:
+  dry-run" line, printed after the file had already been rewritten — and unlike
+  `clean-history`, this path writes no `.bak`. `clean-history --dryrun` had the
+  identical shape and targets your real shell history, which has no path flag at
+  all.
+
+- **`clean --path=DIR` cleaned every transcript on the machine.** The equals
+  spelling was unparsed, and the fallback for a missing scope is the maximum
+  scope. Measured: a target holding one file, against 9,119 files discovered and
+  205 that would have been rewritten in place. The header printed the unscoped
+  "Scanning Claude Code transcripts..." with no mention that the `--path` given
+  had been discarded. `--path` with no value did the same.
+
+- **`scan --max-files <path>` scanned the working directory instead.** The flag
+  consumed the path as its value, leaving no positional, so the scan silently
+  retargeted and printed "No hardcoded credentials found." over a tree it never
+  opened, with exit 0 and every coverage counter reading zero. The warning named
+  the invalid value; nothing said the path had been eaten or named the directory
+  actually scanned. A rejected flag value now refuses the run rather than
+  falling back to a default you did not ask for.
+
+- **`--min-confidence=`, `--max-files=` and `--max-file-size=` were dropped.**
+  Each was warned about as an unknown flag and the scan ran at the default, so
+  a raised cap was not raised and a confidence threshold was not applied.
+
+- **Redaction left the tail of a credential longer than its pattern's fixed
+  length ([#133](https://github.com/opena2a-org/secretless-ai/issues/133)).**
+  The redactors replaced what the DETECTOR matched, and the detector's patterns
+  carry fixed quantifiers, so a value longer than the canonical shape kept its
+  overshoot — while the output read as fully redacted. This is a remediation
+  defect, not a preview defect: `clean` wrote the residue back into the
+  transcript and reported the redaction complete, `clean-history` did the same
+  to your shell history, and `diff` printed it to stdout under a "REDACTED"
+  label with no length cap. The replacement span is now derived from the
+  credential rather than from the pattern match, and every write and display
+  path routes through the same primitive. Vendors document GitHub, AWS and Slack
+  token lengths as variable, so a fixed quantifier is wrong regardless of
+  today's value. Listed in 0.22.0 as a known issue fixed in 0.23.0; it is fixed
+  here instead.
+
+- **`secretless-mcp` read credentials from the wrong place.** The second
+  published bin carried the same parse idiom and had never been swept:
+  `--vault-dir=` fell back to the default vault and `--backend=` to the
+  configured backend, so the wrapper loaded credentials from somewhere other
+  than where it was told to. An empty `--server` or `--client` now refuses
+  rather than starting an MCP server with none of the credentials the wrapper
+  exists to inject.
+
+  **Migration consequence, if you hand-edited an MCP config.** A wrapper line
+  carrying `--vault-dir=/path` was reading the DEFAULT vault and will now read
+  the directory you named — which may be empty, in which case the server starts
+  without its secrets. The same applies to `--backend=`: it now uses the backend
+  named rather than the configured default. Configs written by `protect-mcp`
+  use the spaced form and are unaffected.
+
+- **`verify --alll` answered a narrower question than the one asked.** Any
+  misspelling of `--all` was resolved as the project directory, so every project
+  context file was skipped and the short report was printed as though it were
+  the full one.
+
+### Known issues
+
+Found by this release's own walkthrough, each reproduced against published 0.22.0
+and carried rather than fixed. First carry for both. Named here because this
+release is about the tool telling the truth about what it did, and both of these
+are cases where it does not.
+
+- **`scan` has three ignore layers and one of them is unreachable by any flag
+  ([#136](https://github.com/opena2a-org/secretless-ai/issues/136)).** A tree whose
+  only credential sits in `dist/`, `build/`, `node_modules/`, `coverage/` or
+  `vendor/` reports `No hardcoded credentials found.` with exit 0 under every
+  documented flag combination. Worse, `--no-ignore` and `--include-tests` each
+  widen coverage on their own and, given together, narrow it back to the no-flag
+  baseline. `--help` describes the two layers that flags do reach and is silent
+  about the third. Fixed in **0.24.0**, with the rest of the selection work.
+
+- **A typo in a `scan` coverage flag yields a confident clean
+  ([#137](https://github.com/opena2a-org/secretless-ai/issues/137)).**
+  `scan --include-testss` warns on stderr, names the flag you meant, and then exits
+  0 with `No hardcoded credentials found.` over a tree it narrowed. The `--json`
+  summary carries no trace of the dropped flag, so a CI job gating on
+  `summary.total` cannot see it. `scan` warns rather than refuses by design — see
+  the behaviour note above — and the case that survives that design is the
+  coverage flags specifically. Fixed in **0.23.0**.
+
+### Corrections to the 0.22.0 notes
+
+Found while re-checking the issues that release closed. Neither is fixed here —
+0.22.1 is deliberately narrow — but a release note that claims more than the
+code does is the same defect class this release is about.
+
+- **"Values are validated at the store boundary, so `set`, `import` and the MCP
+  write path are all covered" is wider than the code.** The MCP write path does
+  not end at `setSecret`: `src/mcp/vault.ts` calls the backend directly and
+  bypasses the check, as does the backend migration path. Measured by storing a
+  value carrying bracketed-paste escape bytes through `McpVault` and reading it
+  back unchanged. The source comment asserting the same coverage is wrong in the
+  same way. Tracked on [#104](https://github.com/opena2a-org/secretless-ai/issues/104).
+
+- **"Every successful write now prints the shape" is only true of `secret set`.**
+  `setup` prompts for values interactively and prints no shape line; `import`
+  prints names only.
+
 ## [0.22.0] - 2026-08-12
 
 Credential disclosure and integrity. Three defects a credential manager should

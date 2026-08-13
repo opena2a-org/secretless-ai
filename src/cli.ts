@@ -26,6 +26,33 @@ import { runFeedback } from './commands/feedback';
 import { runIgnore } from './commands/ignore';
 import { runDiff } from './commands/diff';
 import { printHelp, OWN_HELP } from './commands/help';
+import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } from './argv';
+
+/**
+ * The stderr block for a refused command.
+ *
+ * States that nothing ran, because the failure mode being closed here is a
+ * command that did something OTHER than what was asked: after a refusal the
+ * user has to know the difference between "not run" and "run wrongly".
+ *
+ * Lives here rather than in `argv.ts` because it needs `CLI_BARE`, and
+ * `argv.ts` is in the `mcp-wrapper` require graph, which is copied to a
+ * standalone directory where `commands/utils`' `require('../../package.json')`
+ * does not resolve. See the import note at the top of `argv.ts`.
+ */
+function formatArgvErrors(verb: string, errors: string[]): string[] {
+  const spec = VERBS[verb];
+  const lines = errors.map((e) => `  ${e}`);
+  lines.push(`  \`${verb}\` was not run. Nothing was changed.`);
+  if (spec) {
+    lines.push(`  Supported: ${supportedFlags(spec).join(', ')}`);
+  }
+  // CLI_BARE, not a literal: an embedding host sets SECRETLESS_CLI_PREFIX and
+  // every citation we print has to rebrand with it (#191). A hardcoded name
+  // here tells that host's users to run a command that does not exist.
+  lines.push(`  Run \`${CLI_BARE} ${verb} --help\` for usage.`);
+  return lines;
+}
 
 const TOOL = 'secretless-ai';
 // Subcommands we don't track: pure-help / pure-config calls don't represent
@@ -35,8 +62,16 @@ const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '--help', '
 
 
 async function main(): Promise<number> {
-  const args = process.argv.slice(2);
-  const command = args[0];
+  const rawArgs = process.argv.slice(2);
+  const command = rawArgs[0];
+
+  // Normalise argv ONCE, here, before anything reads it. Every command below
+  // still does its own `args.includes('--dry-run')` / `args.indexOf('--path')`
+  // and none of them had to change, because by this point they are looking at
+  // the split form: `--path=DIR` has already become `--path` `DIR`. See
+  // src/argv.ts for why this is not an `=` branch inside each parser.
+  const prepared = prepareArgv(command, rawArgs);
+  const args = prepared.args;
 
   // Tier-1 anonymous usage telemetry — default ON; opt-out via OPENA2A_TELEMETRY=off
   // or `secretless-ai telemetry off`. See README §Telemetry. Disclosure surfaces:
@@ -67,6 +102,17 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  // Refuse a command line we could not bind, BEFORE any side effect: before
+  // telemetry is recorded, before dispatch, and so before the first byte is
+  // written by a destructive verb. `clean --dryrun` reaching runClean at all is
+  // the defect — by then the only signal is a missing "Mode: dry-run" line,
+  // printed after the file has already been rewritten.
+  if (prepared.errors.length > 0 && command) {
+    for (const line of formatArgvErrors(command, prepared.errors)) console.error(line);
+    return EXIT_USAGE;
+  }
+  for (const warning of prepared.warnings) console.error(`  ${warning}`);
+
   // telemetry subcommand
   if (command === 'telemetry') {
     console.log(runTelemetryCommand(args[1] as TelemetryAction, {
@@ -80,7 +126,7 @@ async function main(): Promise<number> {
   const startedAt = Date.now();
   let exitCode = 0;
   try {
-    exitCode = await dispatch(args, command);
+    exitCode = await dispatch(args, command, prepared);
   } catch (err) {
     exitCode = 1;
     if (command) tele.error(command, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
@@ -114,7 +160,24 @@ function rejectUnknownFlagAsDirArg(command: string, dirArg: string | undefined):
   return true;
 }
 
-async function dispatch(args: string[], command: string | undefined): Promise<number> {
+/**
+ * Refuse a flag whose VALUE we could not use, instead of falling back to the
+ * default and answering a different question than the one asked.
+ *
+ * The fallback was a silent scope change, not merely a wasted flag: `scan
+ * --max-files ./src` consumes `./src` as the cap's value, so no positional
+ * remains, so the scan retargets to the current directory and prints "No
+ * hardcoded credentials found." over a tree it never opened. Measured on
+ * 0.22.0: exit 0, one warning naming the VALUE, and nothing anywhere saying a
+ * different directory was scanned.
+ */
+function refuseFlagValue(verb: string, flag: string, raw: string, expected: string): number {
+  const detail = `${flag} needs ${expected}, but was given "${raw}".`;
+  for (const line of formatArgvErrors(verb, [detail])) console.error(line);
+  return EXIT_USAGE;
+}
+
+async function dispatch(args: string[], command: string | undefined, prepared: PreparedArgv): Promise<number> {
   switch (command) {
     case 'init': {
       const dirArg = args[1];
@@ -133,17 +196,16 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       const showPlaceholders = args.includes('--show-placeholders');
       // --min-confidence <n>  (n in [0, 1]). Drops findings whose composite
       // confidence score is below the threshold. Useful on noisy repos to
-      // surface only high-confidence credentials. Invalid values fall back to
-      // 0 (no filtering) and the runner prints a warning.
+      // surface only high-confidence credentials.
       let minConfidence = 0;
       const mcIdx = args.indexOf('--min-confidence');
-      if (mcIdx !== -1 && mcIdx + 1 < args.length) {
+      if (mcIdx !== -1) {
         const raw = args[mcIdx + 1];
         const parsed = Number.parseFloat(raw);
         if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
           minConfidence = parsed;
         } else {
-          console.error(`  Warning: ignoring invalid --min-confidence value "${raw}" (must be in [0, 1]).`);
+          return refuseFlagValue('scan', '--min-confidence', raw, 'a number in [0, 1], e.g. --min-confidence 0.8');
         }
       }
       // --max-files <n>  Raise the per-walk file cap (default 5000). Without
@@ -151,7 +213,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       // but the user has no way to finish it short of scanning subtrees by hand.
       let maxFiles: number | undefined;
       const mfIdx = args.indexOf('--max-files');
-      if (mfIdx !== -1 && mfIdx + 1 < args.length) {
+      if (mfIdx !== -1) {
         const raw = args[mfIdx + 1];
         // Must be ALL digits. `parseInt` stops at the first non-digit and
         // returns what it got, so `--max-files 20abc` silently became a cap of
@@ -161,7 +223,7 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
         if (Number.isSafeInteger(parsed) && parsed > 0) {
           maxFiles = parsed;
         } else {
-          console.error(`  Warning: ignoring invalid --max-files value "${raw}" (must be a positive whole number, e.g. --max-files 20000).`);
+          return refuseFlagValue('scan', '--max-files', raw, 'a positive whole number, e.g. --max-files 20000');
         }
       }
       // --max-file-size <size>  Raise the per-file size cap (10MB config, 1MB
@@ -169,34 +231,21 @@ async function dispatch(args: string[], command: string | undefined): Promise<nu
       // way hitting the file cap was before --max-files existed.
       let maxFileSizeBytes: number | undefined;
       const fsIdx = args.indexOf('--max-file-size');
-      if (fsIdx !== -1 && fsIdx + 1 < args.length) {
+      if (fsIdx !== -1) {
         const raw = args[fsIdx + 1];
         const parsed = parseFileSize(raw);
         if (parsed !== null) {
           maxFileSizeBytes = parsed;
         } else {
-          console.error(`  Warning: ignoring invalid --max-file-size value "${raw}" (e.g. --max-file-size 20mb, 500kb, or a byte count).`);
+          return refuseFlagValue('scan', '--max-file-size', raw, 'a size, e.g. --max-file-size 20mb, 500kb, or a byte count');
         }
       }
-      const flagFlag = new Set(['--include-tests', '--explain', '--no-ignore', '--json', '--show-placeholders', '--min-confidence', '--max-files', '--max-file-size']);
-      const positionalArgs: string[] = [];
-      const unknownFlags: string[] = [];
-      for (let k = 1; k < args.length; k++) {
-        const a = args[k];
-        if (flagFlag.has(a)) {
-          if (a === '--min-confidence' || a === '--max-files' || a === '--max-file-size') k++;
-          continue;
-        }
-        // Warn (don't fail) on an unrecognized flag so a typo like `--show-placeholder`
-        // for `--show-placeholders` doesn't silently no-op (#81). Matches the warn-not-
-        // crash behavior already used for an invalid `--min-confidence` value.
-        if (a.startsWith('--')) { unknownFlags.push(a); continue; }
-        positionalArgs.push(a);
-      }
-      if (unknownFlags.length > 0) {
-        console.error(`  Warning: ignoring unknown flag${unknownFlags.length > 1 ? 's' : ''} ${unknownFlags.join(', ')}.`);
-        console.error(`  Run \`${CLI_BARE} scan\` for supported flags (--json, --show-placeholders, --min-confidence, --max-files, --max-file-size, --no-ignore, --include-tests, --explain).`);
-      }
+      // Positionals come from the shared argv layer, which knows which tokens
+      // were consumed as flag values. The local loop this replaces had its own
+      // copy of the flag list, and a flag missing from that copy became a
+      // positional — a second place for the two to disagree about what the user
+      // typed. The unknown-flag warning #81 added moved there with it.
+      const positionalArgs = prepared.positionals;
       // Refuse extra paths rather than silently scanning only the first. A
       // second path used to be dropped with no warning, and since the first
       // path's findings still set exit 1, the run LOOKED complete while a whole

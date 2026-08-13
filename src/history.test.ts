@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { scanHistory, cleanHistory } from './history';
+import { leaksAny } from './redact';
 
 vi.mock('fs/promises');
 vi.mock('os');
@@ -256,4 +257,37 @@ describe('cleanHistory', () => {
     expect(result.linesRedacted).toBe(0);
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
+});
+
+/**
+ * The write path, pinned at the consumer rather than at the helper.
+ *
+ * `clean-history` is the remedy `scan-history` tells the user to run, so a
+ * partial redaction here is reported to the user as a completed one. Measured
+ * on 0.22.0: a `ghp_` value longer than the pattern's fixed 36-char quantifier
+ * left its tail in the rewritten file while the command printed
+ * `History cleaned.` and exit 0.
+ *
+ * Asserted with `leaksAny` — the module's own residue detector — rather than
+ * with `not.toContain(value)`, because whole-value containment is exactly the
+ * check that returns false over a message showing most of a credential.
+ */
+describe('cleanHistory — no residue for an over-length credential', () => {
+  const CANONICAL = 'ghp_' + 'aB3xQ9zK7mR2tY5wL8pN4vC6hJ1sD0gF1234'.slice(0, 36);
+  const OVERSHOOT = CANONICAL + 'TAILMARKER99';
+
+  for (const [label, value] of [['canonical length', CANONICAL], ['over length', OVERSHOOT]] as const) {
+    it(`writes no run of the credential back to disk — ${label}`, async () => {
+      mockHistoryFiles({ '.bash_history': `export B=${value}` });
+      mockWriteFile.mockResolvedValue(undefined);
+
+      await cleanHistory(false);
+
+      const written = mockWriteFile.mock.calls.find(c => c[0] === '/home/testuser/.bash_history');
+      expect(written, 'the history file was never rewritten').toBeDefined();
+      const content = written![1] as string;
+      expect(content).toContain('[REDACTED:github-pat]');
+      expect(leaksAny(content, [value])).toBe(false);
+    });
+  }
 });

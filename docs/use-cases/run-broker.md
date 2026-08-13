@@ -120,7 +120,23 @@ Supported constraints:
 - `rateLimit.maxPerMinute` — per agent + credential pair
 - `minTrustScore` — AIM-only, see below
 - `requireCapability` — AIM-only, see below
-- `scopeCheck` — deny if credential permissions expanded since last baseline
+
+A rule is refused if it names anything else, including a constraint this build
+cannot apply and a top-level field it does not read. The refusal names the key
+and the legal set. This is deliberate: a constraint that is accepted but not
+applied drops the restrictive half of your rule and keeps the permissive half,
+while every status surface reports the rule loaded.
+
+That includes documentation keys — a `comment` or `description` beside `id` is
+refused today. An `x-` prefixed annotation namespace is planned; until it lands,
+keep notes outside the rule objects.
+
+`scopeCheck` was listed here until 0.22.1 and is no longer accepted. It never
+denied a request: the check compared an empty current-permission list against
+the baseline, so it could not observe an expansion. Enforcing it needs live
+permission discovery in the resolve path, which is tracked separately. A rule
+naming it is refused rather than silently ignored, so that a policy relying on
+it fails visibly instead of appearing enforced.
 
 Reload by restarting the daemon. Or pass `--policy-file <path>` on start to use a non-default location.
 
