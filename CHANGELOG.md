@@ -1,5 +1,105 @@
 # Changelog
 
+## [0.23.0] - 2026-08-13
+
+The tool does what it says. Every change here is a case where a command accepted
+something, did something narrower or different, and reported success.
+
+**Read these three before you upgrade.**
+
+**1. `--json` on a command that does not implement it now exits 2.** It is
+implemented by `scan` and `status`. The other 30 commands accepted it and
+ignored it: 15 did nothing with it, 11 mistook it for a subcommand, and 4
+mistook it for a path. The last group is why this is not a tidy-up — `verify
+--json` resolved `--json` as the project directory and printed `AI context:
+clean (no credentials found)` for a directory whose `CLAUDE.md` held a live key.
+If you pass `--json` to anything other than `scan` or `status`, that call now
+fails instead of returning human text at exit 0.
+
+**2. `scan`, `scan-staged` and `scan-history` now refuse an unrecognised flag
+instead of warning and continuing.** `scan --nosuchflag` on a clean tree changes
+from exit 0 to exit 2; on a tree with findings, from 1 to 2. `scan` is the most
+used command in this tool and this is a CI-visible change to it. The reason is
+that warn-and-continue produced `No hardcoded credentials found.` — the
+strongest clean claim the tool makes — over a scan whose scope you asked to
+change and did not get. `scan-staged` is the pre-commit gate and had no
+machine-readable channel at all, so an exit code was the only signal it had.
+`feedback` and `diff` still warn, since they report no verdict.
+
+**3. `PolicyEngine.loadPolicies()` is now `async`.** Only relevant if you use
+this package as a library rather than a CLI. `const n = engine.loadPolicies()`
+becomes `const n = await engine.loadPolicies()`. An un-awaited call leaves the
+engine holding zero rules, which is default-deny.
+
+### Security
+
+- **A duplicated key in a broker policy file no longer decides the rule.**
+  `JSON.parse` keeps the last of a repeated member name and resolves it before
+  the loader is given anything to inspect, so a rule whose text read
+  `"effect": "deny"` then `"effect": "allow"` loaded as an allow — and the rule
+  count, `getRules()` and `/health` all reported the operator's rule as loaded.
+  The restrictive half was gone and nothing said so. The same shape applied one
+  level out: a file carrying two `rules` arrays loaded only the second, so
+  appending a deny block below an existing one produced a policy containing
+  neither the deny rules nor any indication they had been dropped.
+
+  Duplicating a key that the loader *does* know also defeated the checks added
+  in 0.22.1, because the instance that would have been refused is the instance
+  that disappears: a duplicated `constraints` hid an unknown-constraint
+  refusal, a duplicated `rateLimit` hid the sub-key refusal, a duplicated
+  `requireCapability` hid the empty-capability refusal, and a duplicated
+  `effect` hid effect validation.
+
+  A duplicated member is now refused at every level of the file, on the raw text
+  before parsing. Names are compared after JSON escape decoding and case
+  folding, so a colliding member spelled as an escape sequence or a case variant
+  is caught too — worth knowing, because such a spelling survives a `grep` and
+  a diff review while `JSON.parse` still collapses it. Tracked as #140; the
+  limitation was disclosed in GHSA-4x65-2hwf-fwpm and is now closed.
+
+  This statement is scoped to duplicated member names and to nothing else.
+
+- **A `/grant` request no longer reports a broker-side fault as your mistake.**
+  One `catch` covered both the load of the duplicate-member scanner and the scan
+  itself, while its comment named only the parse — so a scanner that failed to
+  load returned `400 Invalid JSON` to every caller, blaming each request for a
+  security module that was silently absent. The two are now separate, and a
+  scanner that will not load is reported as a broker fault, logged, with grant
+  requests refused rather than answered.
+
+### Fixed
+
+- **`cache` and `backend` refuse a subcommand they do not recognise** instead of
+  printing their status page at exit 0. `backend purg` — a near miss of the
+  destructive `purge` — exited 0 with a normal-looking report, and nothing in
+  the output or the exit code separated "purged" from "never ran". `telemetry`
+  had the same shape with a message: it printed `Unknown action` to stdout and
+  returned 0. Running any of these with no subcommand is still an exploration
+  and still exits 0.
+- **`secret list` refuses an argument** rather than accepting a filter token and
+  listing every stored name anyway, byte-identically to the unfiltered run.
+- **A near miss of `--json` is no longer suggested by a command that does not
+  implement it.** The refusal hid `--json` from its own "Supported:" line while
+  suggesting it two lines earlier, and taking the suggestion produced the
+  silent mistarget above.
+
+### Added
+
+- **`scan` reports what it did not look at.** Two new non-gating fields in the
+  `--json` summary, each with a sample carrying the reason:
+  `skippedUnsupported` (files enumerated but not opened) and `notEntered`
+  (directories not descended into). Neither changes the exit code — a boundary
+  the scanner declared is not a claim it broke, and every repository contains at
+  least one, so gating on them would fail every build.
+
+  The case that made this necessary: source files inside dot-directories are not
+  scanned, while config and key files inside them are. So a scan could report a
+  finding inside `.claude/` while a byte-identical credential in
+  `.claude/agent.ts` went unreported, with every coverage counter reading 0 —
+  the summary did not merely omit the gap, it corroborated the conclusion that
+  there wasn't one. Tracked as #144. This release discloses the gap; changing
+  what is scanned is separate work.
+
 ## [0.22.1] - 2026-08-12
 
 A security patch. Three defects where the tool did something other than what it

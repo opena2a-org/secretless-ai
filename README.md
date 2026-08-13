@@ -166,11 +166,19 @@ npx secretless-ai status --json                # protection state for CI (gate o
 
 A scan that could not read everything is not a passing scan. If the walk stops at the file cap, or a path cannot be opened, `scan` prints what it missed, exits 1, and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`. In `--json`, `summary.truncated` and `summary.unreadable` carry the same signal, so CI can tell "clean" from "unfinished".
 
+**Two kinds of gap, and only one of them gates.** A gap against a claim the scanner made -- it said it would read something and did not -- sets exit 1: `truncated`, `unreadable`, `oversize`. A boundary the scanner declared and never claimed to cross does not: `outOfRoot`, `skippedUnsupported` (files enumerated but not opened, such as a `.png` or a `.md`), and `notEntered` (directories not descended into, such as `node_modules/` or any dot-directory). The second group is reported, sampled and given the command that scans it, but it does not fail your build -- every repository contains at least one of them, so gating on it would fail every build. If you want a declared boundary to gate, test it yourself: `jq -e '.summary.notEntered == 0'`.
+
+Dot-directories are among the `notEntered` group, and that includes `.claude/`. Config files and key files inside them are still scanned; source files inside them are not. See issue #144.
+
 Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed -- otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan -- and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
 
 ### A flag never widens scope
 
-A command line the tool cannot bind is refused with exit 2 before anything runs, rather than partly ignored. That covers an unrecognised flag on a command that writes, a flag given a value it cannot use, and a value-taking flag given no value at all. `--only=NAME`, `--path=DIR` and every other `--flag=value` spelling binds the same way as the spaced form.
+A command line the tool cannot bind is refused with exit 2 before anything runs, rather than partly ignored. That covers an unrecognised flag, a flag given a value it cannot use, and a value-taking flag given no value at all. `--only=NAME`, `--path=DIR` and every other `--flag=value` spelling binds the same way as the spaced form.
+
+`scan`, `scan-staged` and `scan-history` refuse an unrecognised flag rather than warning and continuing, because their output is the answer: a typo in a coverage flag used to produce `No hardcoded credentials found.` at exit 0 over a narrower scan than the one you asked for. `feedback` and `diff` still warn, since they report no verdict.
+
+`--json` is implemented by `scan` and `status`. Passing it to any other command exits 2 and names those two, rather than printing human text and exiting 0 -- the caller of `--json` is a machine, and a machine reading exit 0 beside prose cannot tell it was ignored.
 
 Exit codes: `0` clean, `1` credentials found (or an incomplete scan), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
 
@@ -185,7 +193,8 @@ npx secretless-ai clean --dryrun --path ./transcripts
 ```bash
 npx secretless-ai scan --json | jq '.summary'
 # { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
-#   "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0 }
+#   "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0,
+#   "oversize": 0, "skippedUnsupported": 0, "notEntered": 0 }
 ```
 
 ## Architecture
