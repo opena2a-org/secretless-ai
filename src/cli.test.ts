@@ -378,3 +378,148 @@ describe('scan rejects more than one path', () => {
     expect(res.stdout).toContain('credential');
   });
 });
+
+/**
+ * The argv layer (0.22.1).
+ *
+ * Every block below is an A/B on ONE variable: how a flag is spelled. The
+ * CONTROL row passes on v0.22.0 and after, which is what proves the arm beside
+ * it is measuring the fix rather than the harness. Each arm fails on v0.22.0 on
+ * its OWN assertion — not on a missing import, and not on a timeout.
+ *
+ * These are the red-proofable half of the fix. `argv.test.ts` covers the
+ * per-spelling matrix but cannot be red-proofed, because `src/argv.ts` does not
+ * exist on v0.22.0 and every test there would fail on the import instead.
+ */
+describe('a flag never widens scope (0.22.1 argv layer)', () => {
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  // Split so this file is not itself a credential-bearing file.
+  const PAT = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+
+  function transcriptFixture(): { dir: string; file: string; before: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-argv-clean-'));
+    const file = path.join(dir, 'session.jsonl');
+    fs.writeFileSync(file, JSON.stringify({ role: 'user', content: `token ${PAT}` }) + '\n');
+    return { dir, file, before: fs.readFileSync(file, 'utf-8') };
+  }
+
+  function scanFixture(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-argv-scan-'));
+    fs.writeFileSync(path.join(dir, 'leak.js'), `const k = "${PAT}";\n`);
+    return dir;
+  }
+
+  function cli(args: string[], cwd?: string) {
+    return spawnSync(process.execPath, [CLI_PATH, ...args], {
+      encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
+
+  // --- clean: the destructive verb, where the safety flag is the only thing
+  // standing between a preview and an irreversible in-place rewrite ----------
+
+  itIfBuilt('CONTROL: `clean --dry-run` previews and changes nothing', () => {
+    const { dir, file, before } = transcriptFixture();
+    try {
+      const res = cli(['clean', '--dry-run', '--path', dir]);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain('dry-run');
+      expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`clean --dryrun` is refused, and the file is not rewritten', () => {
+    const { dir, file, before } = transcriptFixture();
+    try {
+      const res = cli(['clean', '--dryrun', '--path', dir]);
+      // On v0.22.0 this exits 0 having performed the redaction the user asked
+      // to preview: `runClean` computes `args.includes('--dry-run')`, which is
+      // false, and validates nothing else.
+      expect(res.status).toBe(2);
+      expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+      expect(res.stderr).toContain('--dry-run');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The pre-fix arm of this one walks the machine's whole transcript corpus,
+  // which is the defect. Read-only (--dry-run) but slow, so the timeout is
+  // raised: a red-proof that fails on the clock has not proved anything.
+  itIfBuilt('`clean --path=DIR` scopes to DIR instead of the whole corpus', () => {
+    const { dir } = transcriptFixture();
+    try {
+      const res = cli(['clean', `--path=${dir}`, '--dry-run']);
+      expect(res.stdout).toContain(`Scanning transcripts at ${dir}`);
+      expect(res.stdout).toContain('Scanned:  1 files');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  // --- scan: a flag's value silently eating the path ------------------------
+
+  itIfBuilt('CONTROL: `--max-files 20000 <dir>` honours the path', () => {
+    const dir = scanFixture();
+    try {
+      const res = cli(['scan', '--max-files', '20000', dir]);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain('credential');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`--max-files <dir>` refuses rather than silently scanning the cwd', () => {
+    const dir = scanFixture();
+    const emptyCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-argv-cwd-'));
+    try {
+      const res = cli(['scan', '--max-files', dir], emptyCwd);
+      // On v0.22.0: exit 0 and "No hardcoded credentials found." — over a
+      // directory the tool never opened, because the path was consumed as the
+      // flag's value and the scan retargeted to the working directory.
+      expect(res.status).toBe(2);
+      expect(res.stdout).not.toContain('No hardcoded credentials found');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(emptyCwd, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('`--max-files=N` binds the cap instead of being dropped as unknown', () => {
+    const dir = scanFixture();
+    try {
+      const res = cli(['scan', dir, '--max-files=20000', '--json']);
+      const summary = JSON.parse(res.stdout).summary;
+      // On v0.22.0 this is 5000: the equals form was warned about as an unknown
+      // flag and the scan silently ran at the default cap.
+      expect(summary.maxFiles).toBe(20000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // --- run: the selector whose absence means "inject everything" ------------
+
+  const ABSENT = 'SECRETLESS_ARGV_NO_SUCH_SECRET';
+
+  itIfBuilt('CONTROL: `run --only NAME` fails closed on a name the store lacks', () => {
+    const res = cli(['run', '--only', ABSENT, '--', process.execPath, '-e', 'process.exit(7)']);
+    expect(res.status).not.toBe(7);
+    expect(res.stderr).toContain(ABSENT);
+  });
+
+  itIfBuilt('`run --only=NAME` binds the selector rather than injecting the whole store', () => {
+    const res = cli(['run', `--only=${ABSENT}`, '--', process.execPath, '-e', 'process.exit(7)']);
+    // On v0.22.0 `--only=NAME` is unparsed, so `only` stays undefined, undefined
+    // means "inject every credential in the store", and the child RUNS —
+    // exiting 7. The selector naming a nonexistent secret is what makes this
+    // observable without printing anything: bound, it must refuse and name it.
+    expect(res.status).not.toBe(7);
+    expect(res.stderr).toContain(ABSENT);
+  });
+});

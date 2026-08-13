@@ -17,6 +17,7 @@ import * as os from 'os';
 
 import { McpVault } from './mcp/vault';
 import { resolveBackendType } from './backends/config';
+import { prepareBinArgv, MCP_WRAPPER } from './argv';
 
 function parseArgs(argv: string[]): {
   server: string;
@@ -34,13 +35,25 @@ function parseArgs(argv: string[]): {
   let backend = '';
   let separatorIdx = -1;
 
+  // Normalise before parsing, so `--server=NAME` binds here exactly as it does
+  // in the CLI. Without it every flag below is dropped on the equals spelling:
+  // `--vault-dir=/path` silently falls back to the DEFAULT vault and
+  // `--backend=1password` silently falls back to the configured backend, so the
+  // wrapper reads credentials from somewhere other than where it was told to.
+  // The child command after `--` is left untouched.
+  argv = prepareBinArgv(MCP_WRAPPER, argv).args;
+
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--') { separatorIdx = i; break; }
-    if (argv[i] === '--server' && argv[i + 1]) { server = argv[++i]; continue; }
-    if (argv[i] === '--client' && argv[i + 1]) { client = argv[++i]; continue; }
-    if (argv[i] === '--vault-dir' && argv[i + 1]) { vaultDir = argv[++i]; continue; }
-    if (argv[i] === '--vault-key' && argv[i + 1]) { vaultKey = argv[++i]; continue; }
-    if (argv[i] === '--backend' && argv[i + 1]) {
+    // `!== undefined`, not truthiness: `--server ''` is the flag WITH an empty
+    // value. Read as "flag absent" it produced an empty server name, and an
+    // empty name looks up no secrets — so the wrapper spawned the MCP server
+    // with none of its credentials and said nothing. Same shape as #110.
+    if (argv[i] === '--server' && argv[i + 1] !== undefined) { server = argv[++i]; continue; }
+    if (argv[i] === '--client' && argv[i + 1] !== undefined) { client = argv[++i]; continue; }
+    if (argv[i] === '--vault-dir' && argv[i + 1] !== undefined) { vaultDir = argv[++i]; continue; }
+    if (argv[i] === '--vault-key' && argv[i + 1] !== undefined) { vaultKey = argv[++i]; continue; }
+    if (argv[i] === '--backend' && argv[i + 1] !== undefined) {
       const val = argv[++i];
       if (val !== 'local' && val !== 'keychain' && val !== '1password' && val !== 'vault' && val !== 'gcp-sm') {
         process.stderr.write(`secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
@@ -72,6 +85,19 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
   if (!args) {
+    process.stderr.write('secretless-mcp: Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]\n');
+    process.exit(1);
+  }
+
+  // Refuse rather than spawn an unprotected child. An empty server or client
+  // name matches no vault entry, so the wrapper would hand the MCP server an
+  // environment with none of the credentials it was installed to inject — and
+  // the server would start anyway, looking installed and doing nothing. The
+  // whole point of this bin is that the child gets its secrets; if we cannot
+  // say which secrets those are, not starting is the safe answer.
+  if (!args.server || !args.client) {
+    const missing = [!args.server && '--server', !args.client && '--client'].filter(Boolean).join(' and ');
+    process.stderr.write(`secretless-mcp: ${missing} must be given a non-empty value. The server was not started.\n`);
     process.stderr.write('secretless-mcp: Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]\n');
     process.exit(1);
   }
