@@ -22,6 +22,17 @@ not choose.
 the commands that do not implement it. Making that an error is a consumer-
 visible change and belongs to its own release.
 
+**A broker policy file with an unrecognised field now refuses to load, and the
+daemon will not start.** This includes documentation keys: a `comment` or
+`description` sitting beside `id` in a rule is refused. That is not
+hypothetical — it is what one hand-annotated policy file on our own machine
+carried, and it is how we found this. The remedy is to delete the key; the
+error names it and lists the five fields a rule may carry. An `x-` prefixed
+annotation namespace is planned so that notes have a supported home, and it is
+deliberately not being designed inside a security patch. The refusal is the
+strict direction on purpose: a field we do not read is a field whose meaning we
+would be dropping.
+
 ### Security
 
 - **The broker authorized more than the policy said.** The policy engine
@@ -38,6 +49,29 @@ visible change and belongs to its own release.
   exists but will not validate is a startup failure rather than a warning — a
   daemon warning is a silent failure with extra steps. Affects 0.9.2 through
   0.22.0.
+
+- **The same fail-open was reachable one level up, through a typo.** The check
+  above refuses a constraint it cannot apply, but nothing validated a rule's
+  top-level fields — so misspelling the container (`contraints`, `constraint`)
+  discarded the whole constraint block, and the rule loaded as an unconstrained
+  allow with every surface reporting it loaded. Measured with a control: the
+  correct spelling plus a closed time window denies; the typo allows. A rule may
+  now carry only `id`, `agentSelector`, `credentialSelector`, `constraints` and
+  `effect`, and anything else refuses the file.
+
+- **`scopeCheck` was documented as a deny and could not deny.** It was listed as
+  "deny if credential permissions expanded since last baseline", counted among
+  the loaded constraints, and advertised in the broker guide — while the
+  enforcement path compared an *empty* current-permission list against the
+  baseline, so expansion was false for every baseline and the deny branch was
+  unreachable. Measured: the same comparison reports an expansion when handed
+  real permissions, so the call site was what disabled it. An operator's
+  scope-drift gate was inert while every surface reported it enforced. The
+  constraint is removed rather than left accepted-and-unapplied: a rule naming
+  it is now refused with an error saying this build does not enforce it, so a
+  policy that depended on it fails visibly instead of appearing to hold. Real
+  enforcement needs live permission discovery in the resolve path and is
+  tracked separately.
 
 - **`run --only=NAME` injected every credential in the store.** The parser
   compared `args[i] === '--only'` by exact equality, so the GNU equals spelling

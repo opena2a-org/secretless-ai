@@ -11,7 +11,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { PolicyRule, PolicyConstraints, AgentIdentity } from './types';
 import { RateLimiter } from './rate-limiter';
-import { compareToBaseline } from '../scope/baselines';
+import { nearestMatch } from '../near-miss';
 
 const DEFAULT_POLICY_FILE = path.join(os.homedir(), '.secretless-ai', 'broker-policies.json');
 
@@ -174,17 +174,13 @@ export class PolicyEngine {
       }
     }
 
-    // Scope check
-    if (constraints.scopeCheck) {
-      const scopeResult = compareToBaseline(credentialName, '', []);
-      // Only enforce if a baseline exists (baselinePermissions > 0 means we have a baseline)
-      if (scopeResult.baselinePermissions.length > 0 && scopeResult.hasExpanded) {
-        return {
-          passed: false,
-          reason: `Credential scope has expanded since baseline (+${scopeResult.added.length} permissions)`,
-        };
-      }
-    }
+    // No scope check. It lived here, and it could not deny: it called
+    // compareToBaseline with an empty current-permission list, and expansion is
+    // computed from that list, so the deny branch was unreachable for every
+    // baseline. The key is now refused at load (UNENFORCED_CONSTRAINT_KEYS)
+    // rather than accepted and not applied, so there is nothing to enforce
+    // here. Real enforcement needs live permission discovery in the resolve
+    // path — latency, egress and error semantics — and is its own unit.
 
     // Capability check
     if (constraints.requireCapability) {
@@ -283,7 +279,59 @@ const KNOWN_CONSTRAINT_KEYS = new Set([
   'rateLimit',
   'minTrustScore',
   'requireCapability',
-  'scopeCheck',
+]);
+
+/**
+ * The five keys a policy rule may carry, mirroring `PolicyRule` in ./types.
+ *
+ * A rule is refused if it carries anything else. Misspelling the CONTAINER
+ * reaches the same place misspelling a constraint did: `contraints: {...}` left
+ * `r.constraints` undefined, so the block below never ran, and the rule loaded
+ * as an unconstrained ALLOW while `loadPolicies()`, `getRules()` and `/health`
+ * all reported it loaded. That is the same fail-open the constraint-key check
+ * closes, one level up, and it was reachable in the build that fixed the inner
+ * one.
+ *
+ * Deliberately NOT tolerating annotation keys (`description`, `comment`): the
+ * shipped example in docs/use-cases/run-broker.md and every fixture use exactly
+ * these five, so tolerance buys no compatibility, and each tolerated key is one
+ * more near-miss neighbour for the typo this exists to catch.
+ *
+ * Deliberately NOT auto-correcting a near miss to the key it resembles. Binding
+ * a key the operator did not write is a guess about intent inside the
+ * authorization path; the error names the likely intent instead.
+ */
+const KNOWN_RULE_KEYS = new Set([
+  'id',
+  'agentSelector',
+  'credentialSelector',
+  'constraints',
+  'effect',
+]);
+
+/**
+ * Constraints this build parses but does not enforce, with the reason.
+ *
+ * A rule naming one is REFUSED, not ignored. `scopeCheck` sat in the known set
+ * and was documented as "deny if credential permissions expanded since last
+ * baseline", while `checkConstraints` called
+ * `compareToBaseline(credentialName, '', [])` — an empty current-permission
+ * list, from which `hasExpanded` is computed, so it was false for every
+ * baseline and the deny branch was unreachable. Measured: the same function
+ * returns `hasExpanded: true` when given real permissions, so the call site was
+ * what disabled it, not the comparison. An operator's scope-drift gate was
+ * inert while every surface reported it enforced.
+ *
+ * Accepting the key with no enforcement is the failure mode this file is about,
+ * so it is refused until the enforcement exists.
+ */
+const UNENFORCED_CONSTRAINT_KEYS = new Map<string, string>([
+  [
+    'scopeCheck',
+    'this build does not enforce scopeCheck — it never denied a request, so accepting it ' +
+    'would report a scope-drift gate that is not there. Remove it from the rule; a rule ' +
+    'without it is enforced exactly as written.',
+  ],
 ]);
 
 /** "HH:MM", 00:00-23:59. */
@@ -298,6 +346,20 @@ function validateRule(raw: unknown): PolicyRule {
 
   if (typeof r.id !== 'string' || !r.id) {
     throw new Error('Policy rule must have a non-empty "id" string');
+  }
+
+  // Top-level keys are checked BEFORE the constraint block, because the defect
+  // this closes is that a misspelled container never reaches that block at all.
+  for (const key of Object.keys(r)) {
+    if (KNOWN_RULE_KEYS.has(key)) continue;
+    const near = nearestMatch(key, [...KNOWN_RULE_KEYS]);
+    throw new Error(
+      `Rule "${r.id}": unknown field "${key}"${near ? ` (did you mean "${near}"?)` : ''}. ` +
+      `A rule may carry: ${[...KNOWN_RULE_KEYS].join(', ')}. ` +
+      `A field this build does not read is refused rather than ignored, because ignoring ` +
+      `"${key}" would drop whatever it was meant to restrict and load the rule as written ` +
+      `without it.`,
+    );
   }
   if (typeof r.agentSelector !== 'string') {
     throw new Error(`Rule "${r.id}": agentSelector must be a string`);
@@ -341,6 +403,10 @@ function validateRule(raw: unknown): PolicyRule {
     const c = r.constraints as Record<string, unknown>;
 
     for (const key of Object.keys(c)) {
+      const unenforced = UNENFORCED_CONSTRAINT_KEYS.get(key);
+      if (unenforced) {
+        throw new Error(`Rule "${r.id}": ${unenforced}`);
+      }
       if (!KNOWN_CONSTRAINT_KEYS.has(key)) {
         throw new Error(
           `Rule "${r.id}": unknown constraint "${key}". ` +
@@ -399,12 +465,6 @@ function validateRule(raw: unknown): PolicyRule {
       constraints.requireCapability = c.requireCapability;
     }
 
-    if (c.scopeCheck !== undefined) {
-      if (typeof c.scopeCheck !== 'boolean') {
-        throw new Error(`Rule "${r.id}": scopeCheck must be a boolean`);
-      }
-      constraints.scopeCheck = c.scopeCheck;
-    }
   }
 
   return {

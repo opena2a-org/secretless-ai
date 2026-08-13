@@ -537,3 +537,202 @@ describe('PolicyEngine — an unappliable constraint refuses the rule', () => {
     expect(e.loadPolicies()).toBe(1);
   });
 });
+
+/**
+ * A rule field we do not read is refused, not ignored.
+ *
+ * The sibling block above closes the same fail-open one level down: a
+ * constraint whose VALUE we cannot type-match. This closes the container.
+ * Misspelling `constraints` left `r.constraints` undefined, so the whole
+ * constraint block never ran and the rule loaded as an unconstrained ALLOW,
+ * while `loadPolicies()`, `getRules()` and `/health` all reported it loaded —
+ * verbatim the failure mode the constraint-key fix was written for, still
+ * reachable in the build that fixed it.
+ */
+describe('PolicyEngine — a rule field we do not read refuses the rule', () => {
+  const tmpDirs: string[] = [];
+
+  function policyFileFor(rule: Record<string, unknown>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-toplevel-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'p.json');
+    fs.writeFileSync(file, JSON.stringify({ rules: [rule] }));
+    return file;
+  }
+
+  const BASE = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow' };
+  // A window that has already closed, so an HONOURED constraint must deny.
+  // Using a constraint that DENIES is what makes the controls discriminate:
+  // a rule that loads with its constraints intact returns allowed=false, and a
+  // rule that silently lost them returns allowed=true.
+  const CLOSED_WINDOW = { timeWindow: { start: '00:00', end: '00:01' } };
+
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
+  // POSITIVE CONTROLS. Both pass before and after the fix. Without them a
+  // validator that refused every rule would satisfy the arms below.
+  it('CONTROL: the correctly spelled container still loads and still denies', () => {
+    const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE, constraints: CLOSED_WINDOW }) });
+    expect(engine.loadPolicies()).toBe(1);
+    expect(engine.getRules()[0].constraints.timeWindow).toEqual(CLOSED_WINDOW.timeWindow);
+    expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(false);
+  });
+
+  it('CONTROL: a rule with no constraints at all is still legitimate', () => {
+    // "constraints absent" cannot itself be an error — an unconstrained allow
+    // rule is a real thing an operator writes.
+    const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE }) });
+    expect(engine.loadPolicies()).toBe(1);
+    expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(true);
+  });
+
+  const UNKNOWN_FIELDS: Array<[string, Record<string, unknown>]> = [
+    ['contraints — the measured typo', { ...BASE, contraints: CLOSED_WINDOW }],
+    ['constraint — singular', { ...BASE, constraint: CLOSED_WINDOW }],
+    ['a documentation annotation', { ...BASE, constraints: CLOSED_WINDOW, description: 'allow deploys' }],
+    ['an invented field', { ...BASE, constraints: CLOSED_WINDOW, priority: 10 }],
+    ['effect misspelled, so the real effect is absent', { ...BASE, efect: 'deny' }],
+  ];
+
+  it.each(UNKNOWN_FIELDS)('refuses a rule carrying %s', (_label, rule) => {
+    const engine = new PolicyEngine({ policyFile: policyFileFor(rule) });
+    expect(() => engine.loadPolicies()).toThrow();
+  });
+
+  it('the refusal names the offending field and the legal set', () => {
+    const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE, contraints: CLOSED_WINDOW }) });
+    let message = '';
+    try { engine.loadPolicies(); } catch (err) { message = (err as Error).message; }
+    expect(message).toContain('contraints');
+    expect(message).toContain('did you mean "constraints"');
+    for (const key of ['id', 'agentSelector', 'credentialSelector', 'constraints', 'effect']) {
+      expect(message).toContain(key);
+    }
+  });
+
+  // The property, stated once: no rule that carries an unreadable field may
+  // ever load. Asserting the rule SET rather than an error string, because a
+  // refusal that loaded the rule anyway would still throw somewhere.
+  it('nothing is loaded when a rule is refused', () => {
+    const engine = new PolicyEngine({ policyFile: policyFileFor({ ...BASE, contraints: CLOSED_WINDOW }) });
+    try { engine.loadPolicies(); } catch { /* expected */ }
+    expect(engine.getRules()).toEqual([]);
+    expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(false);
+  });
+});
+
+/**
+ * A constraint we parse but do not enforce is refused, not accepted.
+ *
+ * `scopeCheck` sat in the known-constraint set and was documented as "deny if
+ * credential permissions expanded since last baseline". It could not deny:
+ * `checkConstraints` called `compareToBaseline(credentialName, '', [])`, and
+ * expansion is computed from that empty current-permission list, so it was
+ * false for every baseline. Measured before removal — the same comparison
+ * returns hasExpanded: true when handed real permissions, so the call site was
+ * what disabled it, not the comparison.
+ */
+describe('PolicyEngine — an unenforced constraint refuses the rule', () => {
+  const tmpDirs: string[] = [];
+
+  function engineFor(constraints: unknown): PolicyEngine {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-unenforced-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'p.json');
+    fs.writeFileSync(file, JSON.stringify({
+      rules: [{ id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow', constraints }],
+    }));
+    return new PolicyEngine({ policyFile: file });
+  }
+
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
+  it.each([
+    ['true', true],
+    ['false', false],
+    ['a string', 'true'],
+  ])('refuses scopeCheck: %s rather than reporting a gate that is not there', (_label, value) => {
+    const engine = engineFor({ scopeCheck: value });
+    expect(() => engine.loadPolicies()).toThrow(/does not enforce scopeCheck/);
+  });
+
+  it('says it is unenforced, not that it is unknown', () => {
+    // The distinction is the whole point: "unknown constraint" would tell an
+    // operator they typed it wrong. They did not — we removed it.
+    const engine = engineFor({ scopeCheck: true });
+    let message = '';
+    try { engine.loadPolicies(); } catch (err) { message = (err as Error).message; }
+    expect(message).toContain('does not enforce');
+    expect(message).not.toContain('unknown constraint');
+  });
+
+  it('CONTROL: the constraints that ARE enforced still load', () => {
+    const engine = engineFor({ timeWindow: { start: '00:00', end: '23:59' }, minTrustScore: 80 });
+    expect(engine.loadPolicies()).toBe(1);
+    expect(engine.getRules()[0].constraints.minTrustScore).toBe(80);
+  });
+});
+
+/**
+ * Gate integrity: no suite may read the developer's real policy file.
+ *
+ * `PolicyEngine` defaults to ~/.secretless-ai/broker-policies.json, so a
+ * `BrokerServer` built without an explicit `policyFile` takes its authorization
+ * rules from whatever is on the machine running the tests. The AAP conformance
+ * suite did exactly that and was green because that file happened to validate —
+ * it started failing the moment policy validation got stricter, which means it
+ * had never been measuring what it claimed. Fixing the one instance leaves the
+ * class open, so this asserts the class.
+ */
+describe('no test constructs BrokerServer against the machine policy file', () => {
+  const SRC = path.resolve(__dirname, '..');
+
+  function testFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { out.push(...testFiles(full)); continue; }
+      if (entry.name.endsWith('.test.ts')) out.push(full);
+    }
+    return out;
+  }
+
+  it('every `new BrokerServer(` in a test passes an explicit policyFile', () => {
+    const offenders: string[] = [];
+    let constructions = 0;
+
+    for (const file of testFiles(SRC)) {
+      const text = fs.readFileSync(file, 'utf-8');
+      let idx = text.indexOf('new BrokerServer(');
+      while (idx !== -1) {
+        // Skip the literal inside this guard's own source. A real construction
+        // is preceded by whitespace or `=`, never by a quote.
+        if (idx > 0 && `'"\``.includes(text[idx - 1])) {
+          idx = text.indexOf('new BrokerServer(', idx + 1);
+          continue;
+        }
+        constructions++;
+        // The config object is the first argument; scan to the end of the call.
+        const window = text.slice(idx, idx + 600);
+        if (!window.includes('policyFile')) {
+          const line = text.slice(0, idx).split('\n').length;
+          offenders.push(`${path.relative(SRC, file)}:${line}`);
+        }
+        idx = text.indexOf('new BrokerServer(', idx + 1);
+      }
+    }
+
+    // A guard that found no constructions would pass whether or not the class
+    // exists. Pin it on there being something to check.
+    expect(constructions).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+});
