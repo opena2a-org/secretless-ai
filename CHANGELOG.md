@@ -31,6 +31,18 @@ this package as a library rather than a CLI. `const n = engine.loadPolicies()`
 becomes `const n = await engine.loadPolicies()`. An un-awaited call leaves the
 engine holding zero rules, which is default-deny.
 
+**In the same area:** `PolicyEngine.loadRules()` now validates what it is handed,
+the same way rules read from the policy file are validated. It used to validate
+nothing, so a caller that parsed its own rules skipped every check the file
+loader performs. It now throws on an unknown or misspelled constraint key
+(`timeWindoww`), on a constraint this build does not enforce (`scopeCheck`), and
+on a rule carrying any key outside the five a rule may hold — annotation keys
+such as `description` are deliberately not tolerated, for the same reason they
+are refused in a policy file. It also no longer keeps a reference to the object
+you passed: mutating your own rule after the call used to change the engine's
+decision. Narrowing what a shipped method accepts is a breaking change; on 0.x
+it rides this minor.
+
 ### Security
 
 - **A duplicated key in a broker policy file no longer decides the rule.**

@@ -153,10 +153,40 @@ export class PolicyEngine {
   }
 
   /**
-   * Load policies from an in-memory array (for testing).
+   * Load policies from an in-memory array.
+   *
+   * ACCEPTS EXACTLY WHAT `loadPolicies()` ACCEPTS INSIDE A `rules` ARRAY, and
+   * throws on anything else — the same `validateRule`, not a subset and not a
+   * parallel check. Two public methods that load the same type into the same
+   * field and decide the same requests must have one accept-set, or every
+   * constraint added to `validateRule` later applies to one caller and not the
+   * other. That is not a defect to fix once, it is a defect generator.
+   *
+   * It used to validate nothing. Measured on 0.22.1: a closed `timeWindow`
+   * denied, the SAME window under a misspelled `timeWindoww` allowed, and
+   * `scopeCheck: true` allowed — the key `loadPolicies()` refuses outright.
+   * That is the 0.22.1 fail-open reached through a second entry point, and it
+   * made a sentence in our published advisory false: "a rule naming
+   * `scopeCheck` is refused at load" carries no qualifier naming the file.
+   *
+   * It also used to ALIAS the caller's objects — `{ ...r }` is shallow, so
+   * `constraints` stayed the caller's. Measured: deleting `timeWindow` from
+   * one's own object AFTER this returned turned a denying policy into an
+   * allowing one with no call into the engine. `validateRule` reconstructs
+   * `constraints` from scratch, so the engine now holds nothing the caller can
+   * reach.
+   *
+   * Stays SYNCHRONOUS. `loadPolicies()` is async only because the raw-text
+   * duplicate scan is an ESM import, and a parsed JS object cannot carry two
+   * members of the same name — there is no in-memory analogue of that check,
+   * nor of the envelope check. That is the entire delta between the two.
+   *
+   * Stays EXPORTED. It is the only in-memory path to a loaded policy; removing
+   * it would route every programmatic consumer onto a policy file on disk,
+   * which is the weaker of the two surfaces.
    */
   loadRules(rules: PolicyRule[]): void {
-    this.rules = rules.map(r => ({ ...r }));
+    this.rules = rules.map(r => validateRule(r));
   }
 
   /**

@@ -935,3 +935,87 @@ describe('matchGlob is not defeated by a line terminator', () => {
     expect(matchGlob('?', 'ab')).toBe(false);
   });
 });
+
+/**
+ * `loadRules` accepts what the file loader accepts, and nothing else.
+ *
+ * It used to validate nothing at all — three lines, a shallow copy — so every
+ * check `loadPolicies()` performs was skipped by a caller that had parsed its
+ * own rules. That is the 0.22.1 fail-open reached through a second public
+ * entry point, in this file.
+ *
+ * The suite could not see it: 206 broker tests passed identically before and
+ * after the fix. Each assertion below is therefore pinned RED against the
+ * pre-fix commit, not merely green after it.
+ */
+describe('loadRules validates what it loads', () => {
+  const BASE = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow' as const };
+  const CLOSED = { start: '00:00', end: '00:01' };
+  // Never the default policy file: that is the developer's real one.
+  const engineFor = () => new PolicyEngine({ policyFile: '/nonexistent-by-design' });
+
+  it('CONTROL: a rule the file loader accepts still loads and still enforces', () => {
+    const e = engineFor();
+    e.loadRules([{ ...BASE, constraints: { timeWindow: CLOSED } }]);
+    expect(e.ruleCount).toBe(1);
+    // A closed window denies — so the constraint is genuinely being applied,
+    // which is what makes the refusals below mean something.
+    expect(e.evaluate('agent-1', 'ANY_CRED').allowed).toBe(false);
+  });
+
+  it('refuses a misspelled constraint, which otherwise deleted the restriction', () => {
+    // Pre-fix: loaded, and evaluate() ALLOWED over the same closed window.
+    const e = engineFor();
+    expect(() => e.loadRules([{ ...BASE, constraints: { timeWindoww: CLOSED } } as never]))
+      .toThrow(/unknown constraint "timeWindoww"/);
+    expect(e.getRules()).toEqual([]);
+  });
+
+  it('refuses scopeCheck — the exact key the published advisory says is refused at load', () => {
+    // The advisory sentence carries no qualifier naming the policy file, so it
+    // was false through this method until now.
+    const e = engineFor();
+    expect(() => e.loadRules([{ ...BASE, constraints: { scopeCheck: true } } as never]))
+      .toThrow(/does not enforce scopeCheck/);
+    expect(e.getRules()).toEqual([]);
+  });
+
+  it('refuses a rule that would make evaluate() throw rather than decide', () => {
+    // Pre-fix this loaded and `evaluate()` died with a raw TypeError from
+    // inside the decision function — the engine accepted a rule it could not
+    // enforce and only found out at request time.
+    const e = engineFor();
+    expect(() => e.loadRules([{ ...BASE, constraints: { timeWindow: { start: 0, end: 1 } } } as never]))
+      .toThrow(/timeWindow/);
+    expect(() => e.evaluate('agent-1', 'ANY_CRED')).not.toThrow();
+    expect(e.evaluate('agent-1', 'ANY_CRED').allowed).toBe(false);
+  });
+
+  it('holds no reference the caller can still reach', () => {
+    // Pre-fix `{ ...r }` was shallow, so `constraints` stayed the CALLER's
+    // object: deleting a key from it after this returned turned a denying
+    // policy into an allowing one, with no call into the engine.
+    const mine: Record<string, unknown> = { timeWindow: { ...CLOSED } };
+    const e = engineFor();
+    e.loadRules([{ ...BASE, constraints: mine } as never]);
+    expect(e.evaluate('agent-1', 'ANY_CRED').allowed).toBe(false);
+
+    delete mine.timeWindow;
+    expect(e.evaluate('agent-1', 'ANY_CRED').allowed, 'the caller mutated the engine from outside').toBe(false);
+  });
+
+  it('the accept-set is the SAME function the file loader uses, not a copy of its list', () => {
+    // Oracle is behavioural, not a key list: whatever the file path refuses,
+    // this path must refuse, so a constraint added to validateRule later
+    // reaches both surfaces without anyone remembering to update a second one.
+    for (const bad of [
+      { constraints: { rateLimit: { maxPerMinute: 60, maxPerHour: 1 } } },
+      { constraints: { requireCapability: '' } },
+      { contraints: { timeWindow: CLOSED } },
+      { agentSelector: '' },
+    ]) {
+      const e = engineFor();
+      expect(() => e.loadRules([{ ...BASE, ...bad } as never]), JSON.stringify(bad)).toThrow();
+    }
+  });
+});
