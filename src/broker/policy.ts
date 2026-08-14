@@ -69,9 +69,9 @@ export class PolicyEngine {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
         `Cannot load policies from ${this.policyFile}: the duplicate-member scanner ` +
-        `(@opena2a/atx-verify) could not be loaded, so the policy file was NOT applied and no ` +
+        `(@opena2a/atx-verify) could not be loaded, so the policy file was not applied and no ` +
         `credential will be served. This is an installation fault, not a fault in your policy ` +
-        `file — do not edit or delete the file to clear it.\n` +
+        `file. Do not edit or delete the file to clear it.\n` +
         `  Verify: node -e "import('@opena2a/atx-verify').then(() => console.log('ok'))"\n` +
         `  Fix:    npm install   # and check node -v is >= 20.19.0\n` +
         `  Cause:  ${detail}`,
@@ -107,10 +107,10 @@ export class PolicyEngine {
       if (duplicate !== null) {
         throw new Error(
           `Policy file has a duplicate member "${duplicate}". A member name that collides with ` +
-          `another member of the same object is refused rather than resolved: where the collision ` +
-          `is exact, JSON.parse keeps the LAST occurrence, so the half of the rule that RESTRICTS ` +
-          `is the half that disappears — while the rule count, getRules() and /health all report ` +
-          `it loaded. ` +
+          `another member of the same object is refused rather than resolved. Where the collision ` +
+          `is exact, JSON.parse keeps the last occurrence, so the restrictive half of the rule is ` +
+          `the half that disappears, while the rule count, getRules() and /health all report it ` +
+          `loaded. ` +
           `The colliding member may be spelled differently in the file than it reads here: names ` +
           `are compared after JSON escape decoding and case folding, so a case variant or an ` +
           `escaped spelling collides too. Remove the duplicate and keep the one you meant.`,
