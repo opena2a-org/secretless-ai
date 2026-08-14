@@ -59,6 +59,26 @@ engine holding zero rules, which is default-deny.
 
   This statement is scoped to duplicated member names and to nothing else.
 
+- **`status` no longer reports zero deny patterns for a settings file whose keys
+  collide.** `.claude/settings.json` is read by Claude Code, and Claude Code keeps
+  the last copy of a repeated key. A file whose `permissions` block appears twice
+  therefore has every deny pattern in the first copy dropped -- in the editor, not
+  here -- for as long as the duplicate has existed. `status` reported that as
+  `denyRuleCount: 0` with nothing else set, byte-identical to a project that
+  configured none, and printed a green check beside it. It now names the repeated
+  key and says the patterns cannot be read as configured.
+
+  **Contract change:** `denyRuleCount` is now `number | null`. It is `null`
+  whenever the count was not measured -- a settings file that would not parse, and
+  one whose keys collide. A number implies a measurement, and `0` over a file we
+  could not read is a parse artifact. A consumer testing `denyRuleCount > 0` is
+  unaffected; one testing `=== 0` is not. The two unknown states are
+  distinguishable in the JSON: `settingsUnreadable` and `settingsAmbiguous`.
+
+  Scanned on the raw text with the same check the broker policy loader uses, so a
+  collision spelled as a JSON escape or a case variant is caught too. Measured
+  against 36 real-world config files with no false positives.
+
 - **A `/grant` request no longer reports a broker-side fault as your mistake.**
   One `catch` covered both the load of the duplicate-member scanner and the scan
   itself, while its comment named only the parse — so a scanner that failed to

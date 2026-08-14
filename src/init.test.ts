@@ -903,11 +903,11 @@ describe('init', () => {
       expect(result.settingsUnusable?.reason).toMatch(/JSON|position|token/i);
     });
 
-    it('status reports unreadable settings as unknown, not as zero rules', () => {
+    it('status reports unreadable settings as unknown, not as zero rules', async () => {
       seed(JSONC);
       init(dir);
 
-      const s = status(dir);
+      const s = await status(dir);
 
       // "0 deny patterns" and "could not read the deny patterns" are different
       // answers. Reporting the first for the second made an unprotected
@@ -1063,26 +1063,26 @@ describe('status', () => {
   beforeEach(() => { dir = tmpDir(); });
   afterEach(() => { cleanup(dir); });
 
-  it('reports unprotected project', () => {
-    const s = status(dir);
+  it('reports unprotected project', async () => {
+    const s = await status(dir);
     expect(s.isProtected).toBe(false);
     expect(s.configuredTools).toHaveLength(0);
     expect(s.hookInstalled).toBe(false);
   });
 
-  it('reports protected project after init', () => {
+  it('reports protected project after init', async () => {
     init(dir);
 
-    const s = status(dir);
+    const s = await status(dir);
     expect(s.isProtected).toBe(true);
     expect(s.hookInstalled).toBe(true);
     expect(s.denyRuleCount).toBeGreaterThan(0);
   });
 
-  it('counts secrets found', () => {
+  it('counts secrets found', async () => {
     fs.writeFileSync(path.join(dir, '.env'), 'KEY=sk-ant-api03-abc123def456abc123def456abc123');
 
-    const s = status(dir);
+    const s = await status(dir);
     expect(s.secretsFound).toBe(1);
   });
 });
@@ -1095,13 +1095,13 @@ describe('status next steps stay runnable when settings.json does not parse', ()
   beforeEach(() => { dir = tmpDir(); });
   afterEach(() => { cleanup(dir); });
 
-  it('does not claim protection from a guard script nothing wires in', () => {
+  it('does not claim protection from a guard script nothing wires in', async () => {
     fs.mkdirSync(path.join(dir, '.claude', 'hooks'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{\n // c\n "model": "opus"\n}\n');
     // The script exists on disk but settings.json never references it.
     fs.writeFileSync(path.join(dir, '.claude', 'hooks', 'secretless-guard.sh'), '#!/bin/sh\n', { mode: 0o755 });
 
-    const s = status(dir);
+    const s = await status(dir);
 
     expect(s.hookInstalled).toBe(true);      // the file is really there
     expect(s.isProtected).toBe(false);       // but it is not wired in

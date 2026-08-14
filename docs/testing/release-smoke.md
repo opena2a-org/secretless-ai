@@ -98,6 +98,7 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
   summary}`. Exit 1 when findings exist (CI gating), 0 when clean.
 - `status --json`: single JSON document — `{tool, version, isProtected,
   hookInstalled, denyRuleCount, configuredTools, secretsFound,
+  settingsUnreadable, settingsAmbiguous,
   transcriptProtection, backend, session, broker, summary}`. Exit 0; CI
   consumers gate on `summary.verdict`.
 - Neither may print the human banner or any ANSI color in JSON mode.
@@ -143,6 +144,27 @@ this checklist uses the leading form and the README uses the trailing one.
 The one that matters: pre-fix, `verify --json` resolved `--json` as the project
 directory and printed `AI context: clean (no credentials found)` for a directory
 whose `CLAUDE.md` held a live key.
+
+---
+
+### 2d. status tells three states apart (settings key collisions)
+
+```bash
+# A settings file whose permissions key appears TWICE loses every deny pattern in
+# the first copy -- in Claude Code, which is what enforces them.
+$SL status /path/with/duplicated-key --json | jq ".denyRuleCount, .settingsAmbiguous"
+#   null
+#   { "path": ".claude/settings.json", "reason": "repeats ..." }
+$SL status /path/with/duplicated-key      # NO green check on that file
+```
+
+`denyRuleCount` is `number | null`: null in BOTH unknown states (would not parse, or
+keys collide), a number only when it was actually measured. Check the three states are
+distinguishable from the JSON alone -- measured / settingsUnreadable / settingsAmbiguous
+-- and that no row renders green over a file in either unknown state. Do NOT verify a
+collision with `grep` or `node -e JSON.parse`: both exit 0 on a duplicate and print
+nothing. Also run it against a REAL settings file from a dev tree, not only fixtures --
+a false positive here is a warning on the tool own status page.
 
 ---
 

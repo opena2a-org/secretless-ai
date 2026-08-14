@@ -551,8 +551,8 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
   return findings.length > 0 ? 1 : 0;
 }
 
-export function runStatus(projectDir: string, options?: { json?: boolean }): number {
-  const s = status(projectDir);
+export async function runStatus(projectDir: string, options?: { json?: boolean }): Promise<number> {
+  const s = await status(projectDir);
   const session = getSessionStatus();
   const brokerStatus = getDaemonStatus();
   const brokerInstalled = isDaemonInstalled();
@@ -583,8 +583,21 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
       label: `${s.settingsUnreadable.path} does not parse — deny patterns and hook wiring cannot be read`,
       action: `node -e 'JSON.parse(require("fs").readFileSync("${s.settingsUnreadable.path}","utf8"))'`,
     });
+  } else if (s.settingsAmbiguous) {
+    // Ahead of the hookInstalled branch on purpose: the file's authorization
+    // content cannot be read as written, so no row about it renders green.
+    // Claude Code, not this tool, is what enforces these patterns — the loss is
+    // real and it happened there; our defect was reporting fine over it.
+    addRow({
+      glyph: '⚠',
+      label: `${s.settingsAmbiguous.path} ${s.settingsAmbiguous.reason} — the deny patterns cannot be read as configured`,
+      // NOT a grep and NOT `node -e JSON.parse`: both exit 0 on a duplicate and
+      // print nothing, and an escape-spelled or case-variant collision survives
+      // a grep and a diff review. Re-running status is what actually re-checks.
+      action: 'delete the repeated key, then re-run: secretless-ai status',
+    });
   } else if (s.hookInstalled) {
-    const denyText = s.denyRuleCount > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
+    const denyText = (s.denyRuleCount ?? 0) > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
     addRow({ glyph: '✓', label: `Claude Code hook installed (.claude/settings.json${denyText})` });
   } else {
     addRow({ glyph: '⚠', label: 'Claude Code hook not installed', action: 'secretless-ai init' });
@@ -681,10 +694,13 @@ export function runStatus(projectDir: string, options?: { json?: boolean }): num
       // it could not read the whole tree. A CI consumer gating on this needs to
       // tell "found nothing" from "could not look".
       scanIncomplete: s.scanIncomplete,
-      // Present only when `.claude/settings.json` exists and does not parse as
-      // a JSON object. `denyRuleCount: 0` alongside it means "could not read",
-      // not "none configured".
+      // Two distinct unknowns, and `denyRuleCount` is NULL for both — a number
+      // implies a measurement. `settingsUnreadable`: the file does not parse as
+      // a JSON object. `settingsAmbiguous`: it parses, but a repeated member
+      // means only the last copy is in effect, so what it configures cannot be
+      // read as written. `denyRuleCount: 0` now means measured, and none.
       settingsUnreadable: s.settingsUnreadable ?? null,
+      settingsAmbiguous: s.settingsAmbiguous ?? null,
       transcriptProtection: tp,
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,
