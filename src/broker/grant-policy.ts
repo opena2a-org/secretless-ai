@@ -8,19 +8,47 @@
  * The grammar is federation-aware from v1 so federation lights up later with no grammar
  * change (AAP §7.1). A v1 broker MUST parse the full clause — including the federation-only
  * predicates `issuerChainIncludes` and `jurisdiction` — and MAY treat those as satisfied
- * within its own org, while still enforcing `trustClass`, `minTrustLevel`, `oasbLevel`,
- * mode, scope, and ttl. Default-deny: no matching binding ⇒ denied (AAP §3.4).
+ * within its own org, while still enforcing `trustClass`, `oasbLevel`, mode, scope, and ttl
+ * (AAP-BROKER-PROFILE §7.1). `minTrustLevel` is enforced here as well; it is this build's
+ * addition, not a line of that list. Default-deny: no matching binding ⇒ denied (AAP §3.4).
+ *
+ * SCOPE OF WHAT THIS FILE CAN PROMISE. Two of the three predicates it enforces —
+ * `trustClass` (from `ctx.capabilities`) and `oasbLevel` (from `ctx.scanSummary.oasbLevel`)
+ * — are NOT covered by the ATX signature on credential version 1.0. `@opena2a/atx-verify`
+ * publishes `ResolutionContext.signedCapabilities` precisely so a caller can refuse such a
+ * credential, and this build does not yet read it. So these predicates are enforced against
+ * an OPERATOR's configuration mistakes, and against a HOLDER only on a v1.1 credential.
+ * Until the `signedCapabilities` gate lands, no surface may say this build "enforces" an
+ * OASB level presented by an agent.
  */
 
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
-import type { ResourceBinding } from './cpi/types';
+import type { CpiMode, ResourceBinding } from './cpi/types';
+import { isGrantRef } from '../grant';
+import { nearestMatch } from '../near-miss';
 
 export interface GrantMatch {
-  /** Trust class (capability) the ATX must carry, e.g. "orders:read". Enforced in v1. */
+  /**
+   * Trust class (capability) the ATX must carry, e.g. "orders:read".
+   *
+   * Compared in v1, but read from `capabilities`, which the ATX v1.0 signature does NOT cover.
+   * On a v1.0 credential the holder can add this capability after signing and the credential
+   * still verifies, so against a holder this predicate binds only on v1.1. See the file header.
+   */
   trustClass: string;
-  /** Minimum ATX trust level. Enforced in v1. */
+  /**
+   * Minimum ATX trust level. Enforced in v1, and `trustLevel` IS covered by the signature on
+   * both credential versions - the one predicate here a holder cannot rewrite.
+   */
   minTrustLevel?: number;
-  /** Minimum OASB level from the ATX scan summary, e.g. ">=L2". Enforced in v1. */
+  /**
+   * Minimum OASB level from the ATX scan summary, e.g. ">=L2".
+   *
+   * Compared in v1, but read from `scanSummary.oasbLevel`, which the ATX v1.0 signature does
+   * NOT cover. On a v1.0 credential the holder sets their own level after signing, so against a
+   * holder this predicate binds only on v1.1. It does bind an operator's configuration: a level
+   * this build cannot rank is refused at load rather than loading as no floor.
+   */
   oasbLevel?: string;
   /** Federation: issuer chain must include a node in this partner set. v1: parsed, in-org satisfied. */
   issuerChainIncludes?: { partnersSet: string };
@@ -42,13 +70,94 @@ export interface GrantEvaluation {
   reason: string;
 }
 
-const OASB_RANK: Record<string, number> = { L1: 1, L2: 2, L3: 3 };
+/**
+ * The OASB levels this build can ORDER, and therefore the only ones it can treat as a floor.
+ *
+ * A `Map`, not an object literal, and the difference is not stylistic. `OASB_RANK` is indexed
+ * by a string that arrives on the wire inside the agent's own credential. As an object literal,
+ * `OASB_RANK["constructor"]` resolved up the prototype chain to `Object.prototype.constructor`
+ * — a function, so neither `null` nor `undefined`, so the `?? 0` that was meant to catch an
+ * unknown level never fired, and `function < 3` is `false`, so the deny branch never ran.
+ * Measured against a `>=L3` floor: `constructor`, `__proto__`, `toString` and `valueOf` were all
+ * ALLOWED while `L1` and an absent level were correctly denied. A `Map` has no prototype keys,
+ * so `.get()` returns `undefined` for every string that is not a level.
+ *
+ * The vocabulary is L1-L3, matching AAP-BROKER-PROFILE.md's own glossary ("OASB, Open Agent
+ * Security Benchmark (levels L1-L3)"). That reference is informative, not normative, and it is
+ * the only OASB definition anywhere in the AAP tree. The ATX WIRE schema is wider
+ * (`^L[0-9]$`) and deliberately does not govern here: what an operator may write as a floor and
+ * what an agent may present are different populations, and binding the policy vocabulary to
+ * what can arrive is the category error. A level outside this set is unrankable, and unrankable
+ * is refused on the policy side and denied on the wire side — never silently treated as zero.
+ */
+const OASB_RANK: ReadonlyMap<string, number> = new Map([
+  ['L1', 1],
+  ['L2', 2],
+  ['L3', 3],
+]);
+
+/** The three keys a grant binding may carry, mirroring `GrantBinding`. */
+const KNOWN_BINDING_KEYS = new Set(['grant', 'match', 'resolve']);
+
+/**
+ * The five predicates a `match` clause may carry, mirroring `GrantMatch`.
+ *
+ * A clause carrying anything else is REFUSED, not ignored. This is the same decision
+ * `policy.ts` makes for `PolicyRule` at four nesting levels, and it is here for the same
+ * measured reason: a misspelled predicate (`oasbLevl`, `minTrustLvl`) leaves the field
+ * `undefined`, so the enforcement branch that reads it never runs, and the binding loads as
+ * the WIDER rule the operator did not write — while `size` still counts it loaded.
+ */
+const KNOWN_MATCH_KEYS = new Set([
+  'trustClass',
+  'minTrustLevel',
+  'oasbLevel',
+  'issuerChainIncludes',
+  'jurisdiction',
+]);
+
+/** The five keys an operator may author on a `resolve` clause. See `OVERWRITTEN_RESOLVE_KEYS`. */
+const KNOWN_RESOLVE_KEYS = new Set(['mode', 'providerId', 'scope', 'audience', 'ttlSeconds']);
+
+/**
+ * Keys `ResourceBinding` declares but an operator must not author, with the reason.
+ *
+ * `resolve.trustClass` is injected by the resolver from the matched clause
+ * (`grant-resolver.ts` spreads `{ ...binding.resolve, trustClass: binding.match.trustClass }`),
+ * so a value written here is silently discarded — the `scopeCheck` shape, where a field the
+ * operator wrote had no effect while every surface reported the binding loaded.
+ */
+const OVERWRITTEN_RESOLVE_KEYS = new Map<string, string>([
+  [
+    'trustClass',
+    'resolve.trustClass is set by the broker from the matched clause\'s match.trustClass, so a ' +
+    'value written here is discarded. Remove it; the trust class the assertion carries is the ' +
+    'one in match.trustClass.',
+  ],
+]);
+
+/** The three CPI modes, mirroring `CpiMode` in ./cpi/types. */
+const CPI_MODES = new Set<string>(['retrieve', 'assume', 'exchange']);
 
 export class GrantPolicy {
   private readonly bindings: GrantBinding[];
 
-  constructor(bindings: GrantBinding[] = []) {
-    this.bindings = bindings;
+  /**
+   * Load grant bindings. Every binding is validated here and REFUSED if this build cannot
+   * apply it exactly as written.
+   *
+   * The constructor is the only write path to `this.bindings` and must stay the only one.
+   * When a grant-binding file loader lands, it parses the file and calls this constructor; it
+   * does not get its own accept-set. Two load paths that decide the same requests with two
+   * accept-sets is not a defect to fix once, it is a defect generator — every constraint added
+   * to one of them later applies to one caller and not the other.
+   *
+   * Each binding is RECONSTRUCTED rather than stored by reference, so a caller that mutates its
+   * own object after this returns cannot alter a loaded policy from outside the class.
+   */
+  constructor(bindings: readonly unknown[] = []) {
+    const seen = new Set<string>();
+    this.bindings = bindings.map((b) => validateGrantBinding(b, seen));
   }
 
   get size(): number {
@@ -68,30 +177,77 @@ export class GrantPolicy {
     const m = binding.match;
 
     // Enforced predicates (v1).
+    //
+    // The context is derived from the agent's credential, so each field is checked for the
+    // SHAPE the comparison needs before the comparison runs. A context that cannot be compared
+    // denies: the alternative is a raw TypeError thrown from inside the decision function, or a
+    // comparison against a non-number that is silently `false` and therefore never denies.
+    if (!Array.isArray(ctx.capabilities)) {
+      return { allowed: false, binding, reason: 'ATX carries no capability list' };
+    }
     if (!ctx.capabilities.includes(m.trustClass)) {
       return { allowed: false, binding, reason: `ATX lacks trust class "${m.trustClass}"` };
     }
-    if (m.minTrustLevel !== undefined && ctx.trustLevel < m.minTrustLevel) {
-      return {
-        allowed: false,
-        binding,
-        reason: `trust level ${ctx.trustLevel} below minimum ${m.minTrustLevel}`,
-      };
+    if (m.minTrustLevel !== undefined) {
+      if (typeof ctx.trustLevel !== 'number' || !Number.isFinite(ctx.trustLevel)) {
+        return {
+          allowed: false,
+          binding,
+          reason: `ATX trust level is not a number, so it satisfies no minimum (required ${m.minTrustLevel})`,
+        };
+      }
+      if (ctx.trustLevel < m.minTrustLevel) {
+        return {
+          allowed: false,
+          binding,
+          reason: `trust level ${ctx.trustLevel} below minimum ${m.minTrustLevel}`,
+        };
+      }
     }
-    if (m.oasbLevel) {
+    if (m.oasbLevel !== undefined) {
+      // Guaranteed rankable by the load-time refusal; recomputed rather than cached so there is
+      // one definition of what a floor means. `undefined` here would mean the invariant broke,
+      // and the safe reading of a floor we cannot resolve is that nothing satisfies it.
       const required = parseOasbFloor(m.oasbLevel);
-      const have = ctx.oasbLevel ? OASB_RANK[ctx.oasbLevel] ?? 0 : 0;
+      const have = typeof ctx.oasbLevel === 'string' ? OASB_RANK.get(ctx.oasbLevel) : undefined;
+      if (required === undefined) {
+        return {
+          allowed: false,
+          binding,
+          reason: `binding requires ${m.oasbLevel}, which this build cannot rank`,
+        };
+      }
+      // Three distinct reasons, because the single reason this replaced asserted a comparison
+      // that had not run: an unrankable level was reported as "below required", which is a
+      // false statement written into an audit record.
+      if (ctx.oasbLevel === undefined || ctx.oasbLevel === null || ctx.oasbLevel === '') {
+        return {
+          allowed: false,
+          binding,
+          reason: `OASB level absent; binding requires ${m.oasbLevel}`,
+        };
+      }
+      if (have === undefined) {
+        return {
+          allowed: false,
+          binding,
+          reason:
+            `OASB level "${String(ctx.oasbLevel)}" is not one of ${rankableLevels()}, so it ` +
+            `satisfies no floor; binding requires ${m.oasbLevel}`,
+        };
+      }
       if (have < required) {
         return {
           allowed: false,
           binding,
-          reason: `OASB level ${ctx.oasbLevel ?? 'none'} below required ${m.oasbLevel}`,
+          reason: `OASB level ${ctx.oasbLevel} below required ${m.oasbLevel}`,
         };
       }
     }
 
-    // Parsed-but-not-enforced-in-v1 predicates. Presence is validated so a malformed clause
-    // is caught now; evaluation is deferred to v2 (federation) / v3 (jurisdiction).
+    // Parsed-but-not-enforced-in-v1 predicates. The SHAPE of each is validated at load, so a
+    // malformed clause is refused there rather than discovered at request time; evaluation is
+    // deferred to v2 (federation) / v3 (jurisdiction).
     // m.issuerChainIncludes — federation (AAP §7): treated as satisfied within a single org.
     // m.jurisdiction        — residency  (AAP §9): parsed, not enforced.
 
@@ -99,8 +255,252 @@ export class GrantPolicy {
   }
 }
 
-/** Parse an OASB floor like ">=L2" or "L2" to a numeric rank. */
-function parseOasbFloor(spec: string): number {
+/** The levels this build can order, for an error or audit string. */
+function rankableLevels(): string {
+  return [...OASB_RANK.keys()].join(', ');
+}
+
+/**
+ * Parse an OASB floor like ">=L2" or "L2" to a numeric rank.
+ *
+ * Returns `undefined` for a level this build cannot order. It previously returned 0 for that
+ * case, which made the STRICTEST floor an operator could write the one that enforced nothing:
+ * nothing is below 0, so `oasbLevel: "L4"` — or `"l3"`, or `"high"` — granted an agent
+ * presenting no OASB level at all.
+ */
+function parseOasbFloor(spec: string): number | undefined {
   const level = spec.replace(/^>=\s*/, '').trim();
-  return OASB_RANK[level] ?? 0;
+  return OASB_RANK.get(level);
+}
+
+/** A non-empty string, the shape almost every field here needs. */
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === 'string' && v !== '';
+}
+
+/**
+ * Suggest a correction for an unrankable OASB level, and ONLY when it is a pure case difference.
+ *
+ * Deliberately NOT `nearestMatch`. Measured against the rankable set, `nearestMatch` returns
+ * "L1" for "L4", "L0" and "L9" — a Levenshtein tie broken by array order. Telling an operator
+ * who wrote "L4" that they may have meant "L1" talks them into the WEAKEST floor in the
+ * vocabulary while they believe they are fixing a typo. A case difference is the only near miss
+ * where the intended level is unambiguous.
+ */
+function caseOnlyMatch(level: string): string | undefined {
+  for (const known of OASB_RANK.keys()) {
+    if (known.toLowerCase() === level.toLowerCase()) return known;
+  }
+  return undefined;
+}
+
+/** Refuse an object carrying a key this build does not read. */
+function checkKeys(
+  what: string,
+  value: Record<string, unknown>,
+  known: Set<string>,
+  overwritten?: Map<string, string>,
+): void {
+  for (const key of Object.keys(value)) {
+    const reason = overwritten?.get(key);
+    if (reason) {
+      throw new Error(`${what}: ${reason}`);
+    }
+    if (known.has(key)) continue;
+    const near = nearestMatch(key, [...known]);
+    throw new Error(
+      `${what}: unknown field "${key}"${near ? ` (did you mean "${near}"?)` : ''}. ` +
+      `It may carry: ${[...known].join(', ')}. ` +
+      `A field this build does not read is refused rather than ignored, because ignoring ` +
+      `"${key}" would drop whatever it was meant to restrict and load the binding as written ` +
+      `without it.`,
+    );
+  }
+}
+
+/**
+ * Validate one grant binding, or throw naming what is wrong and why refusing beats ignoring.
+ *
+ * Module-private on purpose. Exporting it — or the `KNOWN_*` sets — would create a second
+ * accept-set reachable from outside the module, which is the shape that has already re-opened
+ * closed defects in this package.
+ *
+ * `seen` carries the grant references already loaded in this call, so a duplicate is refused.
+ * `evaluate()` resolves a grant by `find`, so the FIRST binding for a name wins and every later
+ * one is silently dead — including a stricter one written to replace it.
+ */
+function validateGrantBinding(raw: unknown, seen: Set<string>): GrantBinding {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Grant binding must be an object');
+  }
+  const b = raw as Record<string, unknown>;
+
+  if (!isNonEmptyString(b.grant)) {
+    throw new Error('Grant binding must have a non-empty "grant" string, e.g. "grant://orders-db"');
+  }
+  const label = `Grant binding "${b.grant}"`;
+
+  if (!isGrantRef(b.grant)) {
+    throw new Error(
+      `${label}: not a grant reference. A binding is keyed by "grant://name", where name uses ` +
+      `RFC 3986 unreserved characters only and never carries a backend, host, path, or port. ` +
+      `A binding whose key is not a grant reference can never be matched by a request.`,
+    );
+  }
+  if (seen.has(b.grant)) {
+    throw new Error(
+      `${label}: duplicate binding. A grant resolves to the FIRST binding that names it, so a ` +
+      `second one never applies — including a stricter one written to replace it. Keep one ` +
+      `binding per grant.`,
+    );
+  }
+  seen.add(b.grant);
+
+  checkKeys(label, b, KNOWN_BINDING_KEYS);
+
+  if (!b.match || typeof b.match !== 'object' || Array.isArray(b.match)) {
+    throw new Error(`${label}: match must be an object naming the predicates the ATX must satisfy`);
+  }
+  if (!b.resolve || typeof b.resolve !== 'object' || Array.isArray(b.resolve)) {
+    throw new Error(`${label}: resolve must be an object naming the resource this grant maps to`);
+  }
+
+  const match = validateGrantMatch(label, b.match as Record<string, unknown>);
+  const resolve = validateResourceBinding(label, b.resolve as Record<string, unknown>);
+
+  // Reconstructed, not spread: a shallow copy would leave `match` and `resolve` as the caller's
+  // own objects, so deleting a predicate from one after loading would widen a live policy with
+  // no call into this class.
+  return { grant: b.grant, match, resolve };
+}
+
+function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMatch {
+  checkKeys(`${label}: match`, m, KNOWN_MATCH_KEYS);
+
+  if (!isNonEmptyString(m.trustClass)) {
+    throw new Error(
+      `${label}: match.trustClass must be a non-empty string, e.g. "orders:read". It is the ` +
+      `capability the ATX must carry, and it is also the trust class the broker assertion claims.`,
+    );
+  }
+
+  const out: GrantMatch = { trustClass: m.trustClass };
+
+  if (m.minTrustLevel !== undefined) {
+    // `null`, `NaN` and any non-numeric string pass `!== undefined` and then make the comparison
+    // in `evaluate()` unconditionally false — `4 < null`, `4 < NaN` and `4 < "high"` are all
+    // `false` — so the floor loads and denies nothing. JSON can express `null` and `"high"`.
+    if (typeof m.minTrustLevel !== 'number' || !Number.isInteger(m.minTrustLevel) || m.minTrustLevel < 0) {
+      throw new Error(
+        `${label}: match.minTrustLevel must be a non-negative integer, not ` +
+        `${describe(m.minTrustLevel)}. A value the comparison cannot order is not a low ` +
+        `minimum — it is no minimum, and the binding would grant every trust level.`,
+      );
+    }
+    out.minTrustLevel = m.minTrustLevel;
+  }
+
+  if (m.oasbLevel !== undefined) {
+    if (!isNonEmptyString(m.oasbLevel)) {
+      throw new Error(
+        `${label}: match.oasbLevel must be a non-empty string like ">=L2", not ` +
+        `${describe(m.oasbLevel)}. An empty floor is not a floor everything satisfies — it ` +
+        `removes the check. Omit oasbLevel to require no OASB level.`,
+      );
+    }
+    if (parseOasbFloor(m.oasbLevel) === undefined) {
+      const bare = m.oasbLevel.replace(/^>=\s*/, '').trim();
+      const cased = caseOnlyMatch(bare);
+      throw new Error(
+        `${label}: match.oasbLevel "${m.oasbLevel}" names a level this build cannot rank` +
+        `${cased ? ` (did you mean "${cased}"? levels are case-sensitive)` : ''}. ` +
+        `This build ranks: ${rankableLevels()}. ` +
+        `A floor it cannot rank is refused rather than ignored, because ignoring it would ` +
+        `leave the binding with no OASB floor at all while reporting it loaded.`,
+      );
+    }
+    out.oasbLevel = m.oasbLevel;
+  }
+
+  // Federation predicates. AAP §7.1 requires a v1 broker to PARSE the full clause, so these are
+  // accepted rather than refused — but their shape is validated here, so the docstring's claim
+  // that a malformed clause is caught at load is true rather than aspirational.
+  if (m.issuerChainIncludes !== undefined) {
+    const ici = m.issuerChainIncludes;
+    if (!ici || typeof ici !== 'object' || Array.isArray(ici)) {
+      throw new Error(`${label}: match.issuerChainIncludes must be an object with "partnersSet"`);
+    }
+    const rec = ici as Record<string, unknown>;
+    checkKeys(`${label}: match.issuerChainIncludes`, rec, new Set(['partnersSet']));
+    if (!isNonEmptyString(rec.partnersSet)) {
+      throw new Error(
+        `${label}: match.issuerChainIncludes.partnersSet must be a non-empty string naming the ` +
+        `partner set.`,
+      );
+    }
+    out.issuerChainIncludes = { partnersSet: rec.partnersSet };
+  }
+
+  if (m.jurisdiction !== undefined) {
+    const j = m.jurisdiction;
+    if (!j || typeof j !== 'object' || Array.isArray(j)) {
+      throw new Error(`${label}: match.jurisdiction must be an object with an "in" array`);
+    }
+    const rec = j as Record<string, unknown>;
+    checkKeys(`${label}: match.jurisdiction`, rec, new Set(['in']));
+    if (!Array.isArray(rec.in) || rec.in.length === 0 || !rec.in.every(isNonEmptyString)) {
+      throw new Error(
+        `${label}: match.jurisdiction.in must be a non-empty array of non-empty strings. An ` +
+        `empty list names no jurisdiction, which is not the same as naming every one.`,
+      );
+    }
+    out.jurisdiction = { in: [...rec.in] };
+  }
+
+  return out;
+}
+
+function validateResourceBinding(label: string, r: Record<string, unknown>): ResourceBinding {
+  checkKeys(`${label}: resolve`, r, KNOWN_RESOLVE_KEYS, OVERWRITTEN_RESOLVE_KEYS);
+
+  if (!isNonEmptyString(r.mode) || !CPI_MODES.has(r.mode)) {
+    const near = typeof r.mode === 'string' ? nearestMatch(r.mode, [...CPI_MODES]) : undefined;
+    throw new Error(
+      `${label}: resolve.mode must be one of ${[...CPI_MODES].join(', ')}, not ` +
+      `${describe(r.mode)}${near ? ` (did you mean "${near}"?)` : ''}.`,
+    );
+  }
+  for (const key of ['providerId', 'scope', 'audience'] as const) {
+    if (!isNonEmptyString(r[key])) {
+      throw new Error(`${label}: resolve.${key} must be a non-empty string, not ${describe(r[key])}`);
+    }
+  }
+  // An absent or non-numeric TTL reaches the assertion builder as `nowSeconds + undefined`, which
+  // is NaN, which `JSON.stringify` emits as `"exp": null` — a broker assertion a downstream
+  // verifier may read as carrying no expiry at all.
+  if (typeof r.ttlSeconds !== 'number' || !Number.isInteger(r.ttlSeconds) || r.ttlSeconds <= 0) {
+    throw new Error(
+      `${label}: resolve.ttlSeconds must be a positive integer number of seconds, not ` +
+      `${describe(r.ttlSeconds)}. A TTL this build cannot add to a timestamp mints a credential ` +
+      `whose expiry serialises to null.`,
+    );
+  }
+
+  return {
+    mode: r.mode as CpiMode,
+    providerId: r.providerId as string,
+    scope: r.scope as string,
+    audience: r.audience as string,
+    ttlSeconds: r.ttlSeconds,
+  };
+}
+
+/** Describe a rejected value in an error without printing an object's contents. */
+function describe(v: unknown): string {
+  if (v === null) return 'null';
+  if (v === undefined) return 'undefined';
+  if (typeof v === 'number' && Number.isNaN(v)) return 'NaN';
+  if (typeof v === 'string') return `"${v}"`;
+  if (Array.isArray(v)) return 'an array';
+  return `a ${typeof v}`;
 }
