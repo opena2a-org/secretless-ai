@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.23.0] - 2026-08-13
+## [0.23.0] - 2026-08-19
 
 The tool does what it says. Every change here is a case where a command accepted
 something, did something narrower or different, and reported success.
