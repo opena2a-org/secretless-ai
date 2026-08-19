@@ -12,14 +12,17 @@
  * (AAP-BROKER-PROFILE §7.1). `minTrustLevel` is enforced here as well; it is this build's
  * addition, not a line of that list. Default-deny: no matching binding ⇒ denied (AAP §3.4).
  *
- * SCOPE OF WHAT THIS FILE CAN PROMISE. Two of the three predicates it enforces —
- * `trustClass` (from `ctx.capabilities`) and `oasbLevel` (from `ctx.scanSummary.oasbLevel`)
- * — are NOT covered by the ATX signature on credential version 1.0. `@opena2a/atx-verify`
- * publishes `ResolutionContext.signedCapabilities` precisely so a caller can refuse such a
- * credential, and this build does not yet read it. So these predicates are enforced against
- * an OPERATOR's configuration mistakes, and against a HOLDER only on a v1.1 credential.
- * Until the `signedCapabilities` gate lands, no surface may say this build "enforces" an
- * OASB level presented by an agent.
+ * WHAT THE PREDICATES BIND, AND AGAINST WHOM. Two of the three — `trustClass` (read from
+ * `ctx.capabilities`) and `oasbLevel` (read from `ctx.scanSummary.oasbLevel`) — sit outside
+ * the ATX signature on credential version 1.0. Measured with a real key: a holder rewrites
+ * `scanSummary.oasbLevel` from L2 to L3 after signing, the credential still verifies, and a
+ * `>=L3` binding admitted it; injecting a capability that was never issued admitted it too;
+ * the control, rewriting the signature-covered `trustLevel`, correctly failed verification.
+ * So on v1.0 the agent, not the operator, decides two of the three predicates.
+ *
+ * `@opena2a/atx-verify` publishes `ResolutionContext.signedCapabilities` for exactly this
+ * decision, and `evaluate()` requires it. A credential that does not carry these fields under
+ * its signature is denied rather than compared against predicates its holder chose.
  */
 
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
@@ -31,23 +34,22 @@ export interface GrantMatch {
   /**
    * Trust class (capability) the ATX must carry, e.g. "orders:read".
    *
-   * Compared in v1, but read from `capabilities`, which the ATX v1.0 signature does NOT cover.
-   * On a v1.0 credential the holder can add this capability after signing and the credential
-   * still verifies, so against a holder this predicate binds only on v1.1. See the file header.
+   * Read from `capabilities`, which the ATX v1.0 signature does not cover, so a credential
+   * whose `signedCapabilities` is not true is denied before this predicate is compared. See
+   * the file header.
    */
   trustClass: string;
   /**
-   * Minimum ATX trust level. Enforced in v1, and `trustLevel` IS covered by the signature on
-   * both credential versions - the one predicate here a holder cannot rewrite.
+   * Minimum ATX trust level. `trustLevel` is covered by the signature on both credential
+   * versions — the one predicate here a holder could never have rewritten.
    */
   minTrustLevel?: number;
   /**
    * Minimum OASB level from the ATX scan summary, e.g. ">=L2".
    *
-   * Compared in v1, but read from `scanSummary.oasbLevel`, which the ATX v1.0 signature does
-   * NOT cover. On a v1.0 credential the holder sets their own level after signing, so against a
-   * holder this predicate binds only on v1.1. It does bind an operator's configuration: a level
-   * this build cannot rank is refused at load rather than loading as no floor.
+   * Read from `scanSummary.oasbLevel`, which the ATX v1.0 signature does not cover, so a
+   * credential whose `signedCapabilities` is not true is denied before this predicate is
+   * compared. A floor this build cannot rank is refused at load rather than loading as none.
    */
   oasbLevel?: string;
   /** Federation: issuer chain must include a node in this partner set. v1: parsed, in-org satisfied. */
@@ -175,6 +177,23 @@ export class GrantPolicy {
       return { allowed: false, reason: `No binding for ${target} (default deny)` };
     }
     const m = binding.match;
+
+    // The credential's own version decides whether the predicates below mean anything.
+    //
+    // `trustClass` and `oasbLevel` read `capabilities` and `scanSummary.oasbLevel`, and the
+    // v1.0 signature covers neither, so on a v1.0 credential the holder supplies the answers
+    // to the questions this policy asks. Comparing them would report a decision the agent made
+    // as one the operator made. `!== true` rather than `=== false`: a custom `AtxVerifier` — a
+    // published interface anyone may implement — that omits the field must not read as signed.
+    if (ctx.signedCapabilities !== true) {
+      return {
+        allowed: false,
+        binding,
+        reason:
+          'ATX does not cover capabilities or scan summary under its signature (credential ' +
+          'version 1.0), so the predicates this binding matches on are set by the holder',
+      };
+    }
 
     // Enforced predicates (v1).
     //

@@ -11,6 +11,10 @@ const CTX: ResolutionContext = {
   trustScore: 0.95,
   capabilities: ['orders:read'],
   oasbLevel: 'L2',
+  // v1.1: `capabilities` and `scanSummary` are inside the signature. Every test below that
+  // expects a grant needs this, because a credential that does not carry these fields under
+  // its signature is denied before any predicate is compared.
+  signedCapabilities: true,
 };
 
 const BINDING: GrantBinding = {
@@ -434,4 +438,90 @@ describe('GrantPolicy: a loaded binding cannot be altered from outside', () => {
   // way out buys no adversarial protection — the same measurement that put `PolicyEngine`'s
   // `getRules()` at P3 rather than in a fix. The IN direction above is the one that matters,
   // because before this change the caller kept the only reference and the class had none.
+});
+
+/**
+ * The credential version gate.
+ *
+ * `trustClass` and `oasbLevel` read `capabilities` and `scanSummary.oasbLevel`. The ATX v1.0
+ * signature covers neither, so a holder rewrites them after signing and the credential still
+ * verifies — measured with a real Ed25519 key: `scanSummary.oasbLevel` L2 -> L3 admitted the
+ * holder to a `>=L3` binding, and injecting a capability that was never issued admitted them
+ * too, while the control of rewriting the signature-covered `trustLevel` correctly failed
+ * verification. Comparing those predicates reports a decision the agent made as one the
+ * operator made.
+ */
+describe('GrantPolicy: a credential that does not sign what we match on is denied', () => {
+  const p = () => new GrantPolicy([BINDING]);
+
+  it('denies a v1.0 credential that satisfies every predicate honestly', () => {
+    // Not an unqualified agent: identical to CTX in every field the binding matches on.
+    const r = p().evaluate('orders-db', { ...CTX, signedCapabilities: false });
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/signature/);
+  });
+
+  it('denies the holder who raised their own OASB level', () => {
+    // What the forgery buys on v1.0: the agent writes L3 into its own scan summary.
+    const r = p().evaluate('orders-db', { ...CTX, oasbLevel: 'L3', signedCapabilities: false });
+    expect(r.allowed).toBe(false);
+  });
+
+  it('denies the holder who granted themselves the trust class', () => {
+    const r = p().evaluate('orders-db', {
+      ...CTX,
+      capabilities: ['orders:read', 'orders:write'],
+      signedCapabilities: false,
+    });
+    expect(r.allowed).toBe(false);
+  });
+
+  it('treats an absent signedCapabilities as unsigned, not as signed', () => {
+    // `AtxVerifier` is a published interface. A third-party implementation that predates the
+    // field, or omits it, must not read as "these fields are covered".
+    const { signedCapabilities: _drop, ...noFlag } = CTX as Record<string, unknown> & {
+      signedCapabilities: boolean;
+    };
+    const r = p().evaluate('orders-db', noFlag as unknown as ResolutionContext);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/signature/);
+  });
+
+  for (const truthy of [1, 'true', {}, [] as unknown]) {
+    it(`treats a non-boolean signedCapabilities ${JSON.stringify(truthy)} as unsigned`, () => {
+      const r = p().evaluate('orders-db', {
+        ...CTX,
+        signedCapabilities: truthy,
+      } as unknown as ResolutionContext);
+      expect(r.allowed).toBe(false);
+    });
+  }
+
+  it('reports the credential version, not a predicate read from a field it does not sign', () => {
+    // Pins the ORDER, not just the outcome. With the gate after the trustClass comparison the
+    // verdict is still deny, so an outcome-only assertion cannot see the difference — but the
+    // audit record then says "ATX lacks trust class", a conclusion drawn from the very field
+    // we have just established the holder controls. We do not know what capabilities this agent
+    // has; we know we cannot tell.
+    const r = p().evaluate('orders-db', {
+      ...CTX,
+      capabilities: ['weather:read'],
+      signedCapabilities: false,
+    });
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/signature/);
+    expect(r.reason).not.toMatch(/trust class/);
+  });
+
+  // Controls. Without these the block above passes on a build that denies everything.
+  it('grants the same agent on a credential that does sign those fields', () => {
+    expect(p().evaluate('orders-db', CTX).allowed).toBe(true);
+  });
+
+  it('still denies an unqualified agent on a signed credential, for the RIGHT reason', () => {
+    const r = p().evaluate('orders-db', { ...CTX, capabilities: ['weather:read'] });
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/trust class/);
+    expect(r.reason).not.toMatch(/signature/);
+  });
 });
