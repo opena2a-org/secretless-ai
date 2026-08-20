@@ -40,8 +40,14 @@ export interface GrantMatch {
    */
   trustClass: string;
   /**
-   * Minimum ATX trust level. `trustLevel` is covered by the signature on both credential
-   * versions — the one predicate here a holder could never have rewritten.
+   * Minimum ATX trust level, as a whole number.
+   *
+   * `trustLevel` is inside the signature on both credential versions, but only its INTEGER part
+   * is: both canonical payloads project it through `Math.trunc` while the resolution context
+   * carries the raw value, so a holder can edit a signed `3` to `3.999999` and it still verifies.
+   * A whole-number floor is immune — truncation preserves the integer part, so the most a holder
+   * can add is just under 1.0, which cannot cross it. A fractional floor is NOT immune, and that
+   * is the second reason one is refused at load.
    */
   minTrustLevel?: number;
   /**
@@ -142,7 +148,7 @@ const OVERWRITTEN_RESOLVE_KEYS = new Map<string, string>([
 const CPI_MODES = new Set<string>(['retrieve', 'assume', 'exchange']);
 
 export class GrantPolicy {
-  private readonly bindings: GrantBinding[];
+  private readonly bindings: readonly GrantBinding[];
 
   /**
    * Load grant bindings. Every binding is validated here and REFUSED if this build cannot
@@ -163,7 +169,11 @@ export class GrantPolicy {
     // so `new Array(3)` — or a trailing elision — produced a policy whose `size` counted three
     // bindings that were never validated, and whose first evaluation threw on `undefined.grant`.
     // Spreading materialises each hole as `undefined`, which the check below already refuses.
-    this.bindings = [...bindings].map((b) => validateGrantBinding(b, seen));
+    // The ARRAY is frozen, not just its elements. Freezing only the elements left `push` open,
+    // and an appended binding never passes `validateGrantBinding` — so an unrankable floor could
+    // reach `evaluate()`, where `parseOasbFloor` returns undefined and `1 < undefined` is false:
+    // the exact fail-open this class exists to close, re-entered through the back of the array.
+    this.bindings = Object.freeze([...bindings].map((b) => validateGrantBinding(b, seen)));
   }
 
   get size(): number {
@@ -175,6 +185,12 @@ export class GrantPolicy {
    * `grantName` is the logical name (without the `grant://` scheme).
    */
   evaluate(grantName: string, ctx: ResolutionContext): GrantEvaluation {
+    // Interpolating a non-string calls its `toString`, which a hostile object can make throw —
+    // from inside the decision function, so a caller's catch decides the outcome. The in-tree
+    // caller always passes a parsed string; a library consumer need not.
+    if (typeof grantName !== 'string') {
+      return { allowed: false, reason: 'grant name is not a string (default deny)' };
+    }
     const target = `grant://${grantName}`;
     const binding = this.bindings.find((b) => b.grant === target);
     if (!binding) {
@@ -208,7 +224,14 @@ export class GrantPolicy {
     if (!Array.isArray(ctx.capabilities)) {
       return { allowed: false, binding, reason: 'ATX carries no capability list' };
     }
-    if (!ctx.capabilities.includes(m.trustClass)) {
+    // Scanned directly rather than via `includes`. `Array.isArray` is true for an Array subclass
+    // and for a Proxy over an array, either of which can override `includes` to answer whatever
+    // it likes; a plain loop comparing string members cannot be redirected that way.
+    let hasTrustClass = false;
+    for (const cap of ctx.capabilities) {
+      if (typeof cap === 'string' && cap === m.trustClass) { hasTrustClass = true; break; }
+    }
+    if (!hasTrustClass) {
       return { allowed: false, binding, reason: `ATX lacks trust class "${m.trustClass}"` };
     }
     if (m.minTrustLevel !== undefined) {
@@ -366,26 +389,30 @@ function validateGrantBinding(raw: unknown, seen: Set<string>): GrantBinding {
   }
   const b = raw as Record<string, unknown>;
 
-  if (!isNonEmptyString(b.grant)) {
+  // Read once. Six reads of `b.grant` meant the reference `isGrantRef` approved, the key `seen`
+  // recorded, and the key finally stored could all be different values when the source defines an
+  // accessor — defeating BOTH the grant-reference check and the duplicate check.
+  const grant = b.grant;
+  if (!isNonEmptyString(grant)) {
     throw new Error('Grant binding must have a non-empty "grant" string, e.g. "grant://orders-db"');
   }
-  const label = `Grant binding "${b.grant}"`;
+  const label = `Grant binding "${grant}"`;
 
-  if (!isGrantRef(b.grant)) {
+  if (!isGrantRef(grant)) {
     throw new Error(
       `${label}: not a grant reference. A binding is keyed by "grant://name", where name uses ` +
       `RFC 3986 unreserved characters only and never carries a backend, host, path, or port. ` +
       `A binding whose key is not a grant reference can never be matched by a request.`,
     );
   }
-  if (seen.has(b.grant)) {
+  if (seen.has(grant)) {
     throw new Error(
       `${label}: duplicate binding. A grant resolves to the FIRST binding that names it, so a ` +
       `second one never applies — including a stricter one written to replace it. Keep one ` +
       `binding per grant.`,
     );
   }
-  seen.add(b.grant);
+  seen.add(grant);
 
   checkKeys(label, b, KNOWN_BINDING_KEYS);
 
@@ -410,20 +437,25 @@ function validateGrantBinding(raw: unknown, seen: Set<string>): GrantBinding {
   // and buys nothing against a determined in-process caller, so this is a footgun guard rather
   // than a security boundary — but the footgun is on the return value of a published method,
   // costs one call to remove, and `GrantEvaluation.binding` gives a consumer no hint it is live.
-  return Object.freeze({ grant: b.grant, match: Object.freeze(match), resolve: Object.freeze(resolve) });
+  return Object.freeze({ grant, match: Object.freeze(match), resolve: Object.freeze(resolve) });
 }
 
 function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMatch {
   checkKeys(`${label}: match`, m, KNOWN_MATCH_KEYS);
 
-  if (!isNonEmptyString(m.trustClass)) {
+  // Read once, like every other field below. Validating `m.trustClass` and then reading it AGAIN
+  // to store it let an accessor load a different class than the one that passed — and this one
+  // also travels: `grant-resolver.ts` copies it into the broker assertion's `trust_class` claim,
+  // so the minted credential would carry a class the operator never wrote.
+  const trustClass = m.trustClass;
+  if (!isNonEmptyString(trustClass)) {
     throw new Error(
       `${label}: match.trustClass must be a non-empty string, e.g. "orders:read". It is the ` +
       `capability the ATX must carry, and it is also the trust class the broker assertion claims.`,
     );
   }
 
-  const out: GrantMatch = { trustClass: m.trustClass };
+  const out: GrantMatch = { trustClass };
 
   // Read ONCE into a local, then validate and store THAT. Reading `m.minTrustLevel` again to
   // store it would validate one value and load another whenever the source object defines an
@@ -438,11 +470,13 @@ function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMat
     // `4 < null`, `4 < NaN` and `4 < "high"` are all `false` — so the floor loads and denies
     // nothing. JSON can express `null` and `"high"`. A negative floor orders correctly but sits
     // below every trust level a verifier emits, so it is a floor that admits everyone.
-    if (typeof minTrustLevel !== 'number' || !Number.isFinite(minTrustLevel) || minTrustLevel < 0) {
+    if (typeof minTrustLevel !== 'number' || !Number.isInteger(minTrustLevel) || minTrustLevel < 0) {
       throw new Error(
-        `${label}: match.minTrustLevel must be a number of zero or more, not ` +
-        `${describe(minTrustLevel)}. A value the comparison cannot order is not a low ` +
-        `minimum — it is no minimum, and the binding would grant every trust level.`,
+        `${label}: match.minTrustLevel must be a whole number of zero or more, not ` +
+        `${describe(minTrustLevel)}. A value the comparison cannot order is not a low minimum — ` +
+        `it is no minimum, and the binding would grant every trust level. A FRACTIONAL floor is ` +
+        `refused for a second reason: only the integer part of trustLevel is inside the ATX ` +
+        `signature, so a holder can raise a signed 3 to 3.999999 and still verify.`,
       );
     }
     out.minTrustLevel = minTrustLevel;
@@ -487,7 +521,7 @@ function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMat
         `partner set.`,
       );
     }
-    out.issuerChainIncludes = { partnersSet: rec.partnersSet };
+    out.issuerChainIncludes = Object.freeze({ partnersSet: rec.partnersSet });
   }
 
   if (m.jurisdiction !== undefined) {
@@ -503,7 +537,7 @@ function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMat
         `empty list names no jurisdiction, which is not the same as naming every one.`,
       );
     }
-    out.jurisdiction = { in: [...rec.in] };
+    out.jurisdiction = Object.freeze({ in: Object.freeze([...rec.in]) as string[] });
   }
 
   return out;

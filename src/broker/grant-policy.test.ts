@@ -278,7 +278,7 @@ describe('GrantPolicy: the denial reason states what actually happened', () => {
  * express `null` and `"high"`.
  */
 describe('GrantPolicy: a minimum trust level the comparison cannot order is refused at load', () => {
-  for (const bad of [null, 'high', '3', -1, Infinity, -Infinity, [], {}, true]) {
+  for (const bad of [null, 'high', '3', -1, 1.5, 2.5, 0.1, Infinity, -Infinity, NaN, [], {}, true]) {
     it(`refuses minTrustLevel ${JSON.stringify(bad)}`, () => {
       expect(() => new GrantPolicy([withMatch({ minTrustLevel: bad })])).toThrow(/minTrustLevel/);
     });
@@ -295,14 +295,24 @@ describe('GrantPolicy: a minimum trust level the comparison cannot order is refu
     expect(p.evaluate('orders-db', { ...CTX, trustLevel: 2 }).allowed).toBe(false);
   });
 
-  it('accepts a fractional floor, which orders perfectly well', () => {
-    // Deliberately NOT refused. The reason this check exists is that the comparison cannot
-    // ORDER the value; 2.5 orders fine and worked as a floor before this change. Refusing it
-    // would be a break with no security argument, justified by an error message that is untrue
-    // of the value it rejects. `trustLevel` is declared `number`, not an integer.
-    const p = new GrantPolicy([withMatch({ minTrustLevel: 2.5 })]);
-    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 3 }).allowed).toBe(true);
-    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 2 }).allowed).toBe(false);
+  it('refuses a FRACTIONAL floor, and says the signature reason', () => {
+    // This test previously asserted the opposite, on the reasoning that 2.5 orders perfectly well
+    // so refusing it was a break with no security argument. There is one, and it is measured:
+    // both canonical ATX payloads project trustLevel through `Math.trunc` while the resolution
+    // context carries the raw value, so a holder edits a signed 3 to 3.999999 and the credential
+    // still verifies. Against a 3.5 floor the honest credential is denied and the forged one is
+    // served. A whole-number floor cannot be crossed that way, because truncation preserves the
+    // integer part. The relaxation was the vulnerability.
+    expect(() => new GrantPolicy([withMatch({ minTrustLevel: 2.5 })])).toThrow(/whole number/);
+    expect(() => new GrantPolicy([withMatch({ minTrustLevel: 2.5 })])).toThrow(/signature/);
+  });
+
+  it('a whole-number floor is not crossed by the fractional bits a signature does not cover', () => {
+    // The property the refusal above protects, asserted on the policy directly: whatever a holder
+    // can add below 1.0, an integer floor still denies it.
+    const p = new GrantPolicy([withMatch({ minTrustLevel: 4 })]);
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 3.999999 }).allowed).toBe(false);
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 4 }).allowed).toBe(true);
   });
 
   it('accepts a floor of 0 and omitting the predicate entirely', () => {
@@ -692,5 +702,129 @@ describe('GrantPolicy: a binding is what it was when it was validated', () => {
       delete (handle.match as Record<string, unknown>).minTrustLevel;
     }).toThrow(TypeError); // frozen: strict mode, and test files are modules
     expect(p.evaluate('orders-db', { ...CTX, trustLevel: 1 }).allowed).toBe(false);
+  });
+});
+
+/**
+ * Read-once, completed. Three fields were hoisted into locals in an earlier commit and two were
+ * missed — `match.trustClass` and the binding's own `grant` key — which is the same class the
+ * commit claimed to have swept. Each test asserts the field is read EXACTLY once and that the
+ * value loaded is the one the first read returned.
+ */
+describe('GrantPolicy: every validated field is read exactly once', () => {
+  it('reads trustClass once, and loads what that read returned', () => {
+    // This one also travels: the resolver copies match.trustClass into the broker assertion's
+    // trust_class claim, so a second read would mint a credential naming a class nobody authored.
+    let reads = 0;
+    const match = {
+      get trustClass() {
+        reads += 1;
+        return reads > 1 ? 'public:read' : 'admin:write';
+      },
+    };
+    const p = new GrantPolicy([{ ...binding(), match }]);
+    expect(reads).toBe(1);
+    const r = p.evaluate('orders-db', { ...CTX, capabilities: ['public:read'] });
+    expect(r.allowed).toBe(false); // the loaded class is admin:write, which this ATX lacks
+    expect(p.evaluate('orders-db', { ...CTX, capabilities: ['admin:write'] }).allowed).toBe(true);
+  });
+
+  it('reads the grant key once, so the reference check and the duplicate check see what loads', () => {
+    let reads = 0;
+    const b = {
+      get grant() {
+        reads += 1;
+        return reads > 1 ? 'not-a-grant-ref://evil' : 'grant://orders-db';
+      },
+      match: { trustClass: 'orders:read' },
+      resolve: { ...(BINDING.resolve as object) },
+    };
+    const p = new GrantPolicy([b]);
+    expect(reads).toBe(1);
+    expect(p.evaluate('orders-db', CTX).allowed).toBe(true);
+  });
+
+  it('refuses a duplicate whose key changes between reads', () => {
+    const mk = (first: string, later: string) => {
+      let n = 0;
+      return {
+        get grant() { n += 1; return n > 1 ? later : first; },
+        match: { trustClass: 'orders:read' },
+        resolve: { ...(BINDING.resolve as object) },
+      };
+    };
+    expect(() =>
+      new GrantPolicy([mk('grant://orders-db', 'grant://other'), mk('grant://orders-db', 'grant://other2')]),
+    ).toThrow(/duplicate binding/);
+  });
+});
+
+/**
+ * The loaded policy is immutable all the way down. The element freeze landed earlier; the ARRAY
+ * and the nested federation predicates did not, and the array is what the `as number` cast in
+ * `evaluate()` rests on — an appended binding never passes validation, so an unrankable floor
+ * could reach the comparison, where `1 < undefined` is false.
+ */
+describe('GrantPolicy: the loaded policy cannot be extended or reshaped', () => {
+  it('freezes the bindings array, not just its elements', () => {
+    const p = new GrantPolicy([BINDING]);
+    const internals = (p as unknown as { bindings: GrantBinding[] }).bindings;
+    expect(Object.isFrozen(internals)).toBe(true);
+    expect(() => internals.push({ ...BINDING, grant: 'grant://smuggled' })).toThrow(TypeError);
+    expect(p.size).toBe(1);
+  });
+
+  it('an unrankable floor cannot reach evaluate() through the array', () => {
+    const p = new GrantPolicy([withMatch({ oasbLevel: '>=L3' })]);
+    const internals = (p as unknown as { bindings: GrantBinding[] }).bindings;
+    expect(() =>
+      internals.push({
+        grant: 'grant://evil',
+        match: { trustClass: 'orders:read', oasbLevel: 'L9' },
+        resolve: BINDING.resolve,
+      }),
+    ).toThrow(TypeError);
+    expect(p.evaluate('evil', { ...CTX, oasbLevel: 'L1' }).allowed).toBe(false);
+  });
+
+  it('freezes the federation predicates nested inside match', () => {
+    const r = new GrantPolicy([BINDING]).evaluate('orders-db', CTX);
+    expect(Object.isFrozen(r.binding?.match.jurisdiction)).toBe(true);
+    expect(Object.isFrozen(r.binding?.match.jurisdiction?.in)).toBe(true);
+    expect(Object.isFrozen(r.binding?.match.issuerChainIncludes)).toBe(true);
+  });
+});
+
+/** evaluate() denies; it never throws, whatever a library consumer hands it. */
+describe('GrantPolicy: evaluate() denies rather than throwing', () => {
+  for (const [label, name] of [
+    ['a throwing toString', { toString() { throw new Error('boom'); } }],
+    ['a symbol', Symbol('orders-db')],
+    ['undefined', undefined],
+    ['a number', 42],
+  ] as [string, unknown][]) {
+    it(`denies when the grant name is ${label}`, () => {
+      const p = new GrantPolicy([BINDING]);
+      const r = p.evaluate(name as string, CTX);
+      expect(r.allowed).toBe(false);
+    });
+  }
+
+  it('denies a capability list that lies about includes', () => {
+    // Array.isArray is true for a subclass and for a Proxy over an array, either of which can
+    // override includes. The check scans members directly instead.
+    class Liar extends Array { includes() { return true; } }
+    const liar = new Liar();
+    expect(Array.isArray(liar)).toBe(true);
+    expect(new GrantPolicy([BINDING]).evaluate('orders-db', { ...CTX, capabilities: liar }).allowed).toBe(false);
+
+    const proxied = new Proxy(['nothing:useful'], {
+      get(t, prop) { return prop === 'includes' ? () => true : (t as never)[prop as never]; },
+    });
+    expect(new GrantPolicy([BINDING]).evaluate('orders-db', { ...CTX, capabilities: proxied as string[] }).allowed).toBe(false);
+  });
+
+  it('still grants on an honest capability list', () => {
+    expect(new GrantPolicy([BINDING]).evaluate('orders-db', CTX).allowed).toBe(true);
   });
 });
