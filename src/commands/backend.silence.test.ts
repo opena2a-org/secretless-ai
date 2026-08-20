@@ -97,7 +97,7 @@ describe('read-only commands stay silent (no biometric / 1P prompts)', () => {
 
   it('runStatus does not invoke `security` or `op`', async () => {
     const { runStatus } = await import('./core');
-    const exitCode = runStatus(fakeHome);
+    const exitCode = await runStatus(fakeHome);
     expect(exitCode).toBe(0);
     expect(offending()).toEqual([]);
   });

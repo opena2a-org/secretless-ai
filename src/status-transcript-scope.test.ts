@@ -46,8 +46,8 @@ describe('status transcript scope', () => {
   });
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-  it('separates how many transcripts exist from how many were read', () => {
-    const result = status(dir);
+  it('separates how many transcripts exist from how many were read', async () => {
+    const result = await status(dir);
     const tp = result.transcriptProtection;
 
     expect(tp.transcriptFiles).toBe(DISCOVERED);
@@ -58,21 +58,21 @@ describe('status transcript scope', () => {
     expect(tp.transcriptFilesScanned).toBeLessThan(tp.transcriptFiles);
   });
 
-  it('reads the most recent transcripts, which is what the output claims', () => {
-    status(dir);
+  it('reads the most recent transcripts, which is what the output claims', async () => {
+    await status(dir);
     // discoverTranscripts sorts by mtime descending, so "most recent" is the
     // head of the list. If that ever changes, the wording in the status row
     // becomes false and this fails.
     expect(filesActuallyRead).toEqual(FAKE_TRANSCRIPTS.slice(0, TRANSCRIPT_SAMPLE_SIZE));
   });
 
-  it('never reports the discovery count as the number of files scanned', () => {
+  it('never reports the discovery count as the number of files scanned', async () => {
     const logs: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       logs.push(args.join(' '));
     });
     try {
-      runStatus(dir);
+      await runStatus(dir);
     } finally {
       spy.mockRestore();
     }

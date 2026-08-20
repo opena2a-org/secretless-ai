@@ -4,11 +4,22 @@
 
 Every item came from a real bug or regression. Don't skip without writing down why.
 
-Run every command from the local build (`node dist/cli.js`), not the global
-install. Several commands operate on **machine-global state** (the secret
-store, `~/.zshenv`, shell history, MCP configs) — the steps below flag each
-one and use throwaway names or isolated `$HOME` so a smoke run never damages
-the operator's real setup.
+Run every command from the local build, not the global install. Several commands
+operate on **machine-global state** (the secret store, `~/.zshenv`, shell
+history, MCP configs) — the steps below flag each one and use throwaway names or
+isolated `$HOME` so a smoke run never damages the operator's real setup.
+
+**The binary is `dist/cli.js`.** Take it from `package.json` `bin`, never from
+habit: `dist/index.js` is this package's LIBRARY entry, it registers no commands,
+and it prints nothing and exits 0 for every invocation including `--version`.
+A walkthrough scripted against it produces a full sheet of exit-0 rows with no
+output, which is indistinguishable from a clean pass. Two people hit this in one
+day. Before trusting any sheet, confirm at least one row produced real output.
+
+**Build from a clean checkout of the commit you intend to tag**, not from the
+incrementally-built working tree. An incremental `dist/` is not the build
+artifact of any particular commit, and the walkthrough certifies whatever
+happens to be on disk.
 
 ---
 
@@ -87,22 +98,73 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
   summary}`. Exit 1 when findings exist (CI gating), 0 when clean.
 - `status --json`: single JSON document — `{tool, version, isProtected,
   hookInstalled, denyRuleCount, configuredTools, secretsFound,
+  settingsUnreadable, settingsAmbiguous,
   transcriptProtection, backend, session, broker, summary}`. Exit 0; CI
   consumers gate on `summary.verdict`.
 - Neither may print the human banner or any ANSI color in JSON mode.
 
-### 2b. Unknown-flag rejection (issues #62 / #74 / #81 / #83)
+### 2b. Unknown-flag rejection (issues #62 / #74 / #81 / #83 / #126 / #137)
+
+**Run every flag row on BOTH a clean tree and a tree with a finding.** A tree
+that contains a credential exits 1 for that reason, so it cannot tell you
+whether a flag changed anything — this exact confound put "`scan --nosuchflag`
+-> exit 1, warns and continues" on the record as evidence that warn-and-continue
+was safe. On a clean tree the same command exited 0 and said `No hardcoded
+credentials found.` The 1 was never the flag.
 
 ```bash
-$SL init --dry-run; echo "exit=$?"    # "Unknown option: --dry-run", exit 2, NO --dry-run/ dir created
-$SL status --bogus; echo "exit=$?"    # rejected, exit 2
-$SL scan --show-placeholder .         # WARNS about the unknown flag (typo of --show-placeholders), still scans
-$SL bogus-command; echo "exit=$?"     # "Unknown command", help block, exit 1
+mkdir -p /tmp/sl-clean && : > /tmp/sl-clean/app.ts       # clean tree
+$SL init --dry-run; echo "exit=$?"        # "Unknown option: --dry-run", exit 2, NO --dry-run/ dir created
+$SL status --bogus; echo "exit=$?"        # rejected, exit 2
+$SL scan /tmp/sl-clean --show-placeholder; echo "exit=$?"   # REFUSED, exit 2, names --show-placeholders
+$SL scan /tmp/sl-clean; echo "exit=$?"                      # CONTROL: exit 0, "No hardcoded credentials found."
+$SL scan-staged --no-ignoree; echo "exit=$?"                # REFUSED, exit 2 (the pre-commit gate)
+$SL bogus-command; echo "exit=$?"         # "Unknown command", help block, exit 1
 ```
 
-`init`/`status` reject unknown flags (filesystem footgun — pre-fix, `init
---ci` created a literal `--ci/` directory). `scan` warns-but-runs so a typo'd
-flag never hides scan results.
+`scan`, `scan-staged` and `scan-history` refuse an unrecognised flag: their
+output is the answer, so a dropped flag is a wrong verdict rather than a wasted
+run. `feedback` and `diff` still warn — they report no verdict. The
+`secretless-mcp` wrapper still warns, because its argv lines live in hand-edited
+client configs where a refusal is a server that will not start.
+
+### 2c. `--json` is honored or refused (issue #126)
+
+```bash
+$SL scan /tmp/sl-clean --json | head -c 40; echo " exit=$?"   # JSON, exit 0
+$SL status /tmp/sl-clean --json | head -c 40                  # JSON
+$SL verify --json; echo "exit=$?"      # REFUSED, exit 2, names scan and status
+$SL cache --json; echo "exit=$?"       # REFUSED, exit 2 (pre-fix: status page, exit 0)
+$SL doctor --json; echo "exit=$?"      # REFUSED, exit 2
+```
+
+Check both argv positions — `scan --json <dir>` and `scan <dir> --json` — since
+this checklist uses the leading form and the README uses the trailing one.
+
+The one that matters: pre-fix, `verify --json` resolved `--json` as the project
+directory and printed `AI context: clean (no credentials found)` for a directory
+whose `CLAUDE.md` held a live key.
+
+---
+
+### 2d. status tells three states apart (settings key collisions)
+
+```bash
+# A settings file whose permissions key appears TWICE loses every deny pattern in
+# the first copy -- in Claude Code, which is what enforces them.
+$SL status /path/with/duplicated-key --json | jq ".denyRuleCount, .settingsAmbiguous"
+#   null
+#   { "path": ".claude/settings.json", "reason": "repeats ..." }
+$SL status /path/with/duplicated-key      # NO green check on that file
+```
+
+`denyRuleCount` is `number | null`: null in BOTH unknown states (would not parse, or
+keys collide), a number only when it was actually measured. Check the three states are
+distinguishable from the JSON alone -- measured / settingsUnreadable / settingsAmbiguous
+-- and that no row renders green over a file in either unknown state. Do NOT verify a
+collision with `grep` or `node -e JSON.parse`: both exit 0 on a duplicate and print
+nothing. Also run it against a REAL settings file from a dev tree, not only fixtures --
+a false positive here is a warning on the tool own status page.
 
 ---
 

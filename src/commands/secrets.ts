@@ -115,6 +115,25 @@ export async function runSecret(args: string[]): Promise<number> {
     }
 
     case 'list': {
+      // `secret list` takes no argument (help.ts, README). It used to ACCEPT
+      // one and ignore it: measured on 0.22.1, `secret list ZZZ_NO_SUCH_PREFIX`
+      // returned all 81 stored names, byte-identical to the unfiltered run, at
+      // exit 0, with nothing saying the token was dropped. A user who believes
+      // they filtered and sees every name reads that as "these all match".
+      //
+      // Refused rather than implemented as a filter: adding a filter is a
+      // feature with its own design questions (substring or prefix? case
+      // sensitivity? exit code on no match?), and inventing one here to excuse
+      // a swallowed token is how a parsing surface grows. Naming the token is
+      // the fix; the feature is a separate decision.
+      const extra = args[1];
+      if (extra !== undefined) {
+        console.error(`\n  \`secret list\` takes no arguments, but "${extra}" was given.`);
+        console.error('  It lists every stored name, and it was NOT filtered by that token.');
+        console.log(`\n  List all:  ${CLI_BARE} secret list`);
+        console.log(`  Filter:    ${CLI_BARE} secret list | grep ${JSON.stringify(extra)}\n`);
+        return 2;
+      }
       const store = new SecretStore();
       try {
         const names = await store.listSecrets();

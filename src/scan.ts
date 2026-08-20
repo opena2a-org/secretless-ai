@@ -176,6 +176,16 @@ export interface ScanStats {
    * never opened rendered as a clean scan (#120).
    */
   oversize?: Array<{ path: string; bytes: number; capBytes: number }>;
+  /**
+   * What the SOURCE walk chose not to look at, with the reason.
+   *
+   * DISCLOSURE, NOT A FAILURE. These are boundaries the scanner declared, not
+   * claims it broke, so they do not set the exit code — the same class as
+   * `outOfRoot`. Populated only by the source walk; the config and key walks
+   * prune the same heavy directories and counting all three would treble the
+   * number and bury the entry that matters.
+   */
+  skips?: CoverageSkips;
 }
 
 /** Per-file size caps. A file above the cap is skipped and reported, never dropped silently. */
@@ -549,6 +559,15 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       const k = dedupeKey(p);
       if (stats.outOfRoot && !seenOutOfRoot.has(k)) { seenOutOfRoot.add(k); stats.outOfRoot.push(p); }
     }
+    // Only the disclosing walk contributes; the others return an empty set, so
+    // this is an accumulate rather than a filter and cannot silently pick up a
+    // second walk if one ever opts in.
+    if (stats.skips) {
+      stats.skips.dirCount += walk.skips.dirCount;
+      stats.skips.fileCount += walk.skips.fileCount;
+      for (const d of walk.skips.dirs) if (stats.skips.dirs.length < SKIP_SAMPLE_CAP) stats.skips.dirs.push(d);
+      for (const f of walk.skips.files) if (stats.skips.files.length < SKIP_SAMPLE_CAP) stats.skips.files.push(f);
+    }
   };
 
   const configWalk = walkConfigFiles(projectDir, options?.maxSourceFiles ?? 5000, includeTestsOpt, ignore);
@@ -810,6 +829,45 @@ interface WalkResult {
    * same fail-open in a new place.
    */
   outOfRoot: string[];
+  /**
+   * What this walk chose not to look at, with the reason it chose that.
+   *
+   * DISCLOSURE ONLY — see `CoverageSkips`. Populated on the walk that opts in
+   * via `discloseSkips`, which is the SOURCE walk alone: the config and key
+   * walks prune the same heavy directories, so counting all three would report
+   * `node_modules` three times and produce a number nobody can act on.
+   */
+  skips: CoverageSkips;
+}
+
+/**
+ * Directories not entered and files not opened, each with the reason.
+ *
+ * These are DECLARED BOUNDARIES, not failures of a claim the scanner made, so
+ * they do not set the exit code — the same class as `outOfRoot` and the same
+ * treatment. `truncated`, `unreadable` and `oversize` are the other class: we
+ * said we would read something and did not.
+ *
+ * The reason travels with the path because the count alone is not actionable.
+ * On this repository the raw count is dominated by dependency and build output,
+ * which every user already expects to be skipped; the entry that matters is a
+ * hidden directory, and it is invisible inside a single total.
+ */
+export interface CoverageSkips {
+  /** Directories not descended into: `{ path, reason }`, capped. */
+  dirs: Array<{ path: string; reason: string }>;
+  /** Files enumerated but not opened: `{ path, reason }`, capped. */
+  files: Array<{ path: string; reason: string }>;
+  /** True counts, which keep rising after the samples above stop growing. */
+  dirCount: number;
+  fileCount: number;
+}
+
+/** Samples are for a human; the counts carry the magnitude. */
+const SKIP_SAMPLE_CAP = 20;
+
+export function emptySkips(): CoverageSkips {
+  return { dirs: [], files: [], dirCount: 0, fileCount: 0 };
 }
 
 /**
@@ -993,12 +1051,25 @@ function realpathOrNull(p: string): string | null {
 
 /** Per-walk behaviour: which directories to descend, which files to keep. */
 interface WalkSpec {
-  /** True to NOT descend into this directory. */
-  skipDir(name: string, relFromRoot: string): boolean;
-  /** True to keep this file. */
-  acceptFile(name: string, relFromRoot: string): boolean;
+  /**
+   * A REASON string to skip this directory, or false to descend.
+   *
+   * It returns the reason rather than a boolean so the disclosure and the
+   * decision come from the same expression. A separate `skipReason` predicate
+   * beside a boolean `skipDir` would be two statements of one rule, free to
+   * drift — and a disclosure that disagrees with the walk is worse than none.
+   */
+  skipDir(name: string, relFromRoot: string): string | false;
+  /** A REASON string to reject this file, or false to keep it. Same rule. */
+  rejectFile(name: string, relFromRoot: string): string | false;
   /** What to push into `files` — an absolute path or a root-relative one. */
   collect(entryPath: string, relFromRoot: string): string;
+  /**
+   * Record what was skipped. Only the SOURCE walk sets this: all three walks
+   * prune `node_modules` and friends, so disclosing every walk would treble the
+   * count and bury the one entry a user needs to see.
+   */
+  discloseSkips?: boolean;
 }
 
 /**
@@ -1022,6 +1093,7 @@ interface WalkSpec {
 function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   const files: string[] = [];
   const unreadable: string[] = [];
+  const skips = emptySkips();
   const outOfRoot: string[] = [];
   let truncated = false;
 
@@ -1073,7 +1145,14 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         // coverage warning. Reporting `node_modules -> /pnpm-store` as an
         // unfollowed boundary — and telling the user to go scan it — is noise
         // about a directory that was never going to be walked.
-        if (spec.skipDir(entry.name, relFromRoot)) continue;
+        const skipReason = spec.skipDir(entry.name, relFromRoot);
+        if (skipReason) {
+          if (spec.discloseSkips) {
+            skips.dirCount++;
+            if (skips.dirs.length < SKIP_SAMPLE_CAP) skips.dirs.push({ path: relFromRoot, reason: skipReason });
+          }
+          continue;
+        }
 
         // Containment applies to DIRECTORY links only. Following one is
         // unbounded: a repo holding `link -> $HOME` would pull the whole home
@@ -1088,7 +1167,14 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (files.length >= maxFiles) { truncated = true; break; }
         queue.push({ dir: entryPath, ancestors: childAncestors });
       } else {
-        if (!spec.acceptFile(entry.name, relFromRoot)) continue;
+        const rejectReason = spec.rejectFile(entry.name, relFromRoot);
+        if (rejectReason) {
+          if (spec.discloseSkips) {
+            skips.fileCount++;
+            if (skips.files.length < SKIP_SAMPLE_CAP) skips.files.push({ path: relFromRoot, reason: rejectReason });
+          }
+          continue;
+        }
         // A symlinked FILE is NOT contained, even out of the root. Reading one
         // file the repository explicitly names is bounded work, and it is the
         // shape every dotfile manager produces: `pkg/.env -> ../../shared/.env`
@@ -1101,7 +1187,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     }
   }
 
-  return { files, truncated, unreadable, outOfRoot };
+  return { files, truncated, unreadable, outOfRoot, skips };
 }
 
 /**
@@ -1120,13 +1206,14 @@ function walkKeyFiles(
     // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
     // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
     skipDir: (name, rel) =>
-      SOURCE_SKIP_DIRS.has(name) || name === '.git'
-      || (!includeTests && TEST_DIRS.has(name))
-      || !!(ignore && ignore.matches(rel + '/.')),
-    acceptFile: (name, rel) =>
-      KEY_FILE_EXTENSIONS.has(path.extname(name).toLowerCase())
-      && (includeTests || !isTestFile(name))
-      && !(ignore && ignore.matches(rel)),
+      (SOURCE_SKIP_DIRS.has(name) && 'dependency or build output')
+      || (name === '.git' && 'git metadata')
+      || (!includeTests && TEST_DIRS.has(name) && 'test directory')
+      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule'),
+    rejectFile: (name, rel) =>
+      (!KEY_FILE_EXTENSIONS.has(path.extname(name).toLowerCase()) && 'not a key file')
+      || (!(includeTests || !isTestFile(name)) && 'test file')
+      || (!!(ignore && ignore.matches(rel)) && 'ignore rule'),
     collect: (entryPath) => entryPath,
   });
 }
@@ -1140,12 +1227,13 @@ function walkConfigFiles(
   const matcher = buildConfigNameMatcher();
   return walkTree(dir, maxFiles, {
     skipDir: (name, rel) =>
-      SOURCE_SKIP_DIRS.has(name) || name === '.git'
-      || (!includeTests && TEST_DIRS.has(name))
-      || !!(ignore && ignore.matches(rel + '/.')),
-    acceptFile: (name, rel) =>
-      matchesConfigName(name, rel, matcher)
-      && !(ignore && ignore.matches(rel)),
+      (SOURCE_SKIP_DIRS.has(name) && 'dependency or build output')
+      || (name === '.git' && 'git metadata')
+      || (!includeTests && TEST_DIRS.has(name) && 'test directory')
+      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule'),
+    rejectFile: (name, rel) =>
+      (!matchesConfigName(name, rel, matcher) && 'not a recognised config file')
+      || (!!(ignore && ignore.matches(rel)) && 'ignore rule'),
     collect: (_entryPath, rel) => rel,
   });
 }
@@ -1159,14 +1247,21 @@ function walkSourceFiles(
   return walkTree(dir, maxFiles, {
     // Prune whole-tree ignored directories. The matcher's directory patterns
     // end with `/`, so we test the dir path with a trailing segment.
+    // `.git` is tested BEFORE the build-output set purely so the disclosure
+    // names it accurately: it is in SOURCE_SKIP_DIRS, so without this arm it
+    // reported as "dependency or build output", which it is not. The set that
+    // skips is unchanged; only the reason differs.
     skipDir: (name, rel) =>
-      SOURCE_SKIP_DIRS.has(name) || name.startsWith('.')
-      || (!includeTests && TEST_DIRS.has(name))
-      || !!(ignore && ignore.matches(rel + '/.')),
-    acceptFile: (name, rel) =>
-      SOURCE_FILE_EXTENSIONS.has(path.extname(name))
-      && (includeTests || !isTestFile(name))
-      && !(ignore && ignore.matches(rel)),
+      (name === '.git' && 'git metadata')
+      || (SOURCE_SKIP_DIRS.has(name) && 'dependency or build output')
+      || (name.startsWith('.') && 'hidden directory')
+      || (!includeTests && TEST_DIRS.has(name) && 'test directory (--include-tests)')
+      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule (--no-ignore)'),
+    rejectFile: (name, rel) =>
+      (!SOURCE_FILE_EXTENSIONS.has(path.extname(name)) && 'unsupported file type')
+      || (!(includeTests || !isTestFile(name)) && 'test file (--include-tests)')
+      || (!!(ignore && ignore.matches(rel)) && 'ignore rule (--no-ignore)'),
     collect: (entryPath) => entryPath,
+    discloseSkips: true,
   });
 }

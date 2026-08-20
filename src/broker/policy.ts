@@ -37,15 +37,86 @@ export class PolicyEngine {
   /**
    * Load policies from the policy file. Safe to call multiple times (reloads).
    * Returns the number of rules loaded.
+   *
+   * ASYNC because the duplicate-member scan it depends on lives in
+   * `@opena2a/atx-verify`, which is ESM-only while this package is CommonJS —
+   * the same dynamic-import mechanism the `/grant` path already uses in
+   * `server.ts`. The whole chain above this call is already async
+   * (`commands/broker.ts` -> `daemon.ts` -> `server.start()`), so the await
+   * costs one keyword at the single call site. The signature change IS
+   * consumer-visible for anyone using `PolicyEngine` as a library; a call left
+   * un-awaited leaves the engine at zero rules, which is default-deny.
    */
-  loadPolicies(): number {
+  async loadPolicies(): Promise<number> {
     if (!fs.existsSync(this.policyFile)) {
       this.rules = [];
       return 0;
     }
 
+    // Resolved BEFORE the load block and with its OWN message, because a module
+    // that will not load is an installation fault and not a fault in the
+    // operator's file. Reporting it as "Failed to load policies from <their
+    // file>" would send them to debug the wrong artifact.
+    //
+    // There is deliberately no catch that continues without the scan. Falling
+    // back to a bare JSON.parse here is not a degraded mode — it is the
+    // pre-0.23.0 code path verbatim, the one this check exists to close. A
+    // security check that cannot run must withhold, not wave the input through.
+    let firstDuplicateMember: (text: string) => string | null;
+    try {
+      ({ firstDuplicateMember } = await import('@opena2a/atx-verify'));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Cannot load policies from ${this.policyFile}: the duplicate-member scanner ` +
+        `(@opena2a/atx-verify) could not be loaded, so the policy file was not applied and no ` +
+        `credential will be served. This is an installation fault, not a fault in your policy ` +
+        `file. Do not edit or delete the file to clear it.\n` +
+        `  Verify: node -e "import('@opena2a/atx-verify').then(() => console.log('ok'))"\n` +
+        `  Fix:    npm install   # and check node -v is >= 20.19.0\n` +
+        `  Cause:  ${detail}`,
+      );
+    }
+
     try {
       const raw = fs.readFileSync(this.policyFile, 'utf-8');
+
+      // Scanned on the RAW TEXT, and on the SAME binding `JSON.parse` consumes
+      // below — never a re-read and never a normalised copy, or the two would
+      // be judging different bytes.
+      //
+      // It has to happen out here because `JSON.parse` resolves a duplicated
+      // key before any consumer of the parsed object can see it: a reviver is
+      // handed each member exactly once, already collapsed. Issue #140's filed
+      // direction proposed that reviver; it cannot work, and the control it
+      // would produce never fires.
+      let duplicate: string | null;
+      try {
+        duplicate = firstDuplicateMember(raw);
+      } catch {
+        // StrictParseError. The scanner is lax on scalar tokens but strict on
+        // structure, so this is text it cannot vouch for as a single JSON
+        // value. Refusing here rather than letting JSON.parse decide keeps the
+        // accept-set of the file and the accept-set of the check identical.
+        throw new Error(
+          `Policy file is not a single well-formed JSON value that the duplicate-member ` +
+          `scanner can vouch for, so it was not applied. Check the file for truncation, ` +
+          `trailing content after the closing brace, or a malformed string escape.`,
+        );
+      }
+      if (duplicate !== null) {
+        throw new Error(
+          `Policy file has a duplicate member "${duplicate}". A member name that collides with ` +
+          `another member of the same object is refused rather than resolved. Where the collision ` +
+          `is exact, JSON.parse keeps the last occurrence, so the restrictive half of the rule is ` +
+          `the half that disappears, while the rule count, getRules() and /health all report it ` +
+          `loaded. ` +
+          `The colliding member may be spelled differently in the file than it reads here: names ` +
+          `are compared after JSON escape decoding and case folding, so a case variant or an ` +
+          `escaped spelling collides too. Remove the duplicate and keep the one you meant.`,
+        );
+      }
+
       const parsed = JSON.parse(raw);
 
       // Accept both { rules: [...] } and bare array [...] formats
@@ -82,10 +153,40 @@ export class PolicyEngine {
   }
 
   /**
-   * Load policies from an in-memory array (for testing).
+   * Load policies from an in-memory array.
+   *
+   * ACCEPTS EXACTLY WHAT `loadPolicies()` ACCEPTS INSIDE A `rules` ARRAY, and
+   * throws on anything else — the same `validateRule`, not a subset and not a
+   * parallel check. Two public methods that load the same type into the same
+   * field and decide the same requests must have one accept-set, or every
+   * constraint added to `validateRule` later applies to one caller and not the
+   * other. That is not a defect to fix once, it is a defect generator.
+   *
+   * It used to validate nothing. Measured on 0.22.1: a closed `timeWindow`
+   * denied, the SAME window under a misspelled `timeWindoww` allowed, and
+   * `scopeCheck: true` allowed — the key `loadPolicies()` refuses outright.
+   * That is the 0.22.1 fail-open reached through a second entry point, and it
+   * made a sentence in our published advisory false: "a rule naming
+   * `scopeCheck` is refused at load" carries no qualifier naming the file.
+   *
+   * It also used to ALIAS the caller's objects — `{ ...r }` is shallow, so
+   * `constraints` stayed the caller's. Measured: deleting `timeWindow` from
+   * one's own object AFTER this returned turned a denying policy into an
+   * allowing one with no call into the engine. `validateRule` reconstructs
+   * `constraints` from scratch, so the engine now holds nothing the caller can
+   * reach.
+   *
+   * Stays SYNCHRONOUS. `loadPolicies()` is async only because the raw-text
+   * duplicate scan is an ESM import, and a parsed JS object cannot carry two
+   * members of the same name — there is no in-memory analogue of that check,
+   * nor of the envelope check. That is the entire delta between the two.
+   *
+   * Stays EXPORTED. It is the only in-memory path to a loaded policy; removing
+   * it would route every programmatic consumer onto a policy file on disk,
+   * which is the weaker of the two surfaces.
    */
   loadRules(rules: PolicyRule[]): void {
-    this.rules = rules.map(r => ({ ...r }));
+    this.rules = rules.map(r => validateRule(r));
   }
 
   /**

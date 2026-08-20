@@ -21,7 +21,15 @@ export interface StatusResult {
   isProtected: boolean;
   configuredTools: AITool[];
   hookInstalled: boolean;
-  denyRuleCount: number;
+  /**
+   * Deny patterns in effect, or NULL when the count was not measured.
+   *
+   * Null in BOTH unknown states — a settings file that would not parse, and one
+   * whose keys collide. A number implies a measurement, and `0` over a file we
+   * could not read is a parse artifact, not a count. Two different spellings of
+   * unknown in one contract is the defect class this release exists to close.
+   */
+  denyRuleCount: number | null;
   secretsFound: number;
   /**
    * True when the scan behind `secretsFound` could not cover the whole tree, so
@@ -39,6 +47,23 @@ export interface StatusResult {
    * `truncated` closes for scan coverage.
    */
   settingsUnreadable?: { path: string; reason: string };
+  /**
+   * Present when the settings file PARSES but carries a colliding member name,
+   * so what it configures cannot be read as written.
+   *
+   * Distinct from `settingsUnreadable`: the file is valid JSON and throws
+   * nothing. `JSON.parse` keeps the last copy of a repeated key, so a file
+   * whose `permissions` block appears twice loses every deny pattern in the
+   * first copy — silently, in Claude Code, which is what enforces them. This
+   * tool's defect was reporting `0` for that, indistinguishable from a project
+   * that configured none.
+   *
+   * Also carries the case where the duplicate scanner itself could not load.
+   * `status` is a reporting command: it does not throw on an installation
+   * fault the way the policy loader does, and it does not continue as though
+   * the check had passed. It reports that it could not tell.
+   */
+  settingsAmbiguous?: { path: string; reason: string };
   transcriptProtection: {
     stopHookInstalled: boolean;
     watcherRunning: boolean;
@@ -62,7 +87,7 @@ export interface StatusResult {
 /**
  * Check the current protection status of the project.
  */
-export function status(projectDir: string): StatusResult {
+export async function status(projectDir: string): Promise<StatusResult> {
   const result: StatusResult = {
     isProtected: false,
     configuredTools: [],
@@ -90,8 +115,14 @@ export function status(projectDir: string): StatusResult {
     // it. Both used to render as "0 deny patterns", so a project whose
     // protection had never been wired up looked exactly like a healthy one.
     let settings: any;
+    // Hoisted so the duplicate scan below reads the SAME bytes the parser
+    // consumed. Re-reading the file there would let the two judge different
+    // content, which is the defect one level over.
+    let rawSettings = '';
     try {
-      const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      rawSettings = fs.readFileSync(settingsPath, 'utf-8');
+
+      const parsed = JSON.parse(rawSettings);
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         result.settingsUnreadable = {
           path: '.claude/settings.json',
@@ -107,8 +138,48 @@ export function status(projectDir: string): StatusResult {
       };
     }
 
+    if (!settings) {
+      // Could not read it at all: the initial 0 would read as a measurement.
+      result.denyRuleCount = null;
+    }
+
+    // Scanned on the RAW TEXT — the same bytes JSON.parse consumed, never the
+    // parsed object, because the parser resolves a repeated member before any
+    // consumer can see it.
+    //
+    // Ordered AFTER the parse has classified the file, not because the scan
+    // needs the result but because the two failures are DIFFERENT states: text
+    // that does not parse is `settingsUnreadable`, and running the scan on it
+    // first set both flags and collapsed the distinction the fix exists to
+    // create. A file only reaches here if it parsed.
     if (settings) {
-      result.denyRuleCount = settings?.permissions?.deny?.length || 0;
+      try {
+        const { firstDuplicateMember } = await import('@opena2a/atx-verify');
+        const dup = firstDuplicateMember(rawSettings);
+        if (dup !== null) {
+          result.settingsAmbiguous = {
+            path: '.claude/settings.json',
+            reason: `repeats "${dup}", so only the last copy is in effect`,
+          };
+        }
+      } catch (err) {
+        // The scan could not run over text that DID parse: an installation
+        // fault, or input the parser accepted and the scanner will not vouch
+        // for. Reported, not thrown — this is a reporting command and an
+        // installation fault is not a broken project — and not swallowed,
+        // which would restore the green this exists to remove.
+        result.settingsAmbiguous = {
+          path: '.claude/settings.json',
+          reason: `keys could not be checked for collisions: ${(err as Error).message}`,
+        };
+      }
+    }
+
+    if (settings) {
+      // Left null when a collision means the file does not say what it reads as.
+      result.denyRuleCount = result.settingsAmbiguous
+        ? null
+        : settings?.permissions?.deny?.length || 0;
 
       // Check for Stop hook
       const stopHooks = settings?.hooks?.Stop || [];

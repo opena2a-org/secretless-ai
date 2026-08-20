@@ -59,16 +59,37 @@ export const EXIT_USAGE = 2;
 export type UnknownFlagPolicy =
   /** Refuse to run, exit EXIT_USAGE, before any side effect. */
   | 'reject'
-  /** Print a warning and continue — the behaviour `scan` has shipped since #81. */
+  /** Print a warning and continue. */
   | 'warn';
 
 export interface VerbSpec {
   /** Flag spelling -> whether it consumes the FOLLOWING argv token as its value. */
   flags: Record<string, boolean>;
   /**
-   * What to do with a flag not in `flags`. `reject` on every verb that can
-   * write, because a misspelled safety flag there is a destroyed file; `warn`
-   * on read-only verbs, where the cost of a typo is a wasted run.
+   * What to do with a flag not in `flags`.
+   *
+   * THE AXIS IS WHETHER THE VERB EMITS A VERDICT, not whether it can write.
+   * The write-based axis was inherited from the harm model of a file-mutation
+   * tool, and it is wrong for a scanner: the cost of a dropped flag here is not
+   * a wasted run, it is a wrong answer the user acts on.
+   *
+   * Measured — the same dropped flag, two trees, and the exit code that made
+   * this look safe came from somewhere else entirely:
+   *
+   *   scan <tree WITH a credential>   --nosuchflag  -> exit 1, "1 credential found"
+   *   scan <tree WITHOUT a credential> --nosuchflag -> exit 0, "No hardcoded credentials found."
+   *
+   * The 1 was the finding. On a clean tree, warn-and-continue emits the
+   * strongest clean claim the tool can make over a scan whose scope the user
+   * asked to change and did not get. `scan-staged --no-ignoree` is the same
+   * shape on the PRE-COMMIT GATE: exit 0, empty stdout, a warning on the one
+   * stream a git hook reliably swallows.
+   *
+   * So `reject` on the verdict-emitting verbs, and `warn` only where a refusal
+   * would be worse than a wrong answer — `feedback` and `diff`, which report no
+   * verdict, and the `secretless-mcp` wrapper, whose argv lines live in
+   * hand-edited client configs where a refusal is a server that will not start.
+   * That failure is loud, and loud is not the class this guards against.
    */
   unknownFlags: UnknownFlagPolicy;
   /**
@@ -80,12 +101,15 @@ export interface VerbSpec {
   /**
    * True when this verb actually implements `--json`.
    *
-   * Acceptance of `--json` is global and unchanged (see GLOBAL_FLAGS); this
-   * governs only whether we NAME it as supported when refusing a command line.
-   * Naming it on the 30 verbs that ignore it would advertise a machine-readable
-   * mode that does not exist, in the text a user reads at the moment they hit
-   * an error — the same false-clean class this release exists to close, and it
-   * would contradict this release's own note that `--json` is unchanged.
+   * It is now the single source of truth for that, in both directions: the verb
+   * declares `--json` in its own `flags` AND sets this, and `jsonVerbs()` reads
+   * it to name the honoring verbs in the refusal every other verb produces. A
+   * test pins it against the `--json` read sites in `cli.ts`, so a verb that
+   * starts or stops implementing JSON cannot leave this behind.
+   *
+   * Before 0.23.0 this governed only whether a refusal message NAMED `--json`
+   * as supported, because acceptance was global. That half-measure is gone: the
+   * flag is either implemented or not a flag.
    */
   honorsJson?: boolean;
 }
@@ -93,39 +117,53 @@ export interface VerbSpec {
 /**
  * Accepted by every verb.
  *
- * `--json` is here because 20 verbs accept and silently ignore it today. The
- * 2026-08-12 `[CHIEF-CPO]` ruling is that a flag the tool accepts is a flag the
- * tool honors, and that `--json` on a verb that does not implement it must exit
- * 2 naming the verbs that do. That is a consumer-visible exit-code change and
- * belongs to its own release, so it is NOT made here. Listing `--json` keeps
- * this release's behaviour byte-identical and leaves the ruling exactly one
- * place to land: delete this entry and give the implementing verbs their own.
+ * `--json` USED TO BE HERE, and that is what 0.23.0 changes. It is now declared
+ * by the two verbs that implement it, so on every other verb it is simply not a
+ * flag — which is the honest description of what it was all along.
  *
- * ACCEPTING it globally is not the same as ADVERTISING it globally. Only verbs
- * marked `honorsJson` name it in a refusal message — see `supportedFlags`.
+ * The 2026-08-12 `[CHIEF-CPO]` ruling: a flag the tool accepts is a flag the
+ * tool honors. `--json` on a verb that does not implement it exits 2 naming the
+ * verbs that do, rather than warning, because a machine consumer reading exit 0
+ * plus human text is the same false-clean class the rest of this file closes.
+ *
+ * Measured on 0.22.1 across all 32 verbs: 2 honor it, and of the other 30, 15
+ * truly ignored it, 11 mistook it for a SUBCOMMAND (`cache` and `backend`
+ * silently falling through to a normal-looking status page at exit 0), and 4
+ * mistook it for a POSITIONAL. The last group is why this is not cosmetic:
+ * `verify --json` resolved `--json` as the project directory, so the AI-context
+ * scan ran against a path that does not exist and printed `AI context: clean
+ * (no credentials found)` for a directory whose `CLAUDE.md` held a live
+ * Anthropic key. That is not accept-and-ignore; it is answering a different
+ * question and reporting it as clean.
  */
 const GLOBAL_FLAGS: Readonly<Record<string, boolean>> = {
   '--help': false,
   '-h': false,
-  '--json': false,
 };
 
 /**
  * Every verb the dispatcher accepts, with the flags it actually reads.
  *
- * `unknownFlags` is keyed on whether the verb can WRITE — mutate a file, the
- * credential store, or system state — not on how dangerous it feels. `clean`
- * and `clean-history` are the sharpest cases: both are destructive by default
- * and `--dry-run` is the only thing that makes either a preview, so a
- * misspelling of that flag has to stop the run rather than degrade to it.
+ * `unknownFlags` is `reject` by default and `warn` only by exception. The
+ * exceptions are listed with their reason, because an unexplained `warn` is how
+ * a verdict-emitting verb quietly rejoins the warn-and-continue class.
+ *
+ * It used to be keyed on whether the verb can WRITE. That axis came from the
+ * harm model of a file-mutation tool and was wrong here — see `UnknownFlagPolicy`
+ * for the measurement that retired it. Writing verbs still reject, but they
+ * reject because a dropped flag is a wrong action, not because writing is the
+ * test. `clean` and `clean-history` remain the sharpest of those: destructive by
+ * default, with `--dry-run` the only thing that makes either a preview.
  *
  * A verb whose flag list is incomplete would reject a working command, so
  * `argv.test.ts` derives the flag literals from the source and asserts this
  * table covers them. The test reads the source, not this table, so the two
- * cannot agree by construction.
+ * cannot agree by construction. A second test pins the POLICY per verb, in both
+ * directions, so neither flipping the table wholesale nor demoting one verb can
+ * pass quietly.
  */
 export const VERBS: Readonly<Record<string, VerbSpec>> = {
-  // --- read-only: a typo costs a wasted run, so warn and continue -----------
+  // --- verbs whose output IS the answer: a dropped flag is a wrong verdict ---
   scan: {
     flags: {
       '--history': false,
@@ -136,23 +174,35 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--min-confidence': true,
       '--max-files': true,
       '--max-file-size': true,
+      '--json': false,
     },
-    unknownFlags: 'warn',
+    unknownFlags: 'reject',
     honorsJson: true,
   },
   // `status` already refuses an unknown flag today, via
   // `rejectUnknownFlagAsDirArg` — the flag falls through as its directory
   // argument. Keeping it at `reject` preserves that exit code while replacing a
   // message that called the flag a bad path with one that calls it a bad flag.
-  status: { flags: {}, unknownFlags: 'reject', honorsJson: true },
+  status: { flags: { '--json': false }, unknownFlags: 'reject', honorsJson: true },
   // `verify` is the one read-only verb where a swallowed flag changes the
   // ANSWER rather than wasting the run: `verify --alll` silently returns the
   // short report, and the user reads "36 known env vars not set (use --all to
   // list)" believing they ran the full listing.
   verify: { flags: { '--all': false }, unknownFlags: 'reject' },
-  'scan-staged': { flags: { '--no-ignore': false }, unknownFlags: 'warn' },
-  'scan-history': { flags: {}, unknownFlags: 'warn' },
+  // The pre-commit gate, and the reason the whole axis changed. Measured with a
+  // CLEAN staged set: `scan-staged --no-ignoree` exited 0 with EMPTY stdout and
+  // the warning on stderr — the one stream a git hook reliably swallows. It has
+  // no `--json` channel, so an exit code is the only signal that path has.
+  // (Our own installed hook body passes no flags — `git-hook.ts:19` — so this
+  // cannot refuse an existing installation under version skew.)
+  'scan-staged': { flags: { '--no-ignore': false }, unknownFlags: 'reject' },
+  'scan-history': { flags: {}, unknownFlags: 'reject' },
+  // EXCEPTION, and a deliberately temporary one. By the verdict test this
+  // belongs on `reject`, but its sibling defect (clean-over-unparsed) is
+  // assigned to the next release and reclassifying it here would widen this one.
+  // It is swept with that fix, and the unit names it so it is not lost.
   'mcp-status': { flags: {}, unknownFlags: 'warn' },
+  // EXCEPTION: reports no verdict. A typo costs a wasted run, nothing more.
   feedback: { flags: {}, unknownFlags: 'warn' },
   // No flags of its own: `diff` reads one positional ref (commands/diff.ts:292).
   // The `--no-color`, `--verify` and `--show-toplevel` literals in that file are
@@ -287,12 +337,21 @@ export function supportedFlags(spec: VerbSpec): string[] {
   const all = { ...GLOBAL_FLAGS, ...spec.flags };
   return Object.keys(all)
     .filter((f) => f !== '-h')
-    // `--json` is accepted by every verb and implemented by two. Listing it as
-    // "Supported" everywhere promises a machine-readable mode that does not
-    // exist — and promises it in the one place a user reads after a refusal.
-    .filter((f) => f !== '--json' || spec.honorsJson === true)
     .sort()
     .map((f) => usageOf(f, all[f]));
+}
+
+/**
+ * The verbs that implement `--json`, derived from the registry rather than
+ * written out, so the refusal message cannot name a verb that stopped
+ * implementing it — or omit one that started.
+ *
+ * Computed on call, not at module load: `VERBS` is initialised below this
+ * point and a module-level constant here would read it in its temporal dead
+ * zone.
+ */
+export function jsonVerbs(): string[] {
+  return Object.keys(VERBS).filter((v) => VERBS[v].honorsJson === true).sort();
 }
 
 /**
@@ -307,7 +366,7 @@ export function prepareArgv(verb: string | undefined, args: string[]): PreparedA
   // output. Rewriting argv for a command that will not run helps nobody.
   if (!verb || !spec) return { args, positionals: [], warnings: [], errors: [] };
   // args[0] is the verb; flags start at 1.
-  return prepareWithSpec(spec, args, 1);
+  return prepareWithSpec(spec, args, 1, true);
 }
 
 /**
@@ -315,10 +374,20 @@ export function prepareArgv(verb: string | undefined, args: string[]): PreparedA
  * `secretless-mcp` wrapper, whose first token is already a flag.
  */
 export function prepareBinArgv(spec: VerbSpec, args: string[]): PreparedArgv {
-  return prepareWithSpec(spec, args, 0);
+  // `isVerb: false`. The `--json` refusal is a statement about THIS CLI's verb
+  // contract; `secretless-mcp` has no such contract, its argv lines are written
+  // into MCP client configs and hand-edited afterwards, and its `warn` policy
+  // is a deliberate decision with a different blast radius. An unrecognised
+  // `--json` there takes the ordinary unknown-flag path.
+  return prepareWithSpec(spec, args, 0, false);
 }
 
-function prepareWithSpec(spec: VerbSpec, args: string[], firstFlagIndex: number): PreparedArgv {
+function prepareWithSpec(
+  spec: VerbSpec,
+  args: string[],
+  firstFlagIndex: number,
+  isVerb: boolean,
+): PreparedArgv {
   // Split at the first bare `--` BEFORE touching anything, so the child's argv
   // is preserved byte for byte.
   const sepIdx = spec.passthrough ? args.indexOf('--') : -1;
@@ -352,6 +421,28 @@ function prepareWithSpec(spec: VerbSpec, args: string[], firstFlagIndex: number)
     const takesValue = known[name];
 
     if (takesValue === undefined) {
+      // `--json` is refused rather than warned about, on EVERY verb that does
+      // not implement it, whatever that verb's unknown-flag policy says.
+      //
+      // This deliberately overrides `unknownFlags: 'warn'`. Routing `--json`
+      // through the ordinary unknown-flag path would refuse it on the twelve
+      // verbs that reject and merely WARN on the six read-only ones — and a
+      // warning on stderr beside exit 0 and human text on stdout is precisely
+      // the false-clean shape a machine consumer cannot see. `--json` is the
+      // one flag whose entire audience is a machine, so it is the one flag
+      // where warn-and-continue is not available as an answer.
+      if (isVerb && name === '--json') {
+        const honoring = jsonVerbs().map((v) => `\`${v}\``);
+        const list = honoring.length > 1
+          ? `${honoring.slice(0, -1).join(', ')} and ${honoring[honoring.length - 1]}`
+          : honoring.join('');
+        errors.push(
+          `--json is not implemented by this command, so it would have printed human text ` +
+          `and exited as though it had answered. Only ${list} produce JSON.`,
+        );
+        out.push(name);
+        continue;
+      }
       // Left WHOLE on purpose. Splitting an unregistered `--foo=bar` would push
       // `bar` into the positional list, and for `scan` or `clean` a stray
       // positional is a path — a token the user never typed becoming a target.
