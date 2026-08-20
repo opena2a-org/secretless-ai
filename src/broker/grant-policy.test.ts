@@ -810,18 +810,45 @@ describe('GrantPolicy: evaluate() denies rather than throwing', () => {
     });
   }
 
-  it('denies a capability list that lies about includes', () => {
-    // Array.isArray is true for a subclass and for a Proxy over an array, either of which can
-    // override includes. The check scans members directly instead.
-    class Liar extends Array { includes() { return true; } }
-    const liar = new Liar();
-    expect(Array.isArray(liar)).toBe(true);
-    expect(new GrantPolicy([BINDING]).evaluate('orders-db', { ...CTX, capabilities: liar }).allowed).toBe(false);
-
-    const proxied = new Proxy(['nothing:useful'], {
-      get(t, prop) { return prop === 'includes' ? () => true : (t as never)[prop as never]; },
+  // All four method-override shapes, because closing one and opening the other is exactly what
+  // happened here once: replacing `includes` with a `for…of` denied the Proxy-traps-includes case
+  // and started ALLOWING a subclass whose `Symbol.iterator` yields a class it does not contain —
+  // weaker than the released build, under a comment claiming a loop could not be redirected.
+  // Reading by index is redirected by neither.
+  for (const [label, make] of [
+    ['a subclass overriding Symbol.iterator', () => {
+      class C extends Array { *[Symbol.iterator]() { yield 'orders:read'; } }
+      const c = new C(); c.push('nothing:useful'); return c;
+    }],
+    ['a subclass overriding includes', () => {
+      class C extends Array { includes() { return true; } }
+      const c = new C(); c.push('nothing:useful'); return c;
+    }],
+    ['a Proxy trapping Symbol.iterator', () => new Proxy(['nothing:useful'], {
+      get(t, p) { return p === Symbol.iterator ? function* () { yield 'orders:read'; } : (t as never)[p as never]; },
+    })],
+    ['a Proxy trapping includes', () => new Proxy(['nothing:useful'], {
+      get(t, p) { return p === 'includes' ? () => true : (t as never)[p as never]; },
+    })],
+  ] as [string, () => unknown][]) {
+    it(`denies a capability list that lies via ${label}`, () => {
+      const caps = make();
+      expect(Array.isArray(caps)).toBe(true); // it passes the shape guard, which is the point
+      const r = new GrantPolicy([BINDING]).evaluate('orders-db', { ...CTX, capabilities: caps as string[] });
+      expect(r.allowed).toBe(false);
+      expect(r.reason).toMatch(/trust class/);
     });
-    expect(new GrantPolicy([BINDING]).evaluate('orders-db', { ...CTX, capabilities: proxied as string[] }).allowed).toBe(false);
+  }
+
+  it('does NOT claim to defend against a Proxy that traps every read', () => {
+    // Recorded as a known limit rather than left as a silent surprise. An object that lies about
+    // `length` and about each element cannot be read honestly in place by any means, so a caller
+    // supplying a hostile verifier decides the verdict — that is the trust boundary, not a gap.
+    // Asserted so that if a future change appears to close it, someone checks why.
+    const total = new Proxy(['nothing:useful'], {
+      get(t, p) { if (p === 'length') return 1; if (p === '0') return 'orders:read'; return (t as never)[p as never]; },
+    });
+    expect(new GrantPolicy([BINDING]).evaluate('orders-db', { ...CTX, capabilities: total as string[] }).allowed).toBe(true);
   });
 
   it('still grants on an honest capability list', () => {

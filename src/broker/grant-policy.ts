@@ -224,12 +224,25 @@ export class GrantPolicy {
     if (!Array.isArray(ctx.capabilities)) {
       return { allowed: false, binding, reason: 'ATX carries no capability list' };
     }
-    // Scanned directly rather than via `includes`. `Array.isArray` is true for an Array subclass
-    // and for a Proxy over an array, either of which can override `includes` to answer whatever
-    // it likes; a plain loop comparing string members cannot be redirected that way.
+    // Read by INDEX. `Array.isArray` is true for an Array subclass and for a Proxy over an array,
+    // and both can override `includes` — but a `for…of` is no better, because it consults
+    // `Symbol.iterator`, which is just as overridable. Measured: a subclass whose iterator yields
+    // a class it does not contain is granted by a `for…of` and denied by `includes`, and a Proxy
+    // trapping `includes` is the mirror image. Swapping one for the other moves the hole; an
+    // index read is redirected by neither.
+    //
+    // It is NOT a defence against a Proxy that traps every property read: such an object can lie
+    // about `length` and about each element, and nothing this function does while reading it in
+    // place can prevent that. A caller who supplies a hostile `AtxVerifier` already decides the
+    // verdict, so that is the boundary, not a gap. What this closes is the ordinary object that
+    // merely overrides a method.
     let hasTrustClass = false;
-    for (const cap of ctx.capabilities) {
-      if (typeof cap === 'string' && cap === m.trustClass) { hasTrustClass = true; break; }
+    const capCount = ctx.capabilities.length;
+    for (let i = 0; i < capCount; i += 1) {
+      // No `typeof` guard: `m.trustClass` is a validated non-empty string and `===` is strict,
+      // so a non-string member can never match it. A guard whose removal no test can detect is
+      // not a defence — it is dead code that reads as one.
+      if (ctx.capabilities[i] === m.trustClass) { hasTrustClass = true; break; }
     }
     if (!hasTrustClass) {
       return { allowed: false, binding, reason: `ATX lacks trust class "${m.trustClass}"` };
