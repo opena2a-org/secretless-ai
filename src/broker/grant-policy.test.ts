@@ -126,9 +126,17 @@ describe('GrantPolicy: a floor this build cannot rank is refused at load', () =>
     });
   }
 
-  for (const empty of ['', '   ', '>=', '>= ']) {
-    it(`refuses the empty-ish floor ${JSON.stringify(empty)} rather than dropping the check`, () => {
-      expect(() => new GrantPolicy([withMatch({ oasbLevel: empty })])).toThrow();
+  it('refuses an empty floor with the message written for it, not the unrankable one', () => {
+    // A bare `.toThrow()` here cannot tell which guard fired. Weakening `isNonEmptyString` to a
+    // plain `typeof === 'string'` still throws — from the unrankable branch — so the empty-floor
+    // message that explains the actual mistake would never be seen and no test would notice.
+    expect(() => new GrantPolicy([withMatch({ oasbLevel: '' })])).toThrow(/removes the check/);
+  });
+
+  for (const empty of ['   ', '>=', '>= ']) {
+    it(`refuses the whitespace-only floor ${JSON.stringify(empty)} rather than dropping the check`, () => {
+      // These are non-empty strings, so they reach the rankable check and fail there.
+      expect(() => new GrantPolicy([withMatch({ oasbLevel: empty })])).toThrow(/cannot rank/);
     });
   }
 
@@ -193,9 +201,31 @@ describe('GrantPolicy: a presented level this build cannot rank satisfies no flo
     });
   }
 
-  for (const level of ['L4', 'L9', 'l3', 'L3 ', ' L3', 'none', 'HARDENED', '']) {
+  for (const level of ['L4', 'L9', 'l3', 'L3 ', ' L3', 'none', 'HARDENED']) {
     it(`denies an agent presenting the unrankable level ${JSON.stringify(level)}`, () => {
       expect(l3().evaluate('orders-db', { ...CTX, oasbLevel: level }).allowed).toBe(false);
+    });
+  }
+
+  it('classifies an empty presented level as absent, not as unrankable', () => {
+    // An empty string is what an unset template variable produces, so "you sent nothing" is the
+    // more accurate record. Asserted because the two branches must not disagree about it, and a
+    // verdict-only assertion cannot see which one ran.
+    const r = l3().evaluate('orders-db', { ...CTX, oasbLevel: '' });
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/absent/);
+  });
+
+  for (const weird of [{ toString: 1 }, { valueOf: 1, toString: 1 }, Object.create(null)]) {
+    it('denies rather than throwing on a presented level that cannot be stringified', () => {
+      // Reachable on a v1.1 credential whose signature still verifies: the TBS projects this
+      // field through the verifier's asString, which maps every non-string to '', so a holder
+      // substitutes an object post-signing without changing the signed bytes. `String()` on it
+      // throws from inside the decision function, which empties the audit record's policyId and
+      // lets an agent make its own denial unattributable to the binding it violated.
+      const r = l3().evaluate('orders-db', { ...CTX, oasbLevel: weird } as unknown as ResolutionContext);
+      expect(r.allowed).toBe(false);
+      expect(r.reason).toMatch(/satisfies no floor/);
     });
   }
 
@@ -248,7 +278,7 @@ describe('GrantPolicy: the denial reason states what actually happened', () => {
  * express `null` and `"high"`.
  */
 describe('GrantPolicy: a minimum trust level the comparison cannot order is refused at load', () => {
-  for (const bad of [null, 'high', '3', -1, 1.5, [], {}, true]) {
+  for (const bad of [null, 'high', '3', -1, Infinity, -Infinity, [], {}, true]) {
     it(`refuses minTrustLevel ${JSON.stringify(bad)}`, () => {
       expect(() => new GrantPolicy([withMatch({ minTrustLevel: bad })])).toThrow(/minTrustLevel/);
     });
@@ -265,6 +295,16 @@ describe('GrantPolicy: a minimum trust level the comparison cannot order is refu
     expect(p.evaluate('orders-db', { ...CTX, trustLevel: 2 }).allowed).toBe(false);
   });
 
+  it('accepts a fractional floor, which orders perfectly well', () => {
+    // Deliberately NOT refused. The reason this check exists is that the comparison cannot
+    // ORDER the value; 2.5 orders fine and worked as a floor before this change. Refusing it
+    // would be a break with no security argument, justified by an error message that is untrue
+    // of the value it rejects. `trustLevel` is declared `number`, not an integer.
+    const p = new GrantPolicy([withMatch({ minTrustLevel: 2.5 })]);
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 3 }).allowed).toBe(true);
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 2 }).allowed).toBe(false);
+  });
+
   it('accepts a floor of 0 and omitting the predicate entirely', () => {
     expect(() => new GrantPolicy([withMatch({ minTrustLevel: 0 })])).not.toThrow();
     const b = binding();
@@ -272,19 +312,35 @@ describe('GrantPolicy: a minimum trust level the comparison cannot order is refu
     expect(() => new GrantPolicy([b])).not.toThrow();
   });
 
-  it('denies rather than throwing when the ATX trust level is not a number', () => {
+  for (const bad of ['high', NaN, Infinity, -Infinity, null, undefined, '4', [4]]) {
+    it(`denies rather than throwing when the ATX trust level is ${String(bad)}`, () => {
+      // NaN and Infinity are the sharp cases and `typeof` alone does not catch them: `4 < NaN`
+      // is false, so a NaN trust level satisfies every floor. A string is caught by `typeof`,
+      // so testing only that would leave `Number.isFinite` unpinned.
+      const p = new GrantPolicy([withMatch({ minTrustLevel: 3 })]);
+      const r = p.evaluate('orders-db', { ...CTX, trustLevel: bad } as unknown as ResolutionContext);
+      expect(r.allowed).toBe(false);
+      expect(r.reason).toMatch(/not a number/);
+    });
+  }
+
+  it('grants on a fractional trust level, which is a number and does order', () => {
     const p = new GrantPolicy([withMatch({ minTrustLevel: 3 })]);
-    const r = p.evaluate('orders-db', { ...CTX, trustLevel: 'high' } as unknown as ResolutionContext);
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toMatch(/not a number/);
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 3.5 }).allowed).toBe(true);
   });
 
-  it('denies rather than throwing when the ATX carries no capability list', () => {
-    const p = new GrantPolicy([BINDING]);
-    const r = p.evaluate('orders-db', { ...CTX, capabilities: undefined } as unknown as ResolutionContext);
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toMatch(/no capability list/);
-  });
+  for (const bad of [undefined, null, 'orders:read', { includes: () => true }, 42]) {
+    it(`denies rather than throwing when capabilities is ${JSON.stringify(bad) ?? String(bad)}`, () => {
+      // The string and the duck-typed object are why this is `Array.isArray` and not a
+      // truthiness check: `'orders:read'.includes('orders:read')` is true, and an object with an
+      // `includes` method answers whatever it likes. Testing only `undefined` would pass on any
+      // weaker guard, which is the axis the guard exists for.
+      const p = new GrantPolicy([BINDING]);
+      const r = p.evaluate('orders-db', { ...CTX, capabilities: bad } as unknown as ResolutionContext);
+      expect(r.allowed).toBe(false);
+      expect(r.reason).toMatch(/no capability list/);
+    });
+  }
 });
 
 /**
@@ -329,6 +385,31 @@ describe('GrantPolicy: a field this build does not read is refused at load', () 
       new GrantPolicy([withMatch({ issuerChainIncludes: { partnersSet: 'p', partnerSet: 'q' } })]),
     ).toThrow(/unknown field "partnerSet"/);
   });
+
+  it('refuses an unknown sub-key of the jurisdiction predicate', () => {
+    // The sibling of the case above. Without this, `jurisdiction: { in: ['us'], residency: ['cn'] }`
+    // loaded silently — asymmetric coverage of the exact guard class this change is about.
+    expect(() =>
+      new GrantPolicy([withMatch({ jurisdiction: { in: ['us'], residency: ['cn'] } })]),
+    ).toThrow(/unknown field "residency"/);
+  });
+
+  for (const bad of [null, 'orders:read', 42, []]) {
+    it(`refuses a match container that is ${JSON.stringify(bad)}, naming the binding`, () => {
+      // Without the container type check these produce a raw TypeError with no binding label,
+      // or the misleading `unknown field "0"` from iterating a string's indices. The constructor
+      // is written for a config loader, so a JSON-expressible shape gets a real message.
+      const b = binding();
+      b.match = bad;
+      expect(() => new GrantPolicy([b])).toThrow(/match must be an object/);
+    });
+
+    it(`refuses a resolve container that is ${JSON.stringify(bad)}, naming the binding`, () => {
+      const b = binding();
+      b.resolve = bad;
+      expect(() => new GrantPolicy([b])).toThrow(/resolve must be an object/);
+    });
+  }
 
   it('shape-validates the federation predicates it parses but does not enforce', () => {
     expect(() => new GrantPolicy([withMatch({ issuerChainIncludes: { partnersSet: '' } })])).toThrow();
@@ -523,5 +604,93 @@ describe('GrantPolicy: a credential that does not sign what we match on is denie
     expect(r.allowed).toBe(false);
     expect(r.reason).toMatch(/trust class/);
     expect(r.reason).not.toMatch(/signature/);
+  });
+});
+
+/**
+ * Inputs that are not what they appear to be at the moment they are read.
+ *
+ * Each of these validated clean and then behaved differently, so `size` and the constructor's
+ * own promise ("every binding is validated here") were false for them.
+ */
+describe('GrantPolicy: a binding is what it was when it was validated', () => {
+  it('refuses a hole in a sparse array rather than skipping it', () => {
+    // `Array.prototype.map` skips holes; `find` does not. So `new Array(3)` with one real
+    // binding reported size 3, validated one, and threw on `undefined.grant` at the first
+    // evaluation.
+    const sparse = new Array(3);
+    sparse[1] = BINDING;
+    expect(() => new GrantPolicy(sparse)).toThrow(/must be an object/);
+    expect(() => new GrantPolicy([, ] as unknown[])).toThrow(/must be an object/);
+  });
+
+  // Each of the three below asserts the field is read EXACTLY ONCE, and that the value loaded is
+  // the one the first read returned. Counting the reads is the point: a threshold picked to be
+  // "somewhere after validation" is a guess about the implementation's internals, and a guess
+  // that lands too high makes the test pass against the very re-read it exists to catch. Three
+  // such tests survived exactly that way before this was tightened.
+
+  it('reads minTrustLevel once, and loads what that read returned', () => {
+    // `4 < NaN` is false, so loading NaN on a later read would grant every trust level under a
+    // floor the operator wrote as 9.
+    let reads = 0;
+    const match = {
+      trustClass: 'orders:read',
+      get minTrustLevel() {
+        reads += 1;
+        return reads > 1 ? NaN : 9;
+      },
+    };
+    const p = new GrantPolicy([{ ...binding(), match }]);
+    expect(reads).toBe(1);
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 0 }).allowed).toBe(false);
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 9 }).allowed).toBe(true);
+  });
+
+  it('reads oasbLevel once, and loads what that read returned', () => {
+    let reads = 0;
+    const match = {
+      trustClass: 'orders:read',
+      get oasbLevel() {
+        reads += 1;
+        return reads > 1 ? '>=L1' : '>=L3';
+      },
+    };
+    const p = new GrantPolicy([{ ...binding(), match }]);
+    expect(reads).toBe(1);
+    expect(p.evaluate('orders-db', { ...CTX, oasbLevel: 'L1' }).allowed).toBe(false);
+    expect(p.evaluate('orders-db', { ...CTX, oasbLevel: 'L3' }).allowed).toBe(true);
+  });
+
+  it('reads ttlSeconds once, and loads what that read returned', () => {
+    let reads = 0;
+    const resolve = {
+      mode: 'exchange',
+      providerId: 'orders-idp',
+      scope: 'orders.read',
+      audience: 'https://api.orders.internal',
+      get ttlSeconds() {
+        reads += 1;
+        return reads > 1 ? 315360000 : 60; // ten years, vs one minute
+      },
+    };
+    const p = new GrantPolicy([{ ...binding(), resolve }]);
+    expect(reads).toBe(1);
+    expect(p.evaluate('orders-db', CTX).binding?.resolve.ttlSeconds).toBe(60);
+  });
+
+  it('does not hand the caller a live handle through the evaluation result', () => {
+    // The return path, which the in-direction reconstruction does not close. Measured before
+    // freezing: take the binding off a DENIED evaluation, delete its floors, and the next
+    // evaluation of the same low-trust agent was allowed.
+    const p = new GrantPolicy([BINDING]);
+    const denied = p.evaluate('orders-db', { ...CTX, trustLevel: 1 });
+    expect(denied.allowed).toBe(false);
+
+    const handle = denied.binding as GrantBinding;
+    expect(() => {
+      delete (handle.match as Record<string, unknown>).minTrustLevel;
+    }).toThrow(TypeError); // frozen: strict mode, and test files are modules
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 1 }).allowed).toBe(false);
   });
 });

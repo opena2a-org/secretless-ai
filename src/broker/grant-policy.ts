@@ -159,7 +159,11 @@ export class GrantPolicy {
    */
   constructor(bindings: readonly unknown[] = []) {
     const seen = new Set<string>();
-    this.bindings = bindings.map((b) => validateGrantBinding(b, seen));
+    // Spread first. `Array.prototype.map` SKIPS holes in a sparse array while `find` does not,
+    // so `new Array(3)` — or a trailing elision — produced a policy whose `size` counted three
+    // bindings that were never validated, and whose first evaluation threw on `undefined.grant`.
+    // Spreading materialises each hole as `undefined`, which the check below already refuses.
+    this.bindings = [...bindings].map((b) => validateGrantBinding(b, seen));
   }
 
   get size(): number {
@@ -224,21 +228,19 @@ export class GrantPolicy {
       }
     }
     if (m.oasbLevel !== undefined) {
-      // Guaranteed rankable by the load-time refusal; recomputed rather than cached so there is
-      // one definition of what a floor means. `undefined` here would mean the invariant broke,
-      // and the safe reading of a floor we cannot resolve is that nothing satisfies it.
-      const required = parseOasbFloor(m.oasbLevel);
+      // Recomputed rather than cached so there is one definition of what a floor means.
+      // Non-null asserted rather than branched: the constructor refuses an unrankable floor, and
+      // it is the only writer to `this.bindings`, so there is no input that reaches this line
+      // with an unrankable `m.oasbLevel`. A defensive branch here would be code no test can
+      // reach, which reads as covered while proving nothing.
+      const required = parseOasbFloor(m.oasbLevel) as number;
       const have = typeof ctx.oasbLevel === 'string' ? OASB_RANK.get(ctx.oasbLevel) : undefined;
-      if (required === undefined) {
-        return {
-          allowed: false,
-          binding,
-          reason: `binding requires ${m.oasbLevel}, which this build cannot rank`,
-        };
-      }
       // Three distinct reasons, because the single reason this replaced asserted a comparison
       // that had not run: an unrankable level was reported as "below required", which is a
       // false statement written into an audit record.
+      // An empty string is ABSENT, not unrankable: it is what an unset template variable
+      // produces, and "you sent nothing" is the more accurate record than "you sent something I
+      // cannot rank". Kept as one predicate so the two branches cannot disagree about it.
       if (ctx.oasbLevel === undefined || ctx.oasbLevel === null || ctx.oasbLevel === '') {
         return {
           allowed: false,
@@ -251,7 +253,17 @@ export class GrantPolicy {
           allowed: false,
           binding,
           reason:
-            `OASB level "${String(ctx.oasbLevel)}" is not one of ${rankableLevels()}, so it ` +
+            // `describe`, never `String()`. This branch is reached precisely when the value is
+            // NOT a string, and `String({ toString: 1 })` throws `TypeError: Cannot convert
+            // object to primitive value` — from inside the decision function, which is what the
+            // comment above says this code exists to avoid. It is reachable on a v1.1 credential
+            // whose signature still verifies: the TBS projects `scanSummary.oasbLevel` through
+            // the verifier's `asString`, which maps every non-string to the empty string, so a
+            // holder can substitute an object post-signing without changing the signed bytes.
+            // The throw cost us the audit record — `policyId` emptied and the reason became
+            // "resolution error", so an agent could make its own denial unattributable to the
+            // binding it violated.
+            `OASB level ${describe(ctx.oasbLevel)} is not one of ${rankableLevels()}, so it ` +
             `satisfies no floor; binding requires ${m.oasbLevel}`,
         };
       }
@@ -390,7 +402,15 @@ function validateGrantBinding(raw: unknown, seen: Set<string>): GrantBinding {
   // Reconstructed, not spread: a shallow copy would leave `match` and `resolve` as the caller's
   // own objects, so deleting a predicate from one after loading would widen a live policy with
   // no call into this class.
-  return { grant: b.grant, match, resolve };
+  //
+  // Frozen because `evaluate()` returns the matched binding, and that is the same object the
+  // class decides on. Measured before freezing: a caller took the `binding` off a DENIED
+  // evaluation, deleted `match.oasbLevel` and `match.minTrustLevel` from it, and the next
+  // evaluation of the same low-trust agent returned allowed. `private` is a compile-time marker
+  // and buys nothing against a determined in-process caller, so this is a footgun guard rather
+  // than a security boundary — but the footgun is on the return value of a published method,
+  // costs one call to remove, and `GrantEvaluation.binding` gives a consumer no hint it is live.
+  return Object.freeze({ grant: b.grant, match: Object.freeze(match), resolve: Object.freeze(resolve) });
 }
 
 function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMatch {
@@ -405,40 +425,50 @@ function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMat
 
   const out: GrantMatch = { trustClass: m.trustClass };
 
-  if (m.minTrustLevel !== undefined) {
-    // `null`, `NaN` and any non-numeric string pass `!== undefined` and then make the comparison
-    // in `evaluate()` unconditionally false — `4 < null`, `4 < NaN` and `4 < "high"` are all
-    // `false` — so the floor loads and denies nothing. JSON can express `null` and `"high"`.
-    if (typeof m.minTrustLevel !== 'number' || !Number.isInteger(m.minTrustLevel) || m.minTrustLevel < 0) {
+  // Read ONCE into a local, then validate and store THAT. Reading `m.minTrustLevel` again to
+  // store it would validate one value and load another whenever the source object defines an
+  // accessor rather than a data property: measured, a getter returning 9 four times and then
+  // `NaN` passed validation and loaded `NaN`, which orders below nothing and grants every trust
+  // level. Not reachable from JSON, but the constructor is written for a config loader that does
+  // not exist yet, and "the field is read twice" is not a property a future caller can see.
+  const minTrustLevel = m.minTrustLevel;
+  if (minTrustLevel !== undefined) {
+    // Two distinct failures, refused together. `null`, `NaN` and any non-numeric string pass
+    // `!== undefined` and then make the comparison in `evaluate()` unconditionally false —
+    // `4 < null`, `4 < NaN` and `4 < "high"` are all `false` — so the floor loads and denies
+    // nothing. JSON can express `null` and `"high"`. A negative floor orders correctly but sits
+    // below every trust level a verifier emits, so it is a floor that admits everyone.
+    if (typeof minTrustLevel !== 'number' || !Number.isFinite(minTrustLevel) || minTrustLevel < 0) {
       throw new Error(
-        `${label}: match.minTrustLevel must be a non-negative integer, not ` +
-        `${describe(m.minTrustLevel)}. A value the comparison cannot order is not a low ` +
+        `${label}: match.minTrustLevel must be a number of zero or more, not ` +
+        `${describe(minTrustLevel)}. A value the comparison cannot order is not a low ` +
         `minimum — it is no minimum, and the binding would grant every trust level.`,
       );
     }
-    out.minTrustLevel = m.minTrustLevel;
+    out.minTrustLevel = minTrustLevel;
   }
 
-  if (m.oasbLevel !== undefined) {
-    if (!isNonEmptyString(m.oasbLevel)) {
+  const oasbLevel = m.oasbLevel; // Read once. See the note on minTrustLevel above.
+  if (oasbLevel !== undefined) {
+    if (!isNonEmptyString(oasbLevel)) {
       throw new Error(
         `${label}: match.oasbLevel must be a non-empty string like ">=L2", not ` +
-        `${describe(m.oasbLevel)}. An empty floor is not a floor everything satisfies — it ` +
+        `${describe(oasbLevel)}. An empty floor is not a floor everything satisfies — it ` +
         `removes the check. Omit oasbLevel to require no OASB level.`,
       );
     }
-    if (parseOasbFloor(m.oasbLevel) === undefined) {
-      const bare = m.oasbLevel.replace(/^>=\s*/, '').trim();
+    if (parseOasbFloor(oasbLevel) === undefined) {
+      const bare = oasbLevel.replace(/^>=\s*/, '').trim();
       const cased = caseOnlyMatch(bare);
       throw new Error(
-        `${label}: match.oasbLevel "${m.oasbLevel}" names a level this build cannot rank` +
+        `${label}: match.oasbLevel "${oasbLevel}" names a level this build cannot rank` +
         `${cased ? ` (did you mean "${cased}"? levels are case-sensitive)` : ''}. ` +
         `This build ranks: ${rankableLevels()}. ` +
         `A floor it cannot rank is refused rather than ignored, because ignoring it would ` +
         `leave the binding with no OASB floor at all while reporting it loaded.`,
       );
     }
-    out.oasbLevel = m.oasbLevel;
+    out.oasbLevel = oasbLevel;
   }
 
   // Federation predicates. AAP §7.1 requires a v1 broker to PARSE the full clause, so these are
@@ -482,35 +512,43 @@ function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMat
 function validateResourceBinding(label: string, r: Record<string, unknown>): ResourceBinding {
   checkKeys(`${label}: resolve`, r, KNOWN_RESOLVE_KEYS, OVERWRITTEN_RESOLVE_KEYS);
 
-  if (!isNonEmptyString(r.mode) || !CPI_MODES.has(r.mode)) {
-    const near = typeof r.mode === 'string' ? nearestMatch(r.mode, [...CPI_MODES]) : undefined;
+  const mode = r.mode;
+  if (!isNonEmptyString(mode) || !CPI_MODES.has(mode)) {
+    const near = typeof mode === 'string' ? nearestMatch(mode, [...CPI_MODES]) : undefined;
     throw new Error(
       `${label}: resolve.mode must be one of ${[...CPI_MODES].join(', ')}, not ` +
-      `${describe(r.mode)}${near ? ` (did you mean "${near}"?)` : ''}.`,
+      `${describe(mode)}${near ? ` (did you mean "${near}"?)` : ''}.`,
     );
   }
-  for (const key of ['providerId', 'scope', 'audience'] as const) {
-    if (!isNonEmptyString(r[key])) {
-      throw new Error(`${label}: resolve.${key} must be a non-empty string, not ${describe(r[key])}`);
+  const [providerId, scope, audience] = (['providerId', 'scope', 'audience'] as const).map((key) => {
+    const value = r[key];
+    if (!isNonEmptyString(value)) {
+      throw new Error(`${label}: resolve.${key} must be a non-empty string, not ${describe(value)}`);
     }
-  }
+    return value;
+  });
+  // Read once. See the note on minTrustLevel in validateGrantMatch.
+  //
   // An absent or non-numeric TTL reaches the assertion builder as `nowSeconds + undefined`, which
   // is NaN, which `JSON.stringify` emits as `"exp": null` — a broker assertion a downstream
-  // verifier may read as carrying no expiry at all.
-  if (typeof r.ttlSeconds !== 'number' || !Number.isInteger(r.ttlSeconds) || r.ttlSeconds <= 0) {
+  // verifier may read as carrying no expiry at all. An integer is required separately from that:
+  // `exp` is a NumericDate (RFC 7519 §2), so a fractional TTL mints a claim whose type the spec
+  // does not admit, and a non-positive one mints a credential already expired at issue.
+  const ttlSeconds = r.ttlSeconds;
+  if (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds) || ttlSeconds <= 0) {
     throw new Error(
-      `${label}: resolve.ttlSeconds must be a positive integer number of seconds, not ` +
-      `${describe(r.ttlSeconds)}. A TTL this build cannot add to a timestamp mints a credential ` +
-      `whose expiry serialises to null.`,
+      `${label}: resolve.ttlSeconds must be a whole number of seconds greater than zero, not ` +
+      `${describe(ttlSeconds)}. A TTL this build cannot add to a timestamp mints a credential ` +
+      `whose expiry serialises to null, and \`exp\` is a whole number of seconds (RFC 7519 §2).`,
     );
   }
 
   return {
-    mode: r.mode as CpiMode,
-    providerId: r.providerId as string,
-    scope: r.scope as string,
-    audience: r.audience as string,
-    ttlSeconds: r.ttlSeconds,
+    mode: mode as CpiMode,
+    providerId: providerId as string,
+    scope: scope as string,
+    audience: audience as string,
+    ttlSeconds,
   };
 }
 
