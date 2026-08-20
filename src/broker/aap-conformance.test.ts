@@ -21,7 +21,13 @@ import * as path from 'path';
 
 import { BrokerServer } from './server';
 import { GrantResolver } from './grant-resolver';
-import { LocalAtxVerifier, canonicalPayload, type Atx, type AtxTrustAnchors } from '@opena2a/atx-verify';
+import {
+  LocalAtxVerifier,
+  canonicalPayload,
+  canonicalPayloadV11,
+  type Atx,
+  type AtxTrustAnchors,
+} from '@opena2a/atx-verify';
 import { GrantPolicy, type GrantBinding } from './grant-policy';
 import { MapProviderRegistry } from './cpi/registry';
 import { createOktaExchangeProvider } from './cpi/okta-adapter';
@@ -45,11 +51,29 @@ function makeKeypair(): { privateKey: crypto.KeyObject; pubHex: string } {
   return { privateKey, pubHex };
 }
 
-/** Build a valid, Ed25519-signed ATX (and the matching public key hex). */
-function makeSignedAtx(overrides: Partial<Atx> = {}): { atx: Atx; pubHex: string } {
-  const { privateKey, pubHex } = makeKeypair();
+/**
+ * Build a valid, Ed25519-signed ATX (and the matching public key hex).
+ *
+ * The default is credential version 1.1, and that is load-bearing rather than incidental. The
+ * v1.0 signature covers identity, issuer, trust level and validity window but NOT `capabilities`
+ * or `scanSummary` — a holder edits those after signing and the credential still verifies. This
+ * suite asserts that a grant is served to an agent matching `trustClass` and `oasbLevel`, so on
+ * a v1.0 fixture it would have been asserting that the broker honours predicates the agent set
+ * for itself. `GrantPolicy` now requires `signedCapabilities`, and this fixture supplies a
+ * credential that actually carries them. Pass `atcVersion: '1.0'` to build the refused case.
+ *
+ * Pass `keypair` to sign with a key the server already trusts. Without it every call mints a
+ * fresh key, so a fixture handed to a running broker is rejected at signature verification and
+ * never reaches policy — which makes any assertion about a POLICY decision vacuous.
+ */
+function makeSignedAtx(
+  overrides: Partial<Atx> = {},
+  keypair?: { privateKey: crypto.KeyObject; pubHex: string },
+): { atx: Atx; pubHex: string; keypair: { privateKey: crypto.KeyObject; pubHex: string } } {
+  const kp = keypair ?? makeKeypair();
+  const { privateKey, pubHex } = kp;
   const base: Atx = {
-    atcVersion: '1.0',
+    atcVersion: '1.1',
     agentId: 'aim_orders_reader',
     agentDid: 'did:opena2a:agent:acme/orders-reader',
     version: '1.0.0',
@@ -66,9 +90,10 @@ function makeSignedAtx(overrides: Partial<Atx> = {}): { atx: Atx; pubHex: string
     signatures: [],
     ...overrides,
   };
-  const sig = crypto.sign(null, canonicalPayload(base), privateKey);
+  const payload = base.atcVersion === '1.1' ? canonicalPayloadV11(base) : canonicalPayload(base);
+  const sig = crypto.sign(null, payload, privateKey);
   base.signatures = [{ keyId: 'test#ed25519', algorithm: 'Ed25519', value: sig.toString('base64') }];
-  return { atx: base, pubHex };
+  return { atx: base, pubHex, keypair: kp };
 }
 
 function makeTrustAnchors(
@@ -180,9 +205,11 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     // which a real broker may own and which would otherwise race across test instances.
     tokenPath = path.join(tmpDir, 'broker.token');
 
-    const { atx, pubHex } = makeSignedAtx();
+    const { atx, pubHex, keypair } = makeSignedAtx();
     // Stash a valid ATX the "agent" will present. (In production the agent carries its own.)
     (globalThis as any).__aapTestAtx = atx;
+    // And the key behind it, so a test can mint a DIFFERENT credential this same server trusts.
+    (globalThis as any).__aapTestKeypair = keypair;
 
     const signingKey = generateBrokerSigningKey('https://broker.acme.example', 'broker-key-1');
     idp = new FakeIdp();
@@ -262,6 +289,47 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     expect(agentVisible).not.toMatch(/eyJ[A-Za-z0-9_-]+\./); // no broker assertion JWT
     // The grant reference itself IS allowed in context.
     expect(agentVisible).toContain('grant://orders-db');
+  });
+
+  it('refuses a credential whose signature does not cover the predicates it is matched on', async () => {
+    // The refusal path the v1.1 fixture would otherwise leave untested.
+    //
+    // Signed with the key THIS SERVER TRUSTS, and built honestly (orders:read, L2, trustLevel 4),
+    // so it satisfies every predicate in ORDERS_BINDING. The only thing wrong with it is its
+    // credential version. Using a fresh key here would have the server reject it at signature
+    // verification, and the 403 would prove nothing about policy — the assertion would pass
+    // against a build with no gate at all.
+    const keypair = (globalThis as any).__aapTestKeypair;
+    const { atx: v10Atx } = makeSignedAtx({ atcVersion: '1.0' }, keypair);
+
+    // Discriminating control FIRST: this server does verify a v1.0 credential from this key, so
+    // whatever the broker answers below is a policy decision and not a crypto rejection.
+    const verified = new LocalAtxVerifier(makeTrustAnchors(keypair.pubHex)).verify(v10Atx);
+    expect(verified.valid).toBe(true);
+    expect(verified.context?.signedCapabilities).toBe(false);
+    expect(verified.context?.capabilities).toContain('orders:read');
+    expect(verified.context?.oasbLevel).toBe('L2');
+
+    const denied = await brokerPost(socketPath, '/grant', brokerToken, {
+      agentId: 'aim_orders_reader',
+      atx: v10Atx,
+      grant: 'grant://orders-db',
+      operation: { method: 'GET', path: '/orders' },
+    });
+    expect(denied.status).toBe(403);
+    // The denial stays opaque: it names neither the credential version nor the predicate.
+    expect(denied.text).not.toMatch(/1\.0|signedCapabilities|oasbLevel|capabilit/i);
+
+    // Second control: the SAME agent, the SAME key, the SAME claims, differing only in version,
+    // is served. So the 403 is attributable to the version and to nothing else.
+    const { atx: v11Atx } = makeSignedAtx({ atcVersion: '1.1' }, keypair);
+    const allowed = await brokerPost(socketPath, '/grant', brokerToken, {
+      agentId: 'aim_orders_reader',
+      atx: v11Atx,
+      grant: 'grant://orders-db',
+      operation: { method: 'GET', path: '/orders' },
+    });
+    expect(allowed.status).toBe(200);
   });
 
   it('the signed audit log records the decision but never the scoped token', async () => {
