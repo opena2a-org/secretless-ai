@@ -35,6 +35,12 @@ export const OVER = NEAR_MISS_MAX + 1;
  * flow is a degradation path whose trigger a caller sets by growing the store.
  * Not exported from `src/index.ts`; present in the published types only because
  * the package ships `dist/`.
+ *
+ * Being module state, a reader must reset it and read it back without another
+ * test running in between, so the assertions on it need tests to run in order.
+ * That is vitest's default and this repo does not change it. It is also not a
+ * new constraint: forcing `--sequence.concurrent` on `secret-store.test.ts`
+ * fails three tests that predate this counter, alongside the ones reading it.
  */
 let cellsEvaluated = 0;
 
