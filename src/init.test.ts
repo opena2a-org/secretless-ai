@@ -16,7 +16,22 @@ function cleanup(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-describe('init', () => {
+// Every assertion below is about a DECISION the generated hook reaches — block
+// or allow — and none of them is about how fast it reaches it. But each command
+// checked costs a `bash` process, and the hook starts `python3` inside it to
+// parse the tool payload, so a test that checks 26 commands pays for roughly 52
+// process starts. `echo/printenv of a PREFIXED secret variable is blocked`
+// measures 2.8s idle against vitest's 5s default, and it was seen timing out at
+// ~5.8s on a loaded machine. That leaves 1.7x of headroom on a shared laptop,
+// which is not enough, and the failure it produces is a timeout on a security
+// guard test — indistinguishable at a glance from the hook having broken.
+//
+// The commands are the coverage, so thinning them to save time would be paying
+// for speed with the thing the test exists to check. Raise the bound instead:
+// at 30s the slowest test has ~10x headroom, while a genuinely hung `execSync`
+// still fails the run rather than hanging it. This is a timeout, not an
+// assertion — nothing here starts passing because the number went up.
+describe('init', { timeout: 30_000 }, () => {
   let dir: string;
 
   beforeEach(() => { dir = tmpDir(); });

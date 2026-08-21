@@ -20,6 +20,41 @@ export const NEAR_MISS_MAX = 2;
 export const OVER = NEAR_MISS_MAX + 1;
 
 /**
+ * Table cells evaluated since the last reset, summed across every call.
+ *
+ * The band and the row cutoff below are pure optimisations: they change what
+ * gets computed, never what gets returned. Cost is therefore their ONLY
+ * observable, and reading that cost off a clock measures the machine at least
+ * as much as the code — the assertion this replaced went red on source it could
+ * not have been affected by, while staying green on a build with the band taken
+ * out entirely. This counts the work instead. The count is an exact integer,
+ * identical on every machine.
+ *
+ * @internal Observation only. Nothing outside `*.test.ts` may read it, and no
+ * behaviour depends on its value — a work counter that feeds back into control
+ * flow is a degradation path whose trigger a caller sets by growing the store.
+ * Not exported from `src/index.ts`; present in the published types only because
+ * the package ships `dist/`.
+ *
+ * Being module state, a reader must reset it and read it back without another
+ * test running in between, so the assertions on it need tests to run in order.
+ * That is vitest's default and this repo does not change it. It is also not a
+ * new constraint: forcing `--sequence.concurrent` on `secret-store.test.ts`
+ * fails three tests that predate this counter, alongside the ones reading it.
+ */
+let cellsEvaluated = 0;
+
+/** @internal Test observation only — see {@link cellsEvaluated}. */
+export function nearMissCellsEvaluated(): number {
+  return cellsEvaluated;
+}
+
+/** @internal Test observation only — see {@link cellsEvaluated}. */
+export function resetNearMissCellsEvaluated(): void {
+  cellsEvaluated = 0;
+}
+
+/**
  * Case-insensitive edit distance, only ever used to suggest a typo fix.
  * Any result above NEAR_MISS_MAX is returned as OVER, not computed exactly.
  *
@@ -27,15 +62,25 @@ export const OVER = NEAR_MISS_MAX + 1;
  * comparison costs O(n * k) rather than O(n^2) — bounded whether the two names
  * are similar or not.
  *
- * A row-minimum cutoff alone is not enough, and the measurement that suggested
- * it was misleading: it used maximally DIFFERENT names, which exit on the first
- * row. For names sharing a long prefix and differing only near the end — the
- * realistic shape, since stored names look alike — the band around the diagonal
- * stays under the threshold and the full table gets computed. Measured at 5000
- * stored names sharing a 60-char prefix, against 100 unmatched: 7814ms
- * unbounded, 840ms with the cutoff alone, 378ms banded. (The same shape with
- * maximally different names is 33ms — which is why benchmarking that shape hid
- * the problem.)
+ * A row-minimum cutoff alone is not enough. It exits early only when EVERY
+ * reachable cell in a row is already over the threshold, which maximally
+ * different names reach on the third row but names sharing a long prefix never
+ * reach at all — and a long shared prefix is the realistic shape, since stored
+ * secret names look alike. So the two optimisations cover different shapes and
+ * neither substitutes for the other:
+ *
+ *   5000 stored names, 100 requested, MAX_HINTED = 10, cells evaluated:
+ *
+ *                              60-char shared prefix   differing from char 1
+ *     band + cutoff (shipped)             15,603,880                 600,000
+ *     cutoff alone, no band              202,749,440               9,600,000
+ *     band alone, no cutoff                15,700,000              15,700,000
+ *
+ * Read the columns, not the rows: the shared-prefix column is what the BAND
+ * holds down (13x), and the differing-from-char-1 column is the only one that
+ * moves when the CUTOFF goes (26x). Each column is pinned by its own test in
+ * `secret-store.test.ts`; deleting the second as redundant would leave the row
+ * cutoff with no regression test at all.
  */
 export function editDistance(a: string, b: string): number {
   const s = a.toUpperCase();
@@ -52,6 +97,9 @@ export function editDistance(a: string, b: string): number {
     cur[0] = i <= NEAR_MISS_MAX ? i : OVER;
     const lo = Math.max(1, i - NEAR_MISS_MAX);
     const hi = Math.min(t.length, i + NEAR_MISS_MAX);
+    // Derived from lo/hi rather than restated as a constant, so the count
+    // cannot disagree with the loop it measures. Once per ROW, never per cell.
+    cellsEvaluated += hi >= lo ? hi - lo + 1 : 0;
     let rowMin = cur[0];
     for (let j = lo; j <= hi; j++) {
       const v = Math.min(
