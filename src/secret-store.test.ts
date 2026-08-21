@@ -320,8 +320,15 @@ describe('near-miss hint work is bounded (CI review finding, measured)', () => {
     for (let i = 0; i < 5000; i++) names.push('A'.repeat(60) + String(i).padStart(4, '0'));
     const requested = requestedLike('A'.repeat(60));
 
+    // The bound is the band's own ceiling, not a round number with room in it:
+    // at most (2 * NEAR_MISS_MAX + 1) = 5 cells per row, at most 64 rows because
+    // of the length cap, over MAX_HINTED * 5000 = 50,000 comparisons. A looser
+    // bound is not free — at 20,000,000 a band widened by a single cell scores
+    // 18.7M and slips through. Written as a literal on purpose: raising
+    // NEAR_MISS_MAX must fail here and be re-measured, not silently re-derive
+    // a wider bound from the value it just changed.
     const cells = await cellsFor(names, requested);
-    expect(cells).toBeLessThan(20_000_000);
+    expect(cells).toBeLessThanOrEqual(5 * 64 * 50_000);
     // Same input, same count — no clock, no tolerance, no flake.
     expect(await cellsFor(names, requested)).toBe(cells);
   });
@@ -338,8 +345,12 @@ describe('near-miss hint work is bounded (CI review finding, measured)', () => {
     }
     const requested = requestedLike('A'.repeat(60));
 
+    // Same reasoning: the cutoff's own ceiling. Every reachable cell is over the
+    // threshold by row 3, and rows 1-3 are 3, 4 and 5 cells wide, so 12 per
+    // comparison over 50,000 of them. Allowing the walk even one row further
+    // scores well above this.
     const cells = await cellsFor(names, requested);
-    expect(cells).toBeLessThan(2_000_000);
+    expect(cells).toBeLessThanOrEqual(12 * 50_000);
     expect(await cellsFor(names, requested)).toBe(cells);
   });
 
