@@ -39,6 +39,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # fetch-depth: 0 is load-bearing, not hygiene: the 406 fallback in the
+          # gather step builds the diff locally from
+          # `refs/remotes/origin/$BASE_REF...HEAD`, which needs the base branch
+          # present.
           fetch-depth: 0
           # Do not leave this job's GITHUB_TOKEN in .git/config as an
           # http.extraheader for the rest of the job. Nothing after checkout
@@ -51,10 +55,51 @@ jobs:
         id: context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
+          # BASE_REF is the target branch name from github.base_ref: pinned to
+          # main by the trigger, passed through env: rather than interpolated
+          # into this script, and used only inside double quotes with a
+          # refs/remotes/origin/ prefix, so it cannot split, substitute or turn
+          # into an option. The check is belt-and-braces: a name outside this
+          # set fails closed before any git call.
+          [[ "$BASE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::unexpected base ref name"; exit 1; }
           # PR metadata
-          gh pr diff "$PR_NUMBER" > /tmp/pr_diff.txt
-          gh pr diff "$PR_NUMBER" --name-only > /tmp/changed_files.txt
+          # GitHub's diff API rejects PRs over 20,000 changed lines (HTTP 406
+          # "diff exceeded the maximum number of lines") and times out (504) on
+          # very large ones. This step runs under `bash -e`, so a bare failure
+          # aborted the job before any size guard; the Enforce step then reported
+          # INCONCLUSIVE, so every large pull request was refused rather than
+          # reviewed. Fall back to building the diff locally. The `if` is
+          # load-bearing: a command tested by `if` does not trip `bash -e`, so
+          # every failure lands in the fallback (406, 504, or anything else) and
+          # its exit status is logged rather than guessed at.
+          #
+          # The local diff is the pull request's net change against the base tip
+          # the merge ref was built on: three-dot from refs/remotes, never the
+          # short name, which a pushed tag could shadow. Measured on nanomind#44
+          # it had the same file set and the same added and removed lines as the
+          # API diff; the two can differ where the base branch has advanced past
+          # the fork point, because the merge ref already contains those commits.
+          #
+          # Attributes are neutralised first: an in-PR .gitattributes marking a
+          # path `-diff` would print "Binary files differ" for it and blank it
+          # from the review, which the API diff cannot be made to do.
+          # .git/info/attributes has the highest precedence, so `* !diff` marks
+          # the attribute unspecified everywhere (not `-diff`, which would unset
+          # it and print "Binary files differ" for every path) and git classifies
+          # by content. An empty fallback diff is a failure, not a review of
+          # nothing.
+          if gh pr diff "$PR_NUMBER" > /tmp/pr_diff.txt; then :; else
+            echo "::warning::gh pr diff exited $? for this pull request; reviewing a locally built diff"
+            mkdir -p .git/info
+            printf '* !diff\n' >> .git/info/attributes
+            git -c core.quotePath=false diff --no-ext-diff "refs/remotes/origin/${BASE_REF}...HEAD" > /tmp/pr_diff.txt
+            [ -s /tmp/pr_diff.txt ] || { echo "::error::the local fallback diff is empty"; exit 1; }
+          fi
+          if ! gh pr diff "$PR_NUMBER" --name-only > /tmp/changed_files.txt; then
+            git -c core.quotePath=false diff --name-only "refs/remotes/origin/${BASE_REF}...HEAD" > /tmp/changed_files.txt
+          fi
           gh pr view "$PR_NUMBER" --json title -q '.title' > /tmp/pr_title.txt
           gh pr view "$PR_NUMBER" --json body -q '.body' | head -c 2000 > /tmp/pr_body.txt
 
