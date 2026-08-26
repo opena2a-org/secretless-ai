@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+**A `.secretless-rules.yaml` line the parser cannot read is now reported, and
+`rules list` and `init` exit 1 over it.** Previously a top-level key the parser
+did not recognise — `file:` instead of `files:`, `Files:`, `envs:` — silently
+discarded every pattern under it, flow syntax (`env: [ACME_*]`) and zero-indent
+list items vanished the same way, and the loader still reported the file as
+loaded (or empty) with no diagnostic. The deny rules were generated without
+those patterns and `init` exited 0: a restriction you wrote, reported as
+loaded, that did not restrict. Unknown keys now get a nearest-match hint
+("did you mean \"files\"?") but are never auto-corrected, every dropped pattern
+is named with its line number, and the sections that were read still load. Two
+adjacent holes closed with it: a section line carrying inline content no longer
+lets the items below it attach to the previous section (a file pattern misread
+as an env pattern generated deny rules you did not write), and a rules file
+refused for unsafe pattern characters no longer configures nothing while
+`init` exits 0.
+
 ## [0.23.0] - 2026-08-19
 
 The tool does what it says. Every change here is a case where a command accepted
