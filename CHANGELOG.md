@@ -12,11 +12,13 @@ those patterns and `init` exited 0: a restriction you wrote, reported as
 loaded, that did not restrict. Unknown keys now get a nearest-match hint
 ("did you mean \"files\"?") but are never auto-corrected, every dropped pattern
 is named with its line number, and the sections that were read still load. Two
-adjacent holes closed with it: a section line carrying inline content no longer
-lets the items below it attach to the previous section (a file pattern misread
-as an env pattern generated deny rules you did not write), and a rules file
-refused for unsafe pattern characters no longer configures nothing while
-`init` exits 0.
+adjacent holes closed with it: a section line the parser cannot read — inline
+content, stray spacing like `files :`, an invisible character — no longer lets
+the items below it attach to the previous section (a file pattern misread as an
+env pattern generated deny rules you did not write), a rules file refused for
+unsafe pattern characters no longer configures nothing while `init` exits 0,
+and the problem is reported even when Claude Code is not among the configured
+tools.
 
 ## [0.23.0] - 2026-08-19
 

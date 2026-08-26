@@ -519,3 +519,60 @@ file:
     expect(result.rules).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unreadable headers close the open section (adversarial-review finding:
+// "files :" left the previous section open and mis-bound the items below it)
+// ---------------------------------------------------------------------------
+
+describe('parseRulesYamlDetailed — unreadable headers close the section', () => {
+  it('a header with a space before the colon does not bind following items to the previous section', () => {
+    const { rules, issues } = parseRulesYamlDetailed('env:\n  - FOO_*\nfiles :\n  - "*.key-material"\n');
+    expect(rules.env).toEqual(['FOO_*']);
+    expect(rules.files).toEqual([]);
+    const dropped = issues.find(i => i.text.includes('key-material'));
+    expect(dropped).toBeDefined();
+    expect(dropped!.message).toContain('does not sit under any recognised section');
+  });
+
+  it('a tab-indented header closes the section the same way', () => {
+    const { rules, issues } = parseRulesYamlDetailed('env:\n  - FOO_*\n\tfiles:\n  - "*.key-material"\n');
+    expect(rules.env).toEqual(['FOO_*']);
+    expect(rules.files).toEqual([]);
+    expect(issues.some(i => i.text.includes('key-material'))).toBe(true);
+  });
+
+  it('a dropped item after an unreadable header does not blame an earlier unknown key', () => {
+    const { issues } = parseRulesYamlDetailed('envs:\n  - A_*\nfiles :\n  - B_*\n');
+    const b = issues.find(i => i.text === '- B_*');
+    expect(b).toBeDefined();
+    expect(b!.message).not.toContain('envs');
+    expect(b!.message).toContain('does not sit under any recognised section');
+  });
+
+  it('strips a leading BOM so the first key parses', () => {
+    const { rules, issues } = parseRulesYamlDetailed('\uFEFFenv:\n  - ACME_*\n');
+    expect(rules.env).toEqual(['ACME_*']);
+    expect(issues).toEqual([]);
+  });
+
+  it('points at invisible characters when a correct-looking line is not read', () => {
+    const { issues } = parseRulesYamlDetailed('env\u00A0:\n');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('invisible');
+  });
+
+  it('reports an empty quoted item instead of silently skipping it', () => {
+    const { rules, issues } = parseRulesYamlDetailed("env:\n  - \"\"\n  - ''\n");
+    expect(rules.env).toEqual([]);
+    expect(issues).toHaveLength(2);
+    expect(issues[0].message).toContain('no pattern left');
+  });
+
+  it('advises on the key, not on indentation, for an unknown key with an inline value', () => {
+    const { issues } = parseRulesYamlDetailed('version: 1\n');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('is not a section this build reads');
+    expect(issues[0].message).not.toContain('indented');
+  });
+});

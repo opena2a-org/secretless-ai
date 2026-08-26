@@ -98,3 +98,30 @@ describe('runInit with a rules file that cannot be fully honoured', () => {
     expect(code).toBe(0);
   });
 });
+
+describe('runInit with a broken rules file and no Claude Code among detected tools', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('exits 1 and says the file is not in force here', () => {
+    const dir = tmpProject({
+      '.cursorrules': '',
+      '.secretless-rules.yaml': 'file:\n  - "*.corp-secret"\n',
+    });
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rules-diag-home-'));
+    const prev = process.env.HOME;
+    process.env.HOME = home;
+    let code: number;
+    try {
+      code = runInit(dir);
+    } finally {
+      process.env.HOME = prev;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+    expect(code).toBe(1);
+    const out = lines.join('\n');
+    expect(out).toContain('not configured in this run');
+    expect(out).not.toContain('Lines that were read were applied');
+  });
+});

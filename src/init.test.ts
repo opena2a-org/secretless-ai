@@ -1241,3 +1241,17 @@ file:
     }
   });
 });
+
+describe('init surfaces the rules file regardless of detected tools', () => {
+  let dir: string;
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('reports a broken rules file even when Claude Code is not among the detected tools', () => {
+    fs.writeFileSync(path.join(dir, '.cursorrules'), '');
+    fs.writeFileSync(path.join(dir, '.secretless-rules.yaml'), 'file:\n  - "*.corp-secret"\n');
+    const result = init(dir);
+    expect(result.toolsConfigured).not.toContain('claude-code');
+    expect(result.rulesFileProblem?.kind).toBe('unrecognised-content');
+  });
+});

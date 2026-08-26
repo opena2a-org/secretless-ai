@@ -184,7 +184,16 @@ export function runInit(projectDir: string): number {
       }
       console.log();
       console.log('    The flagged lines generated no deny rules, so the protections they');
-      console.log('    describe are not installed. Lines that were read were applied.');
+      console.log('    describe are not installed.');
+      // "were applied" is only true when a Claude Code configuration was
+      // actually written this run — custom rules generate Claude Code deny
+      // rules and nothing for the other tools.
+      if (result.toolsConfigured.includes('claude-code')) {
+        console.log('    Lines that were read were applied.');
+      } else {
+        console.log('    Custom rules generate Claude Code deny rules, and Claude Code was');
+        console.log('    not configured in this run, so none of this file is in force here.');
+      }
     } else {
       console.log(`  ${c.yellow('Warning:')} ${RULES_FILENAME} was refused — none of its patterns were applied`);
       console.log();

@@ -155,11 +155,31 @@ export function init(projectDir: string): InitResult {
   // Quick scan for existing secrets
   result.secretsFound = quickScan(projectDir);
 
+  // Load custom rules HERE, not inside configureClaudeCode: a rules file that
+  // cannot be honoured must reach the result even when Claude Code is not
+  // among the configured tools — otherwise an operator with only .cursorrules
+  // and a broken rules file gets exit 0 and no mention of it. The previous
+  // bare catch inside configureClaudeCode was worse still: a file refused for
+  // unsafe patterns configured nothing and `init` exited 0.
+  let projectCustomRules: CustomRules | null = null;
+  try {
+    const loaded = loadCustomRulesDetailed(projectDir);
+    projectCustomRules = loaded.rules;
+    if (loaded.status === 'unrecognised-content') {
+      result.rulesFileProblem = { kind: 'unrecognised-content', issues: loaded.issues ?? [] };
+    }
+  } catch (err) {
+    result.rulesFileProblem = {
+      kind: 'load-error',
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+
   // Configure each detected tool
   for (const tool of detected) {
     switch (tool.tool) {
       case 'claude-code':
-        configureClaudeCode(projectDir, result);
+        configureClaudeCode(projectDir, result, projectCustomRules);
         break;
       case 'cursor':
         configureCursor(projectDir, result);
@@ -191,30 +211,16 @@ export function init(projectDir: string): InitResult {
 // Claude Code Configuration
 // ============================================================================
 
-function configureClaudeCode(projectDir: string, result: InitResult): void {
+function configureClaudeCode(
+  projectDir: string,
+  result: InitResult,
+  projectCustomRules: CustomRules | null,
+): void {
   const claudeDir = path.join(projectDir, '.claude');
   const hooksDir = path.join(claudeDir, 'hooks');
 
   // Ensure directories exist
   fs.mkdirSync(hooksDir, { recursive: true });
-
-  // Load custom rules early (needed for both hook script and deny rules).
-  // A rules file that cannot be fully honoured is surfaced on the result, not
-  // swallowed: the previous bare catch here meant a file refused for unsafe
-  // patterns configured nothing and `init` still exited 0.
-  let projectCustomRules: CustomRules | null = null;
-  try {
-    const loaded = loadCustomRulesDetailed(projectDir);
-    projectCustomRules = loaded.rules;
-    if (loaded.status === 'unrecognised-content') {
-      result.rulesFileProblem = { kind: 'unrecognised-content', issues: loaded.issues ?? [] };
-    }
-  } catch (err) {
-    result.rulesFileProblem = {
-      kind: 'load-error',
-      reason: err instanceof Error ? err.message : String(err),
-    };
-  }
 
   // 1. Install (or refresh) the PreToolUse guard hook. The hook is a managed
   // file we own — older `init` only wrote it when absent, so an outdated hook

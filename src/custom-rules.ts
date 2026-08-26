@@ -67,6 +67,13 @@ const SAFE_PATTERN = /^[a-zA-Z0-9_*.\-/\[\]{}?]+$/;
  * (`KNOWN_ENVELOPE_KEYS` in broker/policy.ts).
  */
 export function parseRulesYamlDetailed(content: string): RulesParseResult {
+  // A UTF-8 byte-order mark is an encoding artifact, not operator content —
+  // without this, a BOM'd file's first key line fails every pattern below and
+  // the issue shows a line that LOOKS like a valid key (trim strips the BOM
+  // from the displayed text too).
+  if (content.charCodeAt(0) === 0xfeff) {
+    content = content.slice(1);
+  }
   const result: CustomRules = { env: [], files: [], bash: [] };
   const issues: RulesFileIssue[] = [];
   let currentKey: keyof CustomRules | null = null;
@@ -126,6 +133,12 @@ export function parseRulesYamlDetailed(content: string): RulesParseResult {
 
         if (value) {
           result[currentKey].push(value);
+        } else {
+          issues.push({
+            line: lineNo,
+            text: line.trim(),
+            message: `Pattern not loaded: the item has no pattern left after removing quotes and comments.`,
+          });
         }
       } else {
         issues.push({
@@ -154,28 +167,41 @@ export function parseRulesYamlDetailed(content: string): RulesParseResult {
       currentUnknownKey = key;
       const known = KNOWN_RULES_KEYS.includes(key);
       const near = known ? undefined : nearestMatch(key, KNOWN_RULES_KEYS);
+      // The fix advice must match the actual defect: telling the operator to
+      // indent patterns under a key this build does not read sends them in a
+      // circle — the re-indented file fails on the key instead.
       issues.push({
         line: lineNo,
         text: line.trim(),
-        message: trailing.startsWith('#')
-          ? `A comment on the same line as "${key}:" is not supported by this parser, so the ` +
-            `section never opens and the patterns beneath it are not read. Put the comment on ` +
-            `its own line.`
-          : `Content on the same line as "${key}:" is not read (this parser does not support ` +
-            `flow syntax or inline values)` +
-            `${known ? '' : `, and "${key}" is not a section this build reads` +
-              `${near ? ` (did you mean "${near}"?)` : ''}`}. ` +
-            `Put each pattern on its own indented "- pattern" line below the key.`,
+        message: !known
+          ? `The key "${key}" is not a section this build reads` +
+            `${near ? ` (did you mean "${near}"?)` : ''}, and content on the same line as a ` +
+            `key is not read either. A rules file may carry: ${KNOWN_RULES_KEYS.join(', ')}.`
+          : trailing.startsWith('#')
+            ? `A comment on the same line as "${key}:" is not supported by this parser, so the ` +
+              `section never opens and the patterns beneath it are not read. Put the comment on ` +
+              `its own line.`
+            : `Content on the same line as "${key}:" is not read (this parser does not support ` +
+              `flow syntax or inline values). Put each pattern on its own indented ` +
+              `"- pattern" line below the key.`,
       });
       continue;
     }
 
+    // A line that matches nothing above ALSO closes any open section, exactly
+    // as the inline-content branch does: an unreadable header ("files :", a
+    // tab-indented or invisible-character-prefixed key) would otherwise leave
+    // the previous section open and bind the patterns below it there —
+    // installing deny rules of the wrong kind, which is worse than absence.
+    currentKey = null;
+    currentUnknownKey = null;
     issues.push({
       line: lineNo,
       text: line.trim(),
       message:
         `Unrecognised line: not a "key:" section line or an indented "- pattern" item, ` +
-        `so it was not read.`,
+        `so it was not read. If it looks correct, check for stray spacing or invisible ` +
+        `characters (a non-breaking space, a byte-order mark).`,
     });
   }
 
