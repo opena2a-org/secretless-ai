@@ -1,15 +1,18 @@
 import * as path from 'path';
+import * as fs from 'fs';
+import {
+  loadCustomRulesDetailed,
+  customRulesToDenyRules,
+  generateTemplate,
+  envPatternToDenyRules,
+  filePatternToDenyRules,
+  validatePattern,
+  globToShellRegex,
+  RULES_FILENAME,
+} from '../custom-rules';
 
-export function runRules(args: string[]): number {
-  const {
-    loadCustomRulesDetailed,
-    customRulesToDenyRules,
-    generateTemplate,
-    RULES_FILENAME,
-  } = require('../custom-rules') as typeof import('../custom-rules');
-
+export function runRules(args: string[], projectDir: string = process.cwd()): number {
   const subcommand = args[0] ?? 'list';
-  const projectDir = process.cwd();
 
   switch (subcommand) {
     case 'list': {
@@ -24,44 +27,62 @@ export function runRules(args: string[]): number {
         console.log('  Uncomment or add patterns, then run: npx secretless-ai init\n');
         return 0;
       }
-      const rules = result.rules!;
 
-      console.log(`\n  Custom Rules (${RULES_FILENAME})\n`);
-
-      if (rules.env.length > 0) {
-        console.log('  Environment variables:');
-        for (const p of rules.env) {
-          console.log(`    ${p}`);
-        }
-      }
-      if (rules.files.length > 0) {
-        console.log('  File patterns:');
-        for (const p of rules.files) {
-          console.log(`    ${p}`);
-        }
-      }
-      if (rules.bash.length > 0) {
-        console.log('  Bash commands:');
-        for (const p of rules.bash) {
-          console.log(`    ${p}`);
+      const issues = result.status === 'unrecognised-content' ? (result.issues ?? []) : [];
+      if (issues.length > 0) {
+        console.log(`\n  ${RULES_FILENAME}: ${issues.length} line${issues.length === 1 ? '' : 's'} not read\n`);
+        for (const issue of issues) {
+          console.log(`    line ${issue.line}: ${issue.text}`);
+          console.log(`      ${issue.message}`);
         }
       }
 
-      const denyRules = customRulesToDenyRules(rules);
-      console.log(`\n  Generates ${denyRules.length} deny rules.`);
-      console.log('  Run: npx secretless-ai init  (to apply)\n');
+      const rules = result.rules;
+      if (rules) {
+        console.log(`\n  Custom Rules (${RULES_FILENAME})\n`);
+
+        if (rules.env.length > 0) {
+          console.log('  Environment variables:');
+          for (const p of rules.env) {
+            console.log(`    ${p}`);
+          }
+        }
+        if (rules.files.length > 0) {
+          console.log('  File patterns:');
+          for (const p of rules.files) {
+            console.log(`    ${p}`);
+          }
+        }
+        if (rules.bash.length > 0) {
+          console.log('  Bash commands:');
+          for (const p of rules.bash) {
+            console.log(`    ${p}`);
+          }
+        }
+
+        const denyRules = customRulesToDenyRules(rules);
+        console.log(`\n  Generates ${denyRules.length} deny rules${issues.length > 0 ? ' from the lines that were read' : ''}.`);
+        console.log('  Run: npx secretless-ai init  (to apply)\n');
+      }
+
+      if (issues.length > 0) {
+        if (!rules) {
+          console.log(`\n  No deny rules are generated from this file — nothing in it was read as a pattern.`);
+        }
+        console.log(`  The flagged lines generate no deny rules. Fix them, then run: npx secretless-ai rules list  (to re-check)\n`);
+        return 1;
+      }
       return 0;
     }
 
     case 'init': {
-      const nodeFs = require('fs') as typeof import('fs');
       const rulesPath = path.join(projectDir, RULES_FILENAME);
-      if (nodeFs.existsSync(rulesPath)) {
+      if (fs.existsSync(rulesPath)) {
         console.log(`\n  ${RULES_FILENAME} already exists.`);
         console.log('  Edit it directly or use: npx secretless-ai rules list\n');
         return 0;
       }
-      nodeFs.writeFileSync(rulesPath, generateTemplate());
+      fs.writeFileSync(rulesPath, generateTemplate());
       console.log(`\n  Created ${RULES_FILENAME}`);
       console.log('  Edit it to add your organization-specific patterns.');
       console.log('  Then run: npx secretless-ai init  (to apply)\n');
@@ -81,9 +102,6 @@ export function runRules(args: string[]): number {
         console.error('    secretless-ai rules test "curl*corp*" --bash   (force bash type)\n');
         return 1;
       }
-
-      const { envPatternToDenyRules, filePatternToDenyRules, validatePattern, globToShellRegex } =
-        require('../custom-rules') as typeof import('../custom-rules');
 
       if (!validatePattern(pattern)) {
         console.error(`\n  Invalid pattern: ${pattern}`);

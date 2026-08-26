@@ -7,8 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { detectAITools, toolDisplayName, type AITool } from './detect';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
-import { loadCustomRules, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, mergeRules } from './custom-rules';
-import type { CustomRules } from './custom-rules';
+import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, mergeRules } from './custom-rules';
+import type { CustomRules, RulesFileIssue } from './custom-rules';
 import { loadSecretlessIgnore } from './secretlessignore';
 
 /** Known API services with their auth header formats */
@@ -92,6 +92,18 @@ interface InitResult {
    * nothing is not a pass.
    */
   settingsUnusable?: { path: string; kind: SettingsUnusableKind; reason: string };
+  /**
+   * Set when `.secretless-rules.yaml` exists but part or all of it could not
+   * be honoured. 'unrecognised-content': the parser did not read some lines,
+   * so the patterns on them generate no deny rules (any lines that WERE read
+   * are still applied). 'load-error': the file was refused outright (e.g.
+   * unsafe pattern characters) and none of it was applied. Either way the
+   * operator wrote restrictions that are not in force, so `runInit` reports
+   * it and exits non-zero — silence here is the defect this field closes.
+   */
+  rulesFileProblem?:
+    | { kind: 'unrecognised-content'; issues: RulesFileIssue[] }
+    | { kind: 'load-error'; reason: string };
 }
 
 /**
@@ -186,11 +198,23 @@ function configureClaudeCode(projectDir: string, result: InitResult): void {
   // Ensure directories exist
   fs.mkdirSync(hooksDir, { recursive: true });
 
-  // Load custom rules early (needed for both hook script and deny rules)
+  // Load custom rules early (needed for both hook script and deny rules).
+  // A rules file that cannot be fully honoured is surfaced on the result, not
+  // swallowed: the previous bare catch here meant a file refused for unsafe
+  // patterns configured nothing and `init` still exited 0.
   let projectCustomRules: CustomRules | null = null;
   try {
-    projectCustomRules = loadCustomRules(projectDir);
-  } catch { /* handled later in deny rules section */ }
+    const loaded = loadCustomRulesDetailed(projectDir);
+    projectCustomRules = loaded.rules;
+    if (loaded.status === 'unrecognised-content') {
+      result.rulesFileProblem = { kind: 'unrecognised-content', issues: loaded.issues ?? [] };
+    }
+  } catch (err) {
+    result.rulesFileProblem = {
+      kind: 'load-error',
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
 
   // 1. Install (or refresh) the PreToolUse guard hook. The hook is a managed
   // file we own — older `init` only wrote it when absent, so an outdated hook

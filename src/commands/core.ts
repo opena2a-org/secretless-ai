@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { init } from '../init';
+import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips } from '../scan';
 import { status } from '../status';
 import { verify } from '../verify';
@@ -167,6 +168,36 @@ export function runInit(projectDir: string): number {
   console.log('    Scan:   secretless-ai scan');
   console.log('    Status: secretless-ai status');
   console.log();
+
+  // A rules file the operator wrote that is not fully in force fails the run:
+  // part of what they asked for was not installed, and exiting 0 over that is
+  // the accepted-but-narrower defect this block exists to close. Rendered last
+  // so the problem and its fix are the bottom lines of the output.
+  if (result.rulesFileProblem) {
+    if (result.rulesFileProblem.kind === 'unrecognised-content') {
+      const { issues } = result.rulesFileProblem;
+      console.log(`  ${c.yellow('Warning:')} ${RULES_FILENAME} has ${issues.length} line${issues.length === 1 ? '' : 's'} this build does not read`);
+      console.log();
+      for (const issue of issues) {
+        console.log(`    line ${issue.line}: ${issue.text}`);
+        console.log(`      ${issue.message}`);
+      }
+      console.log();
+      console.log('    The flagged lines generated no deny rules, so the protections they');
+      console.log('    describe are not installed. Lines that were read were applied.');
+    } else {
+      console.log(`  ${c.yellow('Warning:')} ${RULES_FILENAME} was refused — none of its patterns were applied`);
+      console.log();
+      for (const l of result.rulesFileProblem.reason.split('\n')) {
+        console.log(`    ${l}`);
+      }
+    }
+    console.log();
+    console.log(`  ${c.cyan('Verify:')} secretless-ai rules list`);
+    console.log(`  ${c.cyan('Fix:')}    edit ${RULES_FILENAME}, then re-run: secretless-ai init`);
+    console.log();
+    return 1;
+  }
 
   return 0;
 }
