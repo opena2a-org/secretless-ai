@@ -1181,3 +1181,77 @@ describe('README sample output matches the build', () => {
     expect(claimed![1]).toBe(pkg.version);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rules file that cannot be fully honoured — init must say so, not exit clean
+// ---------------------------------------------------------------------------
+
+describe('init with a rules file that cannot be fully honoured', () => {
+  let dir: string;
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  function settings(): { permissions: { deny: string[] } } {
+    return JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+  }
+
+  it('surfaces unread lines on the result and still applies the lines that were read', () => {
+    fs.writeFileSync(path.join(dir, '.secretless-rules.yaml'), `
+env:
+  - ACME_*
+file:
+  - "*.corp-secret"
+`);
+    const result = init(dir);
+
+    expect(result.rulesFileProblem?.kind).toBe('unrecognised-content');
+    const problem = result.rulesFileProblem!;
+    if (problem.kind !== 'unrecognised-content') throw new Error('unreachable');
+    // The misspelled key and its dropped pattern are both named.
+    expect(problem.issues.some(i => i.message.includes('did you mean "files"?'))).toBe(true);
+    expect(problem.issues.some(i => i.text.includes('corp-secret'))).toBe(true);
+
+    // The section that WAS read is applied...
+    expect(settings().permissions.deny).toContain('Bash(echo $*ACME_*)');
+    // ...and the dropped file pattern generates nothing.
+    expect(settings().permissions.deny).not.toContain('Read(*.corp-secret)');
+  });
+
+  it('reports a refused rules file instead of silently ignoring it', () => {
+    fs.writeFileSync(path.join(dir, '.secretless-rules.yaml'), 'env:\n  - "$(whoami)"\n');
+    const result = init(dir);
+
+    expect(result.rulesFileProblem?.kind).toBe('load-error');
+    const problem = result.rulesFileProblem!;
+    if (problem.kind !== 'load-error') throw new Error('unreachable');
+    expect(problem.reason).toContain('Invalid patterns');
+    // Nothing from the refused file was applied.
+    expect(settings().permissions.deny.some(r => r.includes('whoami'))).toBe(false);
+  });
+
+  it('sets no problem for a clean rules file or no rules file', () => {
+    expect(init(dir).rulesFileProblem).toBeUndefined();
+
+    const dir2 = tmpDir();
+    try {
+      fs.writeFileSync(path.join(dir2, '.secretless-rules.yaml'), 'env:\n  - CORP_*\n');
+      expect(init(dir2).rulesFileProblem).toBeUndefined();
+    } finally {
+      cleanup(dir2);
+    }
+  });
+});
+
+describe('init surfaces the rules file regardless of detected tools', () => {
+  let dir: string;
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('reports a broken rules file even when Claude Code is not among the detected tools', () => {
+    fs.writeFileSync(path.join(dir, '.cursorrules'), '');
+    fs.writeFileSync(path.join(dir, '.secretless-rules.yaml'), 'file:\n  - "*.corp-secret"\n');
+    const result = init(dir);
+    expect(result.toolsConfigured).not.toContain('claude-code');
+    expect(result.rulesFileProblem?.kind).toBe('unrecognised-content');
+  });
+});

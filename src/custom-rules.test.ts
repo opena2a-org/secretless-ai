@@ -5,6 +5,7 @@ import * as os from 'os';
 
 import {
   parseRulesYaml,
+  parseRulesYamlDetailed,
   validatePattern,
   validateRules,
   globToShellRegex,
@@ -362,5 +363,216 @@ describe('generateTemplate', () => {
     // Template should parse without error (all items are commented out)
     const parsed = parseRulesYaml(template);
     expect(parsed.env).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Detailed parser — every unread line is an issue, never a silent drop
+// ---------------------------------------------------------------------------
+
+describe('parseRulesYamlDetailed', () => {
+  it('reports an unknown top-level key with a nearest-match hint', () => {
+    const { rules, issues } = parseRulesYamlDetailed(`
+file:
+  - "*.corp-secret"
+`);
+    expect(rules).toEqual({ env: [], files: [], bash: [] });
+    const keyIssue = issues.find(i => i.message.includes('Unknown top-level key "file"'));
+    expect(keyIssue).toBeDefined();
+    expect(keyIssue!.message).toContain('did you mean "files"?');
+    expect(keyIssue!.message).toContain('env, files, bash');
+  });
+
+  it('hints on a case variant of a known key', () => {
+    const { issues } = parseRulesYamlDetailed('Files:\n  - "*.a"\n');
+    expect(issues[0].message).toContain('Unknown top-level key "Files"');
+    expect(issues[0].message).toContain('did you mean "files"?');
+  });
+
+  it('reports every pattern dropped under an unknown key, naming the key', () => {
+    const { rules, issues } = parseRulesYamlDetailed(`
+envs:
+  - ACME_*
+  - CORP_*
+`);
+    expect(rules.env).toEqual([]);
+    const dropped = issues.filter(i => i.message.includes('sits under "envs"'));
+    expect(dropped.map(d => d.text)).toEqual(['- ACME_*', '- CORP_*']);
+    expect(dropped.map(d => d.line)).toEqual([3, 4]);
+  });
+
+  it('does not auto-correct: a hinted near-miss key still binds nothing', () => {
+    const { rules } = parseRulesYamlDetailed('file:\n  - "*.corp-secret"\n');
+    expect(rules.files).toEqual([]);
+    expect(rules.env).toEqual([]);
+    expect(rules.bash).toEqual([]);
+  });
+
+  it('reports flow syntax instead of silently dropping it', () => {
+    const { rules, issues } = parseRulesYamlDetailed('env: [ACME_*]\n');
+    expect(rules.env).toEqual([]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(1);
+    expect(issues[0].message).toContain('flow syntax');
+  });
+
+  it('a failed section line does not bind following items to the previous section', () => {
+    const { rules, issues } = parseRulesYamlDetailed(`env:
+  - FOO_*
+files: [inline]
+  - "*.key-material"
+`);
+    // The shipped parser bound *.key-material to env, generating echo/printenv
+    // deny rules for a file pattern. It must be dropped and reported instead.
+    expect(rules.env).toEqual(['FOO_*']);
+    expect(rules.files).toEqual([]);
+    const dropped = issues.find(i => i.text.includes('key-material'));
+    expect(dropped).toBeDefined();
+    expect(dropped!.message).toContain('section never opened');
+  });
+
+  it('reports a comment on a section line as unsupported', () => {
+    const { rules, issues } = parseRulesYamlDetailed('env: # main envs\n  - ACME_*\n');
+    expect(rules.env).toEqual([]);
+    expect(issues).toHaveLength(2);
+    expect(issues[0].message).toContain('comment on the same line');
+    expect(issues[1].message).toContain('section never opened');
+  });
+
+  it('reports a zero-indent list item instead of silently dropping it', () => {
+    const { rules, issues } = parseRulesYamlDetailed('env:\n- ACME_*\n');
+    expect(rules.env).toEqual([]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(2);
+  });
+
+  it('reports a pattern with no section at all', () => {
+    const { issues } = parseRulesYamlDetailed('  - ORPHAN_*\n');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('does not sit under any recognised section');
+  });
+
+  it('returns no issues for a clean file or the generated template', () => {
+    const clean = parseRulesYamlDetailed('env:\n  - ACME_*\nfiles:\n  - "*.a"\n');
+    expect(clean.issues).toEqual([]);
+    expect(parseRulesYamlDetailed(generateTemplate()).issues).toEqual([]);
+  });
+
+  it('issue line numbers are 1-based file positions', () => {
+    const { issues } = parseRulesYamlDetailed('\n# comment\nbogus:\n');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(3);
+  });
+
+  it('parseRulesYaml still returns the same rules object shape', () => {
+    const content = 'env:\n  - A_*\nbogus:\n  - dropped\n';
+    expect(parseRulesYaml(content)).toEqual(parseRulesYamlDetailed(content).rules);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Load status — a file with unread lines must not report 'loaded' or 'empty'
+// ---------------------------------------------------------------------------
+
+describe('loadCustomRulesDetailed with unrecognised content', () => {
+  let dir: string;
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('reports unrecognised-content, not empty, when everything sat under a misspelled key', () => {
+    fs.writeFileSync(path.join(dir, RULES_FILENAME), `
+file:
+  - "*.corp-secret"
+`);
+    const result = loadCustomRulesDetailed(dir);
+    expect(result.status).toBe('unrecognised-content');
+    expect(result.rules).toBeNull();
+    expect(result.issues!.length).toBeGreaterThan(0);
+    expect(result.issues![0].message).toContain('did you mean "files"?');
+  });
+
+  it('reports unrecognised-content, not loaded, when only part of the file was read', () => {
+    fs.writeFileSync(path.join(dir, RULES_FILENAME), `
+env:
+  - ACME_*
+file:
+  - "*.corp-secret"
+`);
+    const result = loadCustomRulesDetailed(dir);
+    expect(result.status).toBe('unrecognised-content');
+    expect(result.rules).not.toBeNull();
+    expect(result.rules!.env).toEqual(['ACME_*']);
+    expect(result.rules!.files).toEqual([]);
+  });
+
+  it('carries no issues field on loaded and empty files', () => {
+    fs.writeFileSync(path.join(dir, RULES_FILENAME), 'env:\n  - CORP_*\n');
+    expect(loadCustomRulesDetailed(dir).issues).toBeUndefined();
+    fs.writeFileSync(path.join(dir, RULES_FILENAME), '# nothing\n');
+    expect(loadCustomRulesDetailed(dir).issues).toBeUndefined();
+  });
+
+  it('does not throw on unsafe characters under an unknown key — nothing binds, so it reports instead', () => {
+    fs.writeFileSync(path.join(dir, RULES_FILENAME), 'bogus:\n  - "$(whoami)"\n');
+    const result = loadCustomRulesDetailed(dir);
+    expect(result.status).toBe('unrecognised-content');
+    expect(result.rules).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unreadable headers close the open section (adversarial-review finding:
+// "files :" left the previous section open and mis-bound the items below it)
+// ---------------------------------------------------------------------------
+
+describe('parseRulesYamlDetailed — unreadable headers close the section', () => {
+  it('a header with a space before the colon does not bind following items to the previous section', () => {
+    const { rules, issues } = parseRulesYamlDetailed('env:\n  - FOO_*\nfiles :\n  - "*.key-material"\n');
+    expect(rules.env).toEqual(['FOO_*']);
+    expect(rules.files).toEqual([]);
+    const dropped = issues.find(i => i.text.includes('key-material'));
+    expect(dropped).toBeDefined();
+    expect(dropped!.message).toContain('does not sit under any recognised section');
+  });
+
+  it('a tab-indented header closes the section the same way', () => {
+    const { rules, issues } = parseRulesYamlDetailed('env:\n  - FOO_*\n\tfiles:\n  - "*.key-material"\n');
+    expect(rules.env).toEqual(['FOO_*']);
+    expect(rules.files).toEqual([]);
+    expect(issues.some(i => i.text.includes('key-material'))).toBe(true);
+  });
+
+  it('a dropped item after an unreadable header does not blame an earlier unknown key', () => {
+    const { issues } = parseRulesYamlDetailed('envs:\n  - A_*\nfiles :\n  - B_*\n');
+    const b = issues.find(i => i.text === '- B_*');
+    expect(b).toBeDefined();
+    expect(b!.message).not.toContain('envs');
+    expect(b!.message).toContain('does not sit under any recognised section');
+  });
+
+  it('strips a leading BOM so the first key parses', () => {
+    const { rules, issues } = parseRulesYamlDetailed('\uFEFFenv:\n  - ACME_*\n');
+    expect(rules.env).toEqual(['ACME_*']);
+    expect(issues).toEqual([]);
+  });
+
+  it('points at invisible characters when a correct-looking line is not read', () => {
+    const { issues } = parseRulesYamlDetailed('env\u00A0:\n');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('invisible');
+  });
+
+  it('reports an empty quoted item instead of silently skipping it', () => {
+    const { rules, issues } = parseRulesYamlDetailed("env:\n  - \"\"\n  - ''\n");
+    expect(rules.env).toEqual([]);
+    expect(issues).toHaveLength(2);
+    expect(issues[0].message).toContain('no pattern left');
+  });
+
+  it('advises on the key, not on indentation, for an unknown key with an inline value', () => {
+    const { issues } = parseRulesYamlDetailed('version: 1\n');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('is not a section this build reads');
+    expect(issues[0].message).not.toContain('indented');
   });
 });
