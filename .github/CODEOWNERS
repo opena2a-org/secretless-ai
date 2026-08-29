@@ -16,3 +16,4 @@
 /.github/ @thebenignhacker
 
 # Temporary line for the head-freshness verification; this pull request is closed unmerged.
+# Content changed AFTER the approval: the gate must fail on this head.
