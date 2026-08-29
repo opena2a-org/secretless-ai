@@ -59,6 +59,8 @@ jobs:
       EVENT_NAME: ${{ github.event_name }}
       REVIEW_AUTHOR: ${{ github.event.review.user.login }}
     steps:
+      - name: Deliberate tripwire violation for leg 7 (checks out head content)
+        uses: actions/checkout@v4
       - name: Evaluate and post the check run
         run: |
           set -euo pipefail
