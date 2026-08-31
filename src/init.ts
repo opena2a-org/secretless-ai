@@ -834,7 +834,7 @@ except Exception:
   #
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
   if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files"}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi
   # Block python/node one-liners that read secret files

@@ -441,6 +441,88 @@ describe('init', { timeout: 30_000 }, () => {
     });
   });
 
+  // SLS-03: the Bash secret-file deny was a dead end — a generic "blocked
+  // command that reads secret files" with no path forward, even when the
+  // command was a committed template read (`cat .env.example`) or a search
+  // pattern that merely contains a secret-file token. The guard itself must
+  // stay as-is (a denylist over command TEXT cannot tell a filename from a
+  // pattern — see NOTE ON TEMPLATE FILES in init.ts), so the fix is the
+  // MESSAGE: the deny names the safe alternative, the Read/Grep tools, whose
+  // file-path guard CAN exempt templates. Message-only; the decision set is
+  // pinned unchanged below.
+  describe('Bash secret-file deny message names the Read/Grep-tool safe path', () => {
+    function runHookCmdRaw(hookPath: string, command: string): string {
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      return execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+    }
+
+    it('SLS-03.AC1 deny output for a Bash secret-file read names the Read/Grep-tool path, not only the block reason', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Both dead-end shapes from the contract: a committed template read, and
+      // a search pattern that merely contains a secret-file token.
+      const deadEnds = [
+        'cat .env.example',
+        'grep -rn "dotenv(.env)" src',
+      ];
+      for (const c of deadEnds) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `fixture must DENY: ${c}`).toBe(true);
+        const reason: string = JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
+        expect(reason, `deny reason must name the Read tool for: ${c}`).toMatch(/Read tool/);
+        expect(reason, `deny reason must name the Grep tool for: ${c}`).toMatch(/Grep tool/);
+        expect(reason, `deny reason must mention committed templates for: ${c}`).toMatch(/template/i);
+        expect(
+          reason,
+          `deny reason must explain the filename/pattern ambiguity for: ${c}`,
+        ).toMatch(/filename.*pattern|pattern.*filename/is);
+      }
+    });
+
+    it('SLS-03.AC2 the decision set is unchanged: same denies, same allows, only the message text differs', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Pinned pre-change corpus for the secret-file-read arm. Every command
+      // here denied before the message change and must still deny — including
+      // the deliberate template over-block (exempting the template NAME from
+      // the command guard is a credential bypass; see init.ts).
+      const mustBlock = [
+        'cat .env',
+        'cat .env.example',
+        'head -5 prod.env',
+        'grep AWS_SECRET .env',
+        'grep -rn "dotenv(.env)" src',
+        'xxd server.key',
+        'sed -n 1p client.pem',
+        'strings cert.p12',
+      ];
+      for (const c of mustBlock) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to still BLOCK: ${c}`).toBe(true);
+        // Message-only change: the decision fields are unchanged; only
+        // permissionDecisionReason carries the new wording.
+        const hso = JSON.parse(out).hookSpecificOutput;
+        expect(hso.hookEventName).toBe('PreToolUse');
+        expect(hso.permissionDecision).toBe('deny');
+      }
+
+      // And nothing that was allowed is newly blocked.
+      const mustAllow = [
+        'ls -la',
+        'cat README.md',
+        'grep TODO src/index.ts',
+        'cat environment.ts',
+        'echo hello',
+      ];
+      for (const c of mustAllow) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to still ALLOW: ${c}`).toBe(false);
+      }
+    });
+  });
+
   // Issue #99: two guard-hook / deny-rule gaps found by adversarial review of the
   // env fix. The tool-level agent-runtime gate is the primary enforcement; these
   // harden the best-effort Claude-layer.
