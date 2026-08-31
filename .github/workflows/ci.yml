@@ -1,18 +1,35 @@
 name: CI
+# The gate this repository's branch protection can actually require.
+#
+# This workflow used to carry `paths: [src/**, package.json, tsconfig.json]` on
+# both triggers. That made `build-and-test` unrequireable: a docs-only pull
+# request produced NO run, so the context never reported, and a required context
+# that never reports leaves the pull request blocked forever with nothing a
+# contributor can do about it. Path filters decide whether a check EXISTS; a
+# required check has to exist on every change and decide for itself what to do.
+#
+# So the filter moved off the trigger and into the run. There are no `paths:`
+# here, and the `gate` job below reports on every push to main and every pull
+# request to main. Inside the run it classifies the change against the SAME
+# globs the trigger filter used, and:
+#   - code change      -> npm ci, npm run build, npm test; the gate is that
+#                         suite's result
+#   - non-code change  -> a deterministic pass, no suite
+#
+# `gate` is the context to require. Its name is a literal — the matrix job's
+# name is `Node ${{ matrix.node-version }}`, which is a different string per leg
+# and changes the moment the matrix changes, so requiring it pins branch
+# protection to a matrix definition. `gate` never moves.
+#
+# The classification is NOT written inline here. It lives in
+# .github/scripts/ci-gate.mjs and is exercised by src/ci-gate.test.ts, so the
+# logic that decides whether the suite runs is itself under test.
 
 on:
   push:
     branches: [main]
-    paths:
-      - "src/**"
-      - "package.json"
-      - "tsconfig.json"
   pull_request:
     branches: [main]
-    paths:
-      - "src/**"
-      - "package.json"
-      - "tsconfig.json"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -22,8 +39,124 @@ permissions:
   contents: read
 
 jobs:
+  gate:
+    # Fixed, path-agnostic, matrix-free. This is the required context.
+    name: gate
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Load-bearing: the classification below diffs the base against the
+          # head locally, so both commits must be present. A shallow clone would
+          # make every base unresolvable, and an unresolvable base runs the full
+          # suite — correct, but it would run it on every docs commit forever.
+          fetch-depth: 0
+          # Nothing after checkout runs an authenticated git operation, so the
+          # job's token has no reason to stay in .git/config.
+          persist-credentials: false
+
+      - name: Collect the changed files
+        id: changed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+          CHANGED_FILES_FILE: ${{ runner.temp }}/changed-files.txt
+        run: |
+          set -euo pipefail
+          : > "$CHANGED_FILES_FILE"
+          unresolved=false
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+            head="$PR_HEAD_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+            head="$PUSH_AFTER_SHA"
+          fi
+
+          # `git cat-file -e` is tested inside `if`, so a missing object does not
+          # trip `set -e` — it lands in the fail-closed branch instead. The cases
+          # that get here are real: the all-zero `before` of a branch's first
+          # push, and a force-push whose previous tip has been garbage collected.
+          if [ -z "$base" ] || [ -z "$head" ] \
+            || ! git cat-file -e "${base}^{commit}" 2>/dev/null \
+            || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+            unresolved=true
+            echo "Base '${base:-<empty>}' or head '${head:-<empty>}' could not be resolved; the change will be treated as code."
+          else
+            # Three-dot: the change against the merge base, so commits the base
+            # branch gained since the fork point are not counted as this
+            # change's. core.quotePath=false keeps non-ASCII paths unescaped, so
+            # the classifier sees the path git recorded.
+            git -c core.quotePath=false diff --name-only "${base}...${head}" > "$CHANGED_FILES_FILE"
+          fi
+
+          echo "unresolved-base=$unresolved" >> "$GITHUB_OUTPUT"
+          echo "Changed files:"
+          cat "$CHANGED_FILES_FILE"
+
+      - name: Classify the change
+        id: classify
+        env:
+          CHANGED_FILES_FILE: ${{ runner.temp }}/changed-files.txt
+          UNRESOLVED_BASE: ${{ steps.changed.outputs.unresolved-base }}
+        run: node .github/scripts/ci-gate.mjs classify
+
+      # The suite. Every step below is conditioned on the SAME expression, and
+      # the verdict step re-checks that all three actually reported success — an
+      # `if:` that silently stopped matching would fail the gate, not skip it.
+      - uses: actions/setup-node@v4
+        if: steps.classify.outputs.code == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - id: npm_ci
+        if: steps.classify.outputs.code == 'true'
+        run: npm ci
+
+      - id: build
+        if: steps.classify.outputs.code == 'true'
+        run: npm run build
+
+      - id: test
+        if: steps.classify.outputs.code == 'true'
+        run: npm test
+
+      - name: Gate verdict
+        # always(): a failed or skipped suite step must still reach the verdict,
+        # because "the suite did not run on a code change" is precisely the state
+        # this step exists to fail on.
+        if: always()
+        env:
+          GATE_CODE: ${{ steps.classify.outputs.code }}
+          GATE_NPM_CI_OUTCOME: ${{ steps.npm_ci.outcome }}
+          GATE_BUILD_OUTCOME: ${{ steps.build.outcome }}
+          GATE_TEST_OUTCOME: ${{ steps.test.outcome }}
+        run: node .github/scripts/ci-gate.mjs verdict
+
   build-and-test:
+    # Unchanged: same job id, same check names (`Node 20`, `Node 22`), same
+    # matrix, same steps. Only its gating moved, and it had to: the workflow-level
+    # `paths:` filter that used to keep this job off non-code changes is gone, so
+    # without the `if:` below the full matrix would start running on every README
+    # commit. The condition is the same classification the old filter expressed,
+    # read from the gate job, so the set of changes this job runs on is the set it
+    # ran on before.
+    #
+    # The gate deliberately does not delegate to this job. A required context
+    # whose verdict is assembled from other jobs' results is one `if:` away from
+    # reporting green because its dependency was skipped; `gate` runs the suite
+    # itself and answers for itself. The cost is that Node 20 is exercised twice
+    # on a code change, and that is the intended trade.
     name: Node ${{ matrix.node-version }}
+    needs: gate
+    if: needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
