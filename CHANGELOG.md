@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+**The generated Claude Code PreToolUse guard now resolves symlinks before the
+template-file exemption, and fails closed when it cannot.** The template-suffix
+allowlist (`*.example`, `*.sample`, `*.template`, `*.dist`) matched the
+candidate's basename with zero path resolution, so a symlink whose NAME ended in
+a template suffix but whose TARGET was a real secret file was waved through Read
+(and, by the shared file-path code path, the other file tools) — a hostile repo
+could ship `config.env.example -> .env` and the agent would read the secret. The
+guard now resolves each candidate to its real, existing target (portable
+`realpath` with a `readlink` fallback, mirroring the hook's existing
+python3-with-grep pattern) BEFORE the exemption and re-runs the block rules on
+the resolved name, so a template-named symlink to a blocked secret — in dotfile,
+suffix, absolute-path, home-credential-store, or parent-traversal form — is
+denied. Resolution failure fails closed: a broken symlink, a resolve error, or an
+empty result is denied rather than trusted. Real template files and a
+template-named symlink pointing at another template are still allowed, and the
+check-every-candidate loop still continues past an exempt path so a multi-path
+payload is fully examined. Upgraded projects receive the patched guard through the
+existing regenerate-on-diff refresh.
+
 **A `.secretless-rules.yaml` line the parser cannot read is now reported, and
 `rules list` and `init` exit 1 over it.** Previously a top-level key the parser
 did not recognise — `file:` instead of `files:`, `Files:`, `envs:` — silently

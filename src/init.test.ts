@@ -204,6 +204,185 @@ describe('init', { timeout: 30_000 }, () => {
     });
   });
 
+  // SLS-02: the template-suffix exemption above trusted the candidate's BASENAME
+  // with zero path resolution, so a symlink NAMED like a template (`x.env.example`)
+  // but pointing AT a real secret file was waved through — a live fail-open shipped
+  // in 0.23.0. The generated hook must resolve each candidate to its real target
+  // BEFORE the exemption and re-run the block rules on the RESOLVED name, failing
+  // CLOSED when resolution fails. Fixtures carry only synthetic placeholder bodies.
+  describe('SLS-02: guard resolves symlinks before the template exemption', () => {
+    const PLACEHOLDER = 'FAKE_PLACEHOLDER_NOT_A_SECRET=xxxxxxxxxxxxxxxx\n';
+
+    // Feed the hook an explicit list of candidate paths. Absolute paths are used
+    // throughout so the hook's `realpath` resolves against the fixtures on disk,
+    // not against the test runner's CWD. Nested `paths` entries exercise the same
+    // recursive candidate collection a real MultiEdit-style payload would.
+    function runHookPaths(hookPath: string, paths: string[]): boolean {
+      const [first, ...rest] = paths;
+      const input = JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: first, paths: rest.map(p => ({ path: p })) },
+      });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+    const denies = (hookPath: string, p: string) => runHookPaths(hookPath, [p]);
+
+    // Build the full fixture tree once per test and hand back absolute paths.
+    function fixtures(root: string) {
+      const abs = (...p: string[]) => path.join(root, ...p);
+      const mk = (rel: string) => { fs.writeFileSync(abs(rel), PLACEHOLDER); return abs(rel); };
+      const link = (target: string, rel: string) => {
+        fs.mkdirSync(path.dirname(abs(rel)), { recursive: true });
+        fs.symlinkSync(target, abs(rel));
+        return abs(rel);
+      };
+      fs.mkdirSync(abs('sub'), { recursive: true });
+      fs.mkdirSync(abs('home', '.aws'), { recursive: true });
+
+      // Real secret files (synthetic placeholders) in each blocked form.
+      const dotEnv = mk('.env');                       // dotfile form
+      const suffixEnv = mk('prod.env');                // extension-suffix form
+      const absKey = mk('server.key');                 // absolute-target form
+      const homeCreds = mk(path.join('home', '.aws', 'credentials')); // home credential store
+      const travEnv = mk('secret.env');                // parent-traversal target
+      // Real template files (must stay allowed).
+      const realTemplate = mk('config.example');
+      const otherTemplate = mk('other.sample');
+
+      return {
+        abs, link,
+        // Template-suffixed symlinks whose TARGET is a blocked secret -> must DENY.
+        linkToDotfile: link(dotEnv, 'dot.env.example'),
+        linkToSuffix: link(suffixEnv, 'app.env.sample'),
+        linkToAbsolute: link(absKey, 'cert.template'),
+        linkToHomeStore: link(homeCreds, 'aws.example'),
+        linkParentTraversal: link('../secret.env', path.join('sub', 'trav.example')),
+        brokenLink: link(abs('does', 'not', 'exist.env'), 'broken.example'),
+        // ALLOW cases (no regression).
+        realTemplate,
+        linkToTemplate: link(otherTemplate, 'tpl-link.example'),
+      };
+    }
+
+    // SLS-02.AC1 — each candidate is resolved to its real target BEFORE the
+    // template exemption, and the block rules re-run on the RESOLVED name, so a
+    // symlink whose NAME carries a template suffix but whose TARGET is a blocked
+    // secret is DENIED. Resolution uses a portable realpath/readlink fallback.
+    it('SLS-02.AC1 resolves a template-named symlink to its secret target and denies it', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // The generator emits a portable resolver mirroring the python3/grep pattern.
+      const script = fs.readFileSync(hookPath, 'utf-8');
+      expect(script, 'hook must resolve paths').toMatch(/realpath/);
+      expect(script, 'hook must have a resolution fallback').toMatch(/readlink/);
+
+      const f = fixtures(dir);
+      expect(denies(hookPath, f.linkToDotfile), 'symlink -> .env must DENY').toBe(true);
+      expect(denies(hookPath, f.linkToSuffix), 'symlink -> prod.env must DENY').toBe(true);
+    });
+
+    // SLS-02.AC2 — resolution failure FAILS CLOSED. A broken symlink, a resolve
+    // error (symlink cycle), and an empty resolution result are each denied.
+    it('SLS-02.AC2 fails closed when a symlink cannot be resolved', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const f = fixtures(dir);
+
+      // Broken symlink: template-suffixed name, dangling target.
+      expect(denies(hookPath, f.brokenLink), 'broken symlink must DENY').toBe(true);
+
+      // Resolve error: a symlink cycle (a -> b -> a) that `realpath -e` rejects.
+      fs.symlinkSync(f.abs('cycle-b.example'), f.abs('cycle-a.example'));
+      fs.symlinkSync(f.abs('cycle-a.example'), f.abs('cycle-b.example'));
+      expect(denies(hookPath, f.abs('cycle-a.example')), 'symlink cycle must DENY').toBe(true);
+
+      // Empty resolution: template-suffixed symlink into a missing directory.
+      const intoMissing = f.link(f.abs('missing-dir', 'x.env'), 'into-missing.example');
+      expect(denies(hookPath, intoMissing), 'unresolvable target must DENY').toBe(true);
+    });
+
+    // SLS-02.AC3 — the full roadmap matrix: template-named symlinks to a blocked
+    // secret in dotfile, suffix, absolute-path, and home-credential-store forms
+    // all DENY; a parent-traversal symlink target DENIES; a broken symlink DENIES;
+    // and the two ALLOW cases do not regress.
+    it('SLS-02.AC3 denies every symlinked-secret form and preserves the ALLOW cases', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const f = fixtures(dir);
+
+      // DENY matrix.
+      expect(denies(hookPath, f.linkToDotfile), 'dotfile form must DENY').toBe(true);
+      expect(denies(hookPath, f.linkToSuffix), 'suffix form must DENY').toBe(true);
+      expect(denies(hookPath, f.linkToAbsolute), 'absolute-target form must DENY').toBe(true);
+      expect(denies(hookPath, f.linkToHomeStore), 'home credential store must DENY').toBe(true);
+      expect(denies(hookPath, f.linkParentTraversal), 'parent traversal must DENY').toBe(true);
+      expect(denies(hookPath, f.brokenLink), 'broken symlink must DENY').toBe(true);
+
+      // ALLOW cases (no regression).
+      expect(denies(hookPath, f.realTemplate), 'real template file must ALLOW').toBe(false);
+      expect(denies(hookPath, f.linkToTemplate), 'symlink -> template must ALLOW').toBe(false);
+    });
+
+    // SLS-02.AC4 — the check-every-candidate semantics are preserved: an allowed
+    // (template) candidate CONTINUES rather than exiting, so a multi-path payload
+    // whose LAST candidate is the offending symlink is still fully examined and
+    // denied.
+    it('SLS-02.AC4 still denies a multi-path payload whose last candidate is the symlink', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // The hook sorts its candidates (LC_ALL=C `sort -u`) before the loop, so
+      // names are chosen so the benign template is processed FIRST and the secret
+      // symlink LAST. If the template exemption exited early instead of continuing,
+      // the trailing symlink would never be examined and this would wrongly ALLOW.
+      const benign = path.join(dir, 'a_ok.example');
+      const secret = path.join(dir, 'z_secret.env');
+      const secretLink = path.join(dir, 'z_link.example');
+      fs.writeFileSync(benign, PLACEHOLDER);
+      fs.writeFileSync(secret, PLACEHOLDER);
+      fs.symlinkSync(secret, secretLink);
+
+      const ordered = [benign, secretLink].sort();
+      expect(ordered[ordered.length - 1], 'symlink must be the last candidate').toBe(secretLink);
+      expect(denies(hookPath, benign), 'benign template alone must ALLOW').toBe(false);
+      expect(runHookPaths(hookPath, ordered), 'last-candidate symlink must DENY').toBe(true);
+    });
+
+    // SLS-02.AC5 — upgraded projects actually receive the patched guard: the
+    // regenerate-on-diff logic in configureClaudeCode() detects a prior guard that
+    // lacks the resolution step and refreshes it in place (not only on fresh
+    // installs), and the refreshed hook now denies a symlinked secret.
+    it('SLS-02.AC5 refreshes a prior guard that lacks symlink resolution on upgrade', () => {
+      const claudeDir = path.join(dir, '.claude');
+      fs.mkdirSync(path.join(claudeDir, 'hooks'), { recursive: true });
+      fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
+        permissions: { deny: ['Read(.env)'] },
+      }, null, 2));
+      const hookPath = path.join(claudeDir, 'hooks', 'secretless-guard.sh');
+      // A prior managed guard: has the template exemption but NO path resolution
+      // (the 0.23.0 shape this leg fixes).
+      const priorHook =
+        '#!/bin/bash\nset -euo pipefail\n' +
+        '# Managed by secretless-ai. Do not edit manually.\n' +
+        'case "$(basename "$1")" in *.example) exit 0 ;; esac\nexit 0\n';
+      fs.writeFileSync(hookPath, priorHook, { mode: 0o755 });
+      expect(fs.readFileSync(hookPath, 'utf-8')).not.toMatch(/realpath|readlink/);
+
+      const result = init(dir);
+
+      expect(result.hookRefreshed, 'upgrade must refresh the stale hook').toBe(true);
+      expect(result.filesModified).toContain('.claude/hooks/secretless-guard.sh');
+      const refreshed = fs.readFileSync(hookPath, 'utf-8');
+      expect(refreshed).toMatch(/realpath/);
+
+      const f = fixtures(dir);
+      expect(denies(hookPath, f.linkToSuffix), 'refreshed hook must DENY the symlink').toBe(true);
+      expect(denies(hookPath, f.realTemplate), 'refreshed hook must ALLOW real templates').toBe(false);
+    });
+  });
+
   // Release-test 2026-07-16 P1: `secretless-ai env` prints every stored secret as
   // plaintext export statements. `secret get` is TTY-guarded and `run -- env` was
   // already denied, but the direct `env` command had neither a deny rule nor a

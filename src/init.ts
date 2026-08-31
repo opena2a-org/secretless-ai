@@ -912,20 +912,56 @@ if [ -z "$FILE_PATH_CANDIDATES" ]; then
   exit 0
 fi
 
+# Resolve a candidate to its canonical, EXISTING target, or print nothing.
+#
+# This is what closes the symlink hole: the template-suffix exemption below trusts
+# the BASENAME, so a symlink NAMED like a template (foo.env.example) but pointing
+# at a real secret file would otherwise be waved through. Resolving FIRST means the
+# block rules re-run against the real target's name, not the link's name.
+#
+# The -e flag is load-bearing. WITHOUT it, realpath/readlink print a broken
+# symlink's dangling target and exit 0, silently un-fail-closing the broken-link
+# case; WITH it, a link that does not resolve to an existing file prints nothing
+# and the caller denies. Portability mirrors the python3-with-grep fallback used
+# above: prefer realpath, fall back to readlink for hosts that lack it.
+resolve_real_target() {
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -e -- "$1" 2>/dev/null || true
+  elif command -v readlink >/dev/null 2>&1; then
+    readlink -e -- "$1" 2>/dev/null || true
+  fi
+}
+
 # Check EVERY candidate path. A payload carrying both a benign top-level path
 # and a secret one nested deeper must block on the secret one, so the loop only
 # skips a template candidate rather than exiting on it.
 while IFS= read -r CANDIDATE; do
   [ -z "$CANDIDATE" ] && continue
 
-  # Normalize path for matching (case-insensitive: server.KEY and prod.ENV must match too)
-  BASENAME=$(basename "$CANDIDATE")
+  # Resolve symlinks to the REAL target BEFORE any allow/deny decision, so a
+  # template-suffixed NAME cannot mask a secret TARGET (the fail-open this fixes).
+  RESOLVED=$(resolve_real_target "$CANDIDATE")
+  if [ -z "$RESOLVED" ]; then
+    if [ -L "$CANDIDATE" ]; then
+      # A symlink that resolves to nothing (broken link, resolve error, empty
+      # result) is FAIL-CLOSED: deny rather than trust its template-suffixed name.
+      echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to unresolvable symlink (possible secret target)"}}'
+      exit 0
+    fi
+    # Not a symlink and not resolvable (e.g. a not-yet-created template file being
+    # written): judge it by the path as given, preserving prior behaviour.
+    RESOLVED="$CANDIDATE"
+  fi
+
+  # Normalize the RESOLVED path for matching (case-insensitive: server.KEY and prod.ENV must match too)
+  BASENAME=$(basename "$RESOLVED")
   LOWER_BASENAME=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
-  LOWER_PATH=$(echo "$CANDIDATE" | tr '[:upper:]' '[:lower:]')
+  LOWER_PATH=$(echo "$RESOLVED" | tr '[:upper:]' '[:lower:]')
 
   # Allow committed template/example files (.env.example, config.sample, etc.) — these
   # hold placeholders, not real secrets, and are meant to be read/edited/committed.
-  # Checked BEFORE any block logic so it wins over the .env extension/dotfile rules below.
+  # Checked on the RESOLVED name (a symlink to a real secret no longer qualifies) and
+  # BEFORE any block logic so it wins over the .env extension/dotfile rules below.
   case "$LOWER_BASENAME" in
     *.example|*.sample|*.template|*.dist) continue ;;
   esac
