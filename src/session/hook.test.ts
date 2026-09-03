@@ -32,7 +32,9 @@ describe('hook', () => {
       const result = hookCheck();
       expect(result.passed).toBe(true);
       expect(result.sessionWarm).toBe(true);
-      expect(result.message).toBe('');
+      expect(result.tampered).toBe(false);
+      expect(result.reason).toBe('');
+      expect(result.denyJson).toBe('');
     });
 
     it('passes when no session has ever existed (permissive)', () => {
@@ -40,26 +42,36 @@ describe('hook', () => {
       const result = hookCheck();
       expect(result.passed).toBe(true);
       expect(result.sessionWarm).toBe(false);
-      expect(result.message).toBe('');
+      expect(result.tampered).toBe(false);
+      expect(result.reason).toBe('');
+      expect(result.denyJson).toBe('');
     });
 
-    it('fails when session existed but expired', () => {
-      // Write an expired session
-      const state = {
-        authenticatedAt: new Date(Date.now() - 600 * 1000).toISOString(),
-        ttlSeconds: 300,
-        pid: process.pid,
-        hostname: os.hostname(),
-        version: 1,
-      };
-      fs.mkdirSync(SESSION_DIR, { recursive: true });
-      fs.writeFileSync(SESSION_FILE, JSON.stringify(state));
+    it('fails when session existed but expired', async () => {
+      writeSessionState(1);
+      await new Promise((resolve) => setTimeout(resolve, 1100));
 
       const result = hookCheck();
       expect(result.passed).toBe(false);
       expect(result.sessionWarm).toBe(false);
-      expect(result.message).toContain('expired');
-      expect(result.message).toContain('secretless-ai warm');
+      expect(result.tampered).toBe(false);
+      expect(result.reason).toContain('expired');
+      expect(result.reason).toContain('secretless-ai warm');
+      expect(result.denyJson).toContain('"permissionDecision":"deny"');
+      expect(result.denyJson).toContain('"hookEventName":"PreToolUse"');
+    });
+
+    it('fails when the session file has a bad HMAC (tampered)', () => {
+      writeSessionState(300);
+      const persisted = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
+      persisted.ttlSeconds = 999; // mutate signed content so the HMAC no longer matches
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(persisted, null, 2));
+
+      const result = hookCheck();
+      expect(result.passed).toBe(false);
+      expect(result.tampered).toBe(true);
+      expect(result.reason).toMatch(/tamper/);
+      expect(result.denyJson).toContain('"permissionDecision":"deny"');
     });
   });
 });

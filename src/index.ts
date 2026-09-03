@@ -120,6 +120,7 @@ export {
 export {
   readSessionState, writeSessionState, getSessionStatus,
   isSessionWarm, clearSessionState, getSessionFilePath,
+  SESSION_TAMPERED,
   DEFAULT_SESSION_TTL_SECONDS, MAX_SESSION_TTL_SECONDS,
   warmSession, isMacOS, isTouchIDAvailable,
   warm, preloadCache,
