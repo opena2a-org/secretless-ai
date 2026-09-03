@@ -4,6 +4,7 @@
  * release-artifact-review.mjs — the release gate's review of the packed tarball.
  *
  * Usage: node scripts/release-artifact-review.mjs --tarball <path>
+ *          [--advisory-states published|all]
  *
  * The bytes under review are the tarball `npm pack` produced in the release
  * `build` job — the same bytes the `publish` job later hands to `npm publish`.
@@ -15,64 +16,108 @@
  * Every check is named, and every run prints one `census:` line naming every
  * check with its status — pass, fail or precondition — so a check that could
  * not run is never silent. A check whose precondition does not hold reports
- * `precondition: <what is missing>` and (with one placeholdered exception,
- * own-package-census, see below) exits non-zero: an unrunnable review is a
- * blocked release, not a passed one.
+ * `precondition: <what is missing>` and exits non-zero: an unrunnable review
+ * is a blocked release, not a passed one.
  *
  * Checks, in order:
- *   entry-allowlist    every file entry is package/dist/**, package/README.md,
- *                      package/LICENSE or package/package.json — the closure of
- *                      package.json's `files: ["dist"]` plus what npm always adds
- *   dot-entries        no dotfile or dot-directory entry (.npmrc, .env, .git, …)
- *   test-path-entries  no entry path containing __tests__, fixtures or test/
- *   install-scripts    no preinstall, install or postinstall in the packed
- *                      package.json — nothing runs on the consumer's machine
- *   opena2a-pinned     no caret or tilde range on any @opena2a/* dependency:
- *                      first-party deps are pinned exactly
- *   npm-audit          `npm audit --omit=dev --audit-level=high` over a lockfile
- *                      resolved from the packed package.json (registry required)
- *   bin-smoke          `npm install -g <tarball> --ignore-scripts` into a clean
- *                      temp prefix, then with an empty HOME and a scrubbed env:
- *                      secretless-ai --version / --help / init --help and
- *                      secretless-mcp --help must exit 0 without a stack trace
- *   credential-scan    hackmyagent (node_modules/.bin or PATH) over a scratch
- *                      copy of the tarball's dist/ into which this script plants
- *                      one credential file: the planted control must be found,
- *                      and nothing else may be
- *   own-package-census own-package-census.mjs MODE=gate when it exists.
- *                      PLACEHOLDER (intake 2026-09-02): the script exists in
- *                      none of the four CLI repos yet, so its absence is
- *                      reported as a precondition without failing the run —
- *                      the one precondition that does not block, because it is
- *                      known-absent by the ruling that ordered this gate.
+ *   entry-allowlist          every file entry is package/dist/**,
+ *                            package/README.md, package/LICENSE or
+ *                            package/package.json — the closure of
+ *                            package.json's `files: ["dist"]` plus what npm
+ *                            always adds
+ *   no-dotfiles              no dotfile or dot-directory entry (.npmrc, .env,
+ *                            .git, …)
+ *   no-test-material         no entry path containing __tests__, fixtures or
+ *                            test/
+ *   no-install-scripts       no preinstall, install or postinstall in the
+ *                            packed package.json — nothing runs on the
+ *                            consumer's machine
+ *   pinned-first-party-deps  no caret or tilde range on any @opena2a/*
+ *                            dependency: first-party deps are pinned exactly
+ *   npm-audit                `npm audit --omit=dev --audit-level=high` over a
+ *                            lockfile resolved from the packed package.json
+ *   global-install-smoke     `npm install -g <tarball> --ignore-scripts` into
+ *                            a clean temp prefix, then with an empty HOME and
+ *                            no network: secretless-ai --version / --help /
+ *                            init --help and secretless-mcp --help must exit 0
+ *                            without a stack trace
+ *   credential-scan          hackmyagent (node_modules/.bin first, PATH only
+ *                            as a fallback) `secure --format json` over a
+ *                            scratch directory holding the tarball's
+ *                            package/dist/ entries extracted FLAT — no `dist`
+ *                            path component, because the scanner's AST
+ *                            credential walk skips directories named `dist`
+ *                            (scanner-bridge.js SKIP_DIRS) — plus one planted
+ *                            control file the scanner must flag; zero
+ *                            credential-class findings on any shipped file
+ *   consumer-closure         the fresh-install closure of THIS tarball,
+ *                            resolved with `npm install --package-lock-only`;
+ *                            every own package in it (hackmyagent,
+ *                            secretless-ai, ai-trust, opena2a-cli, arp-guard,
+ *                            damn-vulnerable-ai-agent, cryptoserve, @opena2a/*
+ *                            — the packed package itself included) must be
+ *                            neither deprecated on the registry nor inside any
+ *                            vulnerable_version_range of its repository's
+ *                            GitHub security advisories
  */
 
 import { spawnSync } from 'node:child_process';
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const REGISTRY = 'https://registry.npmjs.org/';
-const PLANTED_NAME = 'planted-credential-control.txt';
+const PLANTED_NAME = 'zz-planted-credential-control.js';
+
+/**
+ * The own-package roster: the FLOOR of todo/scripts/own-package-census.mjs
+ * plus the @opena2a/ scope. A lockfile package matches on its alias-resolved
+ * name, and the packed package itself is in scope.
+ */
+const OWN_PACKAGE_NAMES = new Set([
+  'hackmyagent',
+  'secretless-ai',
+  'ai-trust',
+  'opena2a-cli',
+  'arp-guard',
+  'damn-vulnerable-ai-agent',
+  'cryptoserve',
+]);
+const OWN_SCOPE_PREFIX = '@opena2a/';
+
+/**
+ * One version the registry is known to answer `deprecated` for, probed before
+ * the real deprecation rows so an empty answer can be told apart from a probe
+ * that silently stopped working.
+ *
+ * UNSET (SLS-06, 2026-09-03): the delivery rotation's sandbox 403-filters
+ * every registry read, so no deprecated own version could be named. Until a
+ * rotation with registry egress pins one — discover it with
+ * `npm view 'hackmyagent@*' deprecated --json` (any own package works) and
+ * put its name@version here — the consumer-closure check reports a visible
+ * `precondition` naming this sentinel, never a pass.
+ */
+const KNOWN_DEPRECATED = { name: 'hackmyagent', version: '0.0.0-unset-see-sls-06-delivery-note' };
 
 /** Ordered check names; the census line reports every one of these, always. */
 const CHECK_NAMES = [
   'entry-allowlist',
-  'dot-entries',
-  'test-path-entries',
-  'install-scripts',
-  'opena2a-pinned',
+  'no-dotfiles',
+  'no-test-material',
+  'no-install-scripts',
+  'pinned-first-party-deps',
   'npm-audit',
-  'bin-smoke',
+  'global-install-smoke',
   'credential-scan',
-  'own-package-census',
+  'consumer-closure',
 ];
 
 function usage(message) {
-  process.stderr.write(`${message}\nusage: node scripts/release-artifact-review.mjs --tarball <path>\n`);
+  process.stderr.write(
+    `${message}\nusage: node scripts/release-artifact-review.mjs --tarball <path> [--advisory-states published|all]\n`,
+  );
   process.exit(2);
 }
 
@@ -88,10 +133,10 @@ function run(command, args, options = {}) {
 /** Records check outcomes and prints each one as it lands. */
 class Results {
   constructor() {
-    this.byName = new Map(); // name -> { status, detail, blocking }
+    this.byName = new Map(); // name -> status
   }
-  record(name, status, detail, { blocking = true } = {}) {
-    this.byName.set(name, { status, detail, blocking });
+  record(name, status, detail) {
+    this.byName.set(name, status);
     console.log(`check ${name}: ${status}${detail ? `: ${detail}` : ''}`);
   }
   pass(name, detail) {
@@ -100,30 +145,36 @@ class Results {
   fail(name, detail) {
     this.record(name, 'fail', detail);
   }
-  precondition(name, missing, options) {
-    this.record(name, 'precondition', missing, options);
+  precondition(name, missing) {
+    this.record(name, 'precondition', missing);
   }
   statusOf(name) {
-    return this.byName.get(name)?.status ?? 'fail';
-  }
-  isBlocking(name) {
-    return this.byName.get(name)?.blocking ?? true;
+    return this.byName.get(name) ?? 'fail';
   }
 }
 
 function main() {
   const argv = process.argv.slice(2);
-  const flagIndex = argv.indexOf('--tarball');
-  if (flagIndex === -1 || flagIndex + 1 >= argv.length) usage('missing required --tarball <path>');
-  const tarball = path.resolve(argv[flagIndex + 1]);
+  const tarballIndex = argv.indexOf('--tarball');
+  if (tarballIndex === -1 || tarballIndex + 1 >= argv.length) usage('missing required --tarball <path>');
+  const tarball = path.resolve(argv[tarballIndex + 1]);
   if (!fs.existsSync(tarball)) usage(`no such tarball: ${tarball}`);
 
-  console.log(`release-artifact-review: reviewing ${tarball}`);
+  let advisoryStates = 'all';
+  const statesIndex = argv.indexOf('--advisory-states');
+  if (statesIndex !== -1) {
+    advisoryStates = argv[statesIndex + 1] ?? '';
+    if (advisoryStates !== 'published' && advisoryStates !== 'all') {
+      usage(`--advisory-states must be published or all, not "${advisoryStates}"`);
+    }
+  }
+
+  console.log(`release-artifact-review: reviewing ${tarball} (advisory states: ${advisoryStates})`);
 
   const results = new Results();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'release-artifact-review-'));
   try {
-    review(tarball, work, results);
+    review(tarball, work, advisoryStates, results);
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
   }
@@ -133,22 +184,19 @@ function main() {
 
   const failing = CHECK_NAMES.filter((name) => results.statusOf(name) === 'fail');
   const preconditions = CHECK_NAMES.filter((name) => results.statusOf(name) === 'precondition');
-  const blocking = preconditions.filter((name) => results.isBlocking(name));
-  const placeholdered = preconditions.filter((name) => !results.isBlocking(name));
 
-  if (failing.length > 0 || blocking.length > 0) {
+  if (failing.length > 0 || preconditions.length > 0) {
     const parts = [];
     if (failing.length > 0) parts.push(`failing: ${failing.join(', ')}`);
-    if (blocking.length > 0) parts.push(`preconditions not met: ${blocking.join(', ')}`);
+    if (preconditions.length > 0) parts.push(`preconditions not met: ${preconditions.join(', ')}`);
     console.log(`result: fail — ${parts.join('; ')}`);
     process.exit(1);
   }
-  const note = placeholdered.length > 0 ? ` (preconditions noted, not blocking: ${placeholdered.join(', ')})` : '';
-  console.log(`result: pass${note}`);
+  console.log('result: pass');
   process.exit(0);
 }
 
-function review(tarball, work, results) {
+function review(tarball, work, advisoryStates, results) {
   // -------------------------------------------------------------------------
   // Read the artifact: entry listing plus a full extraction.
   // -------------------------------------------------------------------------
@@ -195,52 +243,52 @@ function review(tarball, work, results) {
     );
   }
 
-  // dot-entries: any path segment starting with a dot, file or directory.
+  // no-dotfiles: any path segment starting with a dot, file or directory.
   const dotted = entries.filter((entry) => entry.split('/').some((segment) => segment.startsWith('.')));
   if (dotted.length > 0) {
-    results.fail('dot-entries', `dotfile or dot-directory entries: ${dotted.join(', ')}`);
+    results.fail('no-dotfiles', `dotfile or dot-directory entries: ${dotted.join(', ')}`);
   } else {
-    results.pass('dot-entries');
+    results.pass('no-dotfiles');
   }
 
-  // test-path-entries.
+  // no-test-material.
   const testish = entries.filter(
     (entry) => entry.includes('__tests__') || entry.includes('fixtures') || entry.includes('test/'),
   );
   if (testish.length > 0) {
-    results.fail('test-path-entries', `test/fixture paths in the artifact: ${testish.join(', ')}`);
+    results.fail('no-test-material', `test/fixture paths in the artifact: ${testish.join(', ')}`);
   } else {
-    results.pass('test-path-entries');
+    results.pass('no-test-material');
   }
 
-  // install-scripts.
+  // no-install-scripts.
   if (pkg === null) {
-    results.fail('install-scripts', 'packed package.json missing or unparseable');
+    results.fail('no-install-scripts', 'packed package.json missing or unparseable');
   } else {
     const lifecycle = ['preinstall', 'install', 'postinstall'].filter((name) => pkg.scripts?.[name] !== undefined);
     if (lifecycle.length > 0) {
-      results.fail('install-scripts', `install-time lifecycle scripts in the packed package.json: ${lifecycle.join(', ')}`);
+      results.fail('no-install-scripts', `install-time lifecycle scripts in the packed package.json: ${lifecycle.join(', ')}`);
     } else {
-      results.pass('install-scripts');
+      results.pass('no-install-scripts');
     }
   }
 
-  // opena2a-pinned.
+  // pinned-first-party-deps.
   if (pkg === null) {
-    results.fail('opena2a-pinned', 'packed package.json missing or unparseable');
+    results.fail('pinned-first-party-deps', 'packed package.json missing or unparseable');
   } else {
     const loose = [];
     for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
       for (const [name, range] of Object.entries(pkg[section] ?? {})) {
-        if (name.startsWith('@opena2a/') && /^[\^~]/.test(String(range))) {
+        if (name.startsWith(OWN_SCOPE_PREFIX) && /^[\^~]/.test(String(range))) {
           loose.push(`${section}.${name}=${range}`);
         }
       }
     }
     if (loose.length > 0) {
-      results.fail('opena2a-pinned', `caret/tilde range on first-party dependencies: ${loose.join(', ')}`);
+      results.fail('pinned-first-party-deps', `caret/tilde range on first-party dependencies: ${loose.join(', ')}`);
     } else {
-      results.pass('opena2a-pinned');
+      results.pass('pinned-first-party-deps');
     }
   }
 
@@ -249,10 +297,10 @@ function review(tarball, work, results) {
   // is the wrong trade. The dynamic checks report the unmet precondition.
   const staticFailure = [
     'entry-allowlist',
-    'dot-entries',
-    'test-path-entries',
-    'install-scripts',
-    'opena2a-pinned',
+    'no-dotfiles',
+    'no-test-material',
+    'no-install-scripts',
+    'pinned-first-party-deps',
   ].some((name) => results.statusOf(name) !== 'pass');
 
   const distDir = path.join(packageDir, 'dist');
@@ -265,10 +313,28 @@ function review(tarball, work, results) {
   let registryReachable = null;
   const registryOk = () => {
     if (registryReachable === null) {
-      const ping = run('npm', ['ping', '--registry', REGISTRY], { timeout: 30_000 });
+      const ping = run('npm', ['ping'], { timeout: 30_000 });
       registryReachable = ping.status === 0;
     }
     return registryReachable;
+  };
+
+  // The scratch closure resolution, shared by npm-audit and consumer-closure.
+  let closureDir = null;
+  const resolveClosure = () => {
+    if (closureDir !== null) return closureDir;
+    const dir = path.join(work, 'closure');
+    fs.mkdirSync(dir);
+    const home = path.join(work, 'closure-home');
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'closure-scratch', version: '0.0.0' }));
+    const install = run(
+      'npm',
+      ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', tarball],
+      { cwd: dir, env: { ...process.env, HOME: home }, timeout: 300_000 },
+    );
+    closureDir = { dir, ok: install.status === 0, detail: install.status === 0 ? '' : tailOf(install) };
+    return closureDir;
   };
 
   // -------------------------------------------------------------------------
@@ -279,26 +345,16 @@ function review(tarball, work, results) {
   } else if (pkg === null) {
     results.precondition('npm-audit', 'packed package.json missing or unparseable');
   } else if (!hasProdDeps) {
-    results.pass('npm-audit', 'no production dependencies to audit');
+    results.pass('npm-audit', 'no production dependencies to audit; the resolved closure is the package alone');
   } else if (!registryOk()) {
     results.precondition('npm-audit', 'registry unreachable (npm ping failed)');
   } else {
-    const auditDir = path.join(work, 'audit');
-    fs.cpSync(packageDir, auditDir, { recursive: true });
-    const auditHome = path.join(work, 'audit-home');
-    fs.mkdirSync(auditHome);
-    const env = { ...process.env, HOME: auditHome };
-    const lock = run(
-      'npm',
-      ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--registry', REGISTRY],
-      { cwd: auditDir, env, timeout: 300_000 },
-    );
-    if (lock.status !== 0) {
-      results.fail('npm-audit', `could not resolve a lockfile from the packed package.json: ${tailOf(lock)}`);
+    const closure = resolveClosure();
+    if (!closure.ok) {
+      results.precondition('npm-audit', `could not resolve a lockfile from the packed tarball: ${closure.detail}`);
     } else {
-      const audit = run('npm', ['audit', '--omit=dev', '--audit-level=high', '--registry', REGISTRY], {
-        cwd: auditDir,
-        env,
+      const audit = run('npm', ['audit', '--omit=dev', '--audit-level=high'], {
+        cwd: closure.dir,
         timeout: 300_000,
       });
       if (audit.status === 0) {
@@ -310,14 +366,14 @@ function review(tarball, work, results) {
   }
 
   // -------------------------------------------------------------------------
-  // bin-smoke
+  // global-install-smoke
   // -------------------------------------------------------------------------
   if (staticFailure) {
-    results.precondition('bin-smoke', 'static checks failed; the tarball was not installed');
+    results.precondition('global-install-smoke', 'static checks failed; the tarball was not installed');
   } else if (!distPresent) {
-    results.precondition('bin-smoke', 'dist/ absent from the tarball; there is nothing to install');
+    results.precondition('global-install-smoke', 'dist/ absent from the tarball; there is nothing to install');
   } else if (hasProdDeps && !registryOk()) {
-    results.precondition('bin-smoke', 'registry unreachable and the package has dependencies to install');
+    results.precondition('global-install-smoke', 'registry unreachable and the package has dependencies to install');
   } else {
     const prefix = path.join(work, 'prefix');
     const installHome = path.join(work, 'install-home');
@@ -329,7 +385,7 @@ function review(tarball, work, results) {
       { env: { ...process.env, HOME: installHome }, timeout: 600_000 },
     );
     if (install.status !== 0) {
-      results.fail('bin-smoke', `npm install -g --ignore-scripts failed: ${tailOf(install)}`);
+      results.fail('global-install-smoke', `npm install -g --ignore-scripts failed: ${tailOf(install)}`);
     } else {
       const commands = [
         ['secretless-ai', ['--version']],
@@ -367,9 +423,9 @@ function review(tarball, work, results) {
         }
       }
       if (problems.length > 0) {
-        results.fail('bin-smoke', problems.join('; '));
+        results.fail('global-install-smoke', problems.join('; '));
       } else {
-        results.pass('bin-smoke', `clean-prefix install ok; ${ran.join(', ')} all exited 0 with no stack trace`);
+        results.pass('global-install-smoke', `clean-prefix install ok; ${ran.join(', ')} all exited 0 with no stack trace`);
       }
     }
   }
@@ -384,51 +440,284 @@ function review(tarball, work, results) {
   } else {
     const scanner = resolveHackmyagent();
     if (scanner === null) {
-      results.precondition('credential-scan', 'hackmyagent not resolvable (node_modules/.bin or PATH)');
+      results.precondition(
+        'credential-scan',
+        'hackmyagent not resolvable (node_modules/.bin first, then PATH); run `npm ci --ignore-scripts`',
+      );
     } else {
-      const scratch = path.join(work, 'scan', 'dist');
-      fs.cpSync(distDir, scratch, { recursive: true });
-      // The planted control: realistic secrets, freshly generated so no
-      // placeholder allowlist can excuse them. If the scanner cannot find
-      // this file, its "zero findings" means nothing.
-      fs.writeFileSync(path.join(scratch, PLANTED_NAME), plantedCredentials());
-      const scan = run(scanner, ['scan', path.dirname(scratch), '--json'], { timeout: 300_000 });
+      const version = scannerVersion(scanner);
+      // The dist/ entries are laid out FLAT — each at its path relative to
+      // package/dist/, with no `dist` path component anywhere — because the
+      // scanner's AST credential walk skips any directory named `dist`
+      // (scanner-bridge.js SKIP_DIRS): scanning the tree as packed would scan
+      // nothing at all.
+      const scratch = path.join(work, 'scan-scratch');
+      fs.mkdirSync(scratch);
+      for (const entry of fileEntries) {
+        if (!entry.startsWith('package/dist/')) continue;
+        const rel = entry.slice('package/dist/'.length);
+        const target = path.join(scratch, rel);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(path.join(packageDir, 'dist', rel), target);
+      }
+      // The planted control, written beside the shipped files: one
+      // credential-named const whose value is assembled at runtime from parts,
+      // so no credential-shaped literal exists in this repository. A scan that
+      // cannot find this file proves nothing by finding nothing.
+      fs.writeFileSync(
+        path.join(scratch, PLANTED_NAME),
+        [
+          '// planted control written by release-artifact-review.mjs into a scratch copy only',
+          "const OPENAI_API_KEY = 'sk-' + 'proj-' + 'A'.repeat(48);",
+          'module.exports = { OPENAI_API_KEY };',
+          '',
+        ].join('\n'),
+      );
+      const scan = run(scanner, ['secure', '--format', 'json'], { cwd: scratch, timeout: 300_000 });
       const findings = parseFindings(scan.stdout ?? '');
       if (findings === null) {
-        results.fail('credential-scan', `unparseable scanner output (exit ${scan.status}): ${tailOf(scan)}`);
+        results.precondition(
+          'credential-scan',
+          `hackmyagent@${version} produced unparseable output (exit ${scan.status}): ${tailOf(scan)}`,
+        );
       } else {
-        const planted = findings.filter((f) => String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
-        const others = findings.filter((f) => !String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
+        const credential = findings.filter(
+          (f) => /CRED/.test(String(f.checkId ?? '')) || String(f.checkId ?? '') === 'CONFIG-004',
+        );
+        const planted = credential.filter((f) => String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
+        const shipped = credential.filter((f) => !String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
         if (planted.length === 0) {
-          results.fail('credential-scan', 'the planted control was not found — the scanner is not detecting');
-        } else if (others.length > 0) {
-          const where = others.map((f) => String(f.file ?? f.path ?? '<unknown>'));
-          results.fail('credential-scan', `credential findings in the artifact: ${[...new Set(where)].join(', ')}`);
+          results.precondition('credential-scan', `control not flagged by hackmyagent@${version}`);
+        } else if (shipped.length > 0) {
+          // checkId and file:line only — never the matched text, which would
+          // print the very value the check exists to keep out of logs.
+          const rows = shipped.map(
+            (f) => `${String(f.checkId ?? '<unknown>')} at ${String(f.file ?? f.path ?? '<unknown>')}:${String(f.line ?? '?')}`,
+          );
+          results.fail('credential-scan', `credential findings on shipped files: ${[...new Set(rows)].join(', ')}`);
         } else {
-          results.pass('credential-scan', "planted control found; zero findings in the artifact's dist/");
+          results.pass(
+            'credential-scan',
+            `hackmyagent@${version}: planted control found (${planted.map((f) => String(f.checkId)).join('/')}), zero credential-class findings on shipped files`,
+          );
         }
       }
     }
   }
 
   // -------------------------------------------------------------------------
-  // own-package-census
+  // consumer-closure
   // -------------------------------------------------------------------------
-  const censusScript = path.join(REPO_ROOT, 'scripts', 'own-package-census.mjs');
-  if (!fs.existsSync(censusScript)) {
-    // The placeholdered exception: known absent in all four CLI repos at
-    // intake (2026-09-02), so its absence is visible but not blocking.
-    results.precondition('own-package-census', 'own-package census script absent', { blocking: false });
+  if (staticFailure) {
+    results.precondition('consumer-closure', 'static checks failed; the closure was not resolved');
+  } else if (pkg === null) {
+    results.precondition('consumer-closure', 'packed package.json missing or unparseable');
+  } else if (!registryOk()) {
+    results.precondition('consumer-closure', 'registry unreachable (npm ping failed)');
   } else {
-    const census = run(process.execPath, [censusScript, '--tarball', tarball], {
-      env: { ...process.env, MODE: 'gate' },
-      timeout: 300_000,
-    });
-    if (census.status === 0) {
-      results.pass('own-package-census');
-    } else {
-      results.fail('own-package-census', `own-package-census.mjs MODE=gate exited ${census.status}: ${tailOf(census)}`);
+    consumerClosure(tarball, advisoryStates, resolveClosure, results);
+  }
+}
+
+/**
+ * The consumer-closure check: every own package in the fresh-install closure
+ * of this tarball must be neither deprecated nor inside any
+ * vulnerable_version_range of its repository's GitHub security advisories.
+ */
+function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
+  const closure = resolveClosure();
+  if (!closure.ok) {
+    results.precondition('consumer-closure', `the fresh-install closure did not resolve: ${closure.detail}`);
+    return;
+  }
+  let lock = null;
+  try {
+    lock = JSON.parse(fs.readFileSync(path.join(closure.dir, 'package-lock.json'), 'utf-8'));
+  } catch {
+    results.precondition('consumer-closure', 'the resolved closure produced no readable package-lock.json');
+    return;
+  }
+
+  // Alias-aware: a lockfile entry's name is its `name` field when present
+  // (npm records it for aliased installs), else the path under node_modules.
+  const ownCopies = new Map(); // "name@version" -> { name, version }
+  for (const [key, entry] of Object.entries(lock.packages ?? {})) {
+    if (key === '') continue;
+    const pathName = key.replace(/^.*node_modules\//, '');
+    const name = typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : pathName;
+    const version = entry.version;
+    if (typeof version !== 'string') continue;
+    if (OWN_PACKAGE_NAMES.has(name) || name.startsWith(OWN_SCOPE_PREFIX)) {
+      ownCopies.set(`${name}@${version}`, { name, version });
     }
+  }
+
+  if (ownCopies.size === 0) {
+    results.pass(
+      'consumer-closure',
+      `0 own copies in the closure; no deprecation or advisory rows to read (advisory states: ${advisoryStates})`,
+    );
+    return;
+  }
+
+  // The deprecation probe must be shown alive before its empty answers count:
+  // a known-deprecated version that reads back empty means the probe, not the
+  // registry, is broken.
+  const probe = npmViewDeprecated(KNOWN_DEPRECATED.name, KNOWN_DEPRECATED.version);
+  if (probe.error !== null) {
+    results.precondition('consumer-closure', `deprecation probe errored on ${KNOWN_DEPRECATED.name}@${KNOWN_DEPRECATED.version}: ${probe.error}`);
+    return;
+  }
+  if (probe.message === '') {
+    results.precondition(
+      'consumer-closure',
+      `deprecation probe read empty on known-deprecated ${KNOWN_DEPRECATED.name}@${KNOWN_DEPRECATED.version}; the probe cannot be trusted`,
+    );
+    return;
+  }
+
+  // One packument read per distinct own name: the published-version list
+  // (a version the registry has never seen — the freshly packed release
+  // itself — cannot be deprecated and is not probed) and the repository URL.
+  const publishedVersions = new Map(); // package name -> Set<version>
+  const repoOf = new Map(); // package name -> "owner/repo"
+  for (const { name } of ownCopies.values()) {
+    if (repoOf.has(name)) continue;
+    const view = run('npm', ['view', name, 'versions', 'repository.url', '--json'], { timeout: 60_000 });
+    let packument = null;
+    try {
+      packument = JSON.parse(view.stdout ?? '');
+    } catch {
+      packument = null;
+    }
+    if (view.status !== 0 || packument === null) {
+      results.precondition('consumer-closure', `packument read for ${name} errored: ${tailOf(view)}`);
+      return;
+    }
+    const versions = Array.isArray(packument.versions) ? packument.versions : [packument.versions].filter(Boolean);
+    publishedVersions.set(name, new Set(versions));
+    const url = String(packument['repository.url'] ?? '');
+    const match = /github\.com[/:]([^/]+)\/([^/#]+?)(?:\.git)?(?:[#/].*)?$/.exec(url);
+    if (url === '' || match === null) {
+      results.precondition('consumer-closure', `no GitHub repository URL on the registry for ${name} (read "${url}")`);
+      return;
+    }
+    repoOf.set(name, `${match[1]}/${match[2]}`);
+  }
+
+  const failures = [];
+  let deprecationProbes = 0;
+  for (const { name, version } of ownCopies.values()) {
+    if (!publishedVersions.get(name)?.has(version)) continue;
+    const read = npmViewDeprecated(name, version);
+    if (read.error !== null) {
+      results.precondition('consumer-closure', `npm view ${name}@${version} deprecated errored: ${read.error}`);
+      return;
+    }
+    deprecationProbes += 1;
+    if (read.message !== '') {
+      failures.push(`${name}@${version} is deprecated: "${read.message}"`);
+    }
+  }
+
+  const advisoriesByRepo = new Map(); // "owner/repo" -> advisory[]
+  let advisoryRows = 0;
+  for (const repo of new Set(repoOf.values())) {
+    const stateParam = advisoryStates === 'published' ? '&state=published' : '';
+    const url = `https://api.github.com/repos/${repo}/security-advisories?per_page=100${stateParam}`;
+    const response = httpGetJson(url);
+    if (response.error !== null || !Array.isArray(response.body)) {
+      results.precondition(
+        'consumer-closure',
+        `advisories endpoint unreadable for ${repo} (states: ${advisoryStates}): ${response.error ?? 'not an advisory list'}`,
+      );
+      return;
+    }
+    advisoriesByRepo.set(repo, response.body);
+    advisoryRows += response.body.length;
+  }
+
+  // Zero advisories across every roster repository cannot be told apart from
+  // a feed that silently stopped answering — unless a deprecation row already
+  // failed the check, in which case the verdict is settled either way.
+  if (advisoryRows === 0 && failures.length === 0) {
+    results.precondition(
+      'consumer-closure',
+      `the advisory feed returned zero advisories across ${advisoriesByRepo.size} roster repositories (states: ${advisoryStates}); an empty feed cannot be told apart from a broken read`,
+    );
+    return;
+  }
+
+  // GitHub joins compound ranges with ", "; npm semver wants a space.
+  const semver = requireSemver();
+  if (semver === null) {
+    results.precondition('consumer-closure', 'the semver package is not resolvable; run `npm ci --ignore-scripts`');
+    return;
+  }
+  for (const { name, version } of ownCopies.values()) {
+    for (const advisory of advisoriesByRepo.get(repoOf.get(name)) ?? []) {
+      for (const vuln of advisory.vulnerabilities ?? []) {
+        if (vuln.package?.ecosystem !== 'npm' || vuln.package?.name !== name) continue;
+        const range = String(vuln.vulnerable_version_range ?? '').split(', ').join(' ');
+        if (range === '') continue;
+        let satisfied = false;
+        try {
+          satisfied = semver.satisfies(version, range, { includePrerelease: true });
+        } catch {
+          results.precondition('consumer-closure', `unparseable vulnerable_version_range "${range}" on ${advisory.ghsa_id} for ${name}`);
+          return;
+        }
+        if (satisfied) {
+          failures.push(`${name}@${version} satisfies ${advisory.ghsa_id} (${advisory.state ?? 'published'}) range "${range}"`);
+        }
+      }
+    }
+  }
+
+  const copies = [...ownCopies.keys()].sort().join(', ');
+  if (failures.length > 0) {
+    results.fail('consumer-closure', `${failures.join('; ')} — own copies examined: ${copies} (advisory states: ${advisoryStates})`);
+  } else {
+    results.pass(
+      'consumer-closure',
+      `own copies examined: ${copies}; advisory states read: ${advisoryStates}; ${advisoriesByRepo.size} repositories, ${advisoryRows} advisory rows, ${deprecationProbes} deprecation probes, 0 deprecated, 0 in a vulnerable range`,
+    );
+  }
+}
+
+/** `npm view name@version deprecated` → { message, error }. */
+function npmViewDeprecated(name, version) {
+  const view = run('npm', ['view', `${name}@${version}`, 'deprecated'], { timeout: 60_000 });
+  if (view.status !== 0) return { message: '', error: tailOf(view) };
+  return { message: (view.stdout ?? '').trim(), error: null };
+}
+
+/**
+ * GET a JSON URL. Runs in a child node with NODE_USE_ENV_PROXY=1 so the read
+ * honours HTTPS_PROXY where one is configured (fetch ignores it by default);
+ * GH_TOKEN, when present, authenticates the read — the release workflow hands
+ * the job token in.
+ */
+function httpGetJson(url) {
+  const program = [
+    'const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "release-artifact-review" };',
+    'if (process.env.GH_TOKEN) headers.authorization = `Bearer ${process.env.GH_TOKEN}`;',
+    'const res = await fetch(process.env.REVIEW_GET_URL, { headers });',
+    'const text = await res.text();',
+    'console.log(JSON.stringify({ status: res.status, text }));',
+  ].join('\n');
+  const child = run(process.execPath, ['--input-type=module', '-e', program], {
+    env: { ...process.env, NODE_USE_ENV_PROXY: '1', REVIEW_GET_URL: url },
+    timeout: 60_000,
+  });
+  if (child.status !== 0) return { body: null, error: `fetch failed: ${tailOf(child)}` };
+  try {
+    const { status, text } = JSON.parse(child.stdout);
+    if (status === 403 || status === 429) return { body: null, error: `rate-limited or forbidden (HTTP ${status})` };
+    if (status !== 200) return { body: null, error: `HTTP ${status}` };
+    return { body: JSON.parse(text), error: null };
+  } catch {
+    return { body: null, error: 'unparseable response' };
   }
 }
 
@@ -438,7 +727,7 @@ function tailOf(result) {
   return text.split('\n').slice(-4).join(' | ').slice(0, 600);
 }
 
-/** hackmyagent, from this repo's node_modules/.bin or from PATH. */
+/** hackmyagent: this repo's node_modules/.bin first, PATH only as a fallback. */
 function resolveHackmyagent() {
   const candidates = [path.join(REPO_ROOT, 'node_modules', '.bin', 'hackmyagent')];
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
@@ -455,19 +744,32 @@ function resolveHackmyagent() {
   return null;
 }
 
-/** Fresh, realistic credential material for the planted control file. */
-function plantedCredentials() {
-  const upper = (n) =>
-    crypto.randomBytes(n * 2).toString('base64').replace(/[^A-Z0-9]/g, '').slice(0, n).padEnd(n, '7');
-  const alnum = (n) =>
-    crypto.randomBytes(n * 2).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, n).padEnd(n, 'x');
-  return [
-    '# planted credential control — written by release-artifact-review.mjs into a scratch copy only',
-    `aws_access_key_id = AKIA${upper(16)}`,
-    `aws_secret_access_key = ${alnum(40)}`,
-    `github_token = ghp_${alnum(36)}`,
-    '',
-  ].join('\n');
+/** The scanner's version string, for the census row. */
+function scannerVersion(scanner) {
+  const result = run(scanner, ['--version'], { timeout: 30_000 });
+  const match = /\d+\.\d+\.\d+[^\s]*/.exec(`${result.stdout ?? ''}${result.stderr ?? ''}`);
+  return match ? match[0] : '<unknown version>';
+}
+
+/**
+ * The npm semver implementation, resolved lazily: this repo's node_modules
+ * when a copy is installed there, else the copy npm itself ships with — the
+ * range semantics under `vulnerable_version_range` are npm's, so npm's own
+ * resolver is the reference implementation.
+ */
+function requireSemver() {
+  try {
+    return createRequire(path.join(REPO_ROOT, 'package.json'))('semver');
+  } catch {
+    /* fall through to npm's bundled copy */
+  }
+  try {
+    const globalRoot = (run('npm', ['root', '-g'], { timeout: 30_000 }).stdout ?? '').trim();
+    const bundled = path.join(globalRoot, 'npm', 'node_modules', 'semver');
+    return createRequire(path.join(bundled, 'package.json'))(bundled);
+  } catch {
+    return null;
+  }
 }
 
 /** The scanner's findings array, or null when the output is not usable. */
