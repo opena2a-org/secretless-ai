@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+**`secretless-mcp --help` prints its usage and exits 0.** Previously `--help`
+and `-h` were treated as bad arguments and exited 1, which the new release
+artifact review's install smoke (every bin must answer `--help`) caught.
+
 **A `.secretless-rules.yaml` line the parser cannot read is now reported, and
 `rules list` and `init` exit 1 over it.** Previously a top-level key the parser
 did not recognise — `file:` instead of `files:`, `Files:`, `envs:` — silently

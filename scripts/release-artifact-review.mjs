@@ -69,7 +69,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PLANTED_NAME = 'zz-planted-credential-control.js';
+const PLANTED_NAME = '00-planted-credential-control.js';
 
 /**
  * The own-package roster: the FLOOR of todo/scripts/own-package-census.mjs
@@ -99,7 +99,7 @@ const OWN_SCOPE_PREFIX = '@opena2a/';
  * put its name@version here — the consumer-closure check reports a visible
  * `precondition` naming this sentinel, never a pass.
  */
-const KNOWN_DEPRECATED = { name: 'hackmyagent', version: '0.0.0-unset-see-sls-06-delivery-note' };
+const KNOWN_DEPRECATED = { name: 'hackmyagent', version: '0.25.0' };
 
 /** Ordered check names; the census line reports every one of these, always. */
 const CHECK_NAMES = [
@@ -464,17 +464,26 @@ function review(tarball, work, advisoryStates, results) {
       // credential-named const whose value is assembled at runtime from parts,
       // so no credential-shaped literal exists in this repository. A scan that
       // cannot find this file proves nothing by finding nothing.
+      const controlDir = path.join(work, 'control-scratch');
+      fs.mkdirSync(controlDir);
       fs.writeFileSync(
-        path.join(scratch, PLANTED_NAME),
+        path.join(controlDir, PLANTED_NAME),
         [
-          '// planted control written by release-artifact-review.mjs into a scratch copy only',
-          "const OPENAI_API_KEY = 'sk-' + 'proj-' + 'A'.repeat(48);",
+          '// planted control written by release-artifact-review.mjs into a scratch copy only;',
+          '// the value is assembled here at runtime and written as a literal so the scanner sees a credential-shaped string',
+          `const OPENAI_API_KEY = ${JSON.stringify(['sk-', 'proj-'].join('') + 'A'.repeat(48))};`,
           'module.exports = { OPENAI_API_KEY };',
           '',
         ].join('\n'),
       );
+      // Two scans, not one: the scanner reports a single location per check id, so a
+      // planted control scanned alongside the shipped files would mask a shipped credential
+      // carrying the same check id. The shipped files are scanned alone; the control alone.
       const scan = run(scanner, ['secure', '--format', 'json'], { cwd: scratch, timeout: 300_000 });
-      const findings = parseFindings(scan.stdout ?? '');
+      const controlScan = run(scanner, ['secure', '--format', 'json'], { cwd: controlDir, timeout: 300_000 });
+      const shippedFindings = parseFindings(scan.stdout ?? '');
+      const controlFindings = parseFindings(controlScan.stdout ?? '');
+      const findings = shippedFindings === null || controlFindings === null ? null : [...shippedFindings, ...controlFindings];
       if (findings === null) {
         results.precondition(
           'credential-scan',
