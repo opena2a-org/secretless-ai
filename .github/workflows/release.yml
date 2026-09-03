@@ -1,47 +1,203 @@
 name: Release
 
+# The publish path, split so that the job holding the OIDC token does as
+# little as possible:
+#
+#   build   — checks out, builds, tests, packs. The tarball it packs is THE
+#             artifact: its sha256 is recorded as a job output and the bytes
+#             travel forward as an uploaded artifact. contents: read only.
+#   review  — downloads the artifact, confirms the digest, and runs
+#             scripts/release-artifact-review.mjs over the packed bytes. A
+#             non-zero exit fails the job and halts the release.
+#   publish — id-token: write and nothing else, no checkout: the job that can
+#             mint provenance never holds a working tree, only the reviewed
+#             tarball, whose digest it re-checks before `npm publish`. After
+#             publishing it verifies, against the registry, that the versioned
+#             package carries SLSA provenance and that dist.integrity matches
+#             the bytes that were reviewed.
+#   github-release — contents: write and nothing else, after publish.
+#
+# The top level grants neither contents: write nor id-token: write; each job
+# asks for exactly what it needs. src/release-workflow.test.ts parses this
+# file and asserts every property above.
+
 on:
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tarball-name: ${{ steps.pack.outputs.tarball-name }}
+      tarball-sha256: ${{ steps.pack.outputs.tarball-sha256 }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Guard against tracked install-config files
+        run: |
+          if git ls-files | grep -E '(^|/)(\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|\.envrc)$'; then
+            echo "::error::A tracked install-config file can redirect or preload the install"
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          registry-url: https://registry.npmjs.org
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm test
 
-      - name: Publish to npm with provenance
-        run: npm publish --provenance --access public
-
-      - name: Verify provenance on npm
+      - name: Pack the tarball under review
+        id: pack
         run: |
+          mkdir -p packed
+          tarball="$(npm pack --pack-destination packed | tail -n 1)"
+          sha256="$(sha256sum "packed/${tarball}" | cut -d' ' -f1)"
+          echo "tarball-name=${tarball}" >> "$GITHUB_OUTPUT"
+          echo "tarball-sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "Packed ${tarball} (sha256 ${sha256})"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: packed/*.tgz
+          if-no-files-found: error
+
+  review:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      # Re-exported for publish, which needs only `review`: the name and digest
+      # publish trusts are the ones that were actually reviewed.
+      tarball-name: ${{ needs.build.outputs.tarball-name }}
+      tarball-sha256: ${{ needs.build.outputs.tarball-sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard against tracked install-config files
+        run: |
+          if git ls-files | grep -E '(^|/)(\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|\.envrc)$'; then
+            echo "::error::A tracked install-config file can redirect or preload the install"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # The review script itself imports only node builtins; node_modules is
+      # installed so a locally resolvable scanner (node_modules/.bin) can
+      # satisfy the credential-scan check's precondition.
+      - run: npm ci --ignore-scripts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: tarball
+
+      - name: Confirm the downloaded bytes are the built bytes
+        env:
+          TARBALL: tarball/${{ needs.build.outputs.tarball-name }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.tarball-sha256 }}
+        run: |
+          actual="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+          if [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "::error::Artifact digest mismatch: built ${EXPECTED_SHA256}, downloaded ${actual}"
+            exit 1
+          fi
+
+      - name: Review the packed tarball
+        env:
+          TARBALL: tarball/${{ needs.build.outputs.tarball-name }}
+        run: node scripts/release-artifact-review.mjs --tarball "$TARBALL"
+
+  publish:
+    needs: review
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: tarball
+
+      - name: Confirm the digest of the reviewed tarball before publishing
+        env:
+          TARBALL: tarball/${{ needs.review.outputs.tarball-name }}
+          EXPECTED_SHA256: ${{ needs.review.outputs.tarball-sha256 }}
+        run: |
+          actual="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+          if [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "::error::Refusing to publish: digest mismatch (reviewed ${EXPECTED_SHA256}, downloaded ${actual})"
+            exit 1
+          fi
+
+      - name: Publish the reviewed tarball to npm with provenance
+        env:
+          TARBALL: tarball/${{ needs.review.outputs.tarball-name }}
+        run: npm publish "$TARBALL" --provenance --access public
+
+      - name: Verify provenance and integrity on npm
+        env:
+          TARBALL: tarball/${{ needs.review.outputs.tarball-name }}
+          EXPECTED_SHA256: ${{ needs.review.outputs.tarball-sha256 }}
+        run: |
+          version="$(tar -xzOf "$TARBALL" package/package.json | node -e 'let d="";process.stdin.on("data",(c)=>d+=c).on("end",()=>console.log(JSON.parse(d).version))')"
+          echo "Verifying secretless-ai@${version} — never the bare package name, which reads whatever latest is"
+
+          actual_sha256="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+          if [ "$actual_sha256" != "$EXPECTED_SHA256" ]; then
+            echo "::error::The tarball on disk no longer matches the reviewed digest"
+            exit 1
+          fi
+          local_integrity="$(node -e 'const{createHash}=require("node:crypto");const{readFileSync}=require("node:fs");console.log("sha512-"+createHash("sha512").update(readFileSync(process.env.TARBALL)).digest("base64"))')"
+
           deadline=$((SECONDS + 300))
+          predicate=""
           while [ $SECONDS -lt $deadline ]; do
-            attestations=$(npm view "secretless-ai" dist.attestations --json 2>&1 || true)
-            if [ -n "$attestations" ] && [ "$attestations" != "null" ] && [ "$attestations" != "{}" ]; then
-              echo "Provenance verified for secretless-ai"
-              exit 0
+            predicate="$(npm view "secretless-ai@${version}" dist.attestations --json 2>/dev/null | node -e 'let d="";process.stdin.on("data",(c)=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).provenance.predicateType??"")}catch{console.log("")}})')"
+            if [ -n "$predicate" ]; then
+              break
             fi
             echo "Attestations not yet visible, retrying in 15s... (elapsed ${SECONDS}s)"
             sleep 15
           done
-          echo "::error::Provenance attestations missing from npm for secretless-ai after 5 minutes"
-          exit 1
+          if [ "$predicate" != "https://slsa.dev/provenance/v1" ]; then
+            echo "::error::secretless-ai@${version} dist.attestations provenance.predicateType is '${predicate}', expected https://slsa.dev/provenance/v1"
+            exit 1
+          fi
 
+          registry_integrity="$(npm view "secretless-ai@${version}" dist.integrity)"
+          if [ "$registry_integrity" != "$local_integrity" ]; then
+            echo "::error::secretless-ai@${version} dist.integrity '${registry_integrity}' does not correspond to the reviewed tarball (sha256 ${EXPECTED_SHA256}, integrity ${local_integrity})"
+            exit 1
+          fi
+          echo "Provenance and integrity verified for secretless-ai@${version}"
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
