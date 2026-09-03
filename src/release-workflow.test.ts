@@ -157,13 +157,27 @@ describe('release.yml is split into build, tarball review and publish', () => {
   it('SLS-06.AC1 review downloads the artifact and fails on a non-zero exit of the review script', () => {
     const review = jobBlock(RELEASE, 'review');
     expect(review).toContain('uses: actions/download-artifact@v4');
-    expect(review).toContain('run: node scripts/release-artifact-review.mjs --tarball "$TARBALL"');
+    expect(review).toContain(
+      'run: node scripts/release-artifact-review.mjs --tarball "$TARBALL" --advisory-states published',
+    );
     // Nothing swallows the exit code: a non-zero exit of any step fails the job.
     expect(review).not.toContain('continue-on-error');
     expect(review).not.toContain('|| true');
     // And the bytes reviewed are the bytes built: the digest is confirmed first.
     expect(review.indexOf('sha256sum')).toBeGreaterThanOrEqual(0);
     expect(review.indexOf('sha256sum')).toBeLessThan(review.indexOf('release-artifact-review.mjs'));
+  });
+
+  it('SLS-06.AC1 review installs with npm ci --ignore-scripts before the script and hands it the job token', () => {
+    const review = jobBlock(RELEASE, 'review');
+    // The scanner the credential-scan check resolves (node_modules/.bin first)
+    // comes from the committed lockfile, installed without lifecycle scripts.
+    expect(review).toContain('- run: npm ci --ignore-scripts');
+    expect(review.indexOf('npm ci --ignore-scripts')).toBeLessThan(review.indexOf('release-artifact-review.mjs'));
+    // The script step itself carries GH_TOKEN for the advisory reads.
+    const scriptStep = stepBlocks(review).find((step) => step.includes('release-artifact-review.mjs'));
+    expect(scriptStep, 'review has no script step').toBeDefined();
+    expect(scriptStep!).toContain('GH_TOKEN: ${{ github.token }}');
   });
 
   it('SLS-06.AC1 publish holds id-token: write and nothing else, and never checks out a tree', () => {

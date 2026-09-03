@@ -121,7 +121,11 @@ jobs:
       - name: Review the packed tarball
         env:
           TARBALL: tarball/${{ needs.build.outputs.tarball-name }}
-        run: node scripts/release-artifact-review.mjs --tarball "$TARBALL"
+          # For the consumer-closure check's advisory reads. Draft and triage
+          # advisories of other repositories are not readable by this token,
+          # so the workflow reads published ones only.
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-artifact-review.mjs --tarball "$TARBALL" --advisory-states published
 
   publish:
     needs: review
