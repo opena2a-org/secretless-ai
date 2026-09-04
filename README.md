@@ -81,7 +81,7 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 
 1. **Scans** your project for hardcoded credentials in config files and source code. 57 credential patterns from [`@opena2a/credential-patterns@0.1.3`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
-3. **Gates** AI-tool reads of credential files. 18 file patterns enforced at the AI-tool hook layer — a gate on the assistant's tool path, not a security boundary around your machine.
+3. **Gates** AI-tool reads of credential files. 18 file patterns enforced as Claude Code deny rules, plus a PreToolUse hook that denies tool calls that would read credential files or expose secrets before they run: a gate on the assistant's tool path, not a security boundary around the machine. Other tools get instruction files or ignore patterns (see [Supported tools](#supported-tools)).
 4. **Brokers** access through environment variables. Secrets never enter AI context.
 
 ## Store secrets and use them in AI sessions
@@ -225,14 +225,14 @@ AIM is optional. Tier 1 and Tier 2 work against any of the five [storage backend
 
 | Tool | Protection method |
 |---|---|
-| Claude Code | PreToolUse hooks (gate the assistant's tool calls before they run: session check + credential-read guard) + deny rules + CLAUDE.md |
+| Claude Code | PreToolUse hook (`secretless-guard.sh`, a gate on the assistant's tool path: denies tool calls that would read credential files or expose secrets, before they run) + deny rules + CLAUDE.md |
 | Cursor | `.cursorrules` instructions |
 | GitHub Copilot | `.github/copilot-instructions.md` instructions |
 | Windsurf | `.windsurfrules` instructions |
 | Cline | `.clinerules` instructions |
 | Aider | `.aiderignore` file patterns |
 
-Claude Code gets the strongest protection because it supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks). Hook commands run before the assistant's tool calls and can deny them — a gate on the assistant's tool path (it governs what the AI does through its tools), not a security boundary against other processes on the machine.
+Claude Code gets the strongest protection because it supports [hooks](https://code.claude.com/docs/en/hooks). Hook commands run before the assistant's tool calls and can deny them: a gate on the assistant's tool path, not a security boundary against other processes on the machine.
 
 ## Storage backends
 

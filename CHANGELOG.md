@@ -1,22 +1,26 @@
 # Changelog
 
-## [0.23.1] - 2026-09-02
+## [0.23.1] - YYYY-MM-DD
 
-**The Claude Code PreToolUse hook (`secretless-ai hook --check-only`) now
-denies instead of advising.** On an expired or tampered session it exits 2 and
-prints the PreToolUse deny JSON
+**The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
+denies instead of advising.** This hook is registered by hand in the Claude
+Code hooks config; `init` installs only `secretless-guard.sh`, which is
+unchanged. On an expired or tampered session the command exits 2 and prints
+the PreToolUse deny JSON
 (`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",...}}`)
 on stdout with the reason on stderr, so Claude Code blocks the tool call
-instead of showing a warning it may ignore. Previously the hook exited 1 with a
-message on stderr only, which the hook contract treats as non-blocking: the
-session gate could not gate. A session file that fails its HMAC integrity check
-(tampered) now also denies — before, it was indistinguishable from "never
-installed" and passed silently. When the broker daemon is not running, the deny
-reason names `secretless-ai broker start` before `secretless-ai warm`, so a
-user whose daemon is down is not told to run a warm that cannot succeed. When
-no session file exists at all the hook still passes with exit 0 and no output:
-users who never set secretless up are not blocked. This hook is a gate on the
-assistant's tool path, not a security boundary.
+instead of letting it proceed past a warning. Previously the hook exited 1
+with a message on stderr only, which the hook contract does not treat as
+blocking: the session gate could not gate. A session file whose HMAC is
+missing or does not match its content (tampered) now also denies. Before, a
+mismatch was treated as "never installed" and passed silently, and a file with
+the HMAC field removed was accepted as a valid session. On an expired session
+with the broker daemon not running, the deny reason names
+`secretless-ai broker start` before `secretless-ai warm`; a tampered session
+names `secretless-ai warm` only. When no session file exists at all the hook
+still passes with exit 0 and no output: users who never set Secretless up are
+not blocked. This hook is a gate on the assistant's tool path, not a security
+boundary.
 
 **A `.secretless-rules.yaml` line the parser cannot read is now reported, and
 `rules list` and `init` exit 1 over it.** Previously a top-level key the parser
