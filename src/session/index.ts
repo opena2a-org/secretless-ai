@@ -5,6 +5,7 @@ export {
   isSessionWarm,
   clearSessionState,
   getSessionFilePath,
+  SESSION_TAMPERED,
   DEFAULT_SESSION_TTL_SECONDS,
   MAX_SESSION_TTL_SECONDS,
   type SessionState,

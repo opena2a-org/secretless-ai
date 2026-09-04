@@ -49,6 +49,8 @@ export interface SessionState {
 export interface SessionStatus {
   /** Whether the session is currently warm (authenticated and not expired). */
   warm: boolean;
+  /** Whether the session file failed its integrity check (HMAC mismatch or missing). */
+  tampered: boolean;
   /** Seconds remaining until session expires. 0 if expired or no session. */
   remainingSeconds: number;
   /** ISO 8601 expiry time. Empty string if no session. */
@@ -60,10 +62,19 @@ export interface SessionStatus {
 }
 
 /**
- * Read the current session state from disk.
- * Returns null if no session file exists or it is unreadable.
+ * Sentinel returned by {@link readSessionState} when a structurally valid
+ * session file fails its HMAC integrity check. Consumers must treat this as
+ * distinct from null ("never installed"): a tampered session must not pass.
  */
-export function readSessionState(): SessionState | null {
+export const SESSION_TAMPERED = 'tampered' as const;
+
+/**
+ * Read the current session state from disk.
+ * Returns null if no session file exists or it is unreadable, and
+ * {@link SESSION_TAMPERED} if the file is well-formed but its HMAC is
+ * missing or does not match the content.
+ */
+export function readSessionState(): SessionState | typeof SESSION_TAMPERED | null {
   if (!fs.existsSync(SESSION_FILE)) return null;
 
   try {
@@ -77,17 +88,17 @@ export function readSessionState(): SessionState | null {
       typeof parsed.authenticatedAt === 'string' &&
       typeof parsed.ttlSeconds === 'number'
     ) {
-      // Verify HMAC integrity if present
-      if (typeof parsed.hmac === 'string') {
-        const storedHmac = parsed.hmac;
-        // Rebuild JSON without the hmac field to compute expected HMAC
-        const { hmac: _removed, ...dataWithoutHmac } = parsed;
-        const content = JSON.stringify(dataWithoutHmac, null, 2);
-        const expectedHmac = computeHmac(content);
-        if (!crypto.timingSafeEqual(Buffer.from(storedHmac, 'hex'), Buffer.from(expectedHmac, 'hex'))) {
-          // HMAC mismatch — treat as expired/tampered
-          return null;
-        }
+      // Verify HMAC integrity. A structurally valid session whose HMAC is
+      // absent, malformed, or wrong is reported as tampered — stripping the
+      // field must not turn a forged session into a passing one.
+      if (typeof parsed.hmac !== 'string') return SESSION_TAMPERED;
+      // Rebuild JSON without the hmac field to compute expected HMAC
+      const { hmac: _removed, ...dataWithoutHmac } = parsed;
+      const content = JSON.stringify(dataWithoutHmac, null, 2);
+      const expectedBuf = Buffer.from(computeHmac(content), 'hex');
+      const storedBuf = Buffer.from(parsed.hmac, 'hex');
+      if (storedBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(storedBuf, expectedBuf)) {
+        return SESSION_TAMPERED;
       }
       // Return state without the hmac field
       const { hmac: _h, ...state } = parsed;
@@ -136,9 +147,10 @@ export function writeSessionState(ttlSeconds?: number): SessionState {
 export function getSessionStatus(ttlOverride?: number): SessionStatus {
   const state = readSessionState();
 
-  if (!state) {
+  if (!state || state === SESSION_TAMPERED) {
     return {
       warm: false,
+      tampered: state === SESSION_TAMPERED,
       remainingSeconds: 0,
       expiresAt: '',
       authenticatedAt: '',
@@ -157,6 +169,7 @@ export function getSessionStatus(ttlOverride?: number): SessionStatus {
 
   return {
     warm,
+    tampered: false,
     remainingSeconds,
     expiresAt: warm ? new Date(expiresAtMs).toISOString() : '',
     authenticatedAt: state.authenticatedAt,

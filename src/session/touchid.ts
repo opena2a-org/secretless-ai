@@ -178,6 +178,7 @@ export async function warmSession(ttlSeconds?: number): Promise<SessionStatus> {
       expiresAt: '',
       authenticatedAt: '',
       ttlSeconds: ttl,
+      tampered: false,
     };
   }
 
