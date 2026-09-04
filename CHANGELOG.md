@@ -14,6 +14,14 @@ never started, and the error names the variable with a Verify and a Fix line.
 The test suite sets it in every worker; a CLI child started from a copy of
 the worker's environment inherits it.
 
+**The docs URL the tool prints now points at the page that exists.**
+`--help` and the header written into a new `.secretlessignore` cited
+`https://opena2a.org/secretless-ai`, which is a 404; both now cite
+`https://opena2a.org/secretless`, the live docs page the README already
+links. No other output changes; the GitHub repository links
+(`github.com/opena2a-org/secretless-ai`) are the repository's real name
+and are unchanged.
+
 **The macOS Keychain backend hands the value to `security` on stdin, runs
 `/usr/bin/security` by absolute path, and every backend child call is bounded
 in time.** `secret set` on the keychain backend now writes one
