@@ -243,7 +243,7 @@ describe('documented commands exist', () => {
     // Every prose shape actually present in this source tree. These are the
     // cases that make a naive matcher report four dead ends that do not exist,
     // and a check that cries wolf gets deleted rather than fixed.
-    expect(suggestedCommand("'# See https://opena2a.org/secretless-ai for syntax.'")).toBeNull();
+    expect(suggestedCommand("'# See https://opena2a.org/secretless for syntax.'")).toBeNull();
     expect(suggestedCommand("const HOOK_MARKER = '# secretless-ai pre-commit hook';")).toBeNull();
     expect(suggestedCommand("'install-wrapper: Cannot locate secretless-ai package root. '")).toBeNull();
     expect(suggestedCommand(' * so secretless-ai works without it (just shows a message).')).toBeNull();
