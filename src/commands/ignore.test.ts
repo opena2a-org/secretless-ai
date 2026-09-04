@@ -29,6 +29,17 @@ describe('ignorePattern (file creation)', () => {
     expect(content).toContain('# .secretlessignore');
     expect(content).toContain('docs/migration-guide.md');
   });
+
+  it('SLS-07.AC2 header cites https://opena2a.org/secretless, no line names secretless-ai', () => {
+    // The old `/secretless-ai` docs path is a 404; the syntax docs live at
+    // https://opena2a.org/secretless.
+    const r = ignorePattern('docs/migration-guide.md', { rootDir: tmpDir });
+    expect(r.exitCode).toBe(0);
+    const content = fs.readFileSync(path.join(tmpDir, '.secretlessignore'), 'utf-8');
+    const lines = content.split('\n');
+    expect(lines).toContain('# See https://opena2a.org/secretless for syntax.');
+    expect(lines.filter((l) => l.includes('secretless-ai'))).toEqual([]);
+  });
 });
 
 describe('ignorePattern (append behaviour)', () => {
