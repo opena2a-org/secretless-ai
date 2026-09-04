@@ -57,6 +57,17 @@ jobs:
           # job's token has no reason to stay in .git/config.
           persist-credentials: false
 
+      # Before anything that could install: a tracked .npmrc (or yarn/pnpm/
+      # direnv equivalent) can redirect the registry or preload the install,
+      # so its mere presence in the tree fails the job. No `if:` — this runs
+      # on every change, code or not.
+      - name: Guard against tracked install-config files
+        run: |
+          if git ls-files | grep -E '(^|/)(\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|\.envrc)$'; then
+            echo "::error::A tracked install-config file can redirect or preload the install"
+            exit 1
+          fi
+
       - name: Collect the changed files
         id: changed
         env:
@@ -165,6 +176,13 @@ jobs:
         node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Guard against tracked install-config files
+        run: |
+          if git ls-files | grep -E '(^|/)(\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|\.envrc)$'; then
+            echo "::error::A tracked install-config file can redirect or preload the install"
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:

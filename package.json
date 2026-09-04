@@ -46,6 +46,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
+    "hackmyagent": "0.25.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
   },
