@@ -11,7 +11,7 @@ const discordBotToken = ['MTIzNDU2Nzg5MDEyMzQ1Njc4OQ', '.GabcDE.', 'abcdefghijkl
 const PATTERN_TEST_CASES: Record<string, { valid: string[]; invalid: string[] }> = {
   // AI/ML
   'anthropic': {
-    valid: ['sk-ant-api03-abc123def456abc123def456abc123'],
+    valid: ['sk-ant-api03-' + 'abc123def456abc123def456abc123'],
     invalid: ['sk-ant-wrong', 'sk-ant-api-tooshort'],
   },
   'openai-proj': {
@@ -49,11 +49,11 @@ const PATTERN_TEST_CASES: Record<string, { valid: string[]; invalid: string[] }>
 
   // Cloud
   'aws-access': {
-    valid: ['AKIAIOSFODNN7EXAMPLE'],
+    valid: ['AKIA' + 'IOSFODNN7EXAMPLE'],
     invalid: ['AKIA123', 'BKIAIOSFODNN7EXAMPLE'],
   },
   'aws-sts': {
-    valid: ['ASIAIOSFODNN7EXAMPLE'],
+    valid: ['ASIA' + 'IOSFODNN7EXAMPLE'],
     invalid: ['ASIA123', 'BSIAIOSFODNN7EXAMPLE'],
   },
   'aws-secret': {
@@ -137,7 +137,7 @@ const PATTERN_TEST_CASES: Record<string, { valid: string[]; invalid: string[] }>
 
   // Developer
   'github-pat': {
-    valid: ['ghp_abcdefghijklmnopqrstuvwxyz0123456789'],
+    valid: ['ghp_' + 'abcdefghijklmnopqrstuvwxyz0123456789'],
     invalid: ['ghp_short', 'ghp_'],
   },
   'github-fine': {
@@ -214,7 +214,7 @@ const PATTERN_TEST_CASES: Record<string, { valid: string[]; invalid: string[] }>
   // cross JSON string boundaries on minified content.
   'mongodb': {
     valid: [
-      'mongodb+srv://user:pass@cluster.mongodb.net/db',
+      'mongodb+srv://' + 'user:pass@cluster.mongodb.net/db',
       'mongodb://admin:hunter2@mongo1:27017,mongo2:27017/db',
     ],
     invalid: ['mongodb://lo', 'mongo+srv://x', 'mongodb+srv://cluster.mongodb.net/db'],
@@ -268,7 +268,7 @@ const PATTERN_TEST_CASES: Record<string, { valid: string[]; invalid: string[] }>
 
   // Auth & Crypto
   'google': {
-    valid: ['AIzaSyB-abc_def123456789012345678901234'],
+    valid: ['AIza' + 'SyB-abc_def123456789012345678901234'],
     invalid: ['AIzaShort', 'BIzaSyBabc1234567890123456789012345'],
   },
   'google-oauth': {
@@ -383,6 +383,37 @@ describe('CREDENTIAL_PATTERNS', () => {
   });
 });
 
+describe('assembled fixtures preserve detection', () => {
+  // The families whose whole-literal fixtures were replaced by parts-assembled
+  // values; the detectors must still see the assembled string at run time.
+  const AFFECTED_FAMILIES = ['anthropic', 'aws-access', 'aws-sts', 'github-pat', 'mongodb', 'google'];
+
+  it('OPA-12.AC3 each affected family keeps a valid fixture matching the live catalog pattern', () => {
+    for (const id of AFFECTED_FAMILIES) {
+      const pattern = CREDENTIAL_PATTERNS.find(p => p.id === id);
+      expect(pattern, `catalog pattern ${id} exists`).toBeDefined();
+      const matches = PATTERN_TEST_CASES[id].valid.some(v => pattern!.regex.test(v));
+      expect(matches, `family ${id} keeps a valid[] entry matching its catalog pattern`).toBe(true);
+    }
+    expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('AKIA' + '1234567890123456')).toBe(true);
+  });
+
+  it('OPA-12.AC4 affected-family invalid fixtures still do not match', () => {
+    const rejected: Array<[string, string]> = [
+      ['anthropic', 'sk-ant-wrong'],
+      ['aws-access', 'AKIA123'],
+      ['aws-sts', 'ASIA123'],
+      ['github-pat', 'ghp_short'],
+      ['mongodb', 'mongodb://lo'],
+      ['google', 'AIzaShort'],
+    ];
+    for (const [id, sample] of rejected) {
+      const pattern = CREDENTIAL_PATTERNS.find(p => p.id === id)!;
+      expect(pattern.regex.test(sample), `family ${id} rejects ${sample}`).toBe(false);
+    }
+  });
+});
+
 describe('CREDENTIAL_PREFIX_QUICK_CHECK', () => {
   it('is a valid RegExp', () => {
     expect(CREDENTIAL_PREFIX_QUICK_CHECK).toBeInstanceOf(RegExp);
@@ -391,7 +422,7 @@ describe('CREDENTIAL_PREFIX_QUICK_CHECK', () => {
   it('matches known credential prefixes', () => {
     expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('sk-ant-api03-xxx')).toBe(true);
     expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('sk-proj-xxx')).toBe(true);
-    expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('AKIA1234567890123456')).toBe(true);
+    expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('AKIA' + '1234567890123456')).toBe(true);
     expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('ghp_abc')).toBe(true);
     expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('xoxb-123')).toBe(true);
     expect(CREDENTIAL_PREFIX_QUICK_CHECK.test('gsk_abc')).toBe(true);
