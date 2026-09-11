@@ -1,6 +1,6 @@
 {
   "name": "secretless-ai",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "description": "One command to keep secrets out of AI. Works with Claude Code, Cursor, Copilot, Windsurf, and any AI coding tool.",
   "license": "Apache-2.0",
   "type": "commonjs",
@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "hackmyagent": "0.25.0",
+    "hackmyagent": "0.32.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
   },
