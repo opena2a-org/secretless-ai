@@ -69,6 +69,14 @@ describe('cli --help handling', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  itIfBuilt('SLS-07.AC1 help cites https://opena2a.org/secretless, never the dead -ai URL', () => {
+    // The old `/secretless-ai` docs path is a 404; the docs live at
+    // https://opena2a.org/secretless (the page README.md already links).
+    const out = runCli(['--help']);
+    expect(out).not.toMatch(/opena2a\.org\/secretless-ai/);
+    expect(out).toMatch(/https:\/\/opena2a\.org\/secretless\s*$/m);
+  });
 });
 
 describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', () => {
@@ -91,7 +99,7 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
     expect(out).toMatch(/opena2a secrets scan/);
     expect(out).toMatch(/opena2a secrets init/);
     // No standalone secretless command citations leak through. The
-    // `https://opena2a.org/secretless-ai` URL is a product link, not a command
+    // `https://opena2a.org/secretless` URL is a product link, not a command
     // citation, so we match the command forms specifically: `npx secretless-ai`
     // and bare `secretless-ai <verb>`.
     expect(out).not.toMatch(/npx secretless-ai/);

@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+**The docs URL the tool prints now points at the page that exists.**
+`--help` and the header written into a new `.secretlessignore` cited
+`https://opena2a.org/secretless-ai`, which is a 404; both now cite
+`https://opena2a.org/secretless`, the live docs page the README already
+links. No other output changes; the GitHub repository links
+(`github.com/opena2a-org/secretless-ai`) are the repository's real name
+and are unchanged.
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now

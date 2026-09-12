@@ -160,6 +160,6 @@ ${banner}  Keep secrets out of AI context.
 
   Supports: Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, Aider
 
-  https://opena2a.org/secretless-ai
+  https://opena2a.org/secretless
 `);
 }
