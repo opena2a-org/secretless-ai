@@ -106,6 +106,7 @@ const CHECK_NAMES = [
   'entry-allowlist',
   'no-dotfiles',
   'no-test-material',
+  'dist-containment',
   'no-install-scripts',
   'pinned-first-party-deps',
   'npm-audit',
@@ -146,6 +147,9 @@ class Results {
     this.record(name, 'fail', detail);
   }
   precondition(name, missing) {
+    // A precondition never masks a finding already made: a check that failed on the listing
+    // stays failed when the extractor later refuses the same bytes (unit 9299).
+    if (this.byName.get(name) === 'fail') return;
     this.record(name, 'precondition', missing);
   }
   statusOf(name) {
@@ -207,6 +211,20 @@ function review(tarball, work, advisoryStates, results) {
     return;
   }
   const entries = listing.stdout.split('\n').filter((line) => line.length > 0);
+
+  // dist-containment (unit 9299; the CISO ruling headed 2026-09-12T16:10:59Z, op 4). An entry whose
+  // path escapes the package tree — a `..` segment or an absolute name — is refused BY NAME from the
+  // listing, before any extractor is asked. bsdtar and GNU tar both refuse such a member at
+  // extraction, but that is a control this script does not own; this check is the one it does, and
+  // it does not wait on extract.status.
+  const escaping = entries.filter(
+    (entry) => path.posix.isAbsolute(entry) || entry.split('/').includes('..'),
+  );
+  if (escaping.length > 0) {
+    results.fail('dist-containment', `entries escape the package tree: ${escaping.join(', ')}`);
+  } else {
+    results.pass('dist-containment', `${entries.length} entries, none escaping`);
+  }
 
   const extractDir = path.join(work, 'extract');
   fs.mkdirSync(extractDir);
@@ -456,7 +474,13 @@ function review(tarball, work, advisoryStates, results) {
       for (const entry of fileEntries) {
         if (!entry.startsWith('package/dist/')) continue;
         const rel = entry.slice('package/dist/'.length);
-        const target = path.join(scratch, rel);
+        const target = path.resolve(scratch, rel);
+        if (target !== scratch && !target.startsWith(scratch + path.sep)) {
+          // The bound at the first escaping write (the ruling's op 4): never mkdir outside scratch,
+          // whatever the extractor let through.
+          results.fail('dist-containment', `entry resolves outside the scan scratch: ${entry}`);
+          continue;
+        }
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.copyFileSync(path.join(packageDir, 'dist', rel), target);
       }

@@ -33,6 +33,7 @@ const CHECKS = [
   "entry-allowlist",
   "no-dotfiles",
   "no-test-material",
+  "dist-containment",
   "no-install-scripts",
   "pinned-first-party-deps",
   "npm-audit",
@@ -748,4 +749,77 @@ describe("each blocking class is caught by name, and the delivered tree passes",
       expect(run.stdout).toContain("dist/ absent from the tarball");
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Unit 9299 / the containment bound the CISO ruling headed 2026-09-12T16:10:59Z
+// ordered on #173 (op 4): a tarball entry under package/dist/ whose path
+// carries a `..` segment must fail a check BY NAME. `tar` cannot create such a
+// member (it strips `..` on create), so the fixture is a hand-built ustar
+// archive — the chief's own reproduction shape. The check has to fire from
+// the LISTING, before extraction: bsdtar and GNU tar both refuse the member at
+// extraction, which today turns every check into a precondition and reports
+// nothing about the traversal itself. Asserting `status != 0` alone would pass
+// on tar's refusal — the assertion that let a reverted fix look green.
+// ---------------------------------------------------------------------------
+import * as zlib from "zlib";
+
+function ustarHeader(name: string, size: number): Buffer {
+  const header = Buffer.alloc(512, 0);
+  header.write(name, 0, 100, "utf-8");
+  header.write("0000755\0", 100, 8, "ascii");
+  header.write("0000000\0", 108, 8, "ascii");
+  header.write("0000000\0", 116, 8, "ascii");
+  header.write(size.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
+  header.write("00000000000\0", 136, 12, "ascii");
+  header.write("        ", 148, 8, "ascii"); // checksum field counted as spaces
+  header.write("0", 156, 1, "ascii");
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8, "ascii");
+  return header;
+}
+
+/** A ustar .tgz whose member names are written verbatim — `..` included. */
+function buildUstarTgz(name: string, files: Record<string, string>): string {
+  const blocks: Buffer[] = [];
+  for (const [entry, content] of Object.entries(files)) {
+    const body = Buffer.from(content, "utf-8");
+    blocks.push(ustarHeader(entry, body.length), body);
+    const pad = (512 - (body.length % 512)) % 512;
+    if (pad) blocks.push(Buffer.alloc(pad, 0));
+  }
+  blocks.push(Buffer.alloc(1024, 0));
+  const tarball = path.join(tmpRoot, name);
+  fs.writeFileSync(tarball, zlib.gzipSync(Buffer.concat(blocks)));
+  return tarball;
+}
+
+const TRAVERSAL_ENTRY = "package/dist/../../../evil-marker.js";
+
+describe("9299: an entry under package/dist/ that escapes it fails dist-containment by name", () => {
+  it("names the traversal entry from the listing, whether or not tar agrees to extract it", () => {
+    const run = reviewOf("traversal", () =>
+      runReview([
+        "--tarball",
+        buildUstarTgz("traversal.tgz", {
+          ...healthyFiles(),
+          [TRAVERSAL_ENTRY]: "module.exports = 'escaped';\n",
+        }),
+      ]),
+    );
+    expect(run.status).not.toBe(0);
+    expect(run.census["dist-containment"]).toBe("fail");
+    expect(run.stdout).toContain("check dist-containment: fail");
+    expect(run.stdout).toContain(TRAVERSAL_ENTRY);
+  }, 600_000);
+
+  it("control: the same hand-built archive without the escaping member passes dist-containment", () => {
+    const run = reviewOf("ustar-healthy", () =>
+      runReview(["--tarball", buildUstarTgz("ustar-healthy.tgz", healthyFiles())]),
+    );
+    expect(run.census["dist-containment"]).toBe("pass");
+  }, 600_000);
 });
