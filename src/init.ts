@@ -339,7 +339,11 @@ function configureClaudeCode(
     'Grep(*.p12)',
     'Grep(*.pfx)',
     'Grep(*.crt)',
-    'Grep(credentials*)',
+    // The credentials STORE, not the topic word. `credentials*` is a prefix glob,
+    // so a project-root `credentials-guide.md` was denied to Grep for naming the
+    // subject. Same drift as the guard hook's path fragment above — patterns.ts
+    // already spells this rule `credentials/`.
+    'Grep(credentials/*)',
     'Grep(*.tfstate)',
     'Grep(*.tfvars)',
     // Block Bash commands that read secret files (Issue #2 - expanded)
@@ -664,8 +668,18 @@ function generateClaudeHookScript(customRules?: CustomRules | null): string {
   //  - pathFragments: case-insensitive substring match anywhere in the path.
   const secretExtensions = ['env', 'key', 'pem', 'p12', 'pfx', 'crt', 'tfstate', 'tfvars'];
   const dotfileNames = ['.npmrc', '.pypirc', '.git-credentials', '.netrc'];
+  // Key the credentials rule on the STORE (`credentials/`), never on the bare
+  // topic word. A bare `credentials` becomes the case glob `*credentials*` below
+  // and matches ANY path merely NAMING the subject: the only tracked file in this
+  // repository it caught was `docs/use-cases/protect-my-credentials.md`, our own
+  // use-case page, which holds no credential and cannot reach the template-suffix
+  // exemption because it is a `.md`. The canonical list already had the store
+  // form — SECRET_FILE_PATTERNS in patterns.ts spells it `credentials/` — and this
+  // list had drifted from it by one slash. The store itself loses nothing:
+  // `credentials/prod.json` still matches here, `~/.aws/credentials` matches the
+  // next fragment, and `.git-credentials` is an exact basename in dotfileNames.
   const pathFragments = [
-    'credentials', '.aws/credentials', '.ssh/', '.docker/config.json',
+    'credentials/', '.aws/credentials', '.ssh/', '.docker/config.json',
     'secrets/', '.opena2a/secretless-ai/', '.secretless-ai/',
   ];
 
@@ -837,9 +851,14 @@ except Exception:
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi
-  # Block python/node one-liners that read secret files
+  # Block python/node one-liners that read secret files. Same dead-end as the arm
+  # above had: a one-liner that only COMPILES a regex naming a secret-file token
+  # (node -e with new RegExp, python3 -c with re.compile) opens nothing and is
+  # refused all the same, because this is a denylist over command TEXT. The
+  # decision has to stand — see NOTE ON TEMPLATE FILES — so the reason carries the
+  # ambiguity and the route out.
   if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files"}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
@@ -899,9 +918,13 @@ except Exception:
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full secret-store dump via secretless-ai env"}}'
     exit 0
   fi
-  # Block direct access to secretless data directory
+  # Block direct access to secretless data directory. The same filename-versus-
+  # pattern ambiguity as the two arms above: a source search FOR the directory
+  # name (grep -rn for the literal string) reads no store and is refused anyway,
+  # so the reason names it and points at the tools whose path guard can tell the
+  # difference.
   if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|grep|awk|sed|strings|xxd|ls)\\s+.*\\.secretless-ai'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to secretless data directory"}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to secretless data directory. This guard matches command text and cannot tell a filename from a search pattern, so a command that merely searches source for the directory name is blocked too. Safe path: open files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi
 ${customRules ? customRulesToHookBlocks(customRules) : ''}  exit 0

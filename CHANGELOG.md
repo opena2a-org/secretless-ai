@@ -2,6 +2,37 @@
 
 ## [0.23.1] - YYYY-MM-DD
 
+**The credentials rule is keyed on the credential store, not on the word
+`credentials` anywhere in a path.** The generated guard hook matched the bare
+fragment `credentials`, so it denied any file that merely NAMES the subject —
+including this project's own use-case page,
+`docs/use-cases/protect-my-credentials.md`, which was the single tracked file in
+the repository the hook we generate would refuse to open, and which holds no
+credential. It is now `credentials/`, the store form `SECRET_FILE_PATTERNS` in
+`patterns.ts` already used and that the hook's list had drifted from by one
+slash. The native `.claude/settings.json` deny rule had the same shape and is
+narrowed the same way: `Grep(credentials*)`, a prefix glob that denied a
+project-root `credentials-guide.md` to the Grep tool, is now
+`Grep(credentials/*)`. Nothing that protects a real store moves —
+`credentials/prod.json`, `~/.aws/credentials`, `.aws/credentials` and
+`.git-credentials` are all still blocked, the last by the unchanged
+exact-basename dotfile rule. Note for existing projects: an older
+`.claude/settings.json` keeps its previously written `Grep(credentials*)` line,
+since `init` prunes only the rules listed in `DEPRECATED_DENY_RULES`; remove
+that line by hand to pick the narrowed rule up.
+
+**Two Bash deny messages that can fire on a search pattern now say so and name
+the way forward.** `Secretless: blocked script command that reads secret files`
+and `Secretless: blocked access to secretless data directory` were single-clause
+refusals, but both arms match command TEXT and so also fire on commands that
+only DESCRIBE the shape they search for — `node -e "re = new RegExp('\.env')"`,
+`python3 -c "import re; re.compile(r'\.pem')"`, `grep -rn "\.secretless-ai" src`
+— none of which opens a secret. Those commands are still denied (exempting the
+token is a credential bypass; see NOTE ON TEMPLATE FILES in `init.ts`), but each
+reason now states that the guard cannot tell a filename from a search pattern
+and names the Read tool and the Grep tool as the sanctioned route, matching the
+secret-file arm that already did.
+
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
 denies instead of advising.** This hook is registered by hand in the Claude
 Code hooks config; `init` installs only `secretless-guard.sh`, which is
