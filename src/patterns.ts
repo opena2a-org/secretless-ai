@@ -205,6 +205,48 @@ export const CONFIG_FILES = [
   'kubeconfig.yaml', '.kube/config',
 ];
 
+/**
+ * Config FORMATS a credential is commonly typed into (#124).
+ *
+ * `CONFIG_FILES` is a list of NAMES, so `secrets.json`, `appsettings.json`,
+ * `values.yaml`, `app.toml` or `.npmrc` are neither config-scanned nor
+ * source-scanned. A file in one of these formats that no walk reads is
+ * reported as a declared boundary (`summary.unscannedConfig`), and
+ * `scan --include-config` scans it with the source-file rules.
+ */
+export const CONFIG_SHAPED_EXTENSIONS = new Set([
+  '.json', '.jsonc', '.json5',
+  '.yaml', '.yml',
+  '.toml', '.ini', '.cfg', '.conf', '.config', '.properties',
+  '.xml',
+  '.tf', '.tfvars', '.hcl',
+]);
+
+/** Config files recognised by their whole name rather than an extension. */
+export const CONFIG_SHAPED_BASENAMES = new Set([
+  'Dockerfile', 'Containerfile',
+  '.npmrc', '.yarnrc', '.pypirc', '.netrc', '.pgpass',
+]);
+
+/**
+ * Generated lockfiles. Config-format, but machine-written dependency pins, not
+ * a place anyone types a key; reporting them would put a line on every
+ * repository that has dependencies.
+ */
+const LOCKFILE_NAMES = new Set([
+  'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'composer.lock',
+  'Pipfile.lock', 'poetry.lock', 'Cargo.lock', 'Gemfile.lock', 'yarn.lock', 'bun.lock',
+]);
+
+/** Whether a file NAME is in a config format (see `CONFIG_SHAPED_EXTENSIONS`). */
+export function isConfigShaped(name: string): boolean {
+  if (LOCKFILE_NAMES.has(name)) return false;
+  if (CONFIG_SHAPED_BASENAMES.has(name)) return true;
+  if (name.startsWith('Dockerfile.') || name.endsWith('.Dockerfile')) return true;
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && CONFIG_SHAPED_EXTENSIONS.has(name.slice(dot).toLowerCase());
+}
+
 /** Source file extensions to scan for hardcoded credentials */
 export const SOURCE_FILE_EXTENSIONS = new Set([
   '.js', '.jsx', '.mjs', '.cjs',

@@ -216,6 +216,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
         return runScanHistory();
       }
       const includeTests = args.includes('--include-tests');
+      const includeConfig = args.includes('--include-config');
       const explain = args.includes('--explain');
       const noIgnore = args.includes('--no-ignore');
       const json = args.includes('--json');
@@ -286,7 +287,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, explain, noIgnore, minConfidence, json, showPlaceholders, maxFiles, maxFileSizeBytes });
+      return runScan(projectDir, { includeTests, includeConfig, explain, noIgnore, minConfidence, json, showPlaceholders, maxFiles, maxFileSizeBytes });
     }
     case 'status': {
       const json = args.includes('--json');
