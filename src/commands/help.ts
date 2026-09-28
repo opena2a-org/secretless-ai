@@ -87,6 +87,7 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} scan --show-placeholders      Show values hidden as placeholders
     ${CLI} scan --no-ignore              Ignore .secretlessignore and defaults
     ${CLI} scan --include-tests          Include test files in the source scan
+    ${CLI} scan --include-config         Also scan config files not on the built-in list
 
   Shell History:
     ${CLI} scan --history         Scan shell history for credentials
@@ -150,6 +151,7 @@ ${banner}  Keep secrets out of AI context.
 
   Scan options:
     --include-tests          Include test files in source code scan
+    --include-config         Also scan config-format files (.json, .yaml, .toml, .npmrc, ...) not on the built-in list
     --explain                Detailed per-finding view with remediation
     --no-ignore              Disable .secretlessignore + default-ignore
     --min-confidence <n>     Drop findings with composite confidence below n (0-1)

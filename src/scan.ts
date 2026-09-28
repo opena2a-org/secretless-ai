@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, type CredentialPattern } from './patterns';
+import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, isConfigShaped, type CredentialPattern } from './patterns';
 import { redactMatches } from './redact';
 import { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceTier } from './confidence';
@@ -102,6 +102,13 @@ export interface ScanOptions {
   scanSource?: boolean;
   /** Include test files in source scan (default: false) */
   includeTests?: boolean;
+  /**
+   * Also scan config-format files whose names are not on `CONFIG_FILES`
+   * (`secrets.json`, `values.yaml`, `.npmrc`; see `isConfigShaped`), with the
+   * source-file rules. Default: false — they are reported in
+   * `ScanStats.unscannedConfig` instead (#124).
+   */
+  includeConfig?: boolean;
   /** Max source files to scan before stopping (default: 5000) */
   maxSourceFiles?: number;
   /**
@@ -186,6 +193,17 @@ export interface ScanStats {
    * number and bury the entry that matters.
    */
   skips?: CoverageSkips;
+  /**
+   * Config-format files that no walk read (#124): not on the `CONFIG_FILES`
+   * name list, not a source extension. Before this, a tree whose only key sat
+   * in `secrets.json` scanned to `total: 0` with nothing said.
+   *
+   * A DECLARED BOUNDARY, like `skips`: it does not set the exit code, because
+   * `tsconfig.json` alone would then fail every clean scan. A consumer that
+   * wants to gate on it reads `summary.unscannedConfig`. `count` is the true
+   * number; `files` is a sample capped like the skip samples.
+   */
+  unscannedConfig?: { count: number; files: string[] };
 }
 
 /** Per-file size caps. A file above the cap is skipped and reported, never dropped silently. */
@@ -622,8 +640,14 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     const configFileSet = new Set(scannedConfigFiles);
     const maxFiles = options?.maxSourceFiles ?? 5000;
     const includeTests = options?.includeTests ?? false;
-    const sourceWalk = walkSourceFiles(projectDir, maxFiles, includeTests, ignore);
+    const sourceWalk = walkSourceFiles(projectDir, maxFiles, includeTests, ignore, options?.includeConfig ?? false);
     absorbWalk(sourceWalk);
+    if (stats?.unscannedConfig) {
+      stats.unscannedConfig.count += sourceWalk.unscannedConfig.count;
+      for (const f of sourceWalk.unscannedConfig.files) {
+        if (stats.unscannedConfig.files.length < SKIP_SAMPLE_CAP) stats.unscannedConfig.files.push(f);
+      }
+    }
 
     for (const filePath of sourceWalk.files) {
       const relPath = path.relative(projectDir, filePath);
@@ -1062,6 +1086,13 @@ interface WalkSpec {
   skipDir(name: string, relFromRoot: string): string | false;
   /** A REASON string to reject this file, or false to keep it. Same rule. */
   rejectFile(name: string, relFromRoot: string): string | false;
+  /**
+   * True when another walk reads this file, so this one leaves it out WITHOUT
+   * disclosing it: `config.json` is read by the config walk, and counting it
+   * as a file the source walk "did not open" reported a scanned file as
+   * skipped (#124).
+   */
+  coveredElsewhere?(name: string, relFromRoot: string): boolean;
   /** What to push into `files` — an absolute path or a root-relative one. */
   collect(entryPath: string, relFromRoot: string): string;
   /**
@@ -1167,6 +1198,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (files.length >= maxFiles) { truncated = true; break; }
         queue.push({ dir: entryPath, ancestors: childAncestors });
       } else {
+        if (spec.coveredElsewhere?.(entry.name, relFromRoot)) continue;
         const rejectReason = spec.rejectFile(entry.name, relFromRoot);
         if (rejectReason) {
           if (spec.discloseSkips) {
@@ -1243,8 +1275,11 @@ function walkSourceFiles(
   maxFiles: number,
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
-): WalkResult {
-  return walkTree(dir, maxFiles, {
+  includeConfig = false,
+): WalkResult & { unscannedConfig: { count: number; files: string[] } } {
+  const configMatcher = buildConfigNameMatcher();
+  const unscannedConfig = { count: 0, files: [] as string[] };
+  const walk = walkTree(dir, maxFiles, {
     // Prune whole-tree ignored directories. The matcher's directory patterns
     // end with `/`, so we test the dir path with a trailing segment.
     // `.git` is tested BEFORE the build-output set purely so the disclosure
@@ -1257,11 +1292,29 @@ function walkSourceFiles(
       || (name.startsWith('.') && 'hidden directory')
       || (!includeTests && TEST_DIRS.has(name) && 'test directory (--include-tests)')
       || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule (--no-ignore)'),
-    rejectFile: (name, rel) =>
-      (!SOURCE_FILE_EXTENSIONS.has(path.extname(name)) && 'unsupported file type')
-      || (!(includeTests || !isTestFile(name)) && 'test file (--include-tests)')
-      || (!!(ignore && ignore.matches(rel)) && 'ignore rule (--no-ignore)'),
+    // The config walk reads these (it applies the ignore rule itself).
+    coveredElsewhere: (name, rel) =>
+      matchesConfigName(name, rel, configMatcher) && !(ignore && ignore.matches(rel)),
+    rejectFile: (name, rel) => {
+      // #124 — a config-format file off the CONFIG_FILES list was "unsupported
+      // file type" to this walk and unknown to the config walk: read by
+      // neither, and a clean scan said nothing. It now takes the test and
+      // ignore rules like a source file, then is scanned (--include-config) or
+      // reported as a boundary with its own reason.
+      const supported = SOURCE_FILE_EXTENSIONS.has(path.extname(name));
+      const configShaped = !supported && isConfigShaped(name);
+      if (!supported && !configShaped) return 'unsupported file type';
+      if (!(includeTests || !isTestFile(name))) return 'test file (--include-tests)';
+      if (ignore && ignore.matches(rel)) return 'ignore rule (--no-ignore)';
+      if (configShaped && !includeConfig) {
+        unscannedConfig.count++;
+        if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(rel);
+        return 'config file not on the built-in list (--include-config)';
+      }
+      return false;
+    },
     collect: (entryPath) => entryPath,
     discloseSkips: true,
   });
+  return { ...walk, unscannedConfig };
 }
