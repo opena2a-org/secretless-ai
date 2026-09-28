@@ -223,8 +223,10 @@ DEGRADED verdict appears (it edits real shell profiles).
 cd "$TMP" && git init -q
 $SL hook status                     # "Pre-commit hook: not installed" + install hint
 $SL hook install                    # "Pre-commit hook installed."; .git/hooks/pre-commit exists
+grep -c "npx --yes secretless-ai@$($SL --version | head -1 | awk '{print $2}') scan-staged --no-ignore" .git/hooks/pre-commit   # 1: pinned, offline, ignore file not honoured
 echo "const s = \"$PLANT\";" > staged.js && git add staged.js
 $SL scan-staged; echo "exit=$?"     # finds the planted credential, "Remove the secrets and try again.", non-zero exit
+(cd / && $SL scan-staged; echo "exit=$?")   # outside a repo: "could not list the staged files: not a git repository", exit 1 (never a clean 0)
 git rm --cached staged.js -q && rm staged.js
 $SL diff main 2>&1 | head -3        # in a repo with no secretless-managed changes: clean/empty audit
 cd / && $SL diff 2>&1 | head -3     # outside a repo: friendly "Not a git repository" + git init hint, no stack trace

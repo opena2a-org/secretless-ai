@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from './git-hook';
+import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled, installedHookVersion, hookScript } from './git-hook';
+import { VERSION } from './commands/utils';
 
 describe('git-hook', () => {
   let tmpDir: string;
@@ -26,8 +27,33 @@ describe('git-hook', () => {
       expect(fs.existsSync(hookPath)).toBe(true);
 
       const content = fs.readFileSync(hookPath, 'utf-8');
-      expect(content).toContain('secretless-ai');
-      expect(content).toContain('scan-staged');
+      expect(content).toBe(hookScript(VERSION));
+      expect(content).toContain(`npm_config_offline=true npx --yes secretless-ai@${VERSION} scan-staged --no-ignore`);
+      expect(installedHookVersion(tmpDir)).toBe(VERSION);
+    });
+
+    it('replaces an older unpinned secretless hook with the pinned body (#191)', () => {
+      const hooksDir = path.join(tmpDir, '.git', 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(hooksDir, 'pre-commit'),
+        '#!/bin/sh\n# secretless-ai pre-commit hook\nnpx secretless-ai scan-staged\n',
+      );
+      expect(isHookInstalled(tmpDir)).toBe(true);
+      expect(installedHookVersion(tmpDir)).toBeNull();
+
+      installPreCommitHook(tmpDir);
+      expect(installedHookVersion(tmpDir)).toBe(VERSION);
+    });
+
+    it('tells the owner of a foreign hook to append the pinned line (#191)', () => {
+      const hooksDir = path.join(tmpDir, '.git', 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+      fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\necho "custom hook"');
+
+      const result = installPreCommitHook(tmpDir);
+      expect(result.message).toContain(`npx --yes secretless-ai@${VERSION} scan-staged --no-ignore`);
+      expect(installedHookVersion(tmpDir)).toBeNull();
     });
 
     it('fails when not a git repo', () => {
