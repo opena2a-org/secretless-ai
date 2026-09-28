@@ -44,19 +44,6 @@ unsafe pattern characters no longer configures nothing while `init` exits 0,
 and the problem is reported even when Claude Code is not among the configured
 tools.
 
-**`scan` names config files it did not read, and `--include-config` reads
-them (#124).** The config walk matches file NAMES (`config.json`,
-`docker-compose.yml`) and the source walk matches source extensions, so
-`secrets.json`, `appsettings.json`, `values.yaml`, `app.toml`, `.npmrc` or a
-`Dockerfile` were read by neither, and a tree whose only key sat in one of them
-printed "No hardcoded credentials found." with nothing about the file. Such
-files are now a declared boundary: the text report names them with a `Fix:`
-and a `Scan one:` command, and `--json` carries `summary.unscannedConfig` and
-`unscannedConfigFiles`. Like the other boundaries it does not change the exit
-code. `scan --include-config` scans them with the source-file rules. Generated
-lockfiles are not counted. `summary.skippedUnsupported` no longer counts a
-config file the config walk did read.
-
 ## [0.23.0] - 2026-08-19
 
 The tool does what it says. Every change here is a case where a command accepted
