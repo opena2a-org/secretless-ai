@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `scan` opens source files whose extension is upper case (`Legacy.JS`,
+  `main.PY`). The source matcher compared extensions exactly, unlike the key-file
+  and config matchers, so those files were never read (#120).
+- `scan` recognises a real env file whatever the case of its name
+  (`.ENV.STAGING`, `.Env.Production`). Only the template marker was compared
+  case-insensitively, so templates were rejected in any case while real files
+  were recognised only in lower case (#120).
+- `scan` reports `truncated` only when a candidate file was dropped at the file
+  cap. A tree of exactly `--max-files` files plus an empty directory reported
+  "Scan incomplete" and exited 1 with nothing unscanned (#120).
+- A value flag given twice (`scan --max-files 10 --max-files 20000`,
+  `run --only A --only B`) is refused with both values named. The first value
+  used to win and the second was dropped silently (#120).
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now

@@ -443,3 +443,32 @@ describe('supportedFlags names only what the verb honors', () => {
     }
   });
 });
+
+// #120. A value flag given twice kept the first value and dropped the second
+// without a word, so `scan --max-files 10 --max-files 20000` scanned ten files
+// while the user read the second number. Every verb reads one value per flag,
+// so a repeat is refused rather than silently resolved either way.
+describe('a value flag given more than once is refused (#120)', () => {
+  it('refuses a repeated --max-files and names both values', () => {
+    const p = prepareArgv('scan', ['scan', '--max-files', '10', '--max-files', '20000']);
+    expect(p.errors).toHaveLength(1);
+    expect(p.errors[0]).toContain('--max-files');
+    expect(p.errors[0]).toContain('"10"');
+    expect(p.errors[0]).toContain('"20000"');
+  });
+
+  it('refuses a repeat across the spaced and = forms', () => {
+    const p = prepareArgv('run', ['run', '--only=A', '--only', 'B', '--', 'npm', 'test']);
+    expect(p.errors.some(e => e.includes('--only'))).toBe(true);
+  });
+
+  it('leaves a repeat after the -- separator to the child command', () => {
+    const p = prepareArgv('run', ['run', '--only', 'A', '--', 'tool', '--only', 'B']);
+    expect(p.errors).toHaveLength(0);
+  });
+
+  it('still accepts a value flag given once', () => {
+    const p = prepareArgv('scan', ['scan', '--max-files', '20000']);
+    expect(p.errors).toHaveLength(0);
+  });
+});
