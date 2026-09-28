@@ -175,6 +175,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
     flags: {
       '--history': false,
       '--include-tests': false,
+      '--include-config': false,
       '--explain': false,
       '--no-ignore': false,
       '--show-placeholders': false,
