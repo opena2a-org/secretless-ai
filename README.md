@@ -166,7 +166,7 @@ npx secretless-ai status --json                # protection state for CI (gate o
 
 A scan that could not read everything is not a passing scan. If the walk stops at the file cap, or a path cannot be opened, `scan` prints what it missed, exits 1, and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`. In `--json`, `summary.truncated` and `summary.unreadable` carry the same signal, so CI can tell "clean" from "unfinished".
 
-**Two kinds of gap, and only one of them gates.** A gap against a claim the scanner made -- it said it would read something and did not -- sets exit 1: `truncated`, `unreadable`, `oversize`. A boundary the scanner declared and never claimed to cross does not: `outOfRoot`, `skippedUnsupported` (files enumerated but not opened, such as a `.png` or a `.md`), and `notEntered` (directories not descended into, such as `node_modules/` or any dot-directory). The second group is reported, sampled and given the command that scans it, but it does not fail your build -- every repository contains at least one of them, so gating on it would fail every build. If you want a declared boundary to gate, test it yourself: `jq -e '.summary.notEntered == 0'`.
+**Two kinds of gap, and only one of them gates.** A gap against a claim the scanner made -- it said it would read something and did not -- sets exit 1: `truncated`, `unreadable`, `oversize`. A boundary the scanner declared and never claimed to cross does not: `outOfRoot`, `skippedUnsupported` (files enumerated but not opened, such as a `.png` or a `.md`), `notEntered` (directories not descended into, such as `node_modules/` or any dot-directory), and `unscannedConfig` (config-format files whose names are not on the built-in list, such as `secrets.json`, `.npmrc` or `values.yaml`; `scan --include-config` reads them). The second group is reported, sampled and given the command that scans it, but it does not fail your build -- every repository contains at least one of them, so gating on it would fail every build. If you want a declared boundary to gate, test it yourself: `jq -e '.summary.notEntered == 0'`.
 
 Dot-directories are among the `notEntered` group, and that includes `.claude/`. Config files and key files inside them are still scanned; source files inside them are not. See issue #144.
 
@@ -194,7 +194,8 @@ npx secretless-ai clean --dryrun --path ./transcripts
 npx secretless-ai scan --json | jq '.summary'
 # { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
 #   "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0,
-#   "oversize": 0, "skippedUnsupported": 0, "notEntered": 0 }
+#   "oversize": 0, "skippedUnsupported": 0, "notEntered": 0,
+#   "unscannedConfig": 0 }
 ```
 
 ## Architecture

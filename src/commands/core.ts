@@ -256,10 +256,11 @@ export function parseFileSize(input: string): number | null {
   return Math.floor(value * mult);
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; includeConfig?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
   const scanOpts = {
     includeTests: options?.includeTests,
+    includeConfig: options?.includeConfig,
     // `noIgnore` disables BOTH the user `.secretlessignore` and the
     // default-ignore list. Used when a user wants to see every finding,
     // including known-fixture noise.
@@ -282,6 +283,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     const stats = {
       placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
       oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
+      unscannedConfig: { count: 0, files: [] as string[] },
     };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
@@ -309,6 +311,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         // explicitly.
         skippedUnsupported: stats.skips.fileCount,
         notEntered: stats.skips.dirCount,
+        // #124 — config-format files no walk read (`secrets.json`, `.npmrc`,
+        // `values.yaml`). The same declared-boundary class, and the field a CI
+        // job gates on when it wants them read: `--include-config` scans them.
+        unscannedConfig: stats.unscannedConfig.count,
       },
       unreadableFiles: stats.unreadable,
       outOfRootLinks: stats.outOfRoot,
@@ -318,6 +324,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       // is not something a human can act on without knowing which 171.
       skippedUnsupportedFiles: stats.skips.files,
       notEnteredDirs: stats.skips.dirs,
+      unscannedConfigFiles: stats.unscannedConfig.files,
     }, null, 2));
     // An incomplete scan is not a pass. `total: 0` with `truncated: true`, an
     // unreadable file, or a file skipped for size means part of the tree was
@@ -339,6 +346,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   const stats = {
     placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
     oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
+    unscannedConfig: { count: 0, files: [] as string[] },
   };
   const findings = scan(projectDir, scanOpts, stats);
 
@@ -411,6 +419,21 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.log(`  ${c.dim('The cap bounds memory use; it says nothing about the contents.')}`);
       console.log(`  ${c.cyan('Verify:')} head -c 4096 ${runnable(stats.oversize[0].path)}`);
       console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-file-size ${Math.ceil(stats.oversize[0].bytes / (1024 * 1024)) + 1}mb\n`);
+    }
+
+    // #124 — a config-format file whose name is not on the built-in list was
+    // read by no walk, and a clean scan said nothing: `secrets.json` beside a
+    // scanned `config.json`. Named, with the flag that reads them and the
+    // command that reads one. A boundary, so it does not change the exit code.
+    if (stats.unscannedConfig.count > 0) {
+      const n = stats.unscannedConfig.count;
+      console.log(`  ${c.boldYellow(`${n} config file${n > 1 ? 's' : ''} not scanned`)} — ${n > 1 ? 'their names are' : 'its name is'} not on the built-in config list, so not known to be clean.`);
+      for (const f of stats.unscannedConfig.files.slice(0, 10)) {
+        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
+      }
+      if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      console.log(`  ${c.cyan('Fix:')}      npx secretless-ai scan ${runnable('.')} --include-config`);
+      console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(stats.unscannedConfig.files[0])}\n`);
     }
 
     // Declared boundaries. Reported in the same place as the gaps above and
