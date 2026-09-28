@@ -282,6 +282,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     const stats = {
       placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
       oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
+      confidenceSuppressed: 0,
     };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
@@ -294,6 +295,12 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         critical,
         high: findings.length - critical,
         placeholdersSuppressed: stats.placeholdersSuppressed,
+        // What --min-confidence removed. A filtered finding is not a clean
+        // file, so `total: 0` must not be the only thing a consumer sees when
+        // the filter hid every match (#125). Like placeholders, the user asked
+        // for the filter, so it does not set the exit code.
+        minConfidence: options?.minConfidence ?? 0,
+        confidenceSuppressed: stats.confidenceSuppressed,
         // A machine consumer must be able to tell "clean" from "unfinished".
         truncated: stats.truncated,
         maxFiles: capUsed,
@@ -339,8 +346,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   const stats = {
     placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
     oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
+    confidenceSuppressed: 0,
   };
   const findings = scan(projectDir, scanOpts, stats);
+  const minConfidence = options?.minConfidence ?? 0;
 
   // Coverage-gap paths are reported relative to the SCAN ROOT, which is not the
   // shell's cwd when a path argument was given. Printing them bare produced a
@@ -459,6 +468,17 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     }
   };
 
+  // Same disclosure for the --min-confidence filter. Without it, a threshold
+  // that hid every match printed "No hardcoded credentials found." over a repo
+  // holding a credential (#125).
+  const confidenceHint = () => {
+    if (stats.confidenceSuppressed > 0) {
+      const n = stats.confidenceSuppressed;
+      console.log(`  ${c.dim(`${n} match${n > 1 ? 'es' : ''} scored below --min-confidence ${minConfidence} and ${n > 1 ? 'were' : 'was'} hidden.`)}`);
+      console.log(`  ${c.dim(`See ${n > 1 ? 'them' : 'it'}: npx secretless-ai scan ${runnable('.')}`)}\n`);
+    }
+  };
+
   if (findings.length === 0) {
     if (anyCoverageGap()) {
       // Deliberately NOT "No hardcoded credentials found" — nothing was found in
@@ -466,14 +486,20 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.log('  No credentials found in the files scanned.\n');
       coverageWarnings();
       placeholderHint();
+      confidenceHint();
       return 1;
     }
-    console.log('  No hardcoded credentials found.\n');
+    // With matches filtered out, "no credentials" is not the claim we can make;
+    // "none at or above the threshold you set" is.
+    console.log(stats.confidenceSuppressed > 0
+      ? `  No credentials found at or above confidence ${minConfidence}.\n`
+      : '  No hardcoded credentials found.\n');
     // Still report a boundary we chose not to cross. The result IS clean for the
     // tree we claimed to scan, so this stays exit 0 — but a link we declined to
     // follow must be visible, or declining becomes its own silent gap.
     coverageWarnings();
     placeholderHint();
+    confidenceHint();
     console.log('  Verify keys are working: npx secretless-ai verify\n');
     return 0;
   }
@@ -482,12 +508,14 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   if (options?.explain) {
     const code = await runScanWithExplanations(findings);
     coverageWarnings();
+    confidenceHint();
     return code;
   }
 
   printFindings(findings);
   coverageWarnings();
   placeholderHint();
+  confidenceHint();
   return 1;
 }
 
@@ -591,7 +619,22 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
   return findings.length > 0 ? 1 : 0;
 }
 
+/**
+ * Refuse a target directory that does not exist, with the same message and
+ * exit code as `scan`. `status` and `verify` used to answer anyway: a typo in
+ * a CI path produced a clean verdict and exit 0 over a directory nobody read
+ * (#125). Errors go to stderr, so `status --json` keeps stdout empty.
+ */
+function refuseMissingDir(projectDir: string): boolean {
+  const nodeFs = require('fs') as typeof import('fs');
+  if (nodeFs.existsSync(projectDir)) return false;
+  console.error(`  Directory not found: ${projectDir}`);
+  console.error('  Check the path and try again.\n');
+  return true;
+}
+
 export async function runStatus(projectDir: string, options?: { json?: boolean }): Promise<number> {
+  if (refuseMissingDir(projectDir)) return 1;
   const s = await status(projectDir);
   const session = getSessionStatus();
   const brokerStatus = getDaemonStatus();
@@ -804,6 +847,7 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
 }
 
 export function runVerify(projectDir: string, showAll = false): number {
+  if (refuseMissingDir(projectDir)) return 1;
   console.log(`\n  ${c.boldWhite('Secretless Verify')}\n`);
 
   // Scope disclosure: verify spans more than the current project — it reads the
