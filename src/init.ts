@@ -549,6 +549,11 @@ function configureAider(projectDir: string, result: InitResult): void {
 
 const SECRETLESS_MARKER = '<!-- secretless:managed -->';
 
+// The "Command output is not guarded" paragraph is the documented floor for the
+// channel no layer here covers (#129): every guard arm matches the command text
+// or a local path before the command runs, and no hook reads tool output, so a
+// credential returned by a provider API reaches context unchecked. It is an
+// instruction to the assistant, not an enforced control, and says so.
 function buildSecretlessInstructions(): string {
   // Detect which env vars are actually set
   const availableKeys: string[] = [];
@@ -586,6 +591,8 @@ ${keyTable}
 1. Reference it via \`$VAR_NAME\` in shell commands or \`process.env.VAR_NAME\` in code
 2. Never hardcode credentials in source files
 3. Never print or echo key values — only reference them as variables
+
+**Command output is not guarded.** The guard checks a command before it runs and cannot see what the command prints. A command that returns credential values (\`aws secretsmanager get-secret-value\`, \`kubectl get secret -o yaml\`, a provider API that returns keys or environment variable values) puts them into this conversation, and nothing here blocks it. Do not run one to look at a credential; read only the named, non-secret fields you need (\`--query\`, \`jq\`) instead of dumping whole objects.
 
 **If you find a hardcoded credential:**
 1. Replace it with an environment variable reference

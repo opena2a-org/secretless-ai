@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- The instructions `init` writes into `CLAUDE.md` and the other tools' rule
+  files state that command output is not guarded. A command that returns
+  credential values (`aws secretsmanager get-secret-value`,
+  `kubectl get secret -o yaml`, a provider API) puts them into the
+  conversation, and no layer checks it. The README says the same under
+  "What the guard cannot see". Existing installs keep their block until it is
+  removed and `init` is run again (#129).
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
