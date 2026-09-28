@@ -168,9 +168,16 @@ export async function runCleanHistory(dryRun: boolean): Promise<number> {
 
   try {
     const result = await cleanHistory(dryRun);
-    console.log(`  Files scanned:  ${result.filesScanned}`);
-    console.log(`  Files modified: ${result.filesModified}`);
-    console.log(`  Lines redacted: ${result.linesRedacted}`);
+    // A dry run writes nothing, so it reports what would change.
+    if (dryRun) {
+      console.log(`  Files scanned:                ${result.filesScanned}`);
+      console.log(`  Files that would change:      ${result.filesModified}`);
+      console.log(`  Lines that would be redacted: ${result.linesRedacted}`);
+    } else {
+      console.log(`  Files scanned:  ${result.filesScanned}`);
+      console.log(`  Files modified: ${result.filesModified}`);
+      console.log(`  Lines redacted: ${result.linesRedacted}`);
+    }
 
     if (result.backupPaths.length > 0) {
       console.log('\n  Backups created:');
