@@ -1,4 +1,4 @@
-import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from '../git-hook';
+import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled, installedHookVersion } from '../git-hook';
 import { scanStagedFiles } from '../scan-staged';
 import { runHookCheck } from '../session/hook';
 
@@ -32,6 +32,9 @@ export function runHook(args: string[]): number {
       console.log(`\n  Pre-commit hook: ${installed ? 'installed' : 'not installed'}`);
       if (!installed) {
         console.log('  Install: npx secretless-ai hook install');
+      } else if (installedHookVersion(projectDir) === null) {
+        // An older hook body runs `npx secretless-ai scan-staged` unpinned.
+        console.log('  This hook runs an unpinned scanner. Update it: npx secretless-ai hook install');
       }
       console.log();
       return 0;
@@ -50,15 +53,36 @@ export function runHook(args: string[]): number {
 
 export function runScanStaged(args: string[] = []): number {
   const noIgnore = args.includes('--no-ignore');
-  const { findings, blockedFiles } = scanStagedFiles({ noIgnore });
-  const total = findings.length + blockedFiles.length;
+  const allowUnscanned = args.includes('--allow-unscanned');
+  const { findings, blockedFiles, unscannedFiles, error } = scanStagedFiles({ noIgnore });
 
-  if (total === 0) {
+  if (error) {
+    // Nothing was scanned, so there is no clean result to report.
+    console.error(`\n  secretless: Blocked commit — ${error}\n`);
+    console.error('  To bypass: git commit --no-verify\n');
+    return 1;
+  }
+
+  const total = findings.length + blockedFiles.length;
+  const blockOnUnscanned = unscannedFiles.length > 0 && !allowUnscanned;
+
+  if (total === 0 && !blockOnUnscanned) {
+    if (unscannedFiles.length > 0) {
+      console.error('\n  secretless: Not scanned (--allow-unscanned):');
+      for (const u of unscannedFiles) {
+        console.error(`    - ${u.file} (${u.reason})`);
+      }
+      console.error();
+    }
     // Clean — allow commit
     return 0;
   }
 
-  console.error('\n  secretless: Blocked commit — secrets detected\n');
+  console.error(
+    total > 0
+      ? '\n  secretless: Blocked commit — secrets detected\n'
+      : '\n  secretless: Blocked commit — staged files could not be scanned\n',
+  );
 
   if (blockedFiles.length > 0) {
     console.error('  Secret files staged for commit:');
@@ -76,7 +100,20 @@ export function runScanStaged(args: string[] = []): number {
     console.error();
   }
 
-  console.error('  Remove the secrets and try again.');
+  if (unscannedFiles.length > 0) {
+    console.error(allowUnscanned ? '  Not scanned (--allow-unscanned):' : '  Staged files that could not be scanned:');
+    for (const u of unscannedFiles) {
+      console.error(`    ${allowUnscanned ? '-' : '!'} ${u.file} (${u.reason})`);
+    }
+    console.error();
+  }
+
+  if (total > 0) {
+    console.error('  Remove the secrets and try again.');
+  }
+  if (blockOnUnscanned) {
+    console.error('  Review the unscanned files by hand. To let them through, add --allow-unscanned to the scan-staged command.');
+  }
   console.error('  To bypass: git commit --no-verify\n');
   return 1;
 }

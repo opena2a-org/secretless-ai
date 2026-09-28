@@ -193,9 +193,12 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   // CLEAN staged set: `scan-staged --no-ignoree` exited 0 with EMPTY stdout and
   // the warning on stderr — the one stream a git hook reliably swallows. It has
   // no `--json` channel, so an exit code is the only signal that path has.
-  // (Our own installed hook body passes no flags — `git-hook.ts:19` — so this
-  // cannot refuse an existing installation under version skew.)
-  'scan-staged': { flags: { '--no-ignore': false }, unknownFlags: 'reject' },
+  // (An installed hook body is pinned to the version that wrote it, and older
+  // unpinned bodies pass no flags, so this cannot refuse an existing
+  // installation under version skew.)
+  // `--allow-unscanned` lets a file that could not be read (over 5 MB, a git
+  // error) pass with a warning; without it such a file blocks the commit.
+  'scan-staged': { flags: { '--no-ignore': false, '--allow-unscanned': false }, unknownFlags: 'reject' },
   'scan-history': { flags: {}, unknownFlags: 'reject' },
   // EXCEPTION, and a deliberately temporary one. By the verdict test this
   // belongs on `reject`, but its sibling defect (clean-over-unparsed) is

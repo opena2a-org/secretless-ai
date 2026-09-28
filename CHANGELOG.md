@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+**The pre-commit hook and `scan-staged` fail closed (#191).** The hook that
+`hook install` writes now runs
+`npm_config_offline=true npx --yes secretless-ai@<version> scan-staged --no-ignore`:
+pinned to the version that installed it, from the npm cache only, and without
+`.secretlessignore`. Before, it ran an unpinned `npx secretless-ai scan-staged`,
+so a `secretless-ai` binary in an ancestor directory's `node_modules/.bin` or a
+global install answered for it (a planted stub passed the commit), and a
+committed `*` in `.secretlessignore` switched it off. If the pinned version is
+not in the npm cache, the hook blocks and prints the command that caches it.
+Re-run `hook install` to replace an existing hook; `hook status` names an
+unpinned one.
+
+`scan-staged` no longer reports a clean result over work it did not do: a
+staged set that cannot be listed exits 1, and a staged file it cannot read
+(over 5 MB, or a git error) is listed and blocks the commit unless
+`--allow-unscanned` is passed. Lines over 4096 characters are scanned in
+overlapping windows instead of being skipped. Staged paths are read
+NUL-separated, so a non-ASCII file name is matched and scanned instead of
+being quoted past every pattern; submodule pointers are not treated as files.
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now

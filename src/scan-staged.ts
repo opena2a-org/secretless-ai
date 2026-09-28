@@ -25,28 +25,89 @@ interface StagedFinding {
   patternName: string;
 }
 
+export interface UnscannedFile {
+  file: string;
+  reason: string;
+}
+
+export interface ScanStagedResult {
+  findings: StagedFinding[];
+  blockedFiles: string[];
+  /** Staged files whose content could not be read, so were not scanned. */
+  unscannedFiles: UnscannedFile[];
+  /** Set when the staged set could not be listed: nothing was scanned. */
+  error?: string;
+}
+
+/** Largest staged file read for scanning. */
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** Longest text handed to one pattern match (ReDoS bound). */
+const MAX_WINDOW = 4096;
 /**
- * Scan staged files for secrets. Returns findings and exit code.
+ * Overlap between consecutive windows of a longer line. A credential no longer
+ * than this lies wholly inside one window, so a long line (a minified bundle,
+ * inline data) is scanned in pieces rather than skipped.
  */
-export function scanStagedFiles(options?: ScanStagedOptions): { findings: StagedFinding[]; blockedFiles: string[] } {
+const WINDOW_OVERLAP = 1024;
+
+function lineWindows(line: string): string[] {
+  if (line.length <= MAX_WINDOW) return [line];
+  const windows: string[] = [];
+  for (let start = 0; ; start += MAX_WINDOW - WINDOW_OVERLAP) {
+    windows.push(line.slice(start, start + MAX_WINDOW));
+    if (start + MAX_WINDOW >= line.length) break;
+  }
+  return windows;
+}
+
+function gitErrorDetail(err: unknown): string {
+  const stderr = (err as { stderr?: unknown })?.stderr;
+  const text = (typeof stderr === 'string' ? stderr : Buffer.isBuffer(stderr) ? stderr.toString('utf-8') : '')
+    || (err instanceof Error ? err.message : String(err));
+  return text.trim().split('\n')[0] || 'unknown error';
+}
+
+/**
+ * Scan staged files for secrets.
+ *
+ * Fails closed: a staged set that cannot be listed comes back as `error`, and
+ * a file that cannot be read comes back in `unscannedFiles`, never as a clean
+ * result.
+ */
+export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
   const findings: StagedFinding[] = [];
   const blockedFiles: string[] = [];
+  const unscannedFiles: UnscannedFile[] = [];
 
-  // Get list of staged files
+  // Get list of staged files. -z: without it git quotes any path with a
+  // non-ASCII byte ("caf\303\251.env"), and the quoted name matches no pattern
+  // and cannot be read. Submodule entries are commit pointers with no content.
   let stagedFiles: string[];
   try {
-    const output = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMR'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    stagedFiles = output.trim().split('\n').filter(Boolean);
-  } catch {
-    // Not in a git repo or no staged files
-    return { findings, blockedFiles };
+    const output = execFileSync(
+      'git',
+      ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR', '--ignore-submodules=all'],
+      {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+    stagedFiles = output.split('\0').filter(Boolean);
+  } catch (err) {
+    // Outside a repository `git diff` falls back to --no-index mode and
+    // rejects --cached, which says nothing useful to the reader.
+    const detail = gitErrorDetail(err);
+    const notRepo = /not a git repository|unknown option `cached'/i.test(detail);
+    return {
+      findings,
+      blockedFiles,
+      unscannedFiles,
+      error: `could not list the staged files: ${notRepo ? 'not a git repository' : detail}`,
+    };
   }
 
   if (stagedFiles.length === 0) {
-    return { findings, blockedFiles };
+    return { findings, blockedFiles, unscannedFiles };
   }
 
   // Resolve ignore matcher. Priority:
@@ -116,41 +177,44 @@ export function scanStagedFiles(options?: ScanStagedOptions): { findings: Staged
       continue;
     }
 
-    // Skip binary files and very large files
     let content: string;
     try {
       content = execFileSync('git', ['show', `:${file}`], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
-        maxBuffer: 5 * 1024 * 1024,
+        maxBuffer: MAX_FILE_BYTES,
       });
-    } catch {
-      continue; // Skip files that can't be read (binary, deleted, etc.)
+    } catch (err) {
+      const tooLarge = (err as NodeJS.ErrnoException)?.code === 'ENOBUFS';
+      unscannedFiles.push({
+        file,
+        reason: tooLarge ? 'larger than 5 MB' : `could not be read: ${gitErrorDetail(err)}`,
+      });
+      continue;
     }
 
     const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line.length > 4096) continue; // ReDoS protection
+    lineLoop: for (let i = 0; i < lines.length; i++) {
+      for (const segment of lineWindows(lines[i])) {
+        // Skip env var references
+        if (/\$\{[A-Z_]+\}/.test(segment) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(segment)) {
+          continue;
+        }
 
-      // Skip env var references
-      if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) {
-        continue;
-      }
+        for (const pattern of CREDENTIAL_PATTERNS) {
+          const match = findRealMatch(segment, pattern);
+          if (!match) continue;
 
-      for (const pattern of CREDENTIAL_PATTERNS) {
-        const match = findRealMatch(line, pattern);
-        if (!match) continue;
-
-        findings.push({
-          file,
-          line: i + 1,
-          patternName: pattern.name,
-        });
-        break; // One finding per line
+          findings.push({
+            file,
+            line: i + 1,
+            patternName: pattern.name,
+          });
+          continue lineLoop; // One finding per line
+        }
       }
     }
   }
 
-  return { findings, blockedFiles };
+  return { findings, blockedFiles, unscannedFiles };
 }
