@@ -59,6 +59,14 @@ describe('pre-commit hook body (#191)', () => {
     expect(body).not.toMatch(/^npx secretless-ai scan-staged/m);
     expect(hookScript()).toContain(`secretless-ai@${VERSION} scan-staged`);
   });
+
+  it('refuses a version that is not an exact semver string instead of writing it into the script', () => {
+    expect(hookCommand('1.2.3-rc.1')).toContain('secretless-ai@1.2.3-rc.1 scan-staged');
+    for (const bad of ['1.0.0; touch pwned #', '$(id)', 'latest', '^1.2.3', '1.2', '']) {
+      expect(() => hookCommand(bad)).toThrow(/not an exact semver version/);
+      expect(() => hookScript(bad)).toThrow(/not an exact semver version/);
+    }
+  });
 });
 
 describe('pre-commit gate fails closed (#191)', () => {

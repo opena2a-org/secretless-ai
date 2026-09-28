@@ -25,7 +25,19 @@ const HOOK_MARKER = '# secretless-ai pre-commit hook';
  * `*` pattern would switch the hook off. The hook scans without it.
  */
 export function hookCommand(version: string = VERSION): string {
-  return `npm_config_offline=true npx --yes secretless-ai@${version} scan-staged --no-ignore`;
+  return `npm_config_offline=true npx --yes secretless-ai@${pinnableVersion(version)} scan-staged --no-ignore`;
+}
+
+/**
+ * The version is written into a shell script, so only a plain semver string is
+ * accepted; anything else (a range, a tag, shell syntax) is refused rather
+ * than quoted.
+ */
+function pinnableVersion(version: string): string {
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error(`Refusing to pin the pre-commit hook to "${version}": not an exact semver version.`);
+  }
+  return version;
 }
 
 /**
@@ -34,7 +46,7 @@ export function hookCommand(version: string = VERSION): string {
  * start at all and, if not, prints the one command that caches it.
  */
 export function hookScript(version: string = VERSION): string {
-  const pinned = `secretless-ai@${version}`;
+  const pinned = `secretless-ai@${pinnableVersion(version)}`;
   return `#!/bin/sh
 ${HOOK_MARKER}
 # Automatically scans staged files for hardcoded secrets.
