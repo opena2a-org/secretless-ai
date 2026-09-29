@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { scanStagedFiles } from './scan-staged';
+import { runScanStaged } from './commands/git';
 import { buildMatcher } from './secretlessignore';
 
 // Mock child_process to avoid requiring a real git repo
@@ -56,9 +57,11 @@ describe('scanStagedFiles', () => {
     const result = scanStagedFiles();
     expect(result.findings).toEqual([]);
     expect(result.blockedFiles).toEqual([]);
+    // An empty index is a clean answer, not a failure to answer.
+    expect(result.notARepo).toBeUndefined();
   });
 
-  it('handles git command failure gracefully', () => {
+  it('reports a git failure as notARepo instead of an empty clean result (#125)', () => {
     mockExecFileSync.mockImplementation(() => {
       throw new Error('not a git repo');
     });
@@ -66,6 +69,7 @@ describe('scanStagedFiles', () => {
     const result = scanStagedFiles();
     expect(result.findings).toEqual([]);
     expect(result.blockedFiles).toEqual([]);
+    expect(result.notARepo).toBe(true);
   });
 
   it('detects key files (*.pem, *.key)', () => {
@@ -170,5 +174,32 @@ describe('scanStagedFiles', () => {
     const result = scanStagedFiles();
     expect(result.findings.length).toBeGreaterThan(0);
     expect(result.findings[0].patternName).toBe('AWS Access Key');
+  });
+});
+
+// #125: outside a repository, `scan-staged` wrote nothing and exited 0, which
+// is indistinguishable from "staged files scanned, nothing found".
+describe('runScanStaged outside a git repository', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('says so and exits 2, the same as diff', () => {
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error('fatal: not a git repository');
+    });
+    const err: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { err.push(a.map(String).join(' ')); });
+    try {
+      expect(runScanStaged()).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(err.join('\n')).toContain('Not a git repository');
+  });
+
+  it('still exits 0 on an empty index inside a repository', () => {
+    mockExecFileSync.mockImplementation(() => '');
+    expect(runScanStaged()).toBe(0);
   });
 });
