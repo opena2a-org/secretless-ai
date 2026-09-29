@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+**Three commands no longer report a clean result over work they did not do
+(#125).** `status <dir>` and `verify <dir>` on a directory that does not exist
+now print `Directory not found: <dir>` on stderr and exit 1, the same as
+`scan`. Before, both printed a clean verdict (`verify` printed PASS) and
+exited 0, so a typo in a CI path produced a green check over nothing.
+`scan-staged` outside a git repository now says `Not a git repository` and
+exits 2, the same as `diff`; before, it printed nothing and exited 0, which
+reads the same as "staged files scanned, nothing found". An empty index inside
+a repository still exits 0. `scan --min-confidence <n>` now reports what the
+filter removed: the `--json` summary carries `minConfidence` and
+`confidenceSuppressed`, and the human report says how many matches scored
+below the threshold and prints the command that shows them. When the filter
+hid every match, the report reads `No credentials found at or above confidence
+<n>.` instead of `No hardcoded credentials found.` The filter still does not
+set the exit code, the same as placeholder suppression, because the user asked
+for it.
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
