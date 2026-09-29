@@ -402,6 +402,21 @@ function prepareWithSpec(
   const warnings: string[] = [];
   const errors: string[] = [];
   const unknown: string[] = [];
+  // Value flags already given, with the value each carried. Every verb reads
+  // one value per flag, so a second one was dropped without a word:
+  // `scan --max-files 10 --max-files 20000` scanned ten files (#120).
+  const given = new Map<string, string>();
+  const takeValue = (name: string, value: string): void => {
+    const previous = given.get(name);
+    if (previous !== undefined) {
+      errors.push(
+        `${name} was given more than once ("${previous}" and "${value}"); ` +
+        'only one value can apply, so give it once.',
+      );
+      return;
+    }
+    given.set(name, value);
+  };
 
   for (let i = 0; i < head.length; i++) {
     const token = head[i];
@@ -456,6 +471,7 @@ function prepareWithSpec(
         // `--only=` (empty) is the flag WITH an empty value, not the flag
         // absent. That distinction is load-bearing: `--only ''` fails closed
         // downstream while a missing `--only` injects everything (#110).
+        takeValue(name, inline);
         out.push(name, inline);
         continue;
       }
@@ -464,6 +480,7 @@ function prepareWithSpec(
         out.push(token);
         continue;
       }
+      takeValue(name, head[i + 1]);
       out.push(name, head[i + 1]);
       // Consumed, so the value can never be re-read as a flag or a positional.
       i++;

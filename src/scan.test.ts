@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { isKnownExample, findRealMatch, scan, fixFor } from './scan';
+import { isKnownExample, findRealMatch, scan, fixFor, isEnvFile } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { buildMatcher, loadSecretlessIgnore } from './secretlessignore';
 
@@ -1229,5 +1229,108 @@ describe('scan() — files skipped for size are reported, not dropped (#120)', (
     expect(findings.some(f => f.patternId === 'google')).toBe(false);
     expect(stats.oversize.map(o => o.path)).toContain('config.json');
     expect(stats.oversize[0].capBytes).toBe(64);
+  });
+});
+
+// #120, the matchers. 0.21.2 made config FILENAMES case-insensitive because on
+// macOS and Windows two spellings are one file; two neighbours did not move.
+// Source extensions stayed exact, so `Legacy.JS` was never opened (measured: 0
+// of 22 upper-case-extension files scanned), and env-file recognition compared
+// the `.env.` prefix exactly, so a real `.ENV.STAGING` was skipped while its
+// template twin was already rejected case-insensitively.
+describe('scan() — matchers ignore case the way the filesystem does (#120)', () => {
+  const GOOGLE_KEY = ['AIzaSy', 'D-1234567890abcdefghijklmnopqrstuv'].join('');
+
+  it('scans a source file whose extension is upper case', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-ext-case-'));
+    fs.writeFileSync(path.join(dir, 'Legacy.JS'), `const k = "${GOOGLE_KEY}";\n`);
+
+    const findings = scan(dir, { scanGlobal: false });
+
+    expect(findings.some(f => f.patternId === 'google' && f.file.endsWith('Legacy.JS'))).toBe(true);
+  });
+
+  it('recognises a real env file whatever the case of its name', () => {
+    for (const name of ['.ENV', '.ENV.STAGING', '.Env.Production']) {
+      expect(isEnvFile(name)).toBe(true);
+    }
+  });
+
+  it('still treats a committed template as a template whatever its case', () => {
+    for (const name of ['.ENV.EXAMPLE', '.Env.Sample', '.env.TEMPLATE']) {
+      expect(isEnvFile(name)).toBe(false);
+    }
+  });
+
+  it('scans a real env file whose name is not lower case', () => {
+    // One directory per spelling: on a case-insensitive filesystem the two
+    // names are the same file.
+    for (const name of ['.ENV.STAGING', '.Env.Production']) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-env-case-'));
+      fs.writeFileSync(path.join(dir, name), `GOOGLE_API_KEY=${GOOGLE_KEY}\n`);
+
+      const findings = scan(dir, { scanGlobal: false });
+
+      expect(findings.some(f => f.patternId === 'google'), name).toBe(true);
+    }
+  });
+});
+
+// #120, the cap. `truncated` is a claim about FILES — a candidate the walk
+// dropped — but it was set whenever the cap was reached with anything left in
+// the queue, so a tree with exactly `maxFiles` files plus one empty directory
+// reported "Scan incomplete" and exited 1 though nothing went unscanned.
+describe('scan() — truncated means a candidate file was dropped (#120)', () => {
+  function freshStats() {
+    return {
+      placeholdersSuppressed: 0, truncated: false,
+      unreadable: [] as string[], outOfRoot: [] as string[],
+    };
+  }
+
+  function projectWith(files: string[], dirs: string[] = []): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-cap-'));
+    for (const d of dirs) fs.mkdirSync(path.join(dir, d), { recursive: true });
+    for (const f of files) {
+      fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+      fs.writeFileSync(path.join(dir, f), 'const x = 1;\n');
+    }
+    return dir;
+  }
+
+  it('does not report truncation when only an empty directory is left at the cap', () => {
+    const dir = projectWith(['a.js', 'b.js'], ['zzz']);
+    const stats = freshStats();
+
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+
+    expect(stats.truncated).toBe(false);
+  });
+
+  it('does not report truncation when the directories left hold no candidate', () => {
+    const dir = projectWith(['a.js', 'b.js', 'docs/readme.txt'], ['zzz/deeper']);
+    const stats = freshStats();
+
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+
+    expect(stats.truncated).toBe(false);
+  });
+
+  it('reports truncation when a candidate beside the others is dropped', () => {
+    const dir = projectWith(['a.js', 'b.js', 'c.js']);
+    const stats = freshStats();
+
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+
+    expect(stats.truncated).toBe(true);
+  });
+
+  it('reports truncation when the dropped candidate is in a later directory', () => {
+    const dir = projectWith(['a.js', 'b.js', 'zzz/c.js']);
+    const stats = freshStats();
+
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+
+    expect(stats.truncated).toBe(true);
   });
 });
