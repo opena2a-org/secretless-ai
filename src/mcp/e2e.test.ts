@@ -218,4 +218,22 @@ describe('MCP Protection E2E', () => {
     expect(cursorConfig.mcpServers.filesystem.command).toBe('npx');
     expect(cursorConfig.mcpServers.filesystem.env.ROOT_DIR).toBe('/home/user');
   });
+
+  // #138: MCP configs point at the installed copy, which does not update with
+  // the package, so the copy itself must be able to say which build it is.
+  it('the installed wrapper copy reports the package version', async () => {
+    const wrapper = installWrapper(dataDir);
+    const out = await new Promise<{ code: number; stdout: string }>((resolve) => {
+      const proc = spawn(process.execPath, [wrapper.args[0], '--version'], {
+        env: { ...process.env, HOME: homeDir },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      proc.on('close', (code) => resolve({ code: code ?? 1, stdout }));
+    });
+    const version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8')).version;
+    expect(out.code).toBe(0);
+    expect(out.stdout.trim()).toBe(`secretless-mcp ${version}`);
+  });
 });

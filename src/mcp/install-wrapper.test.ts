@@ -74,6 +74,14 @@ describe('installWrapper', () => {
     expect(result.command).toBe(process.execPath);
     expect(secondContent).toBe(firstContent);
   });
+
+  // #138: the copy has no package.json above it, so the version it was copied
+  // from is recorded beside it for `secretless-mcp --version` to read.
+  it('records the package version beside the copied wrapper', () => {
+    installWrapper(dir);
+    const recorded = JSON.parse(fs.readFileSync(path.join(dir, 'bin', 'wrapper-version.json'), 'utf-8'));
+    expect(recorded).toEqual({ name: 'secretless-ai', version: JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8')).version });
+  });
 });
 
 describe('getWrapperCommand', () => {

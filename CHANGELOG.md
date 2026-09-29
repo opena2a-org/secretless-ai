@@ -19,6 +19,21 @@ hid every match, the report reads `No credentials found at or above confidence
 set the exit code, the same as placeholder suppression, because the user asked
 for it.
 
+**`secretless-mcp` reports its version, and refuses a server name it has no
+secrets for (#138).** `secretless-mcp --version` (or `-v`) prints
+`secretless-mcp <version>` and exits 0; it printed the usage line and exited
+1. `protect-mcp` runs MCP servers through a copy of the wrapper under
+`~/.secretless-ai/bin`, which does not update when the package does, so the
+copy now records the version it was copied from and reports that one. A
+`--client`/`--server` pair with no secrets in the vault now exits 1 without
+starting the server, names the pair and the backend it read, and lists the
+pairs that are stored (names only). It started the server with none of its
+credentials and printed nothing. `protect-mcp` wraps only servers it moved a
+secret out of, so a pair it wrapped always has secrets. Arguments after `--`
+now always reach the server: a server started with `-h` or `--help` among its
+own arguments got the wrapper's usage line and exit 0 instead of starting.
+The new `--version` and `-v` are read the same way, before `--` only.
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
