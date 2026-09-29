@@ -2,14 +2,69 @@
 
 ## [Unreleased]
 
+**Three commands no longer report a clean result over work they did not do
+(#125).** `status <dir>` and `verify <dir>` on a directory that does not exist
+now print `Directory not found: <dir>` on stderr and exit 1, the same as
+`scan`. Before, both printed a clean verdict (`verify` printed PASS) and
+exited 0, so a typo in a CI path produced a green check over nothing.
+`scan-staged` outside a git repository now says `Not a git repository` and
+exits 2, the same as `diff`; before, it printed nothing and exited 0, which
+reads the same as "staged files scanned, nothing found". An empty index inside
+a repository still exits 0. `scan --min-confidence <n>` now reports what the
+filter removed: the `--json` summary carries `minConfidence` and
+`confidenceSuppressed`, and the human report says how many matches scored
+below the threshold and prints the command that shows them. When the filter
+hid every match, the report reads `No credentials found at or above confidence
+<n>.` instead of `No hardcoded credentials found.` The filter still does not
+set the exit code, the same as placeholder suppression, because the user asked
+for it.
+
+**`secretless-mcp` reports its version, and refuses a server name it has no
+secrets for (#138).** `secretless-mcp --version` (or `-v`) prints
+`secretless-mcp <version>` and exits 0; it printed the usage line and exited
+1. `protect-mcp` runs MCP servers through a copy of the wrapper under
+`~/.secretless-ai/bin`, which does not update when the package does, so the
+copy now records the version it was copied from and reports that one. A
+`--client`/`--server` pair with no secrets in the vault now exits 1 without
+starting the server, names the pair and the backend it read, and lists the
+pairs that are stored (names only). It started the server with none of its
+credentials and printed nothing. `protect-mcp` wraps only servers it moved a
+secret out of, so a pair it wrapped always has secrets. Arguments after `--`
+now always reach the server: a server started with `-h` or `--help` among its
+own arguments got the wrapper's usage line and exit 0 instead of starting.
+The new `--version` and `-v` are read the same way, before `--` only.
+
 ### Fixed
 
+- `scan` opens source files whose extension is upper case (`Legacy.JS`,
+  `main.PY`). The source matcher compared extensions exactly, unlike the key-file
+  and config matchers, so those files were never read (#120).
+- `scan` recognises a real env file whatever the case of its name
+  (`.ENV.STAGING`, `.Env.Production`). Only the template marker was compared
+  case-insensitively, so templates were rejected in any case while real files
+  were recognised only in lower case (#120).
+- `scan` reports `truncated` only when a candidate file was dropped at the file
+  cap. A tree of exactly `--max-files` files plus an empty directory reported
+  "Scan incomplete" and exited 1 with nothing unscanned (#120).
+- A value flag given twice (`scan --max-files 10 --max-files 20000`,
+  `run --only A --only B`) is refused with both values named. The first value
+  used to win and the second was dropped silently (#120).
 - `--help` names the third layer that keeps a directory out of a scan. The
   `--no-ignore` entry now says dependency and build output (`node_modules/`,
   `dist/`, `build/`, ...) is still not entered and can be scanned by its path,
   and Scan Coverage lists `scan dist`. It described only `.secretlessignore`
   and the default-ignore list, so `--no-ignore --include-tests` read as full
   coverage (#136).
+
+### Changed
+
+- The instructions `init` writes into `CLAUDE.md` and the other tools' rule
+  files state that command output is not guarded. A command that returns
+  credential values (`aws secretsmanager get-secret-value`,
+  `kubectl get secret -o yaml`, a provider API) puts them into the
+  conversation, and no layer checks it. The README says the same under
+  "What the guard cannot see". Existing installs keep their block until it is
+  removed and `init` is run again (#129).
 
 ## [0.23.1] - YYYY-MM-DD
 

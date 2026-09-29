@@ -50,7 +50,16 @@ export function runHook(args: string[]): number {
 
 export function runScanStaged(args: string[] = []): number {
   const noIgnore = args.includes('--no-ignore');
-  const { findings, blockedFiles } = scanStagedFiles({ noIgnore });
+  const { findings, blockedFiles, notARepo } = scanStagedFiles({ noIgnore });
+  if (notARepo) {
+    // Same message and exit code as `diff` in the same situation. Exiting 0
+    // with no output made a pre-commit or CI step in the wrong directory look
+    // installed and passing while it scanned nothing (#125).
+    console.error('\n  Not a git repository (or any parent up to mount point).');
+    console.error('  `scan-staged` scans the files staged for commit, so it runs inside a git repo.');
+    console.error('  Run it inside a git repo, or scan a directory instead: npx secretless-ai scan .\n');
+    return 2;
+  }
   const total = findings.length + blockedFiles.length;
 
   if (total === 0) {

@@ -82,7 +82,7 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 1. **Scans** your project for hardcoded credentials in config files and source code. 57 credential patterns from [`@opena2a/credential-patterns@0.1.3`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
 3. **Gates** AI-tool reads of credential files. 18 file patterns enforced as Claude Code deny rules, plus a PreToolUse hook that denies tool calls that would read credential files or expose secrets before they run: a gate on the assistant's tool path, not a security boundary around the machine. Other tools get instruction files or ignore patterns (see [Supported tools](#supported-tools)).
-4. **Brokers** access through environment variables. Secrets never enter AI context.
+4. **Brokers** access through environment variables. Stored values never enter AI context; a command whose own output is a credential is the one channel no layer checks (see [What the guard cannot see](#what-the-guard-cannot-see)).
 
 ## Store secrets and use them in AI sessions
 
@@ -117,6 +117,10 @@ curl -s "https://api.stripe.com/v1/charges?limit=5" -H "Authorization: Bearer $S
 For a key stored after `init`, or one `init` doesn't recognize, name the variable in your prompt ("use `$GAMMA_API_KEY` for auth") or add a row to the key table in `CLAUDE.md`. To keep the assistant away from raw values entirely, ask it to run commands under the injector:
 
 > Run the deploy script with `secretless-ai run --only DEPLOY_TOKEN -- ./deploy.sh`.
+
+### What the guard cannot see
+
+The hook and the deny rules check a command before it runs, by its text and the local paths it names. Neither can see what the command prints. A command that returns credential values (`aws secretsmanager get-secret-value`, `kubectl get secret -o yaml`, a provider API that returns keys or environment variable values) puts them into the model's context, and nothing in Secretless blocks it. `init` tells the assistant not to run such commands and to read only named, non-secret fields. That is an instruction, not an enforced control.
 
 ## MCP server protection
 
@@ -193,7 +197,7 @@ npx secretless-ai clean --dryrun --path ./transcripts
 ```bash
 npx secretless-ai scan --json | jq '.summary'
 # { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
-#   "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0,
+#   "minConfidence": 0, "confidenceSuppressed": 0, "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0,
 #   "oversize": 0, "skippedUnsupported": 0, "notEntered": 0 }
 ```
 
