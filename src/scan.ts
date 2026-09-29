@@ -944,14 +944,21 @@ function classifyEntry(entryPath: string, entry: fs.Dirent): 'dir' | 'file' | 's
  */
 const ENV_TEMPLATE_SUFFIXES = new Set(['example', 'sample', 'template', 'dist']);
 
-/** True for a real `.env` file; false for a committed template. */
+/**
+ * True for a real `.env` file; false for a committed template.
+ *
+ * Case-insensitive throughout, like the config-name matcher: on macOS and
+ * Windows `.ENV.STAGING` and `.env.staging` are one file. Only the template
+ * marker used to be lowered, so rejection ignored case while recognition did
+ * not, and a real `.Env.Production` was never scanned (#120).
+ */
 export function isEnvFile(basename: string): boolean {
-  if (basename === '.env') return true;
-  if (!basename.startsWith('.env.')) return false;
+  const name = basename.toLowerCase();
+  if (name === '.env') return true;
+  if (!name.startsWith('.env.')) return false;
   // A template marker in ANY segment wins, so `.env.example.local` stays out.
-  return !basename
+  return !name
     .slice('.env.'.length)
-    .toLowerCase()
     .split('.')
     .some(segment => ENV_TEMPLATE_SUFFIXES.has(segment));
 }
@@ -1121,8 +1128,14 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
 
   const rel = (p: string) => path.relative(dir, p).replace(/\\/g, '/');
 
-  while (queue.length > 0) {
-    if (files.length >= maxFiles) { truncated = true; break; }
+  // `truncated` is a claim about FILES: a candidate that passed every filter
+  // and was dropped because the cap was full. Reaching the cap with directories
+  // still queued is not that — they may hold nothing — so the walk goes on
+  // reading directories (never files) until it meets a real candidate or runs
+  // out. A tree of exactly `maxFiles` files plus an empty directory used to
+  // report "Scan incomplete" and exit 1 with nothing unscanned (#120). The
+  // extra work is bounded by MAX_DIRS_VISITED, which still truncates.
+  walk: while (queue.length > 0) {
     if (dirsVisited >= MAX_DIRS_VISITED) { truncated = true; break; }
     const { dir: current, ancestors } = queue.shift()!;
 
@@ -1179,8 +1192,6 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
           if (!isWithinRoot(target, rootReal)) { outOfRoot.push(relFromRoot); continue; }
         }
 
-        // Checked AFTER the filters, so only a real candidate trips the cap.
-        if (files.length >= maxFiles) { truncated = true; break; }
         queue.push({ dir: entryPath, ancestors: childAncestors });
       } else {
         const rejectReason = spec.rejectFile(entry.name, relFromRoot);
@@ -1197,7 +1208,8 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         // under stow/chezmoi, or a package pointing at the monorepo root env.
         // Refusing it would drop a credential the repo is asking us to treat as
         // its own — the opposite of the unbounded-traversal risk above.
-        if (files.length >= maxFiles) { truncated = true; break; }
+        // Checked AFTER the filters, so only a real candidate trips the cap.
+        if (files.length >= maxFiles) { truncated = true; break walk; }
         files.push(spec.collect(entryPath, relFromRoot));
       }
     }
@@ -1274,7 +1286,9 @@ function walkSourceFiles(
       || (!includeTests && TEST_DIRS.has(name) && 'test directory (--include-tests)')
       || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule (--no-ignore)'),
     rejectFile: (name, rel) =>
-      (!SOURCE_FILE_EXTENSIONS.has(path.extname(name)) && 'unsupported file type')
+      // Lowered like the key-file and config matchers: `Legacy.JS` is a
+      // JavaScript file, and an exact match never opened it (#120).
+      (!SOURCE_FILE_EXTENSIONS.has(path.extname(name).toLowerCase()) && 'unsupported file type')
       || (!(includeTests || !isTestFile(name)) && 'test file (--include-tests)')
       || (!!(ignore && ignore.matches(rel)) && 'ignore rule (--no-ignore)'),
     collect: (entryPath) => entryPath,
