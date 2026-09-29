@@ -186,6 +186,17 @@ export interface ScanStats {
    * number and bury the entry that matters.
    */
   skips?: CoverageSkips;
+  /**
+   * Matches dropped because their confidence score was below `minConfidence`.
+   *
+   * Same third state as `placeholdersSuppressed`: a filtered finding is not a
+   * clean file. Before this was counted, `scan --min-confidence 1` turned a
+   * one-finding repo into `total: 0` with nothing anywhere saying a filter had
+   * removed anything, so a CI job read a suppressed finding as a clean repo
+   * (#125). Optional so an existing caller still compiles; `scan()` counts only
+   * when a filter is active.
+   */
+  confidenceSuppressed?: number;
 }
 
 /** Per-file size caps. A file above the cap is skipped and reported, never dropped silently. */
@@ -378,7 +389,9 @@ function scanSingleFile(
             value: match[0],
             filePath: name,
           });
-          if (breakdown.score >= minConfidence) {
+          if (breakdown.score < minConfidence) {
+            if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
+          } else {
             findings.push({
               file: display,
               line: i + 1,
@@ -479,7 +492,10 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       value: match[0],
       filePath: file,
     });
-    if (breakdown.score < minConfidence) return null;
+    if (breakdown.score < minConfidence) {
+      if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
+      return null;
+    }
     const looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(file.replace(/\\/g, '/')));
     return {
       file,
