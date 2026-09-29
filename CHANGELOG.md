@@ -55,6 +55,12 @@ The new `--version` and `-v` are read the same way, before `--` only.
   and Scan Coverage lists `scan dist`. It described only `.secretlessignore`
   and the default-ignore list, so `--no-ignore --include-tests` read as full
   coverage (#136).
+- The broker's policy selector matcher (`matchGlob`) no longer backtracks
+  exponentially on a failing match. It compiled `*` to a regex quantifier, so a
+  selector with several wildcards let a requester-supplied value stall the deny
+  loop (`"*a" x 10` against forty characters took seconds; `x 14` did not
+  return). It now matches with two cursors, bounded by selector length times
+  value length, with the same `*` and `?` semantics (#141).
 
 ### Changed
 

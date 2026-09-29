@@ -355,13 +355,38 @@ export function matchGlob(pattern: string, value: string): boolean {
   // rejects it at `SAFE_NAME` before any lookup. So this is the policy decision
   // being wrong rather than a credential being served, and it is fixed here so
   // that it stays that way if name validation ever moves.
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '[\\s\\S]*')
-    .replace(/\?/g, '[\\s\\S]');
-
-  const regex = new RegExp(`^${escaped}$`);
-  return regex.test(value);
+  //
+  // Matched with two cursors, not a compiled regex (#141). The regex turned
+  // each `*` into a quantifier, so a selector with several wildcards backtracked
+  // exponentially on a FAILING match: `"*a" x 10` against forty `a`s took
+  // 15.56 s, and `"*a" x 14` did not return in 120 s. The selector is the
+  // operator's but the value is the requester's, and deny rules are walked
+  // first, so one such rule let a request stall the deny loop. Here a mismatch
+  // only ever resumes from the LAST `*` seen, which bounds the work at
+  // pattern length x value length. Semantics are the regex's: `*` is any run
+  // (line terminators included), `?` is one UTF-16 code unit, everything else
+  // is literal and case-sensitive.
+  let p = 0;
+  let v = 0;
+  let star = -1; // index of the last `*` in the pattern
+  let resume = 0; // value index that `*` currently stops before
+  while (v < value.length) {
+    if (p < pattern.length && pattern[p] === '*') {
+      star = p++;
+      resume = v;
+    } else if (p < pattern.length && (pattern[p] === '?' || pattern[p] === value[v])) {
+      p++;
+      v++;
+    } else if (star !== -1) {
+      // Let the last `*` absorb one more character and retry after it.
+      p = star + 1;
+      v = ++resume;
+    } else {
+      return false;
+    }
+  }
+  while (p < pattern.length && pattern[p] === '*') p++;
+  return p === pattern.length;
 }
 
 /**
