@@ -197,7 +197,7 @@ npx secretless-ai clean --dryrun --path ./transcripts
 ```bash
 npx secretless-ai scan --json | jq '.summary'
 # { "total": 0, "critical": 0, "high": 0, "placeholdersSuppressed": 0,
-#   "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0,
+#   "minConfidence": 0, "confidenceSuppressed": 0, "truncated": false, "maxFiles": 5000, "unreadable": 0, "outOfRoot": 0,
 #   "oversize": 0, "skippedUnsupported": 0, "notEntered": 0 }
 ```
 
