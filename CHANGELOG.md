@@ -49,6 +49,12 @@ The new `--version` and `-v` are read the same way, before `--` only.
 - A value flag given twice (`scan --max-files 10 --max-files 20000`,
   `run --only A --only B`) is refused with both values named. The first value
   used to win and the second was dropped silently (#120).
+- `--help` names the third layer that keeps a directory out of a scan. The
+  `--no-ignore` entry now says dependency and build output (`node_modules/`,
+  `dist/`, `build/`, ...) is still not entered and can be scanned by its path,
+  and Scan Coverage lists `scan dist`. It described only `.secretlessignore`
+  and the default-ignore list, so `--no-ignore --include-tests` read as full
+  coverage (#136).
 
 ### Changed
 

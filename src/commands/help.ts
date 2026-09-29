@@ -87,6 +87,7 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} scan --show-placeholders      Show values hidden as placeholders
     ${CLI} scan --no-ignore              Ignore .secretlessignore and defaults
     ${CLI} scan --include-tests          Include test files in the source scan
+    ${CLI} scan dist                     Scan a dependency or build output directory by path
 
   Shell History:
     ${CLI} scan --history         Scan shell history for credentials
@@ -151,7 +152,9 @@ ${banner}  Keep secrets out of AI context.
   Scan options:
     --include-tests          Include test files in source code scan
     --explain                Detailed per-finding view with remediation
-    --no-ignore              Disable .secretlessignore + default-ignore
+    --no-ignore              Disable .secretlessignore + default-ignore. Dependency
+                             and build output (node_modules/, dist/, build/, ...)
+                             is still not entered; scan one by its path.
     --min-confidence <n>     Drop findings with composite confidence below n (0-1)
 
   Options:
