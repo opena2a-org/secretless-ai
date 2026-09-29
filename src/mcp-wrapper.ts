@@ -8,6 +8,7 @@
  *
  * Usage:
  *   secretless-mcp --server <name> --client <client> [--vault-dir <path>] [--vault-key <key>] -- <command> [args...]
+ *   secretless-mcp --version
  */
 
 import { spawn } from "child_process";
@@ -18,6 +19,7 @@ import * as os from "os";
 import { McpVault } from "./mcp/vault";
 import { resolveBackendType } from "./backends/config";
 import { prepareBinArgv, MCP_WRAPPER } from "./argv";
+import { readWrapperVersion } from "./mcp/wrapper-version";
 
 function parseArgs(argv: string[]): {
   server: string;
@@ -110,8 +112,21 @@ const USAGE =
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
-  if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
+  // Only the wrapper's own arguments, the ones before `--`, can ask for help or
+  // the version. Everything after `--` belongs to the MCP server: read from the
+  // whole argv, a server started as `-- mcp-server -h <host>` printed this usage
+  // and exited 0 instead of starting.
+  const separator = rawArgs.indexOf("--");
+  const ownArgs = separator === -1 ? rawArgs : rawArgs.slice(0, separator);
+  if (ownArgs.includes("--help") || ownArgs.includes("-h")) {
     process.stdout.write(`${USAGE}\n`);
+    return;
+  }
+  // `protect-mcp` copies this bin to a stable directory and MCP configs point
+  // at the copy, which does not update with the package: the version is how an
+  // installed copy says which build it is.
+  if (ownArgs.includes("--version") || ownArgs.includes("-v")) {
+    process.stdout.write(`secretless-mcp ${readWrapperVersion(__dirname)}\n`);
     return;
   }
   const args = parseArgs(rawArgs);
@@ -158,8 +173,9 @@ async function main(): Promise<void> {
 
   // Load secrets from vault
   let secrets: Record<string, string> = {};
+  let vault: McpVault;
   try {
-    const vault = new McpVault({
+    vault = new McpVault({
       storeDir: args.vaultDir,
       key: args.vaultKey,
       backendType,
@@ -172,6 +188,38 @@ async function main(): Promise<void> {
     );
     process.stderr.write(
       `secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`,
+    );
+    process.exit(1);
+  }
+
+  // `protect-mcp` rewrites a server to run through this bin only after moving
+  // at least one secret of its into the vault, so a protected pair always has
+  // secrets. None for this pair means it names nothing that was protected: a
+  // typo, a client that is not a real client, or a vault in another backend.
+  // Starting the child would run it with none of its credentials while the
+  // config still reads as protected, so refuse, as for an empty name, and say
+  // which pairs do exist (names only, never values).
+  if (Object.keys(secrets).length === 0) {
+    process.stderr.write(
+      `secretless-mcp: No secrets are stored for client "${args.client}", server "${args.server}" in the ${backendType} backend. The server was not started.\n`,
+    );
+    let pairs: string[] | null = null;
+    try {
+      pairs = (await vault.listEntries())
+        .map((e) => `${e.client}/${e.server}`)
+        .sort();
+    } catch {
+      // Listing is a hint; the refusal above stands without it.
+    }
+    if (pairs !== null) {
+      process.stderr.write(
+        pairs.length > 0
+          ? `secretless-mcp: Stored client/server pairs: ${pairs.join(", ")}\n`
+          : `secretless-mcp: The ${backendType} backend holds no MCP server secrets.\n`,
+      );
+    }
+    process.stderr.write(
+      `secretless-mcp: Run 'npx secretless-ai mcp-status' to list protected servers, or 'npx secretless-ai protect-mcp' to protect this one.\n`,
     );
     process.exit(1);
   }
