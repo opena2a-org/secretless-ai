@@ -85,7 +85,7 @@ describe('secretless-mcp wrapper', () => {
     fs.writeFileSync(scriptPath, 'process.exit(42);');
 
     const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
-    await vault.storeServerSecrets('cursor', 'srv', {});
+    await vault.storeServerSecrets('cursor', 'srv', { SRV_TOKEN: 'srv-value' });
 
     const result = await runWrapper(
       ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
@@ -115,5 +115,64 @@ describe('secretless-mcp wrapper', () => {
     const output = JSON.parse(result.stdout.trim());
     expect(output.INJECTED).toBe('from-vault');
     expect(output.EXISTING).toBe('already-here');
+  });
+
+  // #138 item 1: the bin can say which build it is.
+  it.each(['--version', '-v'])('%s prints the package version on stdout and exits 0', async (flag) => {
+    const result = await runWrapper([flag]);
+    const version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8')).version;
+
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe(`secretless-mcp ${version}`);
+    expect(result.stderr).toBe('');
+  });
+
+  // #138 item 2: a pair that matches nothing in the vault refuses instead of
+  // starting the server with none of its credentials.
+  it('refuses to start the server when the client/server pair has no stored secrets', async () => {
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+    await vault.storeServerSecrets('cursor', 'github', { GITHUB_TOKEN: 'stored-secret-value' });
+    await vault.storeServerSecrets('claude-code', 'linear', { LINEAR_KEY: 'another-secret-value' });
+    const marker = path.join(dir, 'started');
+    const scriptPath = path.join(dir, 'server.js');
+    fs.writeFileSync(scriptPath, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x');`);
+
+    const result = await runWrapper(
+      ['--server', 'myserver', '--client', 'bogus-client', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
+    );
+
+    expect(result.code).toBe(1);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(result.stderr).toContain('No secrets are stored for client "bogus-client", server "myserver" in the local backend. The server was not started.');
+    expect(result.stderr).toContain('Stored client/server pairs: claude-code/linear, cursor/github');
+    expect(result.stderr).toContain('npx secretless-ai mcp-status');
+    // Names only: no stored value reaches either stream.
+    expect(result.stdout + result.stderr).not.toContain('secret-value');
+  });
+
+  it('says the backend holds no MCP secrets when the vault is empty', async () => {
+    const result = await runWrapper(
+      ['--server', 'myserver', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'echo', 'hi'],
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('The local backend holds no MCP server secrets.');
+  });
+
+  // Adjacent: arguments after `--` belong to the MCP server. `-h` is a common
+  // host flag; read by the wrapper it printed usage and exited 0 unstarted.
+  it.each(['-h', '--help', '--version', '-v'])('passes %s after -- through to the server', async (flag) => {
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+    await vault.storeServerSecrets('cursor', 'srv', { SRV_TOKEN: 'srv-value' });
+    const scriptPath = path.join(dir, 'argv.js');
+    fs.writeFileSync(scriptPath, 'console.log(JSON.stringify(process.argv.slice(2)));');
+
+    const result = await runWrapper(
+      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath, flag, 'localhost'],
+    );
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual([flag, 'localhost']);
   });
 });

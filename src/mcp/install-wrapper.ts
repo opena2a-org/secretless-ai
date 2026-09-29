@@ -9,6 +9,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { packageVersionAbove, writeWrapperVersion } from './wrapper-version';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -116,6 +118,10 @@ export function installWrapper(dataDir: string): WrapperCommand {
 
   // Copy entire dist/ tree to binDir/ so that internal require() paths resolve
   copyRecursive(distDir, binDir);
+
+  // The copy has no package.json above it; record the version it was copied
+  // from so `secretless-mcp --version` can say which build a config runs.
+  writeWrapperVersion(binDir, packageVersionAbove(distDir) ?? 'unknown');
 
   const targetPath = path.join(binDir, 'mcp-wrapper.js');
   return {
