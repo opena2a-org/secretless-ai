@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- The broker's policy selector matcher (`matchGlob`) no longer backtracks
+  exponentially on a failing match. It compiled `*` to a regex quantifier, so a
+  selector with several wildcards let a requester-supplied value stall the deny
+  loop (`"*a" x 10` against forty characters took seconds; `x 14` did not
+  return). It now matches with two cursors, bounded by selector length times
+  value length, with the same `*` and `?` semantics (#141).
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
