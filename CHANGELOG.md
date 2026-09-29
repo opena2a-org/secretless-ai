@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `--help` names the third layer that keeps a directory out of a scan. The
+  `--no-ignore` entry now says dependency and build output (`node_modules/`,
+  `dist/`, `build/`, ...) is still not entered and can be scanned by its path,
+  and Scan Coverage lists `scan dist`. It described only `.secretlessignore`
+  and the default-ignore list, so `--no-ignore --include-tests` read as full
+  coverage (#136).
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
