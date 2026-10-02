@@ -1479,3 +1479,26 @@ describe('init surfaces the rules file regardless of detected tools', () => {
     expect(result.rulesFileProblem?.kind).toBe('unrecognised-content');
   });
 });
+
+// #129. Every guard arm matches command text or a local path before the command
+// runs, and no hook reads tool output, so a credential returned by a provider
+// API reaches context unchecked. The generated instructions are the documented
+// floor for that channel: they must name it, and must not imply the guard
+// covers it.
+describe('generated instructions name the channel the guard cannot see (#129)', () => {
+  it('tells the assistant that command output is not guarded, with examples', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-ai-129-'));
+    try {
+      init(dir);
+      const claudeMd = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
+
+      expect(claudeMd).toContain('Command output is not guarded');
+      expect(claudeMd).toContain('cannot see what the command prints');
+      expect(claudeMd).toContain('aws secretsmanager get-secret-value');
+      expect(claudeMd).toContain('kubectl get secret -o yaml');
+      expect(claudeMd).toContain('nothing here blocks it');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

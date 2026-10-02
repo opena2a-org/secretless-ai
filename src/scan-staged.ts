@@ -28,7 +28,20 @@ interface StagedFinding {
 /**
  * Scan staged files for secrets. Returns findings and exit code.
  */
-export function scanStagedFiles(options?: ScanStagedOptions): { findings: StagedFinding[]; blockedFiles: string[] } {
+export interface ScanStagedResult {
+  findings: StagedFinding[];
+  blockedFiles: string[];
+  /**
+   * True when git could not list the staged files (not inside a repository,
+   * or git itself failed). A THIRD state, distinct from "nothing staged":
+   * both used to return the same empty result, so `scan-staged` run outside a
+   * repo printed nothing and exited 0, which reads exactly like a clean
+   * commit check (#125).
+   */
+  notARepo?: boolean;
+}
+
+export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
   const findings: StagedFinding[] = [];
   const blockedFiles: string[] = [];
 
@@ -41,8 +54,9 @@ export function scanStagedFiles(options?: ScanStagedOptions): { findings: Staged
     });
     stagedFiles = output.trim().split('\n').filter(Boolean);
   } catch {
-    // Not in a git repo or no staged files
-    return { findings, blockedFiles };
+    // An empty index does not throw (git prints nothing and exits 0), so a
+    // failure here means git could not answer at all.
+    return { findings, blockedFiles, notARepo: true };
   }
 
   if (stagedFiles.length === 0) {

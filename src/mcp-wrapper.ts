@@ -8,16 +8,18 @@
  *
  * Usage:
  *   secretless-mcp --server <name> --client <client> [--vault-dir <path>] [--vault-key <key>] -- <command> [args...]
+ *   secretless-mcp --version
  */
 
-import { spawn } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import { spawn } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
-import { McpVault } from './mcp/vault';
-import { resolveBackendType } from './backends/config';
-import { prepareBinArgv, MCP_WRAPPER } from './argv';
+import { McpVault } from "./mcp/vault";
+import { resolveBackendType } from "./backends/config";
+import { prepareBinArgv, MCP_WRAPPER } from "./argv";
+import { readWrapperVersion } from "./mcp/wrapper-version";
 
 function parseArgs(argv: string[]): {
   server: string;
@@ -28,11 +30,11 @@ function parseArgs(argv: string[]): {
   childCommand: string;
   childArgs: string[];
 } | null {
-  let server = '';
-  let client = '';
-  let vaultDir = '';
-  let vaultKey = '';
-  let backend = '';
+  let server = "";
+  let client = "";
+  let vaultDir = "";
+  let vaultKey = "";
+  let backend = "";
   let separatorIdx = -1;
 
   // Normalise before parsing, so `--server=NAME` binds here exactly as it does
@@ -44,19 +46,42 @@ function parseArgs(argv: string[]): {
   argv = prepareBinArgv(MCP_WRAPPER, argv).args;
 
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--') { separatorIdx = i; break; }
+    if (argv[i] === "--") {
+      separatorIdx = i;
+      break;
+    }
     // `!== undefined`, not truthiness: `--server ''` is the flag WITH an empty
     // value. Read as "flag absent" it produced an empty server name, and an
     // empty name looks up no secrets — so the wrapper spawned the MCP server
     // with none of its credentials and said nothing. Same shape as #110.
-    if (argv[i] === '--server' && argv[i + 1] !== undefined) { server = argv[++i]; continue; }
-    if (argv[i] === '--client' && argv[i + 1] !== undefined) { client = argv[++i]; continue; }
-    if (argv[i] === '--vault-dir' && argv[i + 1] !== undefined) { vaultDir = argv[++i]; continue; }
-    if (argv[i] === '--vault-key' && argv[i + 1] !== undefined) { vaultKey = argv[++i]; continue; }
-    if (argv[i] === '--backend' && argv[i + 1] !== undefined) {
+    if (argv[i] === "--server" && argv[i + 1] !== undefined) {
+      server = argv[++i];
+      continue;
+    }
+    if (argv[i] === "--client" && argv[i + 1] !== undefined) {
+      client = argv[++i];
+      continue;
+    }
+    if (argv[i] === "--vault-dir" && argv[i + 1] !== undefined) {
+      vaultDir = argv[++i];
+      continue;
+    }
+    if (argv[i] === "--vault-key" && argv[i + 1] !== undefined) {
+      vaultKey = argv[++i];
+      continue;
+    }
+    if (argv[i] === "--backend" && argv[i + 1] !== undefined) {
       const val = argv[++i];
-      if (val !== 'local' && val !== 'keychain' && val !== '1password' && val !== 'vault' && val !== 'gcp-sm') {
-        process.stderr.write(`secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
+      if (
+        val !== "local" &&
+        val !== "keychain" &&
+        val !== "1password" &&
+        val !== "vault" &&
+        val !== "gcp-sm"
+      ) {
+        process.stderr.write(
+          `secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`,
+        );
         process.exit(1);
       }
       backend = val;
@@ -67,8 +92,9 @@ function parseArgs(argv: string[]): {
   if (separatorIdx === -1 || separatorIdx >= argv.length - 1) return null;
 
   const home = os.homedir();
-  if (!vaultDir) vaultDir = path.join(home, '.secretless-ai', 'mcp-vault');
-  if (!vaultKey) vaultKey = `${home}-secretless-${process.env.USER ?? 'default'}`;
+  if (!vaultDir) vaultDir = path.join(home, ".secretless-ai", "mcp-vault");
+  if (!vaultKey)
+    vaultKey = `${home}-secretless-${process.env.USER ?? "default"}`;
 
   return {
     server,
@@ -81,11 +107,32 @@ function parseArgs(argv: string[]): {
   };
 }
 
+const USAGE =
+  "Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]";
+
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const rawArgs = process.argv.slice(2);
+  // Only the wrapper's own arguments, the ones before `--`, can ask for help or
+  // the version. Everything after `--` belongs to the MCP server: read from the
+  // whole argv, a server started as `-- mcp-server -h <host>` printed this usage
+  // and exited 0 instead of starting.
+  const separator = rawArgs.indexOf("--");
+  const ownArgs = separator === -1 ? rawArgs : rawArgs.slice(0, separator);
+  if (ownArgs.includes("--help") || ownArgs.includes("-h")) {
+    process.stdout.write(`${USAGE}\n`);
+    return;
+  }
+  // `protect-mcp` copies this bin to a stable directory and MCP configs point
+  // at the copy, which does not update with the package: the version is how an
+  // installed copy says which build it is.
+  if (ownArgs.includes("--version") || ownArgs.includes("-v")) {
+    process.stdout.write(`secretless-mcp ${readWrapperVersion(__dirname)}\n`);
+    return;
+  }
+  const args = parseArgs(rawArgs);
 
   if (!args) {
-    process.stderr.write('secretless-mcp: Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]\n');
+    process.stderr.write(`secretless-mcp: ${USAGE}\n`);
     process.exit(1);
   }
 
@@ -96,9 +143,13 @@ async function main(): Promise<void> {
   // whole point of this bin is that the child gets its secrets; if we cannot
   // say which secrets those are, not starting is the safe answer.
   if (!args.server || !args.client) {
-    const missing = [!args.server && '--server', !args.client && '--client'].filter(Boolean).join(' and ');
-    process.stderr.write(`secretless-mcp: ${missing} must be given a non-empty value. The server was not started.\n`);
-    process.stderr.write('secretless-mcp: Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]\n');
+    const missing = [!args.server && "--server", !args.client && "--client"]
+      .filter(Boolean)
+      .join(" and ");
+    process.stderr.write(
+      `secretless-mcp: ${missing} must be given a non-empty value. The server was not started.\n`,
+    );
+    process.stderr.write(`secretless-mcp: ${USAGE}\n`);
     process.exit(1);
   }
 
@@ -108,18 +159,23 @@ async function main(): Promise<void> {
   const backendType = args.backend || resolveBackendType();
 
   // Validate vault directory exists (only needed for local backend)
-  if (backendType === 'local') {
+  if (backendType === "local") {
     if (!fs.existsSync(args.vaultDir)) {
-      process.stderr.write(`secretless-mcp: Vault directory not found: ${args.vaultDir}\n`);
-      process.stderr.write(`secretless-mcp: Run 'npx secretless-ai protect-mcp' to set up MCP secret protection.\n`);
+      process.stderr.write(
+        `secretless-mcp: Vault directory not found: ${args.vaultDir}\n`,
+      );
+      process.stderr.write(
+        `secretless-mcp: Run 'npx secretless-ai protect-mcp' to set up MCP secret protection.\n`,
+      );
       process.exit(1);
     }
   }
 
   // Load secrets from vault
   let secrets: Record<string, string> = {};
+  let vault: McpVault;
   try {
-    const vault = new McpVault({
+    vault = new McpVault({
       storeDir: args.vaultDir,
       key: args.vaultKey,
       backendType,
@@ -127,8 +183,44 @@ async function main(): Promise<void> {
     secrets = await vault.getServerSecrets(args.client, args.server);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`secretless-mcp: Failed to load secrets for ${args.client}/${args.server}: ${msg}\n`);
-    process.stderr.write(`secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`);
+    process.stderr.write(
+      `secretless-mcp: Failed to load secrets for ${args.client}/${args.server}: ${msg}\n`,
+    );
+    process.stderr.write(
+      `secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`,
+    );
+    process.exit(1);
+  }
+
+  // `protect-mcp` rewrites a server to run through this bin only after moving
+  // at least one secret of its into the vault, so a protected pair always has
+  // secrets. None for this pair means it names nothing that was protected: a
+  // typo, a client that is not a real client, or a vault in another backend.
+  // Starting the child would run it with none of its credentials while the
+  // config still reads as protected, so refuse, as for an empty name, and say
+  // which pairs do exist (names only, never values).
+  if (Object.keys(secrets).length === 0) {
+    process.stderr.write(
+      `secretless-mcp: No secrets are stored for client "${args.client}", server "${args.server}" in the ${backendType} backend. The server was not started.\n`,
+    );
+    let pairs: string[] | null = null;
+    try {
+      pairs = (await vault.listEntries())
+        .map((e) => `${e.client}/${e.server}`)
+        .sort();
+    } catch {
+      // Listing is a hint; the refusal above stands without it.
+    }
+    if (pairs !== null) {
+      process.stderr.write(
+        pairs.length > 0
+          ? `secretless-mcp: Stored client/server pairs: ${pairs.join(", ")}\n`
+          : `secretless-mcp: The ${backendType} backend holds no MCP server secrets.\n`,
+      );
+    }
+    process.stderr.write(
+      `secretless-mcp: Run 'npx secretless-ai mcp-status' to list protected servers, or 'npx secretless-ai protect-mcp' to protect this one.\n`,
+    );
     process.exit(1);
   }
 
@@ -138,23 +230,27 @@ async function main(): Promise<void> {
   // Spawn the real MCP server
   const child = spawn(args.childCommand, args.childArgs, {
     env: childEnv,
-    stdio: ['inherit', 'inherit', 'inherit'],
+    stdio: ["inherit", "inherit", "inherit"],
   });
 
   // Forward signals
-  const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT', 'SIGHUP'];
+  const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
   for (const sig of signals) {
     process.on(sig, () => child.kill(sig));
   }
 
   // Forward exit code
-  child.on('close', (code) => {
+  child.on("close", (code) => {
     process.exit(code ?? 1);
   });
 
-  child.on('error', (err) => {
-    process.stderr.write(`secretless-mcp: Failed to start ${args.childCommand}: ${err.message}\n`);
-    process.stderr.write(`secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`);
+  child.on("error", (err) => {
+    process.stderr.write(
+      `secretless-mcp: Failed to start ${args.childCommand}: ${err.message}\n`,
+    );
+    process.stderr.write(
+      `secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`,
+    );
     process.exit(1);
   });
 }
