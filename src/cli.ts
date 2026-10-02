@@ -26,6 +26,7 @@ import { runFeedback } from './commands/feedback';
 import { runIgnore } from './commands/ignore';
 import { runDiff } from './commands/diff';
 import { printHelp, OWN_HELP } from './commands/help';
+import { printCommandHelp } from './command-help';
 import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } from './argv';
 import { nearestMatch } from './near-miss';
 
@@ -99,7 +100,9 @@ async function main(): Promise<number> {
   // matters for `setup`: the manifest format is documented nowhere else, and
   // guessing it wrong is the reported first experience (#112).
   if (command && (args.includes('--help') || args.includes('-h')) && !OWN_HELP.has(command)) {
-    printHelp();
+    // The verb's own flags (src/command-help.ts), or the global help for a
+    // token that is not a registered verb. Still a no-op: no runner executes.
+    printCommandHelp(command);
     return 0;
   }
 
