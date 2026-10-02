@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+**The macOS Keychain backend hands the value to `security` on stdin, runs
+`/usr/bin/security` by absolute path, and every backend child call is bounded
+in time.** `secret set` on the keychain backend now writes one
+`add-generic-password` line to the stdin of `/usr/bin/security -i`, with the
+value carried as `-X` hex, so the child's argument list is the constant `-i`
+whatever the value is; it used to pass the value as `-w <value>` on the command
+line. Each store is followed by a read-back compare, and a write that reported
+success without landing is a thrown failure. A name holding a line break, an
+empty value, and a value too long for one `security` line are refused by name
+before any process starts. `security` is run by its absolute path from the
+backend and from the factory's availability probe, so a program of that name
+earlier on PATH never runs. Every child the keychain, Secret Service and
+1Password backends and the factory start now has a 30-second bound; a child
+that does not return in time is ended and the call fails with a Verify and a
+Fix line, where it used to wait for as long as the child did. A failure
+message from `security` carries neither the value nor its hex form, and a
+value read back from the keychain keeps its own trailing whitespace. The
+`keychain-macos` and `keychain-linux` backends' tests now run their real child
+process path against a recorder program on Linux.
+
 **Three commands no longer report a clean result over work they did not do
 (#125).** `status <dir>` and `verify <dir>` on a directory that does not exist
 now print `Directory not found: <dir>` on stderr and exit 1, the same as

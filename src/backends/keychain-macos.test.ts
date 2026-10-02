@@ -1,22 +1,35 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as child_process from 'child_process';
 import {
   MacOSKeychainBackend,
+  KeychainLineError,
+  SECURITY_PROGRAM,
+  MAX_SECURITY_LINE_BYTES,
+  buildAddGenericPasswordLine,
   decodeKeychainValue,
   keychainOutputIsHexEncoded,
   redactSecurityError,
 } from './keychain-macos';
+import { leaksAny } from '../redact';
+import {
+  makeSecurityRecorder,
+  makeMarkerProgram,
+  processIsGone,
+  randomValue,
+  withPathPrefix,
+  type Recorder,
+  type RecordedCall,
+} from './child-recorder.test-support';
 
-vi.mock('child_process', () => ({
-  execFileSync: vi.fn(),
-  spawnSync: vi.fn(),
-}));
-
-const mockExecFileSync = vi.mocked(child_process.execFileSync);
-const mockSpawnSync = vi.mocked(child_process.spawnSync);
+/**
+ * These tests run the backend's real child-process path against a recorder
+ * program that stands in for `/usr/bin/security` (see
+ * child-recorder.test-support.ts). They run on Linux, in the lane and in CI,
+ * with no platform condition: nothing here needs a Keychain, and nothing here
+ * ever touches one.
+ */
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-keychain-macos-test-'));
@@ -26,61 +39,387 @@ function cleanup(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-describe('MacOSKeychainBackend', () => {
+const hex = (s: string) => Buffer.from(s, 'utf-8').toString('hex');
+
+/** The `security -i` invocations among the recorded calls. */
+const interactiveCalls = (calls: RecordedCall[]) => calls.filter(c => c.argv[0] === '-i');
+
+describe('MacOSKeychainBackend against a security recorder', () => {
   let dir: string;
+  let recorder: Recorder;
+  let backend: MacOSKeychainBackend;
 
   beforeEach(() => {
     dir = tmpDir();
-    mockExecFileSync.mockReset();
-    mockSpawnSync.mockReset();
+    recorder = makeSecurityRecorder();
+    backend = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program });
   });
 
   afterEach(() => {
     cleanup(dir);
+    recorder.cleanup();
+  });
+
+  describe('C1: the value is on no child argument list and in no child environment', () => {
+    it('SLS-10.AC1 store(V1) and store(V2) start children with identical argv and identical env, and both values reach stdin as hex', async () => {
+      const v1 = randomValue(24);
+      const v2 = randomValue(41);
+
+      await backend.store('mcp/client/server/KEY', v1);
+      const first = recorder.calls();
+      await backend.store('mcp/client/server/KEY', v2);
+      const second = recorder.calls().slice(first.length);
+
+      // Reachability witness: the recorder ran for each store.
+      expect(first.length).toBeGreaterThan(0);
+      expect(second.length).toBeGreaterThan(0);
+      expect(interactiveCalls(first)).toHaveLength(1);
+      expect(interactiveCalls(second)).toHaveLength(1);
+
+      // Differential cell: every child the store starts has the same argv and
+      // the same environment whichever value was stored. Environments are
+      // compared key by key and only the NAMES of differing keys are reported,
+      // so a failure never prints the environment itself.
+      expect(second.map(c => c.argv)).toEqual(first.map(c => c.argv));
+      expect(second).toHaveLength(first.length);
+      for (let i = 0; i < first.length; i++) {
+        const keys = new Set([...Object.keys(first[i].env), ...Object.keys(second[i].env)]);
+        const differing = [...keys].filter(k => first[i].env[k] !== second[i].env[k]);
+        expect(differing, `env keys differing between store(V1) and store(V2), child ${i}`).toEqual([]);
+      }
+
+      // Positive control: the value did reach the child, on stdin, as hex.
+      expect(interactiveCalls(first)[0].stdin).toContain(hex(v1));
+      expect(interactiveCalls(second)[0].stdin).toContain(hex(v2));
+    });
+
+    it('SLS-10.AC1 no child argv and no child env carries the value or its hex', async () => {
+      const value = randomValue(32);
+      await backend.store('secret/API_KEY', value);
+
+      const calls = recorder.calls();
+      expect(calls.length).toBeGreaterThan(0);
+      const carries = (s: string | undefined) => !!s && (s.includes(value) || s.includes(hex(value)));
+      for (const call of calls) {
+        const argvHits = call.argv.map((a, i) => (carries(a) ? `argv[${i}]` : null)).filter(Boolean);
+        expect(argvHits).toEqual([]);
+        // Only the names of offending variables are reported, never their values.
+        const envHits = Object.entries(call.env).filter(([, v]) => carries(v)).map(([k]) => k);
+        expect(envHits).toEqual([]);
+      }
+    });
+  });
+
+  describe('C2: program custody', () => {
+    it('SLS-10.AC2 the program is /usr/bin/security by absolute path', () => {
+      expect(SECURITY_PROGRAM).toBe('/usr/bin/security');
+      expect(path.isAbsolute(SECURITY_PROGRAM)).toBe(true);
+    });
+
+    it('SLS-10.AC2 a security planted first on PATH never runs: not with the recorder seam, not with the default program', async () => {
+      const planted = makeMarkerProgram('security');
+      try {
+        // Positive control: the planted program does run when started, so
+        // "never ran" below is a finding and not a broken fixture.
+        expect(planted.controlRun()).toBe(true);
+        expect(planted.ran()).toBe(false);
+
+        await withPathPrefix(planted.dir, async () => {
+          // With the seam: every call goes to the recorder.
+          await backend.store('secret/K', 'value-one');
+          await backend.resolve('secret/K');
+          await backend.delete('secret/K');
+          await backend.healthCheck();
+          expect(planted.ran()).toBe(false);
+
+          // Without the seam: the program is /usr/bin/security, by absolute
+          // path. This is a read (`default-keychain`), the same probe the
+          // factory's availability check has always made; nothing is written.
+          const plain = new MacOSKeychainBackend({ storeDir: dir });
+          const health = await plain.healthCheck();
+          expect(planted.ran()).toBe(false);
+          // Where /usr/bin/security does not exist (this lane, CI) the answer
+          // is "not accessible"; where it does (a Mac) it is "available". In
+          // neither case did PATH decide what ran.
+          expect(health.healthy).toBe(fs.existsSync(SECURITY_PROGRAM));
+        });
+      } finally {
+        planted.cleanup();
+      }
+    });
+
+    it('SLS-10.AC2 the recorder seam is a constructor parameter only: a config key or environment variable of the same name is ignored', async () => {
+      const keys = ['securityProgram', 'security', 'securityPath', 'program'];
+      const configured = new MacOSKeychainBackend(
+        { storeDir: dir, ...Object.fromEntries(keys.map(k => [k, recorder.program])) },
+      );
+      const saved = { ...process.env };
+      try {
+        for (const name of ['SECRETLESS_SECURITY_PROGRAM', 'SECURITY_PROGRAM', 'SECURITY', 'SECRETLESS_SECURITY']) {
+          process.env[name] = recorder.program;
+        }
+        const health = await configured.healthCheck();
+        expect(recorder.calls()).toEqual([]);
+        expect(health.healthy).toBe(fs.existsSync(SECURITY_PROGRAM));
+      } finally {
+        for (const name of Object.keys(process.env)) {
+          if (!(name in saved)) delete process.env[name];
+        }
+        Object.assign(process.env, saved);
+      }
+    });
+
+    it('SLS-10.AC2 keychain-macos.ts and factory.ts read nothing from the environment that could name a program or a bound', () => {
+      const read = (file: string) => fs.readFileSync(path.join(__dirname, file), 'utf-8');
+      const envReads = (source: string) => [...source.matchAll(/process\.env\.(\w+)/g)].map(m => m[1]);
+
+      const macos = read('keychain-macos.ts');
+      expect(new Set(envReads(macos))).toEqual(new Set(['HOME', 'USERPROFILE']));
+      expect(macos).not.toMatch(/process\.env\[/);
+      expect(macos).not.toMatch(/process\.argv/);
+
+      const factory = read('factory.ts');
+      expect(new Set(envReads(factory))).toEqual(new Set(['PATH', 'PATHEXT', 'VAULT_ADDR', 'VAULT_TOKEN']));
+      expect(factory).not.toMatch(/process\.env\[/);
+      expect(factory).not.toMatch(/process\.argv/);
+      // Every `security` the factory names is the absolute one.
+      expect(factory).not.toMatch(/['"]security['"]/);
+    });
+  });
+
+  describe('C3: no operand is parsed as command text', () => {
+    it('SLS-10.AC3 one store writes exactly one line, the value travels as -X hex, and every other operand is double-quoted with M1 quoting', async () => {
+      const key = 'secret/na"me\\with:odd chars';
+      const value = 'value with spaces "quotes" and \\ backslashes: ok';
+      await backend.store(key, value);
+
+      const lines = interactiveCalls(recorder.calls()).map(c => c.stdin.split('\n').filter(l => l.length > 0));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveLength(1);
+      const line = lines[0][0];
+
+      const q = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+      expect(line).toBe(
+        `add-generic-password -s ${q('Secretless: na"me\\with:odd chars')} -a ${q(key)} -l ${q(`Secretless: ${key}`)} -U -X ${hex(value)}`,
+      );
+      expect(line).not.toContain('-w');
+      expect(line).not.toContain(value);
+      expect(Buffer.byteLength(line + '\n', 'utf-8')).toBeLessThanOrEqual(MAX_SECURITY_LINE_BYTES);
+
+      // And the recorder, parsing the line the way M1 measured, stored the
+      // intended operands: the round trip returns the value under the key.
+      expect(await backend.resolve(key)).toEqual({ [key]: value });
+    });
+
+    it('SLS-10.AC3 a value holding a newline and a second command reaches the recorder as one line, and that command never runs', async () => {
+      const value = 'first-line\nadd-generic-password -s "x" -a "planted-by-value" -U -X 41\n';
+      await backend.store('secret/MULTI', value);
+
+      const calls = interactiveCalls(recorder.calls());
+      expect(calls).toHaveLength(1);
+      const nonEmpty = calls[0].stdin.split('\n').filter(l => l.length > 0);
+      expect(nonEmpty).toHaveLength(1);
+      expect(nonEmpty[0]).toContain(`-X ${hex(value)}`);
+      expect(calls[0].stdin).not.toContain('planted-by-value');
+
+      // Only the intended item exists; the read path decoded the hex form
+      // the CLI returns for a value with a non-printable byte.
+      const state = JSON.parse(fs.readFileSync(path.join(recorder.dir, 'state.json'), 'utf-8'));
+      expect(Object.keys(state)).toHaveLength(1);
+      expect(await backend.resolve('secret/MULTI')).toEqual({ 'secret/MULTI': value });
+    });
+
+    it('SLS-10.AC3 a key holding a newline and a second command is refused by name and no child starts', async () => {
+      const key = 'secret/K\nadd-generic-password -s "x" -a "planted-by-key" -U -X 41';
+      const err = await backend.store(key, 'value').catch((e: Error) => e);
+      expect(err).toBeInstanceOf(KeychainLineError);
+      expect((err as KeychainLineError).name).toBe('KeychainLineError');
+      expect((err as KeychainLineError).reason).toBe('operand-newline');
+      expect((err as Error).message).toMatch(/Verify:/);
+      expect((err as Error).message).toMatch(/Fix:/);
+      expect(recorder.calls()).toEqual([]);
+    });
+
+    it('SLS-10.AC3 a value that does not fit on one line is refused by name and no child starts', async () => {
+      const value = randomValue(2100);
+      const err = await backend.store('secret/BIG', value).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(KeychainLineError);
+      expect((err as KeychainLineError).reason).toBe('line-too-long');
+      expect((err as Error).message).not.toContain(value);
+      expect(leaksAny((err as Error).message, [value, hex(value)])).toBe(false);
+      expect(recorder.calls()).toEqual([]);
+    });
+
+    it('SLS-10.AC3 buildAddGenericPasswordLine refuses a line break in any operand and an empty value', () => {
+      expect(() => buildAddGenericPasswordLine('Secretless: K\n', 'k', 'l', 'v')).toThrow(KeychainLineError);
+      expect(() => buildAddGenericPasswordLine('s', 'k\r', 'l', 'v')).toThrow(KeychainLineError);
+      expect(() => buildAddGenericPasswordLine('s', 'k', 'l\nquit', 'v')).toThrow(KeychainLineError);
+      expect(() => buildAddGenericPasswordLine('s', 'k', 'l', '')).toThrow(/empty/);
+      expect(buildAddGenericPasswordLine('s', 'k', 'l', 'v')).toBe('add-generic-password -s "s" -a "k" -l "l" -U -X 76\n');
+    });
+  });
+
+  describe('C4: every child call is bounded', () => {
+    it('SLS-10.AC4 a security that never exits: store throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
+      recorder.setMode({ kind: 'hang' });
+      const bounded = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program, childTimeoutMs: 500 });
+
+      const start = Date.now();
+      await expect(bounded.store('secret/K', 'value')).rejects.toThrow(/did not respond within 0\.5s/);
+      expect(Date.now() - start).toBeLessThan(5_000);
+
+      const pid = recorder.hangPid();
+      expect(pid).not.toBeNull();
+      expect(processIsGone(pid!)).toBe(true);
+    });
+
+    it('SLS-10.AC4 a security that never exits: resolve throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
+      fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['secret/K']));
+      recorder.setMode({ kind: 'hang' });
+      const bounded = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program, childTimeoutMs: 500 });
+
+      const start = Date.now();
+      await expect(bounded.resolve('secret/K')).rejects.toThrow(/did not respond within 0\.5s/);
+      expect(Date.now() - start).toBeLessThan(5_000);
+      expect(processIsGone(recorder.hangPid()!)).toBe(true);
+    });
+
+    it('SLS-10.AC4 a security that never exits: delete and healthCheck return within the bound and the child is gone', { timeout: 10_000 }, async () => {
+      recorder.setMode({ kind: 'hang' });
+      const bounded = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program, childTimeoutMs: 500 });
+
+      let start = Date.now();
+      expect(await bounded.delete('secret/K')).toBe(false);
+      expect(Date.now() - start).toBeLessThan(5_000);
+      expect(processIsGone(recorder.hangPid()!)).toBe(true);
+
+      start = Date.now();
+      const health = await bounded.healthCheck();
+      expect(Date.now() - start).toBeLessThan(5_000);
+      expect(health.healthy).toBe(false);
+      expect(health.message).toMatch(/did not respond within 0\.5s/);
+      expect(processIsGone(recorder.hangPid()!)).toBe(true);
+    });
+  });
+
+  describe('C5: no value in any error', () => {
+    // Fixed, not random: a random value could share a four-character run with
+    // the message text by chance, and the redactor would then drop the detail
+    // the marker assertion needs. No run of this one occurs in any message.
+    const VALUE = 'Zq9vXw7Tk41Qp';
+    const MARKER = 'marker-bd11-planted';
+
+    function assertClean(err: Error): void {
+      expect(err.message).not.toContain(VALUE);
+      expect(err.message).not.toContain(hex(VALUE));
+      expect(leaksAny(err.message, [VALUE, hex(VALUE)])).toBe(false);
+      expect(leaksAny(err.stack ?? '', [VALUE, hex(VALUE)])).toBe(false);
+      const carried = err as Error & { stdout?: unknown; stderr?: unknown };
+      expect(leaksAny(String(carried.stdout ?? ''), [VALUE, hex(VALUE)])).toBe(false);
+      expect(leaksAny(String(carried.stderr ?? ''), [VALUE, hex(VALUE)])).toBe(false);
+      expect(err.message).toMatch(/Verify:\s+\S/);
+      expect(err.message).toMatch(/Fix:\s+\S/);
+    }
+
+    it('SLS-10.AC5 a non-zero exit: the error carries neither the value nor its hex, keeps the planted stderr marker, and says what happened', async () => {
+      recorder.setMode({
+        kind: 'fail',
+        status: 1,
+        stderr: `security: SecKeychainItemCreateFromContent (<default>): ${MARKER}: The authorization was canceled by the user.\n`,
+      });
+      const err = await backend.store('secret/K', VALUE).catch((e: Error) => e) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/Could not store "secret\/K"/);
+      expect(err.message).toContain(MARKER);
+      expect(err.message).toMatch(/exit status 1/);
+      expect(err.message).toMatch(/declined the write/);
+      assertClean(err);
+    });
+
+    it('SLS-10.AC5 a non-zero exit that echoes the value and its hex on stderr: neither reaches the error', async () => {
+      recorder.setMode({
+        kind: 'fail',
+        status: 1,
+        stderr: `security: rejected ${VALUE} and ${hex(VALUE)}\n`,
+        stdout: `security> echo ${hex(VALUE)}\n`,
+      });
+      const err = await backend.store('secret/K', VALUE).catch((e: Error) => e) as Error;
+      expect(err.message).toMatch(/Could not store "secret\/K"/);
+      assertClean(err);
+    });
+
+    it('SLS-10.AC5 a timeout: the error carries neither the value nor its hex and says what happened', { timeout: 10_000 }, async () => {
+      recorder.setMode({ kind: 'hang' });
+      const bounded = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program, childTimeoutMs: 300 });
+      const err = await bounded.store('secret/K', VALUE).catch((e: Error) => e) as Error;
+      expect(err.message).toMatch(/Could not store "secret\/K"/);
+      expect(err.message).toMatch(/did not respond within 0\.3s/);
+      expect(err.message).toMatch(/did not answer in time/);
+      assertClean(err);
+    });
+  });
+
+  describe('C6: a store that did not commit is a thrown failure', () => {
+    it('SLS-10.AC6 a write that exits 0 without landing is a thrown failure and the key is not indexed', async () => {
+      recorder.setMode({ kind: 'drop' });
+      const err = await backend.store('secret/K', 'value-one').catch((e: Error) => e) as Error;
+      expect(err.message).toMatch(/Could not confirm "secret\/K" was stored/);
+      expect(err.message).toMatch(/no entry could be read back/);
+      expect(err.message).not.toContain('value-one');
+      expect(err.message).toMatch(/Verify:/);
+      expect(err.message).toMatch(/Fix:/);
+      expect(fs.existsSync(path.join(dir, 'keychain-index.json'))).toBe(false);
+    });
+
+    it('SLS-10.AC6 a write that exits 0 but landed a different value is a thrown failure', async () => {
+      recorder.setMode({ kind: 'wrong' });
+      const err = await backend.store('secret/K', 'value-one').catch((e: Error) => e) as Error;
+      expect(err.message).toMatch(/Could not confirm "secret\/K" was stored/);
+      expect(err.message).toMatch(/different/);
+      expect(err.message).not.toContain('value-one');
+      expect(err.message).not.toContain('a-different-value');
+    });
+
+    it('SLS-10.AC6 every store is followed by a read-back of the same entry', async () => {
+      await backend.store('mcp/client/server/KEY', 'v');
+      const argvs = recorder.calls().map(c => c.argv);
+      const add = argvs.findIndex(a => a[0] === '-i');
+      const readBack = argvs.findIndex(a => a[0] === 'find-generic-password' && a.includes('-w'));
+      expect(add).toBeGreaterThanOrEqual(0);
+      expect(readBack).toBeGreaterThan(add);
+      expect(argvs[readBack]).toEqual(['find-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY', '-w']);
+    });
   });
 
   describe('store()', () => {
     it('writes with an in-place update and sweeps the legacy entry after', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-
-      // legacy delete may throw (not found) — that's ok
-      mockExecFileSync.mockImplementation((cmd, args) => {
-        if (typeof cmd === 'string' && cmd === 'security' && Array.isArray(args) && args[0] === 'delete-generic-password') {
-          throw new Error('not found');
-        }
-        return Buffer.from('');
-      });
-
       await backend.store('mcp/client/server/KEY', 'secret-value');
+
+      const argvs = recorder.calls().map(c => c.argv);
+      const add = argvs.findIndex(a => a[0] === '-i');
+      const legacySweep = argvs.findIndex(a =>
+        a[0] === 'delete-generic-password' && a.includes('secretless'));
 
       // `-U` updates in place, so no delete of the live entry precedes the
       // write. The previous ordering deleted first and lost the credential
       // outright whenever the add then failed.
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'security',
-        ['add-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY', '-l', 'Secretless: mcp/client/server/KEY', '-U', '-w', 'secret-value'],
-        expect.any(Object),
-      );
+      expect(add).toBeGreaterThanOrEqual(0);
+      expect(argvs.slice(0, add).some(a => a[0] === 'delete-generic-password')).toBe(false);
+      expect(interactiveCalls(recorder.calls())[0].stdin).toMatch(/^add-generic-password .* -U -X [0-9a-f]+\n$/);
 
       // The live entry is never deleted as part of a write.
-      expect(mockExecFileSync).not.toHaveBeenCalledWith(
-        'security',
+      expect(argvs).not.toContainEqual(
         ['delete-generic-password', '-s', 'Secretless: KEY', '-a', 'mcp/client/server/KEY'],
-        expect.any(Object),
       );
 
       // The legacy duplicate is still swept, after the value is committed.
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'security',
+      expect(legacySweep).toBeGreaterThan(add);
+      expect(argvs[legacySweep]).toEqual(
         ['delete-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY'],
-        expect.any(Object),
       );
     });
 
     it('updates the key index file', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-      mockExecFileSync.mockReturnValue(Buffer.from(''));
-
       await backend.store('mcp/client/server/KEY', 'val');
 
       const indexPath = path.join(dir, 'keychain-index.json');
@@ -89,9 +428,6 @@ describe('MacOSKeychainBackend', () => {
     });
 
     it('does not duplicate keys in index', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-      mockExecFileSync.mockReturnValue(Buffer.from(''));
-
       await backend.store('mcp/client/server/KEY', 'val1');
       await backend.store('mcp/client/server/KEY', 'val2');
 
@@ -100,28 +436,24 @@ describe('MacOSKeychainBackend', () => {
       const count = index.filter((k: string) => k === 'mcp/client/server/KEY').length;
       expect(count).toBe(1);
     });
+
+    it('is wired to redactSecurityError: a failure message holds the key and not the value', async () => {
+      recorder.setMode({
+        kind: 'fail',
+        status: 1,
+        stderr: 'security: The authorization was canceled by the user.\n',
+      });
+      await expect(backend.store('secret/NUTEST', 'hello-world-123')).rejects.toThrow(
+        /Could not store "secret\/NUTEST"/,
+      );
+    });
   });
 
   describe('resolve()', () => {
     it('resolves matching keys from index', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-
-      // Pre-populate index
-      const indexPath = path.join(dir, 'keychain-index.json');
-      fs.writeFileSync(indexPath, JSON.stringify([
-        'mcp/client/server/KEY1',
-        'mcp/client/server/KEY2',
-        'mcp/other/server/KEY3',
-      ]));
-
-      mockExecFileSync.mockImplementation((cmd, args) => {
-        if (typeof cmd === 'string' && cmd === 'security' && Array.isArray(args)) {
-          const account = args[args.indexOf('-a') + 1];
-          if (account === 'mcp/client/server/KEY1') return 'value1\n' as unknown as Buffer;
-          if (account === 'mcp/client/server/KEY2') return 'value2\n' as unknown as Buffer;
-        }
-        return '' as unknown as Buffer;
-      });
+      await backend.store('mcp/client/server/KEY1', 'value1');
+      await backend.store('mcp/client/server/KEY2', 'value2');
+      await backend.store('mcp/other/server/KEY3', 'value3');
 
       const result = await backend.resolve('mcp/client/server');
       expect(result).toEqual({
@@ -131,115 +463,84 @@ describe('MacOSKeychainBackend', () => {
     });
 
     it('returns empty object when no matching keys', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-
       const indexPath = path.join(dir, 'keychain-index.json');
       fs.writeFileSync(indexPath, JSON.stringify(['mcp/other/server/KEY']));
 
       const result = await backend.resolve('mcp/client/server');
       expect(result).toEqual({});
+      expect(recorder.calls()).toEqual([]);
     });
 
     it('skips keys the Keychain says are absent', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-
+      // 44 is what `security` exits with for "The specified item could not be
+      // found in the keychain". The recorder answers 44 for an item it never
+      // stored. This one really is absent.
       const indexPath = path.join(dir, 'keychain-index.json');
       fs.writeFileSync(indexPath, JSON.stringify(['mcp/client/server/KEY1']));
-
-      // 44 is what `security` exits with for "The specified item could not be
-      // found in the keychain". This one really is absent.
-      mockExecFileSync.mockImplementation(() => {
-        throw Object.assign(new Error('item could not be found'), { status: 44 });
-      });
 
       const result = await backend.resolve('mcp/client/server');
       expect(result).toEqual({});
+      // Both the per-key and the legacy service were asked.
+      expect(recorder.calls().map(c => c.argv[2])).toEqual(['Secretless: KEY1', 'secretless']);
     });
 
     it('refuses to report a key absent when the Keychain would not answer', async () => {
-      // This test replaces one titled "skips keys that fail to retrieve", which
-      // asserted {} for ANY failure — the fail-open in #104 written down as the
-      // expected behaviour. A locked Keychain, or a dismissed approval dialog,
-      // made every secret read as missing with exit 0.
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-
+      // A locked Keychain, or a dismissed approval dialog, used to make every
+      // secret read as missing with exit 0 (#104).
       const indexPath = path.join(dir, 'keychain-index.json');
       fs.writeFileSync(indexPath, JSON.stringify(['mcp/client/server/KEY1']));
-
-      mockExecFileSync.mockImplementation(() => {
-        throw Object.assign(
-          new Error('User interaction is not allowed'),
-          { status: 51 },
-        );
-      });
+      recorder.setMode({ kind: 'fail', status: 51, stderr: 'security: User interaction is not allowed.\n' });
 
       await expect(backend.resolve('mcp/client/server')).rejects.toThrow(
         /would not return "mcp\/client\/server\/KEY1"/,
       );
     });
+
+    it('keeps a value with trailing whitespace intact', async () => {
+      await backend.store('secret/TRAIL', 'ends-with-space ');
+      expect(await backend.resolve('secret/TRAIL')).toEqual({ 'secret/TRAIL': 'ends-with-space ' });
+    });
   });
 
   describe('delete()', () => {
     it('deletes both new and legacy entries and removes from index', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-
-      // Pre-populate index
-      const indexPath = path.join(dir, 'keychain-index.json');
-      fs.writeFileSync(indexPath, JSON.stringify(['mcp/client/server/KEY1', 'mcp/client/server/KEY2']));
-
-      mockExecFileSync.mockReturnValue(Buffer.from(''));
+      await backend.store('mcp/client/server/KEY1', 'v1');
+      await backend.store('mcp/client/server/KEY2', 'v2');
 
       const result = await backend.delete('mcp/client/server/KEY1');
       expect(result).toBe(true);
 
-      // Verify delete with new service name
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'security',
+      const argvs = recorder.calls().map(c => c.argv);
+      expect(argvs).toContainEqual(
         ['delete-generic-password', '-s', 'Secretless: KEY1', '-a', 'mcp/client/server/KEY1'],
-        expect.any(Object),
       );
-
-      // Verify legacy delete also attempted
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'security',
+      expect(argvs).toContainEqual(
         ['delete-generic-password', '-s', 'secretless', '-a', 'mcp/client/server/KEY1'],
-        expect.any(Object),
       );
 
-      // Index should no longer contain KEY1
+      const indexPath = path.join(dir, 'keychain-index.json');
       const updatedIndex = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
       expect(updatedIndex).not.toContain('mcp/client/server/KEY1');
       expect(updatedIndex).toContain('mcp/client/server/KEY2');
+      expect(await backend.resolve('mcp/client/server')).toEqual({ 'mcp/client/server/KEY2': 'v2' });
     });
 
-    it('returns false when delete fails', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-
-      mockExecFileSync.mockImplementation(() => {
-        throw new Error('not found');
-      });
-
+    it('returns false when nothing was there to delete', async () => {
       const result = await backend.delete('nonexistent');
       expect(result).toBe(false);
     });
   });
 
   describe('healthCheck()', () => {
-    it('returns healthy when security command works', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-      mockExecFileSync.mockReturnValue(Buffer.from(''));
-
+    it('returns healthy when security answers', async () => {
       const health = await backend.healthCheck();
       expect(health.healthy).toBe(true);
       expect(health.message).toContain('macOS Keychain available');
+      expect(recorder.calls().map(c => c.argv)).toEqual([['default-keychain']]);
     });
 
-    it('returns unhealthy when security command fails', async () => {
-      const backend = new MacOSKeychainBackend({ storeDir: dir });
-      mockExecFileSync.mockImplementation(() => {
-        throw new Error('no keychain');
-      });
-
+    it('returns unhealthy when security fails', async () => {
+      recorder.setMode({ kind: 'fail', status: 1, stderr: 'no keychain\n' });
       const health = await backend.healthCheck();
       expect(health.healthy).toBe(false);
     });
@@ -313,11 +614,12 @@ describe('decodeKeychainValue', () => {
 
   it('never probes a value that is not shaped like hex output', () => {
     // Odd length, non-hex characters, and empty all skip the extra call.
-    const probe = vi.fn(() => true);
+    let probed = 0;
+    const probe = () => { probed++; return true; };
     for (const v of ['not-hex-at-all', 'abc', '', 'zzzz']) {
       expect(decodeKeychainValue(v, probe)).toBe(v);
     }
-    expect(probe).not.toHaveBeenCalled();
+    expect(probed).toBe(0);
   });
 });
 
@@ -344,83 +646,51 @@ describe('keychainOutputIsHexEncoded', () => {
 });
 
 describe('resolve() hex handling', () => {
+  let dir: string;
+  let recorder: Recorder;
+
+  beforeEach(() => {
+    dir = tmpDir();
+    recorder = makeSecurityRecorder();
+  });
+
+  afterEach(() => {
+    cleanup(dir);
+    recorder.cleanup();
+  });
+
   it('does not corrupt a stored 32-hex token', async () => {
-    const hexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-keychain-hex-'));
-    try {
-      const backend = new MacOSKeychainBackend({ storeDir: hexDir });
-      fs.writeFileSync(
-        path.join(hexDir, 'keychain-index.json'),
-        JSON.stringify(['secret/TOKEN']),
-      );
-
-      mockExecFileSync.mockReset();
-      mockSpawnSync.mockReset();
-      mockExecFileSync.mockImplementation((_cmd, args) => {
-        if (Array.isArray(args) && args[0] === 'find-generic-password') {
-          return HEX32_TOKEN as unknown as Buffer;
-        }
-        throw new Error('not found');
-      });
-      // macOS reports it as plain text (quoted, no 0x), so it must not decode.
-      mockSpawnSync.mockReturnValue({
-        // A real successful spawnSync sets status 0. The mock omitted it, and a
-        // probe that cannot report success is a probe that did not complete.
-        status: 0,
-        stdout: '',
-        stderr: `password: "${HEX32_TOKEN}"`,
-      } as unknown as ReturnType<typeof child_process.spawnSync>);
-
-      const out = await backend.resolve('secret/TOKEN');
-      expect(out['secret/TOKEN']).toBe(HEX32_TOKEN);
-    } finally {
-      fs.rmSync(hexDir, { recursive: true, force: true });
-    }
+    const backend = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program });
+    await backend.store('secret/TOKEN', HEX32_TOKEN);
+    // The recorder, like macOS, reports a printable value as plain text
+    // (quoted, no 0x) on `-g`, so it must not be decoded.
+    const out = await backend.resolve('secret/TOKEN');
+    expect(out['secret/TOKEN']).toBe(HEX32_TOKEN);
+    const probes = recorder.calls().filter(c => c.argv[0] === 'find-generic-password' && c.argv.includes('-g'));
+    expect(probes.length).toBeGreaterThan(0);
   });
 
   it('decodes a stored value macOS actually hex-encoded', async () => {
-    const hexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-keychain-hex-'));
-    try {
-      const backend = new MacOSKeychainBackend({ storeDir: hexDir });
-      fs.writeFileSync(
-        path.join(hexDir, 'keychain-index.json'),
-        JSON.stringify(['secret/MULTILINE']),
-      );
+    const backend = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program });
+    await backend.store('secret/MULTILINE', 'line1\nline2');
+    const out = await backend.resolve('secret/MULTILINE');
+    expect(out['secret/MULTILINE']).toBe('line1\nline2');
+  });
 
-      const encoded = Buffer.from('line1\nline2', 'utf-8').toString('hex');
-      mockExecFileSync.mockReset();
-      mockSpawnSync.mockReset();
-      mockExecFileSync.mockImplementation((_cmd, args) => {
-        if (Array.isArray(args) && args[0] === 'find-generic-password') {
-          return encoded as unknown as Buffer;
-        }
-        throw new Error('not found');
-      });
-      mockSpawnSync.mockReturnValue({
-        // A real successful spawnSync sets status 0. The mock omitted it, and a
-        // probe that cannot report success is a probe that did not complete.
-        status: 0,
-        stdout: '',
-        stderr: `password: 0x${encoded.toUpperCase()}  "line1\\012line2"`,
-      } as unknown as ReturnType<typeof child_process.spawnSync>);
-
-      const out = await backend.resolve('secret/MULTILINE');
-      expect(out['secret/MULTILINE']).toBe('line1\nline2');
-    } finally {
-      fs.rmSync(hexDir, { recursive: true, force: true });
-    }
+  it('refuses rather than guess when the -g probe does not complete', async () => {
+    const backend = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program });
+    await backend.store('secret/TOKEN', HEX32_TOKEN);
+    // `-w` still answers; only the `-g` probe fails. The value is shaped like
+    // hex and the question that settles it went unanswered: refuse.
+    recorder.setMode({ kind: 'probe-fails' });
+    await expect(backend.resolve('secret/TOKEN')).rejects.toThrow(/Could not determine how the macOS Keychain stored "secret\/TOKEN"/);
   });
 });
 
 /**
- * `security add-generic-password` takes the password as `-w <value>`, and
- * execFileSync puts the whole argv into the thrown message. Observed in a fresh
- * -user walkthrough of 0.21.0-rc:
- *
- *   Error: Command failed: security add-generic-password -s Secretless: NUTEST \
- *     -a secret/NUTEST -l Secretless: secret/NUTEST -w hello-world-123
- *
- * The secret is right there in the terminal, in a tool whose whole purpose is
- * keeping it out of exactly that kind of output.
+ * The value is never on the child's argv now, but `security` can still echo
+ * what it was given, and an error constructed elsewhere can still arrive with
+ * the value in it. The redaction is the last line, and it is tested as such.
  */
 describe('store() error redaction', () => {
   const SECRET = 'hello-world-123';
@@ -436,6 +706,16 @@ describe('store() error redaction', () => {
       'secret/NUTEST',
     );
     expect(err.message).not.toContain(SECRET);
+  });
+
+  it('scrubs the hex form of the value as well as the value', () => {
+    const err = redactSecurityError(
+      new Error(`security: rejected -X ${hex(SECRET)}\nsecurity: the thing broke`),
+      SECRET,
+      'secret/K',
+    );
+    expect(err.message).not.toContain(hex(SECRET));
+    expect(leaksAny(err.message, [SECRET, hex(SECRET)])).toBe(false);
   });
 
   it('drops our own argv echo and keeps the part that explains the failure', () => {
@@ -459,59 +739,23 @@ describe('store() error redaction', () => {
     expect(err.message).toMatch(/backend set local/);
   });
 
+  it('routes a timeout to advice about the waiting dialog', () => {
+    const err = redactSecurityError(
+      new Error('security did not respond within 30s'),
+      SECRET,
+      'secret/K',
+    );
+    expect(err.message).toMatch(/did not answer in time/);
+    expect(err.message).toMatch(/Verify:\s+security default-keychain/);
+    expect(err.message).toMatch(/Fix:/);
+  });
+
   it('discards the detail rather than leaking when scrubbing cannot clear it', () => {
     // A value that survives naive scrubbing because it reappears after
     // replacement: splitting on "aa" in "aaa" leaves an "a" behind.
     const tricky = 'aa';
     const err = redactSecurityError(new Error('security: aaaaa failed'), tricky, 'secret/K');
     expect(err.message).not.toContain(tricky);
-  });
-
-  it('is actually wired into store(), not merely exported', async () => {
-    const dir2 = tmpDir();
-    try {
-      mockExecFileSync.mockImplementation(((_cmd: string, args: string[]) => {
-        if (Array.isArray(args) && args[0] === 'add-generic-password') {
-          throw new Error(
-            `Command failed: security add-generic-password -w ${SECRET}\n` +
-            'security: The authorization was canceled by the user.',
-          );
-        }
-        return '' as unknown as Buffer;
-      }) as never);
-
-      const backend = new MacOSKeychainBackend({ storeDir: dir2 });
-      await expect(backend.store('secret/NUTEST', SECRET)).rejects.toThrow(
-        /Could not store "secret\/NUTEST"/,
-      );
-      await backend.store('secret/NUTEST', SECRET).catch((e: Error) => {
-        expect(e.message).not.toContain(SECRET);
-      });
-    } finally {
-      cleanup(dir2);
-    }
-  });
-
-  it('updates in place instead of deleting the old value before writing', async () => {
-    const dir2 = tmpDir();
-    try {
-      const calls: string[] = [];
-      mockExecFileSync.mockImplementation(((_cmd: string, args: string[]) => {
-        if (Array.isArray(args)) calls.push(args[0]);
-        return '' as unknown as Buffer;
-      }) as never);
-
-      const backend = new MacOSKeychainBackend({ storeDir: dir2 });
-      await backend.store('secret/K', 'v');
-
-      const addIdx = calls.indexOf('add-generic-password');
-      const delIdx = calls.indexOf('delete-generic-password');
-      expect(addIdx).toBeGreaterThanOrEqual(0);
-      // No delete may precede the write; the legacy sweep runs after it.
-      if (delIdx !== -1) expect(addIdx).toBeLessThan(delIdx);
-    } finally {
-      cleanup(dir2);
-    }
   });
 });
 
