@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { init, DEPRECATED_DENY_RULES } from './init';
+import { SECRET_FILE_PATTERNS } from './patterns';
 import { scan } from './scan';
 import { status } from './status';
 import { detectAITools } from './detect';
@@ -520,6 +521,147 @@ describe('init', { timeout: 30_000 }, () => {
         const out = runHookCmdRaw(hookPath, c);
         expect(/"permissionDecision":"deny"/.test(out), `expected hook to still ALLOW: ${c}`).toBe(false);
       }
+    });
+  });
+
+  // QGF-119: the hook's path rule was keyed on the bare substring `credentials`,
+  // so it denied any path that merely NAMES the topic. Measured over the whole
+  // tree, exactly one tracked file matched it and it holds no credential: this
+  // repository's own use-case page `docs/use-cases/protect-my-credentials.md`,
+  // the first row of the README use-case table. The canonical list already spelled
+  // the rule as a STORE — `credentials/` in patterns.ts — and the two generated
+  // lists had drifted from it, by a missing slash in the hook's fragments and by a
+  // prefix `*` in the native `Grep()` deny rule. Same unit, second half: two
+  // command-text arms fired on commands that only DESCRIBE the shape they search
+  // for, and refused in one clause with no way forward.
+  describe('QGF-119 the credentials rule is keyed on a store, not on the topic word', () => {
+    function runHook(hookPath: string, filePath: string): boolean {
+      const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: filePath } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    function runHookCmdRaw(hookPath: string, command: string): string {
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      return execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+    }
+
+    // Documentation whose only match was the bare `credentials` fragment. The
+    // first is tracked in this repository; the other two are the same shape with
+    // the topic word in a directory and in a basename.
+    const topicNamedDocs = [
+      'docs/use-cases/protect-my-credentials.md',
+      'docs/credentials-guide.md',
+      'notes-about-credentials.md',
+    ];
+
+    // Real credential stores and secret files. Nothing here may move: the store
+    // form (`credentials/`) and the retained `.aws/credentials` fragment cover the
+    // first two, and `.git-credentials` is an exact-basename dotfile rule.
+    const credentialStores = [
+      'credentials/prod.json', '~/.aws/credentials', '.aws/credentials', '.git-credentials',
+      '.ssh/id_rsa', '.docker/config.json', 'secrets/api.json', '.secretless-ai/store.json',
+      '.env', 'prod.env', 'server.key', 'client.pem', 'cert.p12',
+      '.npmrc', 'terraform.tfstate', 'main.tfvars',
+    ];
+
+    it('QGF-119.AC1 the guard hook allows a page that merely names credentials in its path', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      for (const f of topicNamedDocs) {
+        expect(runHook(hookPath, f), `expected hook to ALLOW ${f}`).toBe(false);
+      }
+    });
+
+    it('QGF-119.AC2 the guard hook still denies every real credential store and secret file', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      for (const f of credentialStores) {
+        expect(runHook(hookPath, f), `expected hook to BLOCK ${f}`).toBe(true);
+      }
+    });
+
+    it('QGF-119.AC3 the native Grep deny rule names the credentials store, not the credentials prefix', () => {
+      init(dir);
+      const deny: string[] = JSON.parse(
+        fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'),
+      ).permissions.deny;
+
+      expect(deny).toContain('Grep(credentials/*)');
+      expect(deny).not.toContain('Grep(credentials*)');
+      // The one other credentials entry is a store path and is untouched.
+      expect(deny).toContain('Read(.aws/credentials)');
+    });
+
+    it('QGF-119.AC4 every command arm that can fire on a search pattern names the ambiguity and the Read/Grep-tool route', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Each of these only DESCRIBES the shape it searches for and opens nothing:
+      // two script one-liners compiling a regex (the "script command that reads
+      // secret files" arm) and a source search for the data-directory name (the
+      // "secretless data directory" arm). Both still deny — a denylist over
+      // command TEXT cannot tell the two apart, see NOTE ON TEMPLATE FILES in
+      // init.ts — so what the fix owes them is the reason, not the decision.
+      const patternOnly = [
+        String.raw`node -e "re = new RegExp('\.env')"`,
+        String.raw`python3 -c "import re; re.compile(r'\.pem')"`,
+        String.raw`grep -rn "\.secretless-ai" src`,
+      ];
+      for (const c of patternOnly) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `fixture must DENY: ${c}`).toBe(true);
+        const reason: string = JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
+        expect(reason, `deny reason must name the Read tool for: ${c}`).toMatch(/Read tool/);
+        expect(reason, `deny reason must name the Grep tool for: ${c}`).toMatch(/Grep tool/);
+        expect(
+          reason,
+          `deny reason must explain the filename/pattern ambiguity for: ${c}`,
+        ).toMatch(/filename.*pattern|pattern.*filename/is);
+      }
+    });
+
+    it('QGF-119.AC5 the decision set moves in one direction only and the package version is untouched', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // The hook's fragment list now agrees with the canonical list it drifted
+      // from; patterns.ts is not edited by this change, it is the reference.
+      expect(SECRET_FILE_PATTERNS).toContain('credentials/');
+      expect(SECRET_FILE_PATTERNS).not.toContain('credentials');
+
+      // Newly allowed are ONLY paths whose sole match was the topic word: put the
+      // very same documents inside a credential store and they are denied again.
+      for (const f of topicNamedDocs) {
+        const inStore = `credentials/${path.basename(f)}`;
+        expect(runHook(hookPath, inStore), `expected hook to BLOCK ${inStore}`).toBe(true);
+      }
+
+      // The pinned command corpus of the SLS-03 message change, re-checked here:
+      // no command that denied is allowed now, including the deliberate
+      // `cat .env.example` over-block, and nothing allowed is newly blocked.
+      for (const c of [
+        'cat .env', 'cat .env.example', 'head -5 prod.env', 'grep AWS_SECRET .env',
+        'grep -rn "dotenv(.env)" src', 'xxd server.key', 'sed -n 1p client.pem',
+        'strings cert.p12',
+      ]) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to still BLOCK: ${c}`).toBe(true);
+      }
+      for (const c of [
+        'ls -la', 'cat README.md', 'grep TODO src/index.ts', 'cat environment.ts', 'echo hello',
+      ]) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to still ALLOW: ${c}`).toBe(false);
+      }
+
+      // The version bump and any publish belong to a release commit, not here.
+      const pkg = JSON.parse(
+        fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8'),
+      );
+      expect(pkg.version).toBe('0.23.1');
     });
   });
 
