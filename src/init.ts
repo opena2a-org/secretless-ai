@@ -148,6 +148,7 @@ export function init(projectDir: string): InitResult {
       tool: 'claude-code',
       configDir: '.claude',
       settingsFile: '.claude/settings.json',
+      instructionFiles: ['CLAUDE.md'],
       hooksSupported: true,
     });
   }
@@ -468,9 +469,34 @@ function configureClaudeCode(
 // Cursor Configuration
 // ============================================================================
 
+/**
+ * Frontmatter for the Cursor rule file Secretless owns. `alwaysApply: true`
+ * is what makes Cursor attach the rule to every chat rather than only when a
+ * glob matches or the model decides the description is relevant.
+ */
+const CURSOR_MDC_FRONTMATTER = [
+  '---',
+  'description: Secretless credential protection (managed by secretless-ai)',
+  'alwaysApply: true',
+  '---',
+  '',
+].join('\n');
+
 function configureCursor(projectDir: string, result: InitResult): void {
-  const rulesPath = path.join(projectDir, '.cursorrules');
-  addSecretlessInstructions(rulesPath, 'cursor', result);
+  // Cursor documents project rules as `.cursor/rules/*.mdc`, so the block goes
+  // into a rule file Secretless owns there, created alongside whatever `.mdc`
+  // files the user already has (which are never touched). The single-file
+  // `.cursorrules` is the legacy form: it is never created, but a project that
+  // still carries one gets the block appended to it as before, so the
+  // instructions reach Cursor whichever file it reads.
+  const rulesDir = path.join(projectDir, '.cursor', 'rules');
+  fs.mkdirSync(rulesDir, { recursive: true });
+  addSecretlessInstructions(path.join(rulesDir, 'secretless.mdc'), 'cursor', result, CURSOR_MDC_FRONTMATTER);
+
+  const legacyPath = path.join(projectDir, '.cursorrules');
+  if (pathKind(legacyPath) === 'file') {
+    addSecretlessInstructions(legacyPath, 'cursor', result);
+  }
 }
 
 // ============================================================================
@@ -499,8 +525,34 @@ function configureWindsurf(projectDir: string, result: InitResult): void {
 // ============================================================================
 
 function configureCline(projectDir: string, result: InitResult): void {
-  const rulesPath = path.join(projectDir, '.clinerules');
-  addSecretlessInstructions(rulesPath, 'cline', result);
+  // Cline documents `.clinerules` as either a single file or a directory of
+  // rule files, and also reads `.cline/rules/`. Follow the layout the project
+  // already uses; where there is none, create the documented directory form.
+  // The previous writer assumed a regular file and threw EISDIR on the
+  // directory form, which took every tool configured after Cline down with it.
+  const legacyPath = path.join(projectDir, '.clinerules');
+  const legacyKind = pathKind(legacyPath);
+
+  if (legacyKind === 'file') {
+    // A regular `.clinerules` is never created, but one the user already has
+    // keeps working: append there and make no directory.
+    addSecretlessInstructions(legacyPath, 'cline', result);
+    return;
+  }
+
+  if (legacyKind === 'dir') {
+    addSecretlessInstructions(path.join(legacyPath, 'secretless.md'), 'cline', result);
+    return;
+  }
+
+  const clineRulesDir = path.join(projectDir, '.cline', 'rules');
+  if (pathKind(clineRulesDir) === 'dir') {
+    addSecretlessInstructions(path.join(clineRulesDir, 'secretless.md'), 'cline', result);
+    return;
+  }
+
+  fs.mkdirSync(legacyPath, { recursive: true });
+  addSecretlessInstructions(path.join(legacyPath, 'secretless.md'), 'cline', result);
 }
 
 // ============================================================================
@@ -608,14 +660,33 @@ Verify setup: \`npx secretless-ai verify\`
 `;
 }
 
-function addSecretlessInstructions(filePath: string, tool: string, result: InitResult): void {
+/** What is at a path: a regular file, a directory, something else, or nothing. */
+function pathKind(p: string): 'file' | 'dir' | 'other' | 'absent' {
+  try {
+    const st = fs.statSync(p);
+    if (st.isFile()) return 'file';
+    if (st.isDirectory()) return 'dir';
+    return 'other';
+  } catch {
+    return 'absent';
+  }
+}
+
+/**
+ * Append the Secretless block to `filePath`, creating the file when absent.
+ * A file that already carries the marker is left byte-identical. `preamble`
+ * is written ahead of the block only when the file is being created, for
+ * formats that need a header (the Cursor `.mdc` frontmatter).
+ */
+function addSecretlessInstructions(filePath: string, tool: string, result: InitResult, preamble = ''): void {
   const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
 
   if (existing.includes(SECRETLESS_MARKER)) {
     return; // Already configured
   }
 
-  fs.writeFileSync(filePath, existing + buildSecretlessInstructions());
+  const head = existing ? existing : preamble;
+  fs.writeFileSync(filePath, head + buildSecretlessInstructions());
   if (existing) {
     result.filesModified.push(path.relative(process.cwd(), filePath));
   } else {
