@@ -307,7 +307,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
     // the message text by chance, and the redactor would then drop the detail
     // the marker assertion needs. No run of this one occurs in any message.
     const VALUE = 'Zq9vXw7Tk41Qp';
-    const MARKER = 'marker-bd11-planted';
+    const MARKER = 'planted-stderr-marker';
 
     function assertClean(err: Error): void {
       expect(err.message).not.toContain(VALUE);
