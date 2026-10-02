@@ -104,6 +104,16 @@ interface InitResult {
   rulesFileProblem?:
     | { kind: 'unrecognised-content'; issues: RulesFileIssue[] }
     | { kind: 'load-error'; reason: string };
+  /**
+   * Project-relative paths `init` refused to write through, with the tool
+   * each was for. A path is refused when it, or a directory on the way to
+   * it, is a symbolic link, is not the kind of entry the layout needs, or
+   * resolves outside the project. The tool is then absent from
+   * `toolsConfigured` and nothing was written for it: following a link out
+   * of the project would create or append to a file the user never pointed
+   * `init` at.
+   */
+  pathsRefused: Array<{ tool: AITool; path: string; reason: string }>;
 }
 
 /**
@@ -136,6 +146,7 @@ export function init(projectDir: string): InitResult {
     denyRulesAdded: 0,
     denyRulesRemoved: 0,
     hookRefreshed: false,
+    pathsRefused: [],
   };
 
   // Detect AI tools
@@ -202,6 +213,9 @@ export function init(projectDir: string): InitResult {
     // Listing it under "Configured:" would restore the defect this release
     // exists to fix, one line further down the same output.
     if (tool.tool === 'claude-code' && result.settingsUnusable) continue;
+    // Likewise a tool whose instruction path was refused (a symbolic link, or
+    // a destination outside the project) had nothing written for it.
+    if (result.pathsRefused.some(r => r.tool === tool.tool)) continue;
     result.toolsConfigured.push(tool.tool);
   }
 
@@ -482,21 +496,46 @@ const CURSOR_MDC_FRONTMATTER = [
   '',
 ].join('\n');
 
+const CURSOR_MDC = '.cursor/rules/secretless.mdc';
+const CURSOR_LEGACY = '.cursorrules';
+
 function configureCursor(projectDir: string, result: InitResult): void {
+  // Every path this writer may create or traverse is checked first, and one
+  // refusal means nothing is written for Cursor at all (AC8): a half-written
+  // tool would be listed by `status` from the one file that did land.
+  if (refuseUnsafePaths(projectDir, 'cursor', ['.cursor', '.cursor/rules', CURSOR_MDC, CURSOR_LEGACY], result)) {
+    return;
+  }
+
   // Cursor documents project rules as `.cursor/rules/*.mdc`, so the block goes
   // into a rule file Secretless owns there, created alongside whatever `.mdc`
   // files the user already has (which are never touched). The single-file
-  // `.cursorrules` is the legacy form: it is never created, but a project that
-  // still carries one gets the block appended to it as before, so the
-  // instructions reach Cursor whichever file it reads.
-  const rulesDir = path.join(projectDir, '.cursor', 'rules');
-  fs.mkdirSync(rulesDir, { recursive: true });
-  addSecretlessInstructions(path.join(rulesDir, 'secretless.mdc'), 'cursor', result, CURSOR_MDC_FRONTMATTER);
-
-  const legacyPath = path.join(projectDir, '.cursorrules');
-  if (pathKind(legacyPath) === 'file') {
-    addSecretlessInstructions(legacyPath, 'cursor', result);
+  // `.cursorrules` is the legacy form and is never created.
+  //
+  // Held cell: a project whose rules live in `.cursorrules` and that has no
+  // `.mdc` under `.cursor/rules/` keeps that layout. The block is appended to
+  // `.cursorrules` and no `.mdc` is created, because nothing has yet observed,
+  // on a current Cursor, that adding the first `.mdc` leaves a `.cursorrules`
+  // rule applied. Once that is observed the branch below goes away and the
+  // `.mdc` is written for this project too.
+  const legacyIsFile = pathKind(path.join(projectDir, CURSOR_LEGACY)) === 'file';
+  if (legacyIsFile && !dirHoldsMdc(path.join(projectDir, '.cursor', 'rules'))) {
+    writeInstructionFile(projectDir, CURSOR_LEGACY, 'cursor', result);
+    return;
   }
+
+  writeInstructionFile(projectDir, CURSOR_MDC, 'cursor', result, CURSOR_MDC_FRONTMATTER);
+  // A project that already carries both forms gets the block in both, so the
+  // instructions reach Cursor whichever file it reads.
+  if (legacyIsFile) {
+    writeInstructionFile(projectDir, CURSOR_LEGACY, 'cursor', result);
+  }
+}
+
+/** True when `dir` is a directory holding at least one `.mdc` entry. */
+function dirHoldsMdc(dir: string): boolean {
+  if (pathKind(dir) !== 'dir') return false;
+  return fs.readdirSync(dir).some(name => name.endsWith('.mdc'));
 }
 
 // ============================================================================
@@ -524,35 +563,42 @@ function configureWindsurf(projectDir: string, result: InitResult): void {
 // Cline Configuration
 // ============================================================================
 
+const CLINE_LEGACY = '.clinerules';
+const CLINE_DIR_FILE = '.clinerules/secretless.md';
+const CLINE_RULES_FILE = '.cline/rules/secretless.md';
+
 function configureCline(projectDir: string, result: InitResult): void {
+  // As for Cursor: check every path first, write nothing on a refusal (AC8).
+  const guarded = [CLINE_LEGACY, '.cline', '.cline/rules', CLINE_DIR_FILE, CLINE_RULES_FILE];
+  if (refuseUnsafePaths(projectDir, 'cline', guarded, result)) {
+    return;
+  }
+
   // Cline documents `.clinerules` as either a single file or a directory of
   // rule files, and also reads `.cline/rules/`. Follow the layout the project
   // already uses; where there is none, create the documented directory form.
   // The previous writer assumed a regular file and threw EISDIR on the
   // directory form, which took every tool configured after Cline down with it.
-  const legacyPath = path.join(projectDir, '.clinerules');
-  const legacyKind = pathKind(legacyPath);
+  const legacyKind = pathKind(path.join(projectDir, CLINE_LEGACY));
 
   if (legacyKind === 'file') {
     // A regular `.clinerules` is never created, but one the user already has
     // keeps working: append there and make no directory.
-    addSecretlessInstructions(legacyPath, 'cline', result);
+    writeInstructionFile(projectDir, CLINE_LEGACY, 'cline', result);
     return;
   }
 
   if (legacyKind === 'dir') {
-    addSecretlessInstructions(path.join(legacyPath, 'secretless.md'), 'cline', result);
+    writeInstructionFile(projectDir, CLINE_DIR_FILE, 'cline', result);
     return;
   }
 
-  const clineRulesDir = path.join(projectDir, '.cline', 'rules');
-  if (pathKind(clineRulesDir) === 'dir') {
-    addSecretlessInstructions(path.join(clineRulesDir, 'secretless.md'), 'cline', result);
+  if (pathKind(path.join(projectDir, '.cline', 'rules')) === 'dir') {
+    writeInstructionFile(projectDir, CLINE_RULES_FILE, 'cline', result);
     return;
   }
 
-  fs.mkdirSync(legacyPath, { recursive: true });
-  addSecretlessInstructions(path.join(legacyPath, 'secretless.md'), 'cline', result);
+  writeInstructionFile(projectDir, CLINE_DIR_FILE, 'cline', result);
 }
 
 // ============================================================================
@@ -670,6 +716,116 @@ function pathKind(p: string): 'file' | 'dir' | 'other' | 'absent' {
   } catch {
     return 'absent';
   }
+}
+
+/** Same, without following a symbolic link at the path itself. */
+function linkAwareKind(p: string): 'file' | 'dir' | 'symlink' | 'other' | 'absent' {
+  try {
+    const st = fs.lstatSync(p);
+    if (st.isSymbolicLink()) return 'symlink';
+    if (st.isFile()) return 'file';
+    if (st.isDirectory()) return 'dir';
+    return 'other';
+  } catch {
+    return 'absent';
+  }
+}
+
+/**
+ * Why a project-relative path must not be created or appended to, or null
+ * when it may be. Every existing component on the way is checked with
+ * `lstat`, so a symbolic link anywhere in the path is refused rather than
+ * followed. The deepest existing component is then resolved, and must lie
+ * inside the project's real path: a link `init` follows out of the project
+ * would create or append to a file the user never pointed it at (the M2 cells
+ * of the security entry on this change).
+ *
+ * In `'write'` mode the path is about to be written, so an intermediate
+ * component must be a directory and the last one, when present, a regular
+ * file. In `'links'` mode (the pre-check over every path a writer might use)
+ * a component of another kind just ends the walk: the layout the writer picks
+ * decides whether that path is used at all.
+ */
+function unsafePathReason(
+  projectDir: string,
+  rel: string,
+  mode: 'write' | 'links',
+): { path: string; reason: string } | null {
+  const parts = rel.split('/');
+  let deepestExisting = projectDir;
+  for (let i = 0; i < parts.length; i++) {
+    const relSoFar = parts.slice(0, i + 1).join('/');
+    const abs = path.join(projectDir, ...parts.slice(0, i + 1));
+    const kind = linkAwareKind(abs);
+    if (kind === 'absent') break;
+    if (kind === 'symlink') return { path: relSoFar, reason: 'is a symbolic link' };
+    const last = i === parts.length - 1;
+    const expected = last ? 'file' : 'dir';
+    if (kind !== expected) {
+      if (mode === 'links') break;
+      return { path: relSoFar, reason: last ? 'is not a regular file' : 'is not a directory' };
+    }
+    deepestExisting = abs;
+  }
+
+  let projectReal: string;
+  let real: string;
+  try {
+    projectReal = fs.realpathSync(projectDir);
+    real = fs.realpathSync(deepestExisting);
+  } catch (err) {
+    return { path: rel, reason: `could not be resolved (${(err as Error).message})` };
+  }
+  if (real !== projectReal && !real.startsWith(projectReal + path.sep)) {
+    return { path: rel, reason: `resolves outside the project (${real})` };
+  }
+  return null;
+}
+
+/**
+ * Record every linked or escaping path among `rels` for `tool` in
+ * `result.pathsRefused`. Returns true when at least one was refused, in which
+ * case the caller writes nothing for that tool. Whether a path is the right
+ * kind for the layout is the writer's concern, checked at the write.
+ */
+function refuseUnsafePaths(projectDir: string, tool: AITool, rels: string[], result: InitResult): boolean {
+  let refused = false;
+  for (const rel of rels) {
+    const unsafe = unsafePathReason(projectDir, rel, 'links');
+    if (unsafe) {
+      recordRefusal(result, tool, unsafe);
+      refused = true;
+    }
+  }
+  return refused;
+}
+
+/** One entry per (tool, path): several guarded paths may share a linked ancestor. */
+function recordRefusal(result: InitResult, tool: AITool, unsafe: { path: string; reason: string }): void {
+  if (result.pathsRefused.some(r => r.tool === tool && r.path === unsafe.path)) return;
+  result.pathsRefused.push({ tool, ...unsafe });
+}
+
+/**
+ * Create or append the Secretless block at a project-relative path, after a
+ * final check that nothing on the way to it is a link or leads outside the
+ * project. A refusal is recorded and nothing is written.
+ */
+function writeInstructionFile(
+  projectDir: string,
+  rel: string,
+  tool: AITool,
+  result: InitResult,
+  preamble = '',
+): void {
+  const unsafe = unsafePathReason(projectDir, rel, 'write');
+  if (unsafe) {
+    recordRefusal(result, tool, unsafe);
+    return;
+  }
+  const filePath = path.join(projectDir, rel);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  addSecretlessInstructions(filePath, tool, result, preamble);
 }
 
 /**

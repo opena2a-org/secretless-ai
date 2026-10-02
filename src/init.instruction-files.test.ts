@@ -183,17 +183,23 @@ describe('SLS-09.AC1 Cursor writes .cursor/rules/secretless.mdc', () => {
     expect(exists(dir, '.cursorrules')).toBe(false);
   });
 
-  it('SLS-09.AC1 existing .cursorrules: existing line still first, block appended there, .mdc also written', () => {
+  // Revision 3, the held cell: a project whose rules live in `.cursorrules`
+  // and that has no `.mdc` under `.cursor/rules/` gets the block appended to
+  // `.cursorrules` only. No `.cursor/rules/secretless.mdc` is created until the
+  // host-side load check observes that adding an `.mdc` does not stop Cursor
+  // applying `.cursorrules`.
+  it('SLS-09.AC1 only .cursorrules: user line byte-identical then the block, nothing under .cursor/rules/, no secretless.mdc created', () => {
     const dir = project();
     cursorRulesFile.build(dir);
 
     const result = init(dir);
 
-    expectCursorMdc(dir);
-    expect(result.filesCreated.some(f => f.endsWith('secretless.mdc'))).toBe(true);
     const rules = read(dir, '.cursorrules');
     expect(rules.startsWith('# Existing rules\n')).toBe(true);
     expect(rules.indexOf(BLOCK_HEAD)).toBeGreaterThan(rules.indexOf('# Existing rules'));
+    expect(exists(dir, '.cursor/rules')).toBe(false);
+    expect(listPaths(dir).some(p => p.startsWith('.cursor/rules'))).toBe(false);
+    expect(result.filesCreated.some(f => f.endsWith('secretless.mdc'))).toBe(false);
   });
 });
 
@@ -363,5 +369,175 @@ describe('SLS-09.AC6 no AGENTS.md, Windsurf and Copilot unchanged', () => {
 
     expect(read(dir, '.github/copilot-instructions.md')).toContain(BLOCK_HEAD);
     expect(fs.readdirSync(path.join(dir, '.github'))).toEqual(['copilot-instructions.md']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC8 — a symbolic link in the owned path, or a destination outside the
+// project, is never written through: the target is untouched, the tool is not
+// listed as configured, and the result names the path.
+// ---------------------------------------------------------------------------
+
+/** A directory outside any project, as a symlink target. */
+function outsideDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'sls09-outside-'));
+}
+
+/** Listing plus bytes of every file under `dir`, for a before/after compare. */
+function snapshot(dir: string): Array<[string, string | null]> {
+  return listPaths(dir).map(rel => [rel, isFile(dir, rel) ? read(dir, rel) : null]);
+}
+
+type LinkCell = {
+  name: string;
+  tool: 'cursor' | 'cline';
+  /** The project-relative path that is the link. */
+  linkRel: string;
+  /** Build the project with the link in place; returns the link target. */
+  build: (dir: string) => string;
+  /** The same project without the link (the control), and the file it gets. */
+  control: (dir: string) => void;
+  controlFile: string;
+};
+
+const LINK_CELLS: LinkCell[] = [
+  {
+    name: 'M2 .cursor/rules linked to an outside directory',
+    tool: 'cursor',
+    linkRel: '.cursor/rules',
+    build: dir => {
+      const target = outsideDir();
+      fs.mkdirSync(path.join(dir, '.cursor'));
+      fs.symlinkSync(target, path.join(dir, '.cursor', 'rules'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.cursor', 'rules'), { recursive: true }),
+    controlFile: '.cursor/rules/secretless.mdc',
+  },
+  {
+    name: 'M2b owned .cursor/rules/secretless.mdc linked to an outside file',
+    tool: 'cursor',
+    linkRel: '.cursor/rules/secretless.mdc',
+    build: dir => {
+      const target = outsideDir();
+      fs.writeFileSync(path.join(target, 'victim.mdc'), 'victim\n'); // 7 bytes
+      fs.mkdirSync(path.join(dir, '.cursor', 'rules'), { recursive: true });
+      fs.symlinkSync(path.join(target, 'victim.mdc'), path.join(dir, '.cursor', 'rules', 'secretless.mdc'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.cursor', 'rules'), { recursive: true }),
+    controlFile: '.cursor/rules/secretless.mdc',
+  },
+  {
+    name: '.cursor linked to an outside directory',
+    tool: 'cursor',
+    linkRel: '.cursor',
+    build: dir => {
+      const target = outsideDir();
+      fs.symlinkSync(target, path.join(dir, '.cursor'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.cursor')),
+    controlFile: '.cursor/rules/secretless.mdc',
+  },
+  {
+    name: 'M2c .clinerules linked to an outside directory',
+    tool: 'cline',
+    linkRel: '.clinerules',
+    build: dir => {
+      const target = outsideDir();
+      fs.symlinkSync(target, path.join(dir, '.clinerules'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.clinerules')),
+    controlFile: '.clinerules/secretless.md',
+  },
+  {
+    name: '.cline linked to an outside directory',
+    tool: 'cline',
+    linkRel: '.cline',
+    build: dir => {
+      const target = outsideDir();
+      fs.symlinkSync(target, path.join(dir, '.cline'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.cline')),
+    controlFile: '.clinerules/secretless.md',
+  },
+  {
+    name: '.cline/rules linked to an outside directory',
+    tool: 'cline',
+    linkRel: '.cline/rules',
+    build: dir => {
+      const target = outsideDir();
+      fs.mkdirSync(path.join(dir, '.cline'));
+      fs.symlinkSync(target, path.join(dir, '.cline', 'rules'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.cline', 'rules'), { recursive: true }),
+    controlFile: '.cline/rules/secretless.md',
+  },
+  {
+    name: 'owned .clinerules/secretless.md linked to an outside file',
+    tool: 'cline',
+    linkRel: '.clinerules/secretless.md',
+    build: dir => {
+      const target = outsideDir();
+      fs.writeFileSync(path.join(target, 'victim.md'), 'victim\n');
+      fs.mkdirSync(path.join(dir, '.clinerules'));
+      fs.symlinkSync(path.join(target, 'victim.md'), path.join(dir, '.clinerules', 'secretless.md'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.clinerules')),
+    controlFile: '.clinerules/secretless.md',
+  },
+];
+
+describe('SLS-09.AC8 init never writes through a symbolic link or outside the project', () => {
+  it.each(LINK_CELLS)('SLS-09.AC8 [$name]: target untouched, tool not configured, result names the path', ({ tool, linkRel, build }) => {
+    const dir = project();
+    const target = build(dir);
+    const targetBefore = snapshot(target);
+    const projectBefore = snapshot(dir);
+
+    const result = init(dir);
+
+    expect(snapshot(target)).toEqual(targetBefore);
+    expect(snapshot(dir)).toEqual(projectBefore);
+    expect(result.toolsDetected).toContain(tool);
+    expect(result.toolsConfigured).not.toContain(tool);
+    expect(result.pathsRefused.map(r => r.path)).toContain(linkRel);
+    expect(result.pathsRefused.find(r => r.path === linkRel)?.tool).toBe(tool);
+    expect(result.filesCreated.some(f => f.endsWith('secretless.mdc') || f.endsWith('secretless.md'))).toBe(false);
+  });
+
+  it.each(LINK_CELLS)('SLS-09.AC8 control for [$name]: without the link the project gets its file', ({ tool, control, controlFile }) => {
+    const dir = project();
+    control(dir);
+
+    const result = init(dir);
+
+    expect(isFile(dir, controlFile)).toBe(true);
+    expect(fs.lstatSync(path.join(dir, controlFile)).isSymbolicLink()).toBe(false);
+    expect(read(dir, controlFile)).toContain(BLOCK_HEAD);
+    expect(result.toolsConfigured).toContain(tool);
+    expect(result.pathsRefused).toEqual([]);
+  });
+
+  it('SLS-09.AC8 a dangling owned-path link with a .cursorrules present: nothing is written for Cursor, not even to .cursorrules', () => {
+    const dir = project();
+    write(dir, '.cursorrules', '# Existing rules\n');
+    write(dir, '.cursor/rules/user.mdc', USER_MDC); // an .mdc exists, so the owned .mdc would be written
+    const target = outsideDir();
+    fs.symlinkSync(path.join(target, 'missing.mdc'), path.join(dir, '.cursor', 'rules', 'secretless.mdc'));
+    const before = snapshot(dir);
+
+    const result = init(dir);
+
+    expect(fs.readdirSync(target)).toEqual([]);
+    expect(snapshot(dir)).toEqual(before);
+    expect(read(dir, '.cursorrules')).toBe('# Existing rules\n');
+    expect(result.toolsConfigured).not.toContain('cursor');
+    expect(result.pathsRefused.map(r => r.path)).toContain('.cursor/rules/secretless.mdc');
   });
 });
