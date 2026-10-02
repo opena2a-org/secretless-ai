@@ -275,13 +275,35 @@ export function envPatternToDenyRules(pattern: string): string[] {
 }
 
 /**
+ * The path form a Claude Code `Read(...)` rule needs to match an absolute path.
+ *
+ * In a project-scope settings file a rule path with ONE leading `/` resolves
+ * under the project root: `Read(/srv/app/creds/*.json)` matches
+ * `<project>/srv/app/creds/*.json` and never `/srv/app/creds/*.json` itself, so
+ * an operator who wrote an absolute pattern got a deny that denied nothing.
+ * `//` is the harness's filesystem-root prefix. A pattern that already carries
+ * it is left alone; a relative pattern is left alone.
+ */
+function readRulePath(pattern: string): string {
+  if (pattern.startsWith('/') && !pattern.startsWith('//')) {
+    return `/${pattern}`;
+  }
+  return pattern;
+}
+
+/**
  * Generate settings.json deny rules from a single file pattern.
  * Each file pattern generates Read, Grep, and Bash command rules.
+ *
+ * Only the Read rule gets the `//` treatment for an absolute pattern. The Bash
+ * rules match command text, where the path is the literal the agent would type,
+ * so they keep the pattern exactly as written. Whether the Grep rule shares the
+ * Read rule's path grammar has not been measured, so it is also left as written.
  */
 export function filePatternToDenyRules(pattern: string): string[] {
   const cmds = ['cat', 'grep *', 'awk *', 'sed *', 'strings', 'xxd'];
   const rules: string[] = [
-    `Read(${pattern})`,
+    `Read(${readRulePath(pattern)})`,
     `Grep(${pattern})`,
   ];
   for (const cmd of cmds) {
