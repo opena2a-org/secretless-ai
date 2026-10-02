@@ -189,18 +189,26 @@ export async function status(projectDir: string): Promise<StatusResult> {
     }
   }
 
-  // Check which tools have Secretless AI instructions
+  // Check which tools have Secretless AI instructions: a tool counts once any
+  // file `init` writes its block into carries it. Read through the detector's
+  // `instructionFiles`, not `settingsFile` — for Cursor that was a settings
+  // path `init` never wrote, so an initialised Cursor project reported
+  // "Not protected"; for Cline it is a directory in the documented layout,
+  // and reading it threw.
   const detected = detectAITools(projectDir);
   for (const tool of detected) {
-    const filePath = path.join(projectDir, tool.settingsFile);
-    if (fs.existsSync(filePath)) {
+    for (const rel of tool.instructionFiles) {
+      const filePath = path.join(projectDir, rel);
+      let content: string;
       try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        if (content.includes('secretless:managed') || content.includes('Secretless AI')) {
-          result.configuredTools.push(tool.tool);
-        }
+        if (!fs.statSync(filePath).isFile()) continue;
+        content = fs.readFileSync(filePath, 'utf-8');
       } catch {
-        // Skip
+        continue; // Absent or unreadable: not evidence either way
+      }
+      if (content.includes('secretless:managed') || content.includes('Secretless AI')) {
+        result.configuredTools.push(tool.tool);
+        break;
       }
     }
   }
