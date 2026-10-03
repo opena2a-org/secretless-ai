@@ -26,10 +26,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { WritableSecretBackend, BackendHealth } from './types';
+import { BACKEND_CHILD_TIMEOUT_MS, BACKEND_CHILD_KILL_SIGNAL } from './bounded-child';
 
 const DEFAULT_VAULT = 'Secretless';
 const ITEM_TAG = 'secretless';
-const DEFAULT_OP_TIMEOUT_MS = 30_000;
+/** The one named source every backend child bound comes from. */
+const DEFAULT_OP_TIMEOUT_MS = BACKEND_CHILD_TIMEOUT_MS;
 
 /**
  * What `op` actually reported, without our own `Command failed: ...` argv echo.
@@ -244,6 +246,7 @@ export class OnePasswordBackend implements WritableSecretBackend {
         stdio: ['pipe', 'pipe', 'pipe'],
         encoding: 'utf-8',
         timeout: opTimeoutMs(),
+        killSignal: BACKEND_CHILD_KILL_SIGNAL,
       }) as unknown as string;
     } catch (err) {
       const e = err as NodeJS.ErrnoException & { signal?: string };
@@ -251,7 +254,7 @@ export class OnePasswordBackend implements WritableSecretBackend {
       // path — `ETIMEDOUT` appears instead depending on where it trips. Match
       // both, or a timed-out call falls through to the generic branch and
       // reports something that reads nothing like "it timed out".
-      if (e?.signal === 'SIGTERM' || e?.code === 'ETIMEDOUT') {
+      if (e?.signal === BACKEND_CHILD_KILL_SIGNAL || e?.signal === 'SIGTERM' || e?.code === 'ETIMEDOUT') {
         throw new Error(
           `1Password did not respond within ${opTimeoutMs() / 1000}s (op ${args[0]} ${args[1] ?? ''}).\n` +
           `  This usually means an approval prompt is waiting, or the desktop app is not running.\n` +

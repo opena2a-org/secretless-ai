@@ -8,9 +8,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
 import { LocalBackend } from './local';
-import { MacOSKeychainBackend } from './keychain-macos';
+import { MacOSKeychainBackend, SECURITY_PROGRAM } from './keychain-macos';
+import { BACKEND_CHILD_TIMEOUT_MS, execFileSyncBounded } from './bounded-child';
 import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
@@ -259,20 +259,42 @@ function binaryOnPath(name: string): boolean {
 }
 
 /**
+ * Internal seam for the probes below, for tests only. Nothing outside a test
+ * passes it, and nothing reads it from the environment, config or a flag.
+ */
+export interface ProbeInternals {
+  /** Per-child bound. The default is the one named source in bounded-child.ts. */
+  childTimeoutMs?: number;
+}
+
+/**
+ * Every child the factory starts goes through here: the program as given
+ * (absolute for `security`), the argv as given, and the bound from its one
+ * source. A probe of a locked or wedged tool then returns "not available"
+ * instead of never returning.
+ */
+function probe(program: string, args: string[], internals?: ProbeInternals): void {
+  execFileSyncBounded(program, args, internals?.childTimeoutMs ?? BACKEND_CHILD_TIMEOUT_MS);
+}
+
+/**
  * Check if the OS keychain is available on the current platform.
  * Returns a description of the keychain status.
  *
- * Note: on macOS this shells out to `security default-keychain`, which can
- * trigger Touch ID under some configurations. Prefer `isKeychainLikely()`
- * for read-only display paths; reserve this for genuine pre-flight checks
- * (e.g. `backend set keychain`).
+ * Note: on macOS this shells out to `/usr/bin/security default-keychain`,
+ * which can trigger Touch ID under some configurations. Prefer
+ * `isKeychainLikely()` for read-only display paths; reserve this for genuine
+ * pre-flight checks (e.g. `backend set keychain`). `security` is run by its
+ * absolute path: a program of that name earlier on PATH never runs.
  */
-export function isKeychainAvailable(): { available: boolean; platform: string; message: string } {
+export function isKeychainAvailable(
+  internals?: ProbeInternals,
+): { available: boolean; platform: string; message: string } {
   const platform = process.platform;
 
   if (platform === 'darwin') {
     try {
-      execFileSync('security', ['default-keychain'], { stdio: 'pipe' });
+      probe(SECURITY_PROGRAM, ['default-keychain'], internals);
       return { available: true, platform: 'macOS', message: 'macOS Keychain is available' };
     } catch {
       return { available: false, platform: 'macOS', message: 'macOS Keychain is not accessible' };
@@ -281,7 +303,7 @@ export function isKeychainAvailable(): { available: boolean; platform: string; m
 
   if (platform === 'linux') {
     try {
-      execFileSync('which', ['secret-tool'], { stdio: 'pipe' });
+      probe('which', ['secret-tool'], internals);
       return { available: true, platform: 'Linux', message: 'secret-tool is available (Linux Secret Service)' };
     } catch {
       return {
@@ -308,9 +330,11 @@ export function isKeychainAvailable(): { available: boolean; platform: string; m
  * enabled. Reserve for genuine pre-flight checks (e.g. `backend set
  * 1password`); use `isOnePasswordLikely()` for read-only display paths.
  */
-export function isOnePasswordAvailable(): { available: boolean; message: string } {
+export function isOnePasswordAvailable(
+  internals?: ProbeInternals,
+): { available: boolean; message: string } {
   try {
-    execFileSync('op', ['--version'], { stdio: 'pipe' });
+    probe('op', ['--version'], internals);
   } catch {
     return {
       available: false,
@@ -319,7 +343,7 @@ export function isOnePasswordAvailable(): { available: boolean; message: string 
   }
 
   try {
-    execFileSync('op', ['account', 'get', '--format', 'json'], { stdio: 'pipe' });
+    probe('op', ['account', 'get', '--format', 'json'], internals);
     return {
       available: true,
       message: '1Password CLI installed and authenticated',
