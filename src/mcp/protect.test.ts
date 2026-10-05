@@ -162,4 +162,31 @@ describe('protectMcp', () => {
 
     expect(result.serversProtected).toBe(1); // Only 'raw', not 'already'
   });
+
+  it('leaves a config untouched when a secret in it cannot be stored', async () => {
+    const configDir = path.join(homeDir, '.cursor');
+    fs.mkdirSync(configDir, { recursive: true });
+    const configPath = path.join(configDir, 'mcp.json');
+    const original = JSON.stringify({
+      mcpServers: {
+        github: {
+          command: 'npx',
+          args: ['@github/mcp-server'],
+          env: { GITHUB_TOKEN: '\x1b[200~ghp_abc123def456ghi789jkl012mno345pqr678\x1b[201~' },
+        },
+      },
+    });
+    fs.writeFileSync(configPath, original);
+
+    await expect(protectMcp({
+      homeDir,
+      dataDir,
+      wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
+    })).rejects.toThrow(/"GITHUB_TOKEN" for MCP server cursor\/github was not stored/);
+
+    // Rewriting would point the server at a vault entry holding the mangled
+    // capture; the plaintext config is the one copy of what the user wrote.
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+  });
 });

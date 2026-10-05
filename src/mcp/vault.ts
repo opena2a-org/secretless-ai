@@ -12,6 +12,7 @@ import { createBackend } from '../backends/factory';
 import { resolveBackendType } from '../backends/config';
 import type { WritableSecretBackend } from '../backends/types';
 import type { SelectableBackendType } from '../backends/config';
+import { findSecretValueProblem, unstorableMcpSecretError } from '../secret-value';
 
 const MCP_PREFIX = 'mcp';
 
@@ -61,6 +62,12 @@ export class McpVault {
   /**
    * Store secrets for a specific MCP server.
    * Each secret is stored with key `mcp/{client}/{server}/{envKey}`.
+   *
+   * Every value is checked before the first one is written, with the same rule
+   * `secret set` applies: a value holding terminal escapes or U+FFFD is a
+   * capture that already lost the credential, and storing it only moves the
+   * failure to the server's first request (#104). Checking up front means a
+   * refusal leaves nothing of this server behind.
    */
   async storeServerSecrets(
     client: string,
@@ -69,6 +76,10 @@ export class McpVault {
   ): Promise<void> {
     validateName('client', client);
     validateName('server', server);
+    for (const [envKey, value] of Object.entries(secrets)) {
+      const problem = findSecretValueProblem(value);
+      if (problem) throw unstorableMcpSecretError(client, server, envKey, problem);
+    }
     for (const [envKey, value] of Object.entries(secrets)) {
       const storeKey = `${MCP_PREFIX}/${client}/${server}/${envKey}`;
       await this.backend.store(storeKey, value);
