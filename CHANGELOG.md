@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**`protect-mcp` refuses an MCP server value that holds terminal escapes or
+U+FFFD, the same rule `secret set` applies (#104).** A value in a server's
+`env` block containing an escape or other control character, a null byte, or
+U+FFFD used to be stored in the vault and the config rewritten to point at it,
+so the corruption surfaced only at the server's first request. Every value for
+a server is now checked before any is stored. A refusal names the key, the
+server, the character and its position, never the value; nothing is stored for
+that server, its config file is left as it was, and `protect-mcp` exits 1. Tab,
+newline and carriage return are still accepted, so multi-line keys store as
+before.
+
 **`init` writes Cursor's and Cline's instructions where those tools document
 their rule files.** `init` used to write the Secretless block to `.cursorrules`
 for Cursor and to a single `.clinerules` file for Cline. Cursor documents

@@ -8,9 +8,10 @@
  * checked, so nothing warned, and the corruption surfaced much later as a
  * TypeError inside an unrelated consumer building an HTTP header (#104).
  *
- * The check belongs at the store boundary rather than in the prompt: `set`,
- * `import` and the MCP write path all end at `setSecret`, and a rule enforced
- * in one of three places is a rule with two ways around it.
+ * The check belongs at the store boundaries rather than in the prompt: `set`
+ * and `import` end at `SecretStore.setSecret`, `protect-mcp` ends at
+ * `McpVault.storeServerSecrets`, and both apply it. A rule enforced in one of
+ * the places a value can be written is a rule with a way around it.
  */
 
 /**
@@ -64,7 +65,52 @@ export function findSecretValueProblem(value: string): SecretValueProblem | null
  * of rejecting it is that it is a credential, mangled or not.
  */
 export function unstorableSecretError(name: string, problem: SecretValueProblem): Error {
-  const cause = problem.kind === 'replacement-char'
+  return new Error(
+    [
+      `"${name}" was not stored: ${describeProblem(problem)}`,
+      '',
+      ...problemCause(problem),
+      '',
+      '  Verify:  secretless-ai secret list',
+      `  Fix:     secretless-ai secret set ${name}=<value>   (as an argument, not a paste)`,
+      '           or pipe it:  cat token.txt | secretless-ai secret set ' + name,
+    ].join('\n'),
+  );
+}
+
+/**
+ * Error for an MCP server value that cannot be stored.
+ *
+ * The value came from the server's `env` block in a client config, so the fix
+ * is in that file rather than at a prompt. Never quotes the value.
+ */
+export function unstorableMcpSecretError(
+  client: string,
+  server: string,
+  envKey: string,
+  problem: SecretValueProblem,
+): Error {
+  return new Error(
+    [
+      `${JSON.stringify(envKey)} for MCP server ${client}/${server} was not stored: ${describeProblem(problem)}`,
+      '',
+      ...problemCause(problem),
+      '',
+      '  Nothing was stored for this server.',
+      '',
+      '  Verify:  secretless-ai mcp-status   (shows the config file for each client)',
+      `  Fix:     correct ${envKey} in the "${server}" env block of that file,`,
+      '           then run: secretless-ai protect-mcp',
+    ].join('\n'),
+  );
+}
+
+function describeProblem(problem: SecretValueProblem): string {
+  return `the value contains ${problem.found} at character ${problem.at}.`;
+}
+
+function problemCause(problem: SecretValueProblem): string[] {
+  return problem.kind === 'replacement-char'
     ? [
       '  U+FFFD is what a decoder writes when it has already lost the original',
       '  bytes, so the value cannot be recovered from what was captured.',
@@ -74,18 +120,6 @@ export function unstorableSecretError(name: string, problem: SecretValueProblem)
       '  captured your terminal\'s bracketed-paste escape sequences along with',
       '  the value.',
     ];
-
-  return new Error(
-    [
-      `"${name}" was not stored: the value contains ${problem.found} at character ${problem.at}.`,
-      '',
-      ...cause,
-      '',
-      '  Verify:  secretless-ai secret list',
-      `  Fix:     secretless-ai secret set ${name}=<value>   (as an argument, not a paste)`,
-      '           or pipe it:  cat token.txt | secretless-ai secret set ' + name,
-    ].join('\n'),
-  );
 }
 
 /**

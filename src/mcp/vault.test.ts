@@ -166,4 +166,47 @@ describe('McpVault', () => {
     // Should have IV (16) + tag (16) + ciphertext
     expect(raw.length).toBeGreaterThan(32);
   });
+
+  // The rule `secret set` enforces has to hold on the MCP write path too: a
+  // value with terminal escapes or U+FFFD is a capture that lost the credential,
+  // and storing it only moves the failure to the server's first request (#104).
+  describe('refuses a value no real credential contains', () => {
+    const token = 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0';
+
+    it('refuses bracketed-paste escapes and stores nothing for the server', async () => {
+      const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+
+      const err = await vault.storeServerSecrets('cursor', 'github', {
+        GITHUB_ORG_TOKEN: 'ghp-fine-value',
+        GITHUB_TOKEN: `\x1b[200~${token}\x1b[201~`,
+      }).then(() => null, (e: Error) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err!.message).toContain('"GITHUB_TOKEN"');
+      expect(err!.message).toContain('cursor/github');
+      expect(err!.message).toContain('an escape character (0x1B) at character 1');
+      expect(err!.message).not.toContain(token);
+      expect(err!.message).not.toContain(token.slice(0, 10));
+      // Checked before the first write: the valid key in the same call is not
+      // left behind on its own either.
+      expect(await vault.getServerSecrets('cursor', 'github')).toEqual({});
+    });
+
+    it('refuses U+FFFD', async () => {
+      const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+
+      await expect(vault.storeServerSecrets('cursor', 'github', {
+        GITHUB_TOKEN: 'a1b2c3\uFFFDd4e5',
+      })).rejects.toThrow(/U\+FFFD \(replacement character\) at character 7/);
+      expect(await vault.getServerSecrets('cursor', 'github')).toEqual({});
+    });
+
+    it('still stores a multi-line value', async () => {
+      const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+      const pem = '-----BEGIN KEY-----\r\nAAAA\tBBBB\n-----END KEY-----\n';
+
+      await vault.storeServerSecrets('cursor', 'github', { GITHUB_APP_KEY: pem });
+      expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ GITHUB_APP_KEY: pem });
+    });
+  });
 });

@@ -64,9 +64,9 @@ export class SecretStore {
   /**
    * Store a secret by name.
    *
-   * Validated here rather than in the prompt: `secret set`, `import` and the
-   * MCP write path all arrive at this method, and a rule enforced in one of
-   * three places is a rule with two ways around it (#104).
+   * Validated here rather than in the prompt: `secret set` and `import` both
+   * arrive at this method. The MCP write path does not, and applies the same
+   * check in `McpVault.storeServerSecrets` (#104).
    *
    * `annotation` records what the secret is for (#172). It is checked against
    * the value, and the annotation file is read, BEFORE the value is stored, so
