@@ -241,7 +241,8 @@ function printVaultHelp(): void {
   Usage: secretless-ai vault <command> [options]
 
   Identity Vault — encrypted, identity-bound credential storage.
-  Credentials never enter the agent's process memory (CR-001).
+  exec sets the credential in the child command's environment for that
+  run. It does not mask what the command prints.
 
   Commands:
     init                     Initialize vault with agent identity

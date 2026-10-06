@@ -36,6 +36,19 @@ warning that the value is visible in process listings. Values shorter than
 eight characters are not checked. The vault guide's curl example now passes
 the header on stdin.
 
+**The Vault Exec description no longer says the agent never sees the
+secret.** The README, the `vault` help text and the `vaultExec` type
+declaration in 0.23.0 and earlier releases said that the agent, the AI
+tool's context and any process listing never see a credential injected by
+`vault exec`. That was wrong. `vault exec` sets the value in the child
+command's environment and does not mask the child's output, so a wrapped
+command that prints its environment or the credential returns the value to
+whoever ran it, an AI assistant included; and while the child runs, another
+process running as the same user can read its environment. What `vault exec`
+does is unchanged in this release; the three texts now describe it. If you
+relied on the earlier wording, wrap only commands that do not print the
+credential.
+
 **The Vault and GCP Secret Manager backends bound the whole HTTP exchange,
 and a request that times out says what to do.** Each request's 10-second
 bound used to end when the response headers arrived, so a server that sent

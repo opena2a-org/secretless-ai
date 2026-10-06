@@ -209,13 +209,13 @@ Three layers. Use one, two, or all three. Each works against any supported backe
 
 **Tier 1: In-process SDK.** Credentials resolved in the call stack and zeroized after use. Available in the Python and TypeScript AIM SDKs. Sub-millisecond overhead.
 
-**Tier 2: Vault Exec.** A subprocess primitive that injects a credential into a child process's environment without exposing it to the parent. The agent running under an AI assistant never sees the secret.
+**Tier 2: Vault Exec.** Runs one command with a vault credential set in that command's environment. Vault Exec does not export the value to the calling shell, pass it on the command line, or write it to a file.
 
 ```bash
 npx secretless-ai vault exec github -- curl https://api.github.com/user
 ```
 
-The child process receives `$GITHUB`. The parent shell, the AI tool's context, and any process listing see nothing. Language-agnostic. Wraps any command.
+The child process receives the value as `$GITHUB` and holds it in its environment for as long as it runs. Vault Exec does not mask the child's output: whatever the command prints goes to whoever ran it, so when an AI assistant runs a wrapped command that prints its environment or the credential, the value enters the assistant's context (see [What the guard cannot see](#what-the-guard-cannot-see)). While the child runs, another process running as the same user can read its environment. Wraps any command, in any language.
 
 **Tier 3: Broker with identity policy.** A local daemon that mediates credential access across multiple agents. Policy rules allow or deny access by agent ID, credential name, time window, and rate limit. Optional AIM integration adds trust-score and capability constraints.
 
