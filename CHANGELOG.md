@@ -561,6 +561,18 @@ errors print in the same layout as the other `secret` subcommands (#233): a
 blank line, `Error:` before the first line, every further line at two spaces,
 and for an unreachable source the Verify line inside that block.
 
+**`scan` names every file it did not open, even when no directory was
+skipped.** The count of files not opened was printed only inside the
+"directories not entered" block, so a directory whose only boundary was a file
+of an unsupported type printed "No hardcoded credentials found." with nothing
+beside it: an AWS access key id in `notes.txt` was never read, and the report
+did not say so. Files not opened now have their own block, listed with the
+reason each was not opened, followed by a `Scan one:` command that names a
+file, because naming a file scans it whatever its type. A control character in
+a listed file name is shown as `\xNN`, and such a name is never offered as the
+command. What the scan detects, the exit code and the `--json` output are
+unchanged. `--help` lists scanning a single file under Scan Coverage.
+
 **`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
 CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS
 Keychain and Linux Secret Service CLIs; reads and writes through those backends

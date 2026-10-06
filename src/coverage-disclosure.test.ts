@@ -197,3 +197,67 @@ describe('coverage-warning paths are printed so they run where they are pasted (
     expect(out).toContain(`Verify: head -c 4096 ${path.join(path.basename(dir), 'big.js')}`);
   });
 });
+
+/**
+ * The human report, on a tree where the ONLY boundary is a file.
+ *
+ * The file-count line used to live inside the directory block, so it printed
+ * only when a directory was also pruned. A scratch directory holding one
+ * `notes.txt` with a planted AWS access key id read "No hardcoded credentials
+ * found." with nothing beside it: the key was never opened, and the report did
+ * not say so. The JSON summary carried the count all along; the human report,
+ * which is what a person reads, dropped it.
+ */
+describe('the human report names a file it did not open', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // Assembled from parts so the committed source never carries the key shape.
+  const AWS_KEY_ID = ['AK', 'IA', 'Q7XN3P2LMRT4VW8K'].join('');
+
+  async function report(target: string) {
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = await runScan(target);
+    // eslint-disable-next-line no-control-regex
+    return { text: lines.join('\n').replace(/\x1b\[[0-9;]*m/g, ''), code };
+  }
+
+  it('discloses the unopened file and the command that scans it, with no pruned directory', async () => {
+    const dir = tree({ 'notes.txt': `aws_access_key_id = ${AWS_KEY_ID}\n` });
+    const { text, code } = await report(dir);
+
+    expect(text).toContain('No hardcoded credentials found.');
+    expect(text).toMatch(/1 file not opened — declared boundaries, not findings\./);
+    expect(text).toMatch(/notes\.txt — unsupported file type/);
+    const scanOne = /Scan one: npx secretless-ai scan (\S+)/.exec(text.slice(text.indexOf('file not opened')));
+    expect(scanOne).not.toBeNull();
+    expect(path.basename(scanOne![1])).toBe('notes.txt');
+    expect(code, 'a declared boundary must not gate CI').toBe(0);
+  });
+
+  it('CONTROL: the command it prints finds the planted key', async () => {
+    const dir = tree({ 'notes.txt': `aws_access_key_id = ${AWS_KEY_ID}\n` });
+    const { text, code } = await report(path.join(dir, 'notes.txt'));
+    expect(text).toContain('AWS Access Key');
+    expect(text).toContain('notes.txt:1');
+    expect(code).toBe(1);
+  });
+
+  it('prints a control character in a file name in visible form, never raw', async () => {
+    const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
+    const hostile = 'a\u001b[2Jb.txt';
+    fs.writeFileSync(path.join(dir, hostile), 'nothing here\n');
+    const { text } = await report(dir);
+    expect(text).not.toContain('\u001b[2J');
+    expect(text).toContain('a\\x1b[2Jb.txt');
+    // No runnable command is offered for a name the terminal cannot show as typed.
+    expect(text).not.toMatch(/Scan one: npx secretless-ai scan .*a\\x1b/);
+  });
+
+  it('CONTROL: a tree with nothing skipped prints no file block', async () => {
+    const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
+    const { text } = await report(dir);
+    expect(text).not.toMatch(/not opened/);
+  });
+});
