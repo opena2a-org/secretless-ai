@@ -548,6 +548,20 @@ the switch's value is exactly `off`, in lowercase. The release artifact
 review's install smoke passes `SECRETLESS_OS_KEYCHAIN` through to the CLI
 starts it makes, so the switch holds for any command added to that list.
 
+**The guard hook judges a symlinked path by the file it reaches.** The hook's
+file rules read only the name a tool was given, so a link named like a
+template (`config.env.example -> .env`) was allowed as a template while the
+Read, Grep or Edit went through to the real `.env`, and a link with a plain
+name (`notes.txt -> ~/.aws/credentials`) matched no rule at all. A repository
+can ship such a link. The hook now follows every symlink in the path, in the
+parent directories as well as the file itself, and applies the same rules to
+the resolved path, template exemption first: a link to a secret file is
+refused, and a template-named link to another template is still allowed. A
+link that cannot be resolved (its target is missing, or it loops) is refused,
+because what it reaches is unknown. A file that does not exist yet, such as
+the target of a Write, is still checked under its resolved parent directory.
+Re-running `npx secretless-ai init` refreshes the hook in an existing project.
+
 **An absolute file pattern in `.secretless-rules.yaml` is enforced, in either
 way it can be written.** A `files:` pattern naming an absolute path
 (`/srv/app/creds/*.json`) produced a `.claude/settings.json` deny rule with one

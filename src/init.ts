@@ -1886,40 +1886,108 @@ if [ -z "$FILE_PATH_CANDIDATES" ]; then
   exit 0
 fi
 
+# Classify one path against the file rules: CLASS becomes template, blocked or
+# clear, and REASON names the matching rule when blocked.
+classify_path() {
+  # Normalize path for matching (case-insensitive: server.KEY and prod.ENV must match too)
+  local LOWER_BASENAME LOWER_PATH
+  LOWER_BASENAME=$(basename "$1" | tr '[:upper:]' '[:lower:]')
+  LOWER_PATH=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+  CLASS=clear
+
+  # Allow committed template/example files (.env.example, config.sample, etc.) — these
+  # hold placeholders, not real secrets, and are meant to be read/edited/committed.
+  # Checked BEFORE any block logic so it wins over the .env extension/dotfile rules below.
+  case "$LOWER_BASENAME" in
+    *.example|*.sample|*.template|*.dist) CLASS=template; return 0 ;;
+  esac
+
+  # Block by secret file extension as a suffix: server.key, prod.env, id_rsa.pem, terraform.tfstate
+  if echo "$LOWER_BASENAME" | grep -qE '\\.(${extAlternation})$'; then CLASS=blocked; REASON="secret file extension"; fi
+  # Block .env dotfile families (.env, .env.local, .envrc, .env.production)
+  case "$LOWER_BASENAME" in
+    .env|.env.*|.envrc) CLASS=blocked; REASON=".env" ;;
+    ${dotfileCases}) CLASS=blocked; REASON="$LOWER_BASENAME" ;;
+  esac
+  # Block by path fragment anywhere in the path (credentials, .ssh/, secrets/, ...)
+  case "$LOWER_PATH" in
+    ${fragmentCases}) CLASS=blocked; REASON="secret path" ;;
+  esac
+  return 0
+}
+
+deny_file() {
+  echo "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"permissionDecision\\":\\"deny\\",\\"permissionDecisionReason\\":\\"$1\\"}}"
+  exit 0
+}
+
+# Print the physical path a tool opens for $1: every symlink followed, in the
+# parent directories and in the last component. Written with cd -P and
+# single-step readlink because realpath and readlink -f are missing from older
+# macOS. Fails on a symlink loop or a directory that cannot be entered. A last
+# component that does not exist yet (a Write of a new file) is kept as named,
+# under its resolved parent.
+resolve_path() {
+  local p="$1" dir base target hops=0
+  while [ "$hops" -lt 40 ]; do
+    hops=$((hops + 1))
+    case "$p" in
+      */*) dir="\${p%/*}"; base="\${p##*/}" ;;
+      *) dir=.; base="$p" ;;
+    esac
+    [ -n "$dir" ] || dir=/
+    case "$base" in
+      ''|.|..) (cd -P -- "$p" 2>/dev/null && pwd -P) || return 1; return 0 ;;
+    esac
+    dir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return 1
+    [ "$dir" = / ] && dir=""
+    if [ -L "$dir/$base" ]; then
+      target=$(readlink -- "$dir/$base") || return 1
+      case "$target" in
+        /*) p="$target" ;;
+        *) p="$dir/$target" ;;
+      esac
+    else
+      printf '%s\\n' "$dir/$base"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Check EVERY candidate path. A payload carrying both a benign top-level path
 # and a secret one nested deeper must block on the secret one, so the loop only
 # skips a template candidate rather than exiting on it.
 while IFS= read -r CANDIDATE; do
   [ -z "$CANDIDATE" ] && continue
 
-  # Normalize path for matching (case-insensitive: server.KEY and prod.ENV must match too)
-  BASENAME=$(basename "$CANDIDATE")
-  LOWER_BASENAME=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
-  LOWER_PATH=$(echo "$CANDIDATE" | tr '[:upper:]' '[:lower:]')
+  # The name the tool was given: a secret name is refused whatever it points at.
+  classify_path "$CANDIDATE"
+  if [ "$CLASS" = blocked ]; then
+    deny_file "Secretless: blocked access to secret file matching pattern '$REASON'"
+  fi
 
-  # Allow committed template/example files (.env.example, config.sample, etc.) — these
-  # hold placeholders, not real secrets, and are meant to be read/edited/committed.
-  # Checked BEFORE any block logic so it wins over the .env extension/dotfile rules below.
-  case "$LOWER_BASENAME" in
-    *.example|*.sample|*.template|*.dist) continue ;;
-  esac
-
-  BLOCKED=0
-  # Block by secret file extension as a suffix: server.key, prod.env, id_rsa.pem, terraform.tfstate
-  if echo "$LOWER_BASENAME" | grep -qE '\\.(${extAlternation})$'; then BLOCKED=1; REASON="secret file extension"; fi
-  # Block .env dotfile families (.env, .env.local, .envrc, .env.production)
-  case "$LOWER_BASENAME" in
-    .env|.env.*|.envrc) BLOCKED=1; REASON=".env" ;;
-    ${dotfileCases}) BLOCKED=1; REASON="$LOWER_BASENAME" ;;
-  esac
-  # Block by path fragment anywhere in the path (credentials, .ssh/, secrets/, ...)
-  case "$LOWER_PATH" in
-    ${fragmentCases}) BLOCKED=1; REASON="secret path" ;;
-  esac
-
-  if [ "\${BLOCKED:-0}" = "1" ]; then
-    echo "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"permissionDecision\\":\\"deny\\",\\"permissionDecisionReason\\":\\"Secretless: blocked access to secret file matching pattern '$REASON'\\"}}"
-    exit 0
+  # The file the tool would open. The rules above read the NAME, and a symlink
+  # carries any name: config.env.example -> .env passed as a template while the
+  # Read returned the real .env, and a repository can ship such a link. So the
+  # resolved path is classified again, template exemption first, exactly as the
+  # name was. A link that exists but cannot be resolved (dangling, a loop, an
+  # unreadable directory) is refused, because what it reaches is unknown.
+  RESOLVED=""
+  if [ -L "$CANDIDATE" ] || [ -e "$CANDIDATE" ]; then
+    if ! RESOLVED=$(resolve_path "$CANDIDATE") || [ ! -e "$CANDIDATE" ]; then
+      deny_file "Secretless: blocked a symbolic link whose target cannot be resolved"
+    fi
+  else
+    # Not there yet (a Write of a new file), but a parent directory can still
+    # be a link into a secret store. Nothing to read if the parent is missing.
+    RESOLVED=$(resolve_path "$CANDIDATE") || RESOLVED=""
+  fi
+  if [ -n "$RESOLVED" ]; then
+    classify_path "$RESOLVED"
+    if [ "$CLASS" = blocked ]; then
+      deny_file "Secretless: blocked access to secret file matching pattern '$REASON' at the path this one resolves to"
+    fi
   fi
 done <<EOF
 $FILE_PATH_CANDIDATES
