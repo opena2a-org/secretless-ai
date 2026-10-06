@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**`status --json` and `vault scan` count a file skipped for size as
+unscanned.** `status --json` read `scanIncomplete: false` over a tree holding a
+file skipped for size, and `vault scan` printed `No hardcoded credentials
+found.` over one. Both built their own coverage counters without the size
+list, so `status` reported a complete scan where `scan --json` on the same tree
+reported `oversize: 1` and exited 1. `status --json` now reads
+`scanIncomplete: true` there, and `vault scan` says how many files were skipped
+for size. A test finds every call to the scanner in the shipped code and fails
+when one leaves out a coverage counter.
+
 **The README's `clean` example runs (#240).** Under "A flag never widens
 scope" the README showed `npx secretless-ai clean --dryrun --path ./transcripts`
 as a bare command to illustrate the refusal, so a reader who copied it got exit

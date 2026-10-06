@@ -218,6 +218,35 @@ export interface ScanStats {
   unscannedConfig?: { count: number; files: string[] };
 }
 
+/**
+ * A stats object with every collector present. `scan()` appends only to the
+ * collectors a caller supplies, so a hand-built object that leaves one out
+ * reads that gap as clean: `status --json` reported `scanIncomplete: false`
+ * over a file skipped for size because its object had no `oversize` array.
+ * `Required<>` makes a collector added to `ScanStats` a compile error here
+ * until it is filled in.
+ */
+export function newScanStats(): Required<ScanStats> {
+  return {
+    placeholdersSuppressed: 0, truncated: false, unreadable: [], outOfRoot: [],
+    oversize: [], skips: emptySkips(), confidenceSuppressed: 0,
+    unscannedConfig: { count: 0, files: [] },
+  };
+}
+
+/**
+ * True when part of the tree was never read: the walk stopped at the file cap,
+ * a path could not be opened, or a file was skipped for size. The findings are
+ * then a subset, so zero of them is not a clean result. Out-of-root links and
+ * declared skips are disclosures rather than gaps and do not count, the same
+ * split `scan` uses for its exit code.
+ */
+export function coverageIncomplete(stats: ScanStats): boolean {
+  return stats.truncated
+    || (stats.unreadable?.length ?? 0) > 0
+    || (stats.oversize?.length ?? 0) > 0;
+}
+
 /** Per-file size caps. A file above the cap is skipped and reported, never dropped silently. */
 export const CONFIG_FILE_CAP_BYTES = 10 * 1024 * 1024;
 export const SOURCE_FILE_CAP_BYTES = 1 * 1024 * 1024;
