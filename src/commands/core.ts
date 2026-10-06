@@ -220,7 +220,7 @@ export function runInit(projectDir: string): number {
  * that closed the quote and ran `id`. Single quotes with the standard
  * `'\''` escape make every byte literal.
  */
-function shellQuote(p: string): string {
+export function shellQuote(p: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
 }
 

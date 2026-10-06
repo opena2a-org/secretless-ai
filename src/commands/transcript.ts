@@ -1,7 +1,27 @@
 import * as path from 'path';
-import { cleanTranscripts } from '../transcript';
+import { cleanTranscripts, MAX_LINE_SIZE, type CleanResult } from '../transcript';
 import { startWatch, stopWatch, isWatchRunning, installLaunchAgent, uninstallLaunchAgent } from '../watch';
 import { scanHistory, cleanHistory } from '../history';
+import { shellQuote } from './core';
+
+/**
+ * Name the lines `clean` did not read. A line over the length cap is skipped
+ * whole, so "Transcripts are clean" over a 60 KB line carrying a token reported
+ * a line nobody read as clean.
+ */
+function reportLinesNotRead(result: CleanResult): void {
+  const n = result.totalLinesNotRead;
+  if (n === 0) return;
+  const files = result.linesNotRead.length;
+  console.log(`  Not read: ${n} line${n > 1 ? 's' : ''} longer than ${MAX_LINE_SIZE} characters in ${files} file${files > 1 ? 's' : ''}, left unchanged.`);
+  for (const entry of result.linesNotRead.slice(0, 10)) {
+    const more = entry.lines.length > 10 ? `, … and ${entry.lines.length - 10} more` : '';
+    console.log(`    ${entry.file}  line${entry.lines.length > 1 ? 's' : ''} ${entry.lines.slice(0, 10).join(', ')}${more}`);
+  }
+  if (files > 10) console.log(`    … and ${files - 10} more files`);
+  console.log('  A line over this length is skipped whole, so a credential on it is neither reported nor redacted.');
+  console.log(`  Verify:   awk 'length($0) > ${MAX_LINE_SIZE} { print FNR ": " length($0) }' ${shellQuote(result.linesNotRead[0].path)}\n`);
+}
 
 export function runClean(args: string[]): number {
   const dryRun = args.includes('--dry-run');
@@ -30,6 +50,11 @@ export function runClean(args: string[]): number {
 
   if (result.totalFindings === 0) {
     console.log(`  Scanned: ${result.filesScanned} files`);
+    if (result.totalLinesNotRead > 0) {
+      console.log('  No credentials found in the lines that were read.\n');
+      reportLinesNotRead(result);
+      return 0;
+    }
     console.log('  No credentials found. Transcripts are clean.\n');
     return 0;
   }
@@ -58,6 +83,7 @@ export function runClean(args: string[]): number {
   } else {
     console.log(`  Redacted: ${result.totalRedacted}\n`);
   }
+  reportLinesNotRead(result);
   return 0;
 }
 

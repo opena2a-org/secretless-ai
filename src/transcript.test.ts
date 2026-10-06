@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { deepScan, scanTranscriptFile, atomicWrite, discoverTranscripts, cleanTranscripts, type TranscriptFinding } from './transcript';
+import { deepScan, scanTranscriptFile, atomicWrite, discoverTranscripts, cleanTranscripts, MAX_LINE_SIZE, type TranscriptFinding } from './transcript';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-transcript-test-'));
@@ -201,6 +201,33 @@ describe('scanTranscriptFile', () => {
     expect(findings).toHaveLength(0);
     expect(redactedLines).toBeNull();
   });
+
+  it('returns the number of a line over the length cap, which it leaves unread', () => {
+    const filePath = path.join(dir, 'session.jsonl');
+    const pat = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+    const long = JSON.stringify({ message: { content: 'x'.repeat(MAX_LINE_SIZE) + ' token ' + pat } });
+    fs.writeFileSync(filePath, [JSON.stringify({ message: { content: 'hello' } }), long].join('\n') + '\n');
+
+    const { findings, linesNotRead } = scanTranscriptFile(filePath, true);
+
+    expect(findings).toHaveLength(0);
+    expect(linesNotRead).toEqual([2]);
+  });
+
+  it('CONTROL: a line at the length cap is read, not reported as unread', () => {
+    const filePath = path.join(dir, 'session.jsonl');
+    const pat = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+    const head = JSON.stringify({ message: { content: ' token ' + pat } });
+    const content = 'x'.repeat(MAX_LINE_SIZE - head.length);
+    const atCap = JSON.stringify({ message: { content: content + ' token ' + pat } });
+    expect(atCap.length).toBe(MAX_LINE_SIZE);
+    fs.writeFileSync(filePath, atCap + '\n');
+
+    const { findings, linesNotRead } = scanTranscriptFile(filePath, true);
+
+    expect(findings).toHaveLength(1);
+    expect(linesNotRead).toEqual([]);
+  });
 });
 
 describe('atomicWrite', () => {
@@ -349,5 +376,38 @@ describe('cleanTranscripts', () => {
     // Second clean — should find nothing
     const result = cleanTranscripts({ targetPath: filePath, dryRun: true });
     expect(result.totalFindings).toBe(0);
+  });
+
+  it('counts the lines over the length cap that it leaves unchanged, per file', () => {
+    const filePath = path.join(dir, 'session.jsonl');
+    const pat = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+    const long = JSON.stringify({ message: { content: 'x'.repeat(MAX_LINE_SIZE) + ' token ' + pat } });
+    const lines = [
+      JSON.stringify({ message: { content: 'key: sk-ant-api03-abc123def456abc123def456abc123' } }),
+      long,
+      long,
+    ];
+    fs.writeFileSync(filePath, lines.join('\n'));
+
+    const result = cleanTranscripts({ targetPath: filePath });
+
+    expect(result.totalFindings).toBe(1);
+    expect(result.totalLinesNotRead).toBe(2);
+    expect(result.linesNotRead).toEqual([{ file: filePath.replace(os.homedir(), '~'), path: filePath, lines: [2, 3] }]);
+    // Redaction rewrote line 1 and left the unread lines byte-for-byte as they were.
+    const after = fs.readFileSync(filePath, 'utf-8').split('\n');
+    expect(after[0]).toContain('[REDACTED:anthropic]');
+    expect(after[1]).toBe(long);
+    expect(after[2]).toBe(long);
+  });
+
+  it('CONTROL: a transcript with no long line reports nothing unread', () => {
+    const filePath = path.join(dir, 'session.jsonl');
+    fs.writeFileSync(filePath, JSON.stringify({ message: { content: 'hello' } }) + '\n');
+
+    const result = cleanTranscripts({ targetPath: filePath, dryRun: true });
+
+    expect(result.totalLinesNotRead).toBe(0);
+    expect(result.linesNotRead).toEqual([]);
   });
 });

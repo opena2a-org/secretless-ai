@@ -25,6 +25,13 @@ export interface CleanResult {
   totalFindings: number;
   totalRedacted: number;
   findings: TranscriptFinding[];
+  /**
+   * Lines longer than `MAX_LINE_SIZE` characters, per file. Such a line is left
+   * unchanged without being read, so a credential on it is neither reported nor
+   * redacted, and "no credentials found" says nothing about it.
+   */
+  linesNotRead: Array<{ file: string; path: string; lines: number[] }>;
+  totalLinesNotRead: number;
 }
 
 export interface CleanOptions {
@@ -41,7 +48,7 @@ const SKIP_KEYS = new Set([
 ]);
 
 /** Max string/line size to process (ReDoS protection — 50KB per string value) */
-const MAX_LINE_SIZE = 50 * 1024;
+export const MAX_LINE_SIZE = 50 * 1024;
 
 /**
  * Discover Claude Code transcript files.
@@ -180,16 +187,17 @@ function scanString(
 export function scanTranscriptFile(
   filePath: string,
   dryRun: boolean,
-): { findings: TranscriptFinding[]; redactedLines: string[] | null } {
+): { findings: TranscriptFinding[]; redactedLines: string[] | null; linesNotRead: number[] } {
   const findings: TranscriptFinding[] = [];
   let hasChanges = false;
   const redactedLines: string[] = [];
+  const linesNotRead: number[] = [];
 
   let content: string;
   try {
     content = fs.readFileSync(filePath, 'utf-8');
   } catch {
-    return { findings, redactedLines: null };
+    return { findings, redactedLines: null, linesNotRead };
   }
 
   const lines = content.split('\n');
@@ -204,8 +212,10 @@ export function scanTranscriptFile(
       continue;
     }
 
-    // Skip oversized lines (ReDoS protection)
+    // Skip oversized lines (ReDoS protection). Skipped is not clean: the line
+    // is neither scanned nor redacted, so its number goes back to the caller.
     if (line.length > MAX_LINE_SIZE) {
+      linesNotRead.push(i + 1);
       if (!dryRun) redactedLines.push(line);
       continue;
     }
@@ -243,6 +253,7 @@ export function scanTranscriptFile(
   return {
     findings,
     redactedLines: !dryRun && hasChanges ? redactedLines : null,
+    linesNotRead,
   };
 }
 
@@ -276,6 +287,8 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
     totalFindings: 0,
     totalRedacted: 0,
     findings: [],
+    linesNotRead: [],
+    totalLinesNotRead: 0,
   };
 
   let files = discoverTranscripts(options?.targetPath);
@@ -295,7 +308,12 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
 
   for (const file of files) {
     result.filesScanned++;
-    const { findings, redactedLines } = scanTranscriptFile(file, dryRun);
+    const { findings, redactedLines, linesNotRead } = scanTranscriptFile(file, dryRun);
+
+    if (linesNotRead.length > 0) {
+      result.linesNotRead.push({ file: file.replace(os.homedir(), '~'), path: file, lines: linesNotRead });
+      result.totalLinesNotRead += linesNotRead.length;
+    }
 
     if (findings.length > 0) {
       result.filesWithSecrets++;
