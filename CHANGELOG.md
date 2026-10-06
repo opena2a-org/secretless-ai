@@ -278,6 +278,20 @@ secret-file arm that already did.
   before; `add`, `delete` and `clear` are gone, `Set.prototype.add.call` on a
   view throws a `TypeError`, and `instanceof Set` is now false (#148).
 
+### Added
+
+- `init` installs a PostToolUse hook for Claude Code,
+  `.claude/hooks/secretless-output-check.cjs`, wired to Bash. It reads a
+  command's output after the command runs and, when the output matches the
+  credential catalog, warns the user and tells the assistant to treat the value
+  as exposed. It names the pattern and never repeats the value. The PreToolUse
+  guard decides on the command text, so a command that fetches credentials
+  (`curl -H "Authorization: Bearer $TOKEN"` against a config endpoint) passed
+  it and its output reached context unread. This is detection after exposure,
+  not prevention: the value is already in context when the hook sees it, and a
+  format outside the catalog passes unflagged. Run `init` again to add it to an
+  existing install (#129).
+
 ## [0.23.1] - YYYY-MM-DD
 
 **The session-check PreToolUse hook (`secretless-ai hook --check-only`) now

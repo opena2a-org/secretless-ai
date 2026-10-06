@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { detectAITools, toolDisplayName, type AITool } from './detect';
-import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
+import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
 import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filesystemPathForm, mergeRules } from './custom-rules';
 import type { CustomRules, RulesFileIssue } from './custom-rules';
 import { loadSecretlessIgnore } from './secretlessignore';
@@ -226,6 +226,9 @@ export function init(projectDir: string): InitResult {
 // Claude Code Configuration
 // ============================================================================
 
+const OUTPUT_CHECK_NAME = 'secretless-output-check';
+const OUTPUT_CHECK_FILE = `${OUTPUT_CHECK_NAME}.cjs`;
+
 function configureClaudeCode(
   projectDir: string,
   result: InitResult,
@@ -251,6 +254,18 @@ function configureClaudeCode(
     fs.writeFileSync(hookPath, desiredHook, { mode: 0o755 });
     result.filesModified.push('.claude/hooks/secretless-guard.sh');
     result.hookRefreshed = true;
+  }
+
+  // The PostToolUse output check is managed the same way: regenerated, written
+  // only when it differs. It covers what the guard above cannot see (#129).
+  const outputCheckPath = path.join(hooksDir, OUTPUT_CHECK_FILE);
+  const desiredOutputCheck = generateClaudeOutputCheckScript();
+  if (!fs.existsSync(outputCheckPath)) {
+    fs.writeFileSync(outputCheckPath, desiredOutputCheck, { mode: 0o755 });
+    result.filesCreated.push(`.claude/hooks/${OUTPUT_CHECK_FILE}`);
+  } else if (fs.readFileSync(outputCheckPath, 'utf-8') !== desiredOutputCheck) {
+    fs.writeFileSync(outputCheckPath, desiredOutputCheck, { mode: 0o755 });
+    result.filesModified.push(`.claude/hooks/${OUTPUT_CHECK_FILE}`);
   }
 
   // 2. Update settings.json with hook config and deny rules.
@@ -289,6 +304,29 @@ function configureClaudeCode(
       }],
     });
     result.filesModified.push('.claude/settings.json');
+  }
+
+  // Add the PostToolUse output check for Bash. Bash is the channel #129 names:
+  // a command that fetches credentials over the network names no local path,
+  // so nothing that runs before it has anything to match. Read, Grep and Glob
+  // are gated on the path they open.
+  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
+
+  const outputCheckExists = settings.hooks.PostToolUse.some(
+    (h: any) => h.hooks?.some((hh: any) => hh.command?.includes(OUTPUT_CHECK_NAME))
+  );
+
+  if (!outputCheckExists) {
+    settings.hooks.PostToolUse.push({
+      matcher: 'Bash',
+      hooks: [{
+        type: 'command',
+        command: `"$CLAUDE_PROJECT_DIR"/.claude/hooks/${OUTPUT_CHECK_FILE}`,
+      }],
+    });
+    if (!result.filesModified.includes('.claude/settings.json')) {
+      result.filesModified.push('.claude/settings.json');
+    }
   }
 
   // Add Stop hook for transcript cleaning after conversations
@@ -1215,6 +1253,112 @@ $FILE_PATH_CANDIDATES
 EOF
 
 exit 0
+`;
+}
+
+/**
+ * The PostToolUse output check (#129). Every arm of the guard above matches a
+ * command's text or a local path before the command runs, so a command that
+ * fetches credentials (a provider API, `aws secretsmanager get-secret-value`,
+ * `kubectl get secret -o yaml`) passes it with a clean command string and its
+ * output lands in context unread. This hook reads that output after the command
+ * has run and warns when it matches the credential catalog.
+ *
+ * It is detection after exposure, not prevention: the value is already in the
+ * conversation when the hook sees it, and a format outside the catalog passes
+ * unflagged. The messages say so, and they name the pattern, never the value.
+ *
+ * Node, not bash: the catalog is JavaScript regex (lookahead, `\d`, the `i`
+ * flag), and embedding it verbatim keeps one source of truth instead of a
+ * hand-translated ERE copy that drifts. `init` itself runs on Node, so it is
+ * present. The `.cjs` extension keeps it CommonJS under a `"type": "module"`
+ * package.json.
+ */
+function generateClaudeOutputCheckScript(): string {
+  const patterns = CREDENTIAL_PATTERNS.map(p => [p.name, p.regex.source, p.regex.flags.replace('g', '')]);
+
+  return `#!/usr/bin/env node
+// Secretless output check — PostToolUse hook for Claude Code
+// Warns when a command's output matches a credential pattern. The command has
+// already run, so this cannot keep the value out of the conversation.
+// Managed by secretless-ai. Do not edit manually.
+'use strict';
+
+const PATTERNS = ${JSON.stringify(patterns)};
+const KNOWN_EXAMPLE_KEYS = new Set(${JSON.stringify([...KNOWN_EXAMPLE_KEYS])});
+const PLACEHOLDER_INDICATORS = ${JSON.stringify(PLACEHOLDER_INDICATORS)};
+
+// Scan long output in overlapping windows. Some catalog patterns have an
+// unbounded run before a separator, which is quadratic over one long run of
+// matching characters (a base64 blob, a minified response body). Windowing
+// keeps the cost linear in output size. Windows overlap by more than the
+// shortest text any catalog pattern needs to match, so a credential that starts
+// too close to one window's end to match there still matches in the next.
+const WINDOW = 16384;
+const OVERLAP = 2048;
+
+function collect(value, out, depth) {
+  if (typeof value === 'string') { if (value) out.push(value); return; }
+  if (!value || typeof value !== 'object' || depth > 8) return;
+  for (const v of Array.isArray(value) ? value : Object.values(value)) collect(v, out, depth + 1);
+}
+
+// The value half of the scanner's allowlist (isKnownExample in scan.ts); its
+// line-context rules need a source line, which command output does not have.
+function isPlaceholder(value) {
+  if (KNOWN_EXAMPLE_KEYS.has(value)) return true;
+  const lower = value.toLowerCase();
+  if (PLACEHOLDER_INDICATORS.some(p => lower.includes(p))) return true;
+  return value.length >= 20 && new Set(value).size <= 6;
+}
+
+function matches(re, text) {
+  for (let start = 0; start < text.length; start += WINDOW - OVERLAP) {
+    const chunk = text.slice(start, start + WINDOW);
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(chunk)) !== null) {
+      if (!isPlaceholder(m[1] ?? m[0])) return true;
+      if (m[0].length === 0) re.lastIndex++;
+    }
+    if (start + WINDOW >= text.length) break;
+  }
+  return false;
+}
+
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  let payload;
+  try { payload = JSON.parse(input); } catch { return; }
+  const texts = [];
+  collect(payload && payload.tool_response, texts, 0);
+  if (texts.length === 0) return;
+
+  const names = [];
+  for (const [name, source, flags] of PATTERNS) {
+    const re = new RegExp(source, flags + 'g');
+    if (!names.includes(name) && texts.some(t => matches(re, t))) names.push(name);
+  }
+  if (names.length === 0) return;
+
+  const matched = (names.length === 1 ? 'a credential pattern' : names.length + ' credential patterns') +
+    ' (' + names.join(', ') + ')';
+  process.stdout.write(JSON.stringify({
+    systemMessage: 'Secretless: the output of this command matched ' + matched + '. ' +
+      'The matched text is now in the conversation and the session transcript. This check runs after the ' +
+      'command, so it warns but cannot keep the value out. If it is a live credential, rotate it; ' +
+      'npx secretless-ai clean redacts saved transcripts.',
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUse',
+      additionalContext: 'Secretless: the output of the command that just ran matched ' + matched + '. ' +
+        'Treat the matched text as an exposed credential. Do not repeat it, copy it into files or commands, or use it. ' +
+        'Tell the user which command printed it so they can rotate it. To read configuration ' +
+        'without credentials, select named non-secret fields (--query, jq) instead of printing whole objects.',
+    },
+  }) + '\\n');
+});
 `;
 }
 

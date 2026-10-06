@@ -26,6 +26,7 @@ npx secretless-ai init
 
   Created:
     + .claude/hooks/secretless-guard.sh
+    + .claude/hooks/secretless-output-check.cjs
     + CLAUDE.md
 
   Modified:
@@ -82,7 +83,7 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 1. **Scans** your project for hardcoded credentials in config files and source code. 57 credential patterns from [`@opena2a/credential-patterns@0.1.3`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted, across `.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, and more. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
 3. **Gates** AI-tool reads of credential files. 18 file patterns enforced as Claude Code deny rules, plus a PreToolUse hook that denies tool calls that would read credential files or expose secrets before they run: a gate on the assistant's tool path, not a security boundary around the machine. Other tools get instruction files or ignore patterns (see [Supported tools](#supported-tools)).
-4. **Brokers** access through environment variables. Stored values never enter AI context; a command whose own output is a credential is the one channel no layer checks (see [What the guard cannot see](#what-the-guard-cannot-see)).
+4. **Brokers** access through environment variables. Stored values never enter AI context; a command whose own output is a credential is the one channel no layer blocks. In Claude Code a PostToolUse check warns after such a command runs (see [What the guard cannot see](#what-the-guard-cannot-see)).
 
 ## Store secrets and use them in AI sessions
 
@@ -123,6 +124,8 @@ For a key stored after `init`, or one `init` doesn't recognize, name the variabl
 ### What the guard cannot see
 
 The hook and the deny rules check a command before it runs, by its text and the local paths it names. Neither can see what the command prints. A command that returns credential values (`aws secretsmanager get-secret-value`, `kubectl get secret -o yaml`, a provider API that returns keys or environment variable values) puts them into the model's context, and nothing in Secretless blocks it. `init` tells the assistant not to run such commands and to read only named, non-secret fields. That is an instruction, not an enforced control.
+
+In Claude Code, `init` also installs a PostToolUse hook (`.claude/hooks/secretless-output-check.cjs`) that reads each Bash command's output after it runs. When the output matches a pattern in the credential catalog, the hook warns you and tells the assistant to treat the value as exposed. It names the pattern and never repeats the value. This is detection after exposure, not prevention: the value is already in context when the hook sees it, and a credential format outside the catalog passes unflagged. If it fires on a live credential, rotate it; `npx secretless-ai clean` redacts saved transcripts.
 
 ## MCP server protection
 
@@ -231,7 +234,7 @@ AIM is optional. Tier 1 and Tier 2 work against any of the five [storage backend
 
 | Tool | Protection method |
 |---|---|
-| Claude Code | PreToolUse hook (`secretless-guard.sh`, a gate on the assistant's tool path: denies tool calls that would read credential files or expose secrets, before they run) + deny rules + CLAUDE.md |
+| Claude Code | PreToolUse hook (`secretless-guard.sh`, a gate on the assistant's tool path: denies tool calls that would read credential files or expose secrets, before they run) + PostToolUse output check (`secretless-output-check.cjs`, warns after a Bash command prints a credential-shaped value; detection, not prevention) + deny rules + CLAUDE.md |
 | Cursor | `.cursorrules` instructions |
 | GitHub Copilot | `.github/copilot-instructions.md` instructions |
 | Windsurf | `.windsurfrules` instructions |
