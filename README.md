@@ -122,7 +122,7 @@ Descriptions and metadata are not secrets. They are kept in plain text beside th
 
 ### Ask your AI assistant to use a secret
 
-After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursorrules`, ...) lists which keys are available as environment variables and tells the tool to reference them as `$VAR_NAME` without reading values. So this works in Claude Code:
+After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursor/rules/secretless.mdc`, ...) lists which keys are available as environment variables and tells the tool to reference them as `$VAR_NAME` without reading values. So this works in Claude Code:
 
 > Call the Stripe API and list the last 5 charges.
 
@@ -250,13 +250,15 @@ AIM is optional. Tier 1 and Tier 2 work against any of the five [storage backend
 | Tool | Protection method |
 |---|---|
 | Claude Code | PreToolUse hook (`secretless-guard.sh`, a gate on the assistant's tool path: denies tool calls that would read credential files or expose secrets, before they run) + PostToolUse output check (`secretless-output-check.cjs`, warns after a Bash command prints a credential-shaped value; detection, not prevention) + deny rules + CLAUDE.md |
-| Cursor | `.cursorrules` instructions |
+| Cursor | `.cursor/rules/secretless.mdc` instructions |
 | GitHub Copilot | `.github/copilot-instructions.md` instructions |
 | Windsurf | `.windsurfrules` instructions |
-| Cline | `.clinerules` instructions |
+| Cline | `.clinerules/secretless.md` instructions |
 | Aider | `.aiderignore` file patterns |
 
 Claude Code gets the strongest protection because it supports [hooks](https://code.claude.com/docs/en/hooks). Hook commands run before the assistant's tool calls and can deny them: a gate on the assistant's tool path, not a security boundary against other processes on the machine.
+
+For Cursor, GitHub Copilot, Windsurf and Cline, Secretless writes an instruction file: nothing enforces it, and it has no effect unless the tool loads that file. The table shows the file `init` creates in a project with no rule file yet. `init` never creates a `.cursorrules` file or a single-file `.clinerules`; where a project already has one, the block is appended to it. A Cursor project whose rules live only in `.cursorrules` gets no `.mdc` file, and a Cline project with a `.cline/rules/` directory and no `.clinerules` gets `.cline/rules/secretless.md`.
 
 ## Storage backends
 

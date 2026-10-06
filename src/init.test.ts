@@ -7,7 +7,7 @@ import { init, DEPRECATED_DENY_RULES } from './init';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS } from './patterns';
 import { scan } from './scan';
 import { status } from './status';
-import { detectAITools } from './detect';
+import { detectAITools, toolDisplayName, type AITool } from './detect';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-ai-test-'));
@@ -1681,6 +1681,50 @@ describe('README sample output matches the build', () => {
     const claimed = README().match(/Secretless v(\d+\.\d+\.\d+)/);
     expect(claimed, 'README no longer contains a "Secretless vX.Y.Z" sample banner').not.toBeNull();
     expect(claimed![1]).toBe(pkg.version);
+  });
+
+  it('names, for each instruction-file tool, the file init writes in a new project', () => {
+    // The Supported tools table is where a user looks up which file to check,
+    // and which file their AI tool has to load for the instructions to reach
+    // it. It kept naming `.cursorrules` and `.clinerules` after init moved to
+    // `.cursor/rules/secretless.mdc` and `.clinerules/secretless.md`, so a user
+    // following the table looked for files init no longer creates.
+    const section = README().split(/^## Supported tools$/m)[1]?.split(/^## /m)[0];
+    expect(section, 'README no longer has a "## Supported tools" section').toBeDefined();
+    const rows = new Map<string, string>();
+    for (const m of section!.matchAll(/^\| ([^|]+?) \| ([^|]+?) \|$/gm)) rows.set(m[1], m[2]);
+
+    // A tool directory and nothing else: the layout of a project that has no
+    // rule file yet, which is the one the table describes.
+    const cases: Array<{ tool: AITool; marker: string }> = [
+      { tool: 'cursor', marker: '.cursor' },
+      { tool: 'copilot', marker: '.copilot' },
+      { tool: 'windsurf', marker: '.windsurf' },
+      { tool: 'cline', marker: '.cline' },
+    ];
+    for (const { tool, marker } of cases) {
+      const project = tmpDir();
+      try {
+        fs.mkdirSync(path.join(project, marker));
+        const result = init(project);
+        expect(result.toolsConfigured).toContain(tool);
+
+        const def = detectAITools(project).find(d => d.tool === tool)!;
+        const written = def.instructionFiles.filter(rel => {
+          const p = path.join(project, rel);
+          return fs.existsSync(p) && fs.statSync(p).isFile()
+            && fs.readFileSync(p, 'utf-8').includes('<!-- secretless:managed -->');
+        });
+        expect(written, `init wrote no instruction file for ${tool}`).toHaveLength(1);
+
+        const row = rows.get(toolDisplayName(tool));
+        expect(row, `README has no Supported tools row for ${toolDisplayName(tool)}`).toBeDefined();
+        const named = [...row!.matchAll(/`([^`]+)`/g)].map(m => m[1]);
+        expect(named, `README row for ${toolDisplayName(tool)}`).toEqual(written);
+      } finally {
+        cleanup(project);
+      }
+    }
   });
 });
 
