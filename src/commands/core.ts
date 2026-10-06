@@ -224,14 +224,35 @@ export function shellQuote(p: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
 }
 
-/** Human-readable byte size for coverage warnings ("11.2 MB", "1 MB"). */
-function formatBytes(bytes: number): string {
+/**
+ * Human-readable byte size for coverage warnings ("11 MB", "1.0 MB"), with the
+ * byte count the rounded figure stands for.
+ */
+function roundBytes(bytes: number): { text: string; shown: number } {
   if (bytes >= 1024 * 1024) {
-    const mb = bytes / (1024 * 1024);
-    return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
+    const mb = (bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1);
+    return { text: `${mb} MB`, shown: Number(mb) * 1024 * 1024 };
   }
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${bytes} B`;
+  if (bytes >= 1024) {
+    const kb = (bytes / 1024).toFixed(0);
+    return { text: `${kb} KB`, shown: Number(kb) * 1024 };
+  }
+  return { text: `${bytes} B`, shown: bytes };
+}
+
+/**
+ * Size and cap of a file skipped for size ("11 MB, cap 10 MB").
+ *
+ * Rounding alone printed "1.0 MB, cap 1.0 MB" for a file 4 KB over the 1 MB
+ * source cap, which reads as a file at the cap rather than over it. When the
+ * rounded figures do not show the file as larger, both are printed as exact
+ * byte counts.
+ */
+export function formatSizeOverCap(bytes: number, capBytes: number): string {
+  const size = roundBytes(bytes);
+  const cap = roundBytes(capBytes);
+  if (size.shown > cap.shown) return `${size.text}, cap ${cap.text}`;
+  return `${bytes.toLocaleString('en-US')} bytes, cap ${capBytes.toLocaleString('en-US')} bytes`;
 }
 
 /**
@@ -417,7 +438,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       const n = stats.oversize.length;
       console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} skipped for size`)} — not scanned, so not known to be clean.`);
       for (const f of stats.oversize.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${runnable(f.path)} (${formatBytes(f.bytes)}, cap ${formatBytes(f.capBytes)})`)}`);
+        console.log(`  ${c.dim(`  ${runnable(f.path)} (${formatSizeOverCap(f.bytes, f.capBytes)})`)}`);
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       // The cap is a resource guard, not a judgement — the same bytes under it
