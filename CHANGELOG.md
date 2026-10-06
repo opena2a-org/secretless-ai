@@ -76,10 +76,12 @@ longer than 51200 characters is skipped whole, so a credential on it is
 neither reported nor redacted. `clean` used to print `No credentials found.
 Transcripts are clean.` over such a line; it now prints `No credentials found
 in the lines that were read.` and, after any findings, a `Not read:` block
-naming each file and line number it left unchanged, with a Verify line that
-lists those lines and their lengths. The exit code is unchanged.
-`cleanTranscripts` returns the same lines to library callers as
-`linesNotRead` and `totalLinesNotRead`.
+that states how many such lines there are and in how many files, names up to
+ten files and up to ten line numbers per file and counts the rest, and ends
+with one Verify line, for the first file named, that lists its over-length
+lines and their lengths. The exit code is unchanged. `cleanTranscripts`
+returns every such line to library callers as `linesNotRead` and
+`totalLinesNotRead`.
 
 **`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
 CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS
