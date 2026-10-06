@@ -114,8 +114,9 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     },
     notes: [
       'A secret value on the command line is visible in process listings (ps), so',
-      'run refuses it unless --allow-argv is given. Let the command read the value',
-      'from its environment instead.',
+      'run refuses one of eight or more characters, verbatim or URL-encoded, unless',
+      '--allow-argv is given. Shorter values are not checked. Let the command read',
+      'the value from its environment instead.',
     ],
   },
   env: {
