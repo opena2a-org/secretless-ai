@@ -106,6 +106,9 @@ process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, osK
   it('SLS-10.AC4 isKeychainAvailable on linux: a which that never exits returns "not available" within the bound and the child is gone', { timeout: OUTER_DEADLINE_MS + 5_000 }, async () => {
     const hanging = makeHangingProgram('which');
     try {
+      // Positive control, and the program's first start paid outside the bound.
+      expect(hanging.controlRun()).toBe(true);
+      expect(hanging.pid()).toBeNull();
       // SECRETLESS_OS_KEYCHAIN=off would refuse `which secret-tool` before it
       // starts, and this cell needs the child to start. It is removed for this
       // one harness only: its platform is forced to linux, so the probe's only
@@ -131,6 +134,11 @@ process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, osK
   it('SLS-10.AC4 isOnePasswordAvailable: an op that never exits returns "not available" within the bound and the child is gone', { timeout: OUTER_DEADLINE_MS + 5_000 }, async () => {
     const hanging = makeHangingProgram('op');
     try {
+      // Positive control, and the program's first start paid outside the bound.
+      // `op` is not an OS credential-store CLI, so SECRETLESS_OS_KEYCHAIN=off
+      // does not refuse it: this probe starts the planted `op` either way.
+      expect(hanging.controlRun()).toBe(true);
+      expect(hanging.pid()).toBeNull();
       const out = await runProbeInChild('isOnePasswordAvailable', process.platform, hanging.dir, 500);
       expect(out.signal, `probe did not return before the outer deadline\n${out.stderr}`).toBeNull();
       expect(out.status, out.stderr).toBe(0);

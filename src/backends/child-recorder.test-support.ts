@@ -258,6 +258,16 @@ export function makeHangingProgram(name: string): {
   dir: string;
   program: string;
   pid(): number | null;
+  /**
+   * Positive control: run the program directly with `control`, the one argv
+   * on which it exits after writing its pid, confirm the pid was written, and
+   * clear it. The first start of a newly written executable is the slow one
+   * (on macOS it measured 150 to 250 ms on an idle machine, against 3 to 30 ms
+   * for a second start of the same file, and it grows with load), so a test
+   * that runs this first gives the bounded call a program that can write its
+   * pid inside a short bound.
+   */
+  controlRun(): boolean;
   cleanup(): void;
 } {
   const dir = makeDir('secretless-hang-');
@@ -266,12 +276,19 @@ export function makeHangingProgram(name: string): {
 const fs = require('fs');
 try { fs.readFileSync(0); } catch {}
 fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+if (process.argv[2] === 'control') process.exit(0);
 setInterval(() => {}, 1000);
 `);
   return {
     dir,
     program,
     pid: () => (fs.existsSync(pidPath) ? Number(fs.readFileSync(pidPath, 'utf-8')) : null),
+    controlRun: () => {
+      const res = spawnSync(program, ['control'], { stdio: 'pipe', timeout: 10_000, killSignal: 'SIGKILL' });
+      const ok = res.status === 0 && fs.existsSync(pidPath);
+      fs.rmSync(pidPath, { force: true });
+      return ok;
+    },
     cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
   };
 }
