@@ -127,9 +127,26 @@ and the legal set. This is deliberate: a constraint that is accepted but not
 applied drops the restrictive half of your rule and keeps the permissive half,
 while every status surface reports the rule loaded.
 
-That includes documentation keys — a `comment` or `description` beside `id` is
-refused today. An `x-` prefixed annotation namespace is planned; until it lands,
-keep notes outside the rule objects.
+That includes documentation keys — a bare `comment` or `description` beside `id`
+is refused. To keep a note on a rule, put it under a key starting with `x-`:
+
+```json
+{
+  "id": "scanner-github-readonly",
+  "x-comment": "Read-only token for the nightly scanners",
+  "agentSelector": "scan-*",
+  "credentialSelector": "GITHUB_TOKEN",
+  "effect": "allow"
+}
+```
+
+The broker accepts an `x-` key and does not act on it. It must sit on the rule
+itself, beside `id`; it is refused on the file's top level, inside
+`constraints` and inside a constraint. Its value must be a string. A name that
+resembles a policy field is refused (`x-constraints`, `x-effect`,
+`x-timeWindow`), because a note that reads like a restriction would look
+applied while restricting nothing. Notes are dropped when the policy loads, so
+`broker status`, `/status` and the audit log never show them.
 
 `scopeCheck` was listed here until 0.22.1 and is no longer accepted. It never
 denied a request: the check compared an empty current-permission list against

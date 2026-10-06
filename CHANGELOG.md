@@ -229,6 +229,18 @@ reason now states that the guard cannot tell a filename from a search pattern
 and names the Read tool and the Grep tool as the sanctioned route, matching the
 secret-file arm that already did.
 
+**A broker policy rule can carry notes under `x-` keys (#143).** Since 0.22.1 a
+`comment` or `description` on a rule stops the broker from starting; that
+refusal stands, and it now names the spelling that loads. A rule key that
+starts with `x-` and holds a string, such as `"x-comment": "nightly scanners"`,
+is accepted and does not affect the rule. It is accepted on a rule only: on the
+file's top level, inside `constraints` or inside a constraint it is refused. An
+`x-` name that resembles a rule field or a constraint (`x-constraints`,
+`x-effect`, `x-agent-selector`, `x-timeWindow`) is refused and the error names
+the field, because a note that reads like a restriction would look applied
+while restricting nothing. Notes are dropped at load and do not appear in
+`getRules()`, `/status`, `broker status` or the audit log.
+
 ### Fixed
 
 - `scan` opens source files whose extension is upper case (`Legacy.JS`,

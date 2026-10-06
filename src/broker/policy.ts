@@ -480,10 +480,9 @@ const CONSTRAINT_KEYS = new Set([
  * closes, one level up, and it was reachable in the build that fixed the inner
  * one.
  *
- * Deliberately NOT tolerating annotation keys (`description`, `comment`): the
- * shipped example in docs/use-cases/run-broker.md and every fixture use exactly
- * these five, so tolerance buys no compatibility, and each tolerated key is one
- * more near-miss neighbour for the typo this exists to catch.
+ * Deliberately NOT tolerating bare annotation keys (`description`, `comment`):
+ * each tolerated key is one more near-miss neighbour for the typo this exists
+ * to catch. Notes go under an `x-` key instead — see ANNOTATION_PREFIX.
  *
  * Deliberately NOT auto-correcting a near miss to the key it resembles. Binding
  * a key the operator did not write is a guess about intent inside the
@@ -598,6 +597,55 @@ const UNENFORCED_CONSTRAINT_KEYS = new Map<string, string>([
   ],
 ]);
 
+/**
+ * A rule key starting with this holds an operator's note (#143).
+ *
+ * Accepted on a RULE only — not on the file envelope, not inside
+ * `constraints`, where every key is a restriction, and not inside a structured
+ * constraint. The value must be a string. Strictness can be loosened later
+ * without breaking anyone; a wider format cannot be taken back.
+ *
+ * Dropped at load. `validateRule` rebuilds the rule from its five fields, so a
+ * note never reaches `getRules()`, `/health`, `/status`, `broker status` or the
+ * audit log, and is not an output channel.
+ */
+const ANNOTATION_PREFIX = 'x-';
+
+/**
+ * Names the part after `x-` may not resemble: every rule field and every
+ * constraint, enforced or not.
+ *
+ * `x-` is a shared prefix, so a plain `startsWith('x-')` allowlist ships the
+ * fail-open KNOWN_RULE_KEYS closes wearing a prefix: `x-constraints` would load
+ * as a sanctioned, ignored key that reads exactly like it carries the
+ * operator's restriction. Constraint names are here too because a constraint
+ * written at rule level (`x-timeWindow`) reads the same way.
+ */
+const ANNOTATION_RESERVED_NAMES: readonly string[] = [
+  ...KNOWN_RULE_KEYS,
+  ...KNOWN_CONSTRAINT_KEYS,
+  ...UNENFORCED_CONSTRAINT_KEYS.keys(),
+];
+
+/** Why `key` cannot name an annotation, or null if it can. `key` starts with the prefix. */
+function annotationNameProblem(key: string): string | null {
+  const name = key.slice(ANNOTATION_PREFIX.length);
+  if (name === '') {
+    return `annotation "${key}" has no name after the "${ANNOTATION_PREFIX}" prefix. Name it, for example "x-note".`;
+  }
+  const near = nearestMatch(name, ANNOTATION_RESERVED_NAMES);
+  if (near) {
+    return (
+      `annotation "${key}" reads like the policy field "${near}". The broker accepts an ` +
+      `annotation and does not act on it, so a name that resembles a policy field would look ` +
+      `like it restricts the rule while restricting nothing. Choose a name that does not ` +
+      `resemble one, such as "x-note"; if you meant "${near}" itself, write it without the ` +
+      `"${ANNOTATION_PREFIX}" prefix in its own place.`
+    );
+  }
+  return null;
+}
+
 /** "HH:MM", 00:00-23:59. */
 const TIME_OF_DAY = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
 
@@ -616,13 +664,33 @@ function validateRule(raw: unknown): PolicyRule {
   // this closes is that a misspelled container never reaches that block at all.
   for (const key of Object.keys(r)) {
     if (RULE_KEYS.has(key)) continue;
+    if (key.startsWith(ANNOTATION_PREFIX)) {
+      const problem = annotationNameProblem(key);
+      if (problem) throw new Error(`Rule "${r.id}": ${problem}`);
+      if (typeof r[key] !== 'string') {
+        throw new Error(
+          `Rule "${r.id}": annotation "${key}" must be a string ` +
+          `(got ${r[key] === null ? 'null' : Array.isArray(r[key]) ? 'an array' : typeof r[key]}).`,
+        );
+      }
+      continue;
+    }
     const near = nearestMatch(key, [...RULE_KEYS]);
+    // Offered only when that spelling would load: never for a misspelled field
+    // or a misplaced constraint, whose `x-` form is refused above.
+    const asNote = key.toLowerCase().startsWith(ANNOTATION_PREFIX)
+      ? `${ANNOTATION_PREFIX}${key.slice(ANNOTATION_PREFIX.length)}`
+      : `${ANNOTATION_PREFIX}${key}`;
+    const noteHint = annotationNameProblem(asNote)
+      ? ''
+      : ` To keep it as a note instead, write it as a string under "${asNote}"; ` +
+        `the broker accepts keys starting with "${ANNOTATION_PREFIX}" and does not act on them.`;
     throw new Error(
       `Rule "${r.id}": unknown field "${key}"${near ? ` (did you mean "${near}"?)` : ''}. ` +
       `A rule may carry: ${[...RULE_KEYS].join(', ')}. ` +
       `A field this build does not read is refused rather than ignored, because ignoring ` +
       `"${key}" would drop whatever it was meant to restrict and load the rule as written ` +
-      `without it.`,
+      `without it.${noteHint}`,
     );
   }
   // Non-empty, and the DENY direction is why: an empty selector matches nothing,
@@ -679,6 +747,13 @@ function validateRule(raw: unknown): PolicyRule {
       const unenforced = UNENFORCED_CONSTRAINT_KEYS.get(key);
       if (unenforced) {
         throw new Error(`Rule "${r.id}": ${unenforced}`);
+      }
+      if (key.startsWith(ANNOTATION_PREFIX)) {
+        throw new Error(
+          `Rule "${r.id}": constraints carries the annotation "${key}". Annotations are ` +
+          `accepted on the rule itself, beside "id", and not inside constraints, where every ` +
+          `key is a restriction the broker applies.`,
+        );
       }
       if (!CONSTRAINT_KEYS.has(key)) {
         throw new Error(
