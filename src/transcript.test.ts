@@ -383,7 +383,7 @@ describe('cleanTranscripts', () => {
     const pat = ['gh', 'p_', 'FAKER1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6'].join('');
     const long = JSON.stringify({ message: { content: 'x'.repeat(MAX_LINE_SIZE) + ' token ' + pat } });
     const lines = [
-      JSON.stringify({ message: { content: 'key: sk-ant-api03-abc123def456abc123def456abc123' } }),
+      JSON.stringify({ message: { content: 'key: sk-ant-api03-FAKE23def456abc123def456abc123' } }),
       long,
       long,
     ];
