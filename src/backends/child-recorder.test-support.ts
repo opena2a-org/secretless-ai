@@ -262,10 +262,9 @@ export function makeHangingProgram(name: string): {
    * Positive control: run the program directly with `control`, the one argv
    * on which it exits after writing its pid, confirm the pid was written, and
    * clear it. The first start of a newly written executable is the slow one
-   * (on macOS it measured 150 to 250 ms on an idle machine, against 3 to 30 ms
-   * for a second start of the same file, and it grows with load), so a test
-   * that runs this first gives the bounded call a program that can write its
-   * pid inside a short bound.
+   * (on macOS roughly an order of magnitude slower than a second start of the
+   * same file, and it grows with load), so a test that runs this first gives
+   * the bounded call a program that can write its pid inside a short bound.
    */
   controlRun(): boolean;
   cleanup(): void;

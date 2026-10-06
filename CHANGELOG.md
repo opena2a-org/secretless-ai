@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**The OS keychain refusal reaches the user whole, in one layout (#205).**
+Under `SECRETLESS_OS_KEYCHAIN=off`, `backend set keychain` printed "Cannot use
+keychain backend: macOS Keychain is not accessible" (on Linux, "secret-tool
+not found"), so the variable and its Verify and Fix lines never showed; it now
+gives the refusal as the reason. `secret list` and `run` printed the same
+refusal in two layouts. They, the other `secret` subcommands, and any error a
+command does not handle itself now print through one printer: a blank line,
+`Error:` before the first line, and every further line at two spaces, where
+`run` had pushed the Verify and Fix lines to four. The README now states that
+the switch's value is exactly `off`, in lowercase. The release artifact
+review's install smoke passes `SECRETLESS_OS_KEYCHAIN` through to the CLI
+starts it makes, so the switch holds for any command added to that list.
+
 **An absolute file pattern in `.secretless-rules.yaml` is enforced, in either
 way it can be written.** A `files:` pattern naming an absolute path
 (`/srv/app/creds/*.json`) produced a `.claude/settings.json` deny rule with one

@@ -121,7 +121,7 @@ export interface VerbSpec {
  * by the two verbs that implement it, so on every other verb it is simply not a
  * flag — which is the honest description of what it was all along.
  *
- * The 2026-08-12 `[CHIEF-CPO]` ruling: a flag the tool accepts is a flag the
+ * The rule since 0.23.0: a flag the tool accepts is a flag the
  * tool honors. `--json` on a verb that does not implement it exits 2 naming the
  * verbs that do, rather than warning, because a machine consumer reading exit 0
  * plus human text is the same false-clean class the rest of this file closes.

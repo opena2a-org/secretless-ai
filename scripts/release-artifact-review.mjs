@@ -421,13 +421,19 @@ function review(tarball, work, advisoryStates, results) {
           continue;
         }
         // Empty HOME, minimal PATH, no proxy variables: the bins must stand up
-        // with nothing from this machine's environment and nothing remote.
+        // with nothing from this machine's environment and nothing remote. The
+        // one variable passed through is SECRETLESS_OS_KEYCHAIN, which can only
+        // refuse the OS keychain CLIs, so a run under it keeps that guarantee
+        // for any command added to the list above.
         const runHome = fs.mkdtempSync(path.join(work, 'bin-home-'));
         const result = run(binPath, args, {
           env: {
             PATH: `${path.dirname(process.execPath)}:${path.join(prefix, 'bin')}`,
             HOME: runHome,
             NO_COLOR: '1',
+            ...(process.env.SECRETLESS_OS_KEYCHAIN === undefined
+              ? {}
+              : { SECRETLESS_OS_KEYCHAIN: process.env.SECRETLESS_OS_KEYCHAIN }),
           },
           timeout: 60_000,
         });

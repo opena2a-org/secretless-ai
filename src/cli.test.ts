@@ -67,7 +67,7 @@ const INDEXED = 'SECRETLESS_CLI_TEST_INDEXED_NAME';
  * every CLI run reaches the store; the caller removes it. The keychain HOME
  * records one name in the backends' key index: the index is only names, and a
  * store whose index is empty never asks the OS CLI anything, so a control that
- * omitted this would pass without the refusal ever being reached.
+ * omitted this would no longer reach the refusal.
  */
 function homeWithBackend(backend: 'vault' | 'keychain'): string {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `secretless-${backend}-home-`));
@@ -904,5 +904,52 @@ describe('clean names the lines it did not read', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The OS keychain refusal reaches the user whole, in one layout, whichever
+ * command meets it (#205). Before: `secret list` printed it after `Error:`
+ * with no blank line, `run` printed it without `Error:` and with its Verify
+ * and Fix lines pushed to four spaces, and `backend set keychain` replaced it
+ * with "macOS Keychain is not accessible", so the variable never showed.
+ */
+describe('the OS keychain refusal reads the same from every command', () => {
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+  const SWITCH_TAIL = '\n\n  Nothing was read from or written to any store.\n\n'
+    + '  Verify:  printenv SECRETLESS_OS_KEYCHAIN\n'
+    + '  Fix:     unset SECRETLESS_OS_KEYCHAIN\n';
+  let keychainHome: string;
+  let plainHome: string;
+
+  beforeAll(() => {
+    keychainHome = homeWithBackend('keychain');
+    plainHome = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-plain-home-'));
+  });
+  afterAll(() => {
+    fs.rmSync(keychainHome, { recursive: true, force: true });
+    fs.rmSync(plainHome, { recursive: true, force: true });
+  });
+
+  itIfBuilt('`secret list` and `run` print the refusal as the same block, labelled `Error:`, every line at two spaces', async () => {
+    expect(process.env.SECRETLESS_OS_KEYCHAIN, 'vitest.config.ts sets the switch').toBe('off');
+    const list = await cliAsync(['secret', 'list'], keychainStoreEnv(keychainHome));
+    const run = await cliAsync(['run', '--only', INDEXED, '--', process.execPath, '-e', 'process.exit(7)'], keychainStoreEnv(keychainHome));
+    expect(list.status).toBe(1);
+    expect(run.status).toBe(1);
+    expect(list.stderr).toMatch(/^\n {2}Error: \S+ was not started: SECRETLESS_OS_KEYCHAIN=off is set in this process\./);
+    expect(list.stderr).toContain(SWITCH_TAIL);
+    expect(run.stderr).toBe(list.stderr);
+  });
+
+  itIfBuilt('`backend set keychain` gives the refusal, with its Verify and Fix lines, as the reason', async () => {
+    const res = await cliAsync(['backend', 'set', 'keychain'], keychainStoreEnv(plainHome));
+    expect(res.status).toBe(1);
+    expect(res.stderr).toMatch(/Cannot use keychain backend: \S+ was not started: SECRETLESS_OS_KEYCHAIN=off/);
+    expect(res.stderr).toContain(SWITCH_TAIL);
+    expect(res.stderr).not.toContain('not accessible');
+    // Refused before anything was chosen: no config was written.
+    expect(fs.existsSync(path.join(plainHome, '.secretless-ai', 'config.json'))).toBe(false);
   });
 });

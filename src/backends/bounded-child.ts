@@ -43,8 +43,16 @@ export function osKeychainRefused(program: string, args: readonly string[]): boo
   return program === 'which' && args.length === 1 && OS_KEYCHAIN_PROGRAMS.has(args[0]);
 }
 
-export function osKeychainRefusedError(program: string): Error {
-  return new Error([
+/**
+ * The refusal, as its own class so a caller that turns other probe failures
+ * into "not available" can pass this one's reason through instead.
+ */
+export class OsKeychainRefusedError extends Error {
+  override readonly name = 'OsKeychainRefusedError';
+}
+
+export function osKeychainRefusedError(program: string): OsKeychainRefusedError {
+  return new OsKeychainRefusedError([
     `${program} was not started: ${OS_KEYCHAIN_SWITCH}=off is set in this process.`,
     '',
     '  Nothing was read from or written to any store.',

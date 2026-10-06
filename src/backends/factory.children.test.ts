@@ -32,11 +32,55 @@ describe('factory probes: program custody', () => {
       expect(result.platform).toBe('macOS');
       // The suite runs with SECRETLESS_OS_KEYCHAIN=off (vitest.config.ts):
       // /usr/bin/security is refused before it starts, on every host, so the
-      // probe says not accessible. PATH had no part in the answer.
+      // probe says not available, and says why. PATH had no part in the answer.
       expect(result.available).toBe(false);
-      expect(result.message).toBe('macOS Keychain is not accessible');
+      expect(result.message).toContain('/usr/bin/security was not started: SECRETLESS_OS_KEYCHAIN=off');
     } finally {
       planted.cleanup();
+    }
+  });
+});
+
+/**
+ * `backend set keychain` prints the probe's message as its reason. Under the
+ * switch that message is the refusal itself: a generic "not accessible" or
+ * "not found" would hide the variable, and its Verify and Fix lines, from the
+ * one person who can unset it (#205).
+ */
+describe('factory probes: the OS keychain refusal is the reported reason', () => {
+  const SWITCH_LINES = [
+    'SECRETLESS_OS_KEYCHAIN=off is set in this process.',
+    'Verify:  printenv SECRETLESS_OS_KEYCHAIN',
+    'Fix:     unset SECRETLESS_OS_KEYCHAIN',
+  ];
+
+  it('isKeychainAvailable on darwin carries the refusal, Verify and Fix lines included, as its message', async () => {
+    expect(process.env.SECRETLESS_OS_KEYCHAIN, 'vitest.config.ts sets the switch').toBe('off');
+    const result = await withPlatform('darwin', () => isKeychainAvailable());
+    expect(result).toMatchObject({ available: false, platform: 'macOS' });
+    for (const line of SWITCH_LINES) expect(result.message).toContain(line);
+    expect(result.message).not.toContain('not accessible');
+  });
+
+  it('isKeychainAvailable on linux carries the refusal of `which secret-tool`, not "secret-tool not found"', async () => {
+    const result = await withPlatform('linux', () => isKeychainAvailable());
+    expect(result).toMatchObject({ available: false, platform: 'Linux' });
+    for (const line of SWITCH_LINES) expect(result.message).toContain(line);
+    expect(result.message).not.toContain('not found');
+  });
+
+  it('CONTROL: on linux without the switch the probe runs and its message never names the switch', async () => {
+    // `which` is not an OS credential-store CLI; with the switch unset it runs
+    // and answers from PATH, so nothing here can reach a store.
+    const saved = process.env.SECRETLESS_OS_KEYCHAIN;
+    delete process.env.SECRETLESS_OS_KEYCHAIN;
+    try {
+      const result = await withPlatform('linux', () => isKeychainAvailable());
+      expect(result.platform).toBe('Linux');
+      expect(result.message).not.toContain('SECRETLESS_OS_KEYCHAIN');
+    } finally {
+      if (saved === undefined) delete process.env.SECRETLESS_OS_KEYCHAIN;
+      else process.env.SECRETLESS_OS_KEYCHAIN = saved;
     }
   });
 });

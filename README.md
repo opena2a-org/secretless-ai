@@ -255,7 +255,7 @@ npx secretless-ai backend set 1password               # switch backend
 npx secretless-ai migrate --from local --to 1password # migrate existing secrets
 ```
 
-Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS Keychain and Linux Secret Service CLIs; reads and writes through those backends then fail with an error instead of prompting, and nothing is read from or written to another store.
+Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS Keychain and Linux Secret Service CLIs; reads and writes through those backends then fail with an error instead of prompting, and nothing is read from or written to another store. The value is exactly `off`, in lowercase: `OFF`, `0` or `false` leave the OS keychain reachable.
 
 ## NanoMind integration
 

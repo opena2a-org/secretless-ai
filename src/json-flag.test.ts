@@ -6,7 +6,7 @@ import { prepareArgv, prepareBinArgv, supportedFlags, jsonVerbs, VERBS, MCP_WRAP
 /**
  * `--json` is honored or refused — never accepted and ignored (#126).
  *
- * The 2026-08-12 `[CHIEF-CPO]` ruling: a flag the tool accepts is a flag the
+ * The rule since 0.23.0: a flag the tool accepts is a flag the
  * tool honors. Measured on 0.22.1 across all 32 verbs — 2 honored it, and of
  * the other 30, 15 truly ignored it, 11 mistook it for a SUBCOMMAND and 4
  * mistook it for a POSITIONAL. The last group is why this is a correctness fix
