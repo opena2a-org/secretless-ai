@@ -495,23 +495,24 @@ export async function vaultAudit(options: {
  */
 export async function vaultScan(targetDir?: string): Promise<void> {
   // Re-use secretless-ai's existing scan infrastructure
-  const { scan } = await import('./scan.js');
+  const { scan, newScanStats, coverageIncomplete } = await import('./scan.js');
   const dir = targetDir ?? process.cwd();
 
   console.log(`\n  Scanning ${dir} for credentials to migrate to vault...\n`);
 
   // Coverage shortfalls are collected here too. `scan()` discards them when no
   // stats object is passed, so this command printed the same unqualified
-  // "No hardcoded credentials found" over a truncated or unreadable tree that
-  // `scan` itself was fixed to stop printing.
-  const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+  // "No hardcoded credentials found" over a truncated, unreadable or
+  // oversize-skipped tree that `scan` itself was fixed to stop printing.
+  const stats = newScanStats();
   const findings = scan(dir, { includeTests: false }, stats);
-  const incomplete = stats.truncated || stats.unreadable.length > 0;
+  const incomplete = coverageIncomplete(stats);
   if (findings.length === 0) {
     if (incomplete) {
       console.log('  No credentials found in the files scanned.');
       if (stats.truncated) console.log('  Scan incomplete: stopped at the file cap, so files were left unscanned.');
       if (stats.unreadable.length > 0) console.log(`  ${stats.unreadable.length} path(s) could not be read, so they are not known to be clean.`);
+      if (stats.oversize.length > 0) console.log(`  ${stats.oversize.length} file(s) skipped for size, so they are not known to be clean.`);
       console.log('  Check coverage: secretless-ai scan --json | jq .summary\n');
       return;
     }

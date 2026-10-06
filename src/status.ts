@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { detectAITools, type AITool } from './detect';
-import { scan } from './scan';
+import { scan, newScanStats, coverageIncomplete } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
 import { defaultAnnotationsPath, readAnnotations } from './secret-annotations';
@@ -80,9 +80,10 @@ export interface StatusResult {
   denyRuleCount: number | null;
   secretsFound: number;
   /**
-   * True when the scan behind `secretsFound` could not cover the whole tree, so
-   * the count is a lower bound rather than a verdict. `scan()` discards this
-   * when no stats object is passed, which is how `status --json` reported
+   * True when the scan behind `secretsFound` could not cover the whole tree
+   * (file cap reached, a path unreadable, or a file skipped for size), so the
+   * count is a lower bound rather than a verdict. `scan()` discards this when
+   * no stats object is passed, which is how `status --json` reported
    * `secretsFound: 0` over a subtree it never opened.
    */
   scanIncomplete: boolean;
@@ -400,10 +401,10 @@ export async function status(projectDir: string, options?: { homeDir?: string })
   }
 
   // Scan for secrets (project-level only for status report)
-  const scanStats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+  const scanStats = newScanStats();
   const findings = scan(projectDir, { scanGlobal: false }, scanStats);
   result.secretsFound = findings.length;
-  result.scanIncomplete = scanStats.truncated || scanStats.unreadable.length > 0;
+  result.scanIncomplete = coverageIncomplete(scanStats);
 
   // Transcript protection metrics
   try {
