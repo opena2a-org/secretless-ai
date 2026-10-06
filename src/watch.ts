@@ -34,8 +34,12 @@ function escapeXml(str: string): string {
 /**
  * Start watching Claude Code transcripts for credentials.
  * Runs in the foreground, monitoring file changes and auto-redacting.
+ *
+ * Returns true once the watcher is installed, false when it did not start
+ * (the reason is written to the log). The watcher lives in this process, so a
+ * caller that exits ends it.
  */
-export function startWatch(options?: { logFile?: string }): void {
+export function startWatch(options?: { logFile?: string }): boolean {
   const logPath = options?.logFile || LOG_FILE;
 
   // Ensure directories exist
@@ -44,7 +48,7 @@ export function startWatch(options?: { logFile?: string }): void {
   if (!fs.existsSync(TRANSCRIPT_DIR)) {
     log(logPath, 'Transcript directory not found: ' + TRANSCRIPT_DIR);
     log(logPath, 'Start a Claude Code session first, then re-run.');
-    return;
+    return false;
   }
 
   // Resolve and cache the canonical transcript directory path
@@ -61,7 +65,7 @@ export function startWatch(options?: { logFile?: string }): void {
       // Another watcher may be running — check before overwriting
       if (isWatchRunning()) {
         log(logPath, 'Another watcher is already running.');
-        return;
+        return false;
       }
       // Stale PID file — overwrite
       fs.writeFileSync(PID_FILE, pidData);
@@ -116,6 +120,7 @@ export function startWatch(options?: { logFile?: string }): void {
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  return true;
 }
 
 function processFile(filePath: string, logPath: string): void {

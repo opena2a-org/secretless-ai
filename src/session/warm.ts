@@ -15,7 +15,7 @@
 
 import { warmSession, isMacOS, isTouchIDAvailable } from './touchid';
 import { getSessionStatus, type SessionStatus } from './session-state';
-import { isDaemonRunning, startDaemon, getDaemonStatus } from '../broker/daemon';
+import { isDaemonRunning, spawnDaemon, getDaemonStatus } from '../broker/daemon';
 import { createBackend } from '../backends/factory';
 import { resolveBackendType, readCacheTtl, writeCacheTtl } from '../backends/config';
 
@@ -89,11 +89,14 @@ export async function warm(
     }
   }
 
-  // Start broker if not running
+  // Start broker if not running. It goes in a detached process of its own:
+  // started in this process, it would end when the warm command exits, right
+  // after being reported as started. spawnDaemon resolves only once the new
+  // process answers on its port.
   result.brokerRunning = isDaemonRunning();
   if (!result.brokerRunning && startBrokerIfStopped) {
     try {
-      await startDaemon();
+      await spawnDaemon();
       result.brokerRunning = true;
       result.brokerStarted = true;
     } catch {

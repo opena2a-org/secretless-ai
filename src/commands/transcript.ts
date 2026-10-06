@@ -87,7 +87,7 @@ export function runClean(args: string[]): number {
   return 0;
 }
 
-export function runWatch(args: string[]): number {
+export async function runWatch(args: string[]): Promise<number> {
   const action = args[0];
 
   switch (action) {
@@ -97,9 +97,16 @@ export function runWatch(args: string[]): number {
         return 0;
       }
       console.log('\n  Starting Secretless transcript watcher...');
-      console.log('  Press Ctrl+C to stop.\n');
-      startWatch();
-      return 0;
+      if (!startWatch()) {
+        console.error('\n  Watcher did not start; the log lines above say why.\n');
+        return 1;
+      }
+      console.log('  Watcher is running. Press Ctrl+C to stop.\n');
+      // The watcher runs in this process, in the foreground. Returning here
+      // would hand an exit code to the dispatcher, whose process.exit() ends
+      // the watcher that was just reported running. The process ends in the
+      // SIGTERM/SIGINT handler startWatch installs, which removes the PID file.
+      return await new Promise<number>(() => {});
 
     case 'stop':
       if (stopWatch()) {
