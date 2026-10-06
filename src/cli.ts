@@ -14,6 +14,7 @@ import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize } from
 import { runClean, runWatch, runScanHistory, runCleanHistory } from './commands/transcript';
 import { runSecret } from './commands/secrets';
 import { runRun, runEnv, runImport, runSetupCommand } from './commands/env-run';
+import { runExport } from './commands/bundle';
 import { runRules } from './commands/rules';
 import { runHook, runScanStaged } from './commands/git';
 import { runProtectMcp, runMcpStatus, runMcpUnprotect } from './commands/mcp';
@@ -334,6 +335,8 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       return runEnv(args.slice(1));
     case 'import':
       return runImport(args.slice(1));
+    case 'export':
+      return runExport(args.slice(1));
     case 'setup':
       return runSetupCommand(args.slice(1));
     case 'hook':

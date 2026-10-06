@@ -50,6 +50,9 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} secret sync --from <backend>  Copy .secretless names from a shared backend
     ${CLI} import <file>              Import secrets from .env file
     ${CLI} import --detect            Auto-find and import .env files
+    ${CLI} export --out <file>.secretless-bundle [--only K1,K2]
+                                      Write secrets to an encrypted bundle
+    ${CLI} import <bundle> [--force]  Store a bundle's secrets on this machine
     ${CLI} run [--only K1,K2] -- <cmd>  Run with secrets injected
     ${CLI} env [--only K1,K2]         Output export statements for shell
 

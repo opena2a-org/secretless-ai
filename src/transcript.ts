@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { CREDENTIAL_PATTERNS, type CredentialPattern } from './patterns';
+import { BUNDLE_TOKEN } from './bundle';
 import { redactMatches } from './redact';
 
 export interface TranscriptFinding {
@@ -81,9 +82,6 @@ const SECRET_ASSIGNMENT_PATTERN: CredentialPattern = {
   regex: /(?<![A-Za-z0-9_])[A-Z0-9_]{0,64}(?:SECRET(?:_?KEY)?|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|TOKEN|CREDENTIAL)=["']?(?!\[REDACTED:[a-z0-9-]+\](?![^\s"'`])|process\.env|os\.environ|os\.getenv|import\.meta\.env|Deno\.env)([^\s"'`$<*][^\s"'`]{7,511})/,
   envPrefix: '',
 };
-
-/** Vendor patterns first: a vendor-shaped value is reported under its own id. */
-const TRANSCRIPT_PATTERNS: CredentialPattern[] = [...CREDENTIAL_PATTERNS, SECRET_ASSIGNMENT_PATTERN];
 
 /**
  * Discover Claude Code transcript files.
@@ -182,6 +180,20 @@ export function deepScan(
 
   return value;
 }
+
+/**
+ * What `clean` redacts: the shared credential catalog, plus a bundle written by
+ * `export`, so a bundle an agent printed does not stay in its transcript, plus
+ * a value assigned to a secret-named variable. The bundle pattern is added here
+ * rather than to `patterns.ts`, which is kept identical to the shared pattern
+ * package. Vendor patterns and the bundle come first: a vendor-shaped value or
+ * a bundle is reported under its own id.
+ */
+const TRANSCRIPT_PATTERNS: ReadonlyArray<Pick<CredentialPattern, 'id' | 'name' | 'regex'>> = [
+  ...CREDENTIAL_PATTERNS,
+  { id: 'secretless-bundle', name: 'Secretless Encrypted Bundle', regex: BUNDLE_TOKEN },
+  SECRET_ASSIGNMENT_PATTERN,
+];
 
 function scanString(
   value: string,

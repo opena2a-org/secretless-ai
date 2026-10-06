@@ -293,7 +293,7 @@ describe('the registry is derived from the source, not from itself', () => {
     // is the assertion. A new writing verb added with 'warn' must show up here
     // as a deliberate edit, not slip through a predicate.
     const writers = [
-      'clean', 'clean-history', 'run', 'env', 'init', 'doctor', 'import', 'setup',
+      'clean', 'clean-history', 'run', 'env', 'init', 'doctor', 'import', 'export', 'setup',
       'secret', 'watch', 'hook', 'warm', 'install', 'protect-mcp', 'mcp-unprotect',
       'ignore', 'telemetry', 'rules', 'backend', 'migrate', 'cache', 'scope', 'broker', 'vault',
     ];

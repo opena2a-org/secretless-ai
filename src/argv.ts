@@ -239,7 +239,8 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   },
   init: { flags: {}, unknownFlags: 'reject' },
   doctor: { flags: { '--fix': false }, unknownFlags: 'reject' },
-  import: { flags: { '--detect': false }, unknownFlags: 'reject' },
+  import: { flags: { '--detect': false, '--force': false }, unknownFlags: 'reject' },
+  export: { flags: { '--out': true, '--only': true }, unknownFlags: 'reject' },
   setup: { flags: { '--check': false }, unknownFlags: 'reject' },
   // `--meta` is read once per occurrence by `secret set` (commands/secrets.ts),
   // so it is the one repeatable flag. Each subcommand refuses the flags that
