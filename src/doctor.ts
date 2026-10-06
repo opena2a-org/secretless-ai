@@ -66,6 +66,8 @@ export interface ProfileInfo {
   nonInteractive: boolean;
   /** Recommendation label for this profile */
   recommendation: 'recommended' | 'interactive-only' | 'login-only' | 'none';
+  /** Set when the profile exists but could not be read (e.g. 'EACCES'); its export lines were not checked. */
+  readError?: string;
 }
 
 export interface DoctorResult {
@@ -150,14 +152,18 @@ const COMMENT_RE = /^\s*#/;
 // PowerShell: $env:VAR_NAME = "value"
 const PS_ENV_LINE_RE = /^\s*\$env:([A-Z_][A-Z0-9_]*)\s*=/;
 
-function scanProfile(filePath: string, knownVars: string[], syntax: 'posix' | 'powershell' = 'posix'): string[] {
-  if (!fs.existsSync(filePath)) return [];
+function scanProfile(
+  filePath: string,
+  knownVars: string[],
+  syntax: 'posix' | 'powershell' = 'posix',
+): { vars: string[]; readError?: string } {
+  if (!fs.existsSync(filePath)) return { vars: [] };
 
   let content: string;
   try {
     content = fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    return [];
+  } catch (err) {
+    return { vars: [], readError: (err as NodeJS.ErrnoException).code ?? 'read error' };
   }
 
   const lineRe = syntax === 'powershell' ? PS_ENV_LINE_RE : EXPORT_LINE_RE;
@@ -169,7 +175,7 @@ function scanProfile(filePath: string, knownVars: string[], syntax: 'posix' | 'p
       found.push(match[1]);
     }
   }
-  return found;
+  return { vars: found };
 }
 
 /**
@@ -313,15 +319,16 @@ export function doctor(options?: DoctorOptions): DoctorResult {
     const fullPath = path.join(home, spec.file);
     const exists = fs.existsSync(fullPath);
     const syntax = spec.syntax ?? 'posix';
-    const exportedVars = exists ? scanProfile(fullPath, knownVars, syntax) : [];
+    const scan = exists ? scanProfile(fullPath, knownVars, syntax) : { vars: [] };
     const secretExports = exists ? scanSecretExports(fullPath, knownVars, syntax) : [];
     return {
       path: fullPath,
       exists,
-      exportedVars,
+      exportedVars: scan.vars,
       secretExports,
       nonInteractive: spec.nonInteractive,
       recommendation: spec.recommendation,
+      ...(scan.readError ? { readError: scan.readError } : {}),
     };
   });
 
@@ -486,7 +493,7 @@ export function quickDiagnosis(options?: DoctorOptions): QuickDiagnosisResult {
 
   for (const spec of quickProfiles) {
     const fullPath = path.join(home, spec.file);
-    const exported = scanProfile(fullPath, knownVars);
+    const exported = scanProfile(fullPath, knownVars).vars;
     for (const v of exported) {
       allFound.add(v);
       // In an interactive-only profile and not in env = wrong profile
@@ -536,7 +543,7 @@ export function fixProfiles(options?: DoctorOptions): FixResult | null {
   if (!recommendedSpec) return null;
 
   const targetPath = path.join(home, recommendedSpec.file);
-  const targetVars = scanProfile(targetPath, knownVars);
+  const targetVars = scanProfile(targetPath, knownVars).vars;
   const targetVarSet = new Set(targetVars);
 
   // Find vars in non-recommended profiles that are NOT already in the recommended profile

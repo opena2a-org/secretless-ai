@@ -1270,12 +1270,15 @@ export function runDoctor(autoFix: boolean): number {
         : profile.recommendation === 'login-only'
           ? ' (login-only)'
           : '';
-    const profileStatus = profile.exists
-      ? (profile.secretExports.length > 0
+    const profileStatus = !profile.exists
+      ? 'not found'
+      : profile.readError
+        ? `could not be read (${profile.readError}), not checked`
+        : profile.secretExports.length > 0
           ? `${profile.secretExports.length} key(s)`
-          : 'no keys')
-      : 'not found';
-    console.log(`    ${profile.exists ? '+' : '-'} ~/${require('path').basename(profile.path)}${tag}: ${profileStatus}`);
+          : 'no keys';
+    const marker = !profile.exists ? '-' : profile.readError ? '?' : '+';
+    console.log(`    ${marker} ~/${require('path').basename(profile.path)}${tag}: ${profileStatus}`);
     // Name and line only: the value never leaves the profile.
     for (const exp of profile.secretExports) {
       console.log(`        ${exp.name} (line ${exp.line})`);
@@ -1337,7 +1340,18 @@ export function runDoctor(autoFix: boolean): number {
     console.log(`  Store each one with \`${CLI_BARE} secret set NAME\`, then remove its export line.\n`);
     return 1;
   }
-  console.log(`  ${verdictMap[result.health]}\n`);
+  // A profile that could not be read was not checked, so HEALTHY covers only
+  // the profiles that were read. The health value and exit code are unchanged.
+  const unread = result.profiles.filter((p) => p.readError);
+  const verdict = result.health === 'healthy' && unread.length > 0
+    ? 'HEALTHY for the profiles that were read: the keys found there are available to subprocesses.'
+    : verdictMap[result.health];
+  console.log(`  ${verdict}\n`);
+  if (unread.length > 0) {
+    const names = unread.map((p) => `~/${require('path').basename(p.path)} (${p.readError})`).join(', ');
+    console.log(`  Not checked: ${names}. Export lines in these files were not read.`);
+    console.log('  Make the file(s) readable, then run `npx secretless-ai doctor` again.\n');
+  }
 
   if (result.health !== 'healthy') {
     console.log('  Run `npx secretless-ai doctor --fix` to auto-fix.\n');

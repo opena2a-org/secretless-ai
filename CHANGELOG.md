@@ -561,6 +561,24 @@ errors print in the same layout as the other `secret` subcommands (#233): a
 blank line, `Error:` before the first line, every further line at two spaces,
 and for an unreachable source the Verify line inside that block.
 
+**`mcp-status` and `doctor` name every file they could not read or parse
+instead of reporting it as clean.** `mcp-status` skipped an MCP config it could
+not parse, so a Cursor config holding a plaintext token behind one trailing
+comma printed "No MCP configurations found." Each such config is now listed
+under its client and path as `? not checked:` with the reason (`not valid
+JSON (line 4, column 3)`, `could not be read (EACCES)`, `not a JSON object`),
+followed by a count and a Fix line. The reason gives a position only and never
+quotes the file, because the JSON parser's own message can quote the text
+around the error. A config whose top level is `null` no longer makes
+`mcp-status`, `protect-mcp` or `mcp-unprotect` fail with a TypeError. `doctor`
+listed a shell profile it could not read as "no keys" and could still print
+"HEALTHY: All keys correctly configured"; the profile is now marked `could not
+be read (<code>), not checked`, the verdict says it covers only the profiles
+that were read, and a `Not checked:` line names each file with a Fix line. The
+`doctor` health value and the exit codes of both commands are unchanged; a
+profile in the library `doctor()` result carries `readError` when it could not
+be read.
+
 **`scan` names every file it did not open, even when no directory was
 skipped.** The count of files not opened was printed only inside the
 "directories not entered" block, so a directory whose only boundary was a file

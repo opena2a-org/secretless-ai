@@ -165,6 +165,28 @@ describe('doctor', () => {
     expect(warnFindings[0].message).toContain('may fail in subprocesses');
   });
 
+  it('marks a profile it could not read instead of reporting it as holding no keys', () => {
+    fs.writeFileSync(path.join(home, '.zshenv'), 'export ANTHROPIC_API_KEY="sk-ant-..."\n');
+    // A directory where the profile should be: it exists, and reading it fails.
+    fs.mkdirSync(path.join(home, '.zshrc'));
+
+    const result = doctor({
+      homeDir: home,
+      shell: '/bin/zsh',
+      platform: 'darwin',
+      envOverride: { ANTHROPIC_API_KEY: 'set' },
+    });
+
+    const zshrc = result.profiles.find((p) => p.path.endsWith('.zshrc'))!;
+    expect(zshrc.exists).toBe(true);
+    expect(zshrc.readError).toBe('EISDIR');
+    expect(zshrc.exportedVars).toEqual([]);
+    const zshenv = result.profiles.find((p) => p.path.endsWith('.zshenv'))!;
+    expect(zshenv.readError).toBeUndefined();
+    // The health value is unchanged; the CLI qualifies the verdict it prints.
+    expect(result.health).toBe('healthy');
+  });
+
   it('reports all zsh profiles with correct metadata', () => {
     const result = doctor({
       homeDir: home,
