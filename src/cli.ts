@@ -321,8 +321,12 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       return runBackend(args.slice(1));
     case 'migrate':
       return runMigrate(args.slice(1));
-    case 'secret':
-      return runSecret(args.slice(1));
+    case 'secret': {
+      // `secret list` and `secret show` produce JSON; `set`, `get` and `rm`
+      // refuse the flag rather than ignore it (commands/secrets.ts).
+      const json = args.includes('--json');
+      return runSecret(args.slice(1), { json });
+    }
     case 'run':
       return runRun(args.slice(1));
     case 'env':

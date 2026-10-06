@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+**`secret set` records what a credential is for, and `secret show` reads it
+back without the value (#172).** `secret set NAME --description "..." --meta
+key=value` stores a description and any number of metadata fields beside the
+value; `--meta` is repeatable, `--meta key=` removes a field, and `set` without
+either flag keeps what was recorded, so rotating a value does not erase it.
+`secret show NAME` prints the description, the metadata and whether the value
+is stored, never the value. `secret list --long` adds descriptions and metadata
+to the listing, `secret list --app <name>` lists the entries recorded with
+`--meta app=<name>`, and `secret list --json` and `secret show --json` carry the
+same fields. Keys are free-form: `app`, `provider`, `scopes`, `tokenTtl`,
+`redirectUri` and `expiresAt` are conventions, not a schema. Descriptions and
+metadata are kept in plain text in `~/.secretless-ai/secret-annotations.json`,
+and `set` refuses one that contains the value or matches a credential pattern,
+before anything is stored. `secret rm` removes them with the value. A plain
+`secret list` does not read the file and is unchanged. The new flags belong to
+one subcommand each, and another subcommand refuses them with exit 2 rather
+than ignoring them.
+
 **The OS keychain refusal reaches the user whole, in one layout (#205).**
 Under `SECRETLESS_OS_KEYCHAIN=off`, `backend set keychain` printed "Cannot use
 keychain backend: macOS Keychain is not accessible" (on Linux, "secret-tool

@@ -12,6 +12,8 @@ import type { WritableSecretBackend } from './backends/types';
 import type { SelectableBackendType } from './backends/config';
 import { findSecretValueProblem, unstorableSecretError } from './secret-value';
 import { editDistance, NEAR_MISS_MAX } from './near-miss';
+import { SecretAnnotations, checkAnnotation, defaultAnnotationsPath, isEmptyUpdate } from './secret-annotations';
+import type { AnnotationMap, AnnotationUpdate, SecretAnnotation } from './secret-annotations';
 
 const SECRET_PREFIX = 'secret';
 
@@ -23,12 +25,22 @@ export interface SecretStoreOptions {
   backendType?: SelectableBackendType;
   /** Pre-constructed backend instance (overrides backendType). For DI/testing. */
   backend?: WritableSecretBackend;
+  /**
+   * File holding descriptions and metadata. Defaults to
+   * `~/.secretless-ai/secret-annotations.json`, except with an injected
+   * `backend`, where they are kept in memory unless a path is given here.
+   */
+  annotationsPath?: string;
 }
 
 export class SecretStore {
   private readonly backend: WritableSecretBackend;
+  private readonly annotations: SecretAnnotations;
 
   constructor(options?: SecretStoreOptions) {
+    this.annotations = new SecretAnnotations(
+      options?.annotationsPath ?? (options?.backend ? null : defaultAnnotationsPath()),
+    );
     if (options?.backend) {
       this.backend = options.backend;
       return;
@@ -55,13 +67,46 @@ export class SecretStore {
    * Validated here rather than in the prompt: `secret set`, `import` and the
    * MCP write path all arrive at this method, and a rule enforced in one of
    * three places is a rule with two ways around it (#104).
+   *
+   * `annotation` records what the secret is for (#172). It is checked against
+   * the value, and the annotation file is read, BEFORE the value is stored, so
+   * a refused annotation stores nothing. Without one, an existing annotation is
+   * left as it is: rotating a value does not change what it is for.
    */
-  async setSecret(name: string, value: string): Promise<void> {
+  async setSecret(name: string, value: string, annotation?: AnnotationUpdate): Promise<void> {
     validateSecretName(name);
     const problem = findSecretValueProblem(value);
     if (problem) throw unstorableSecretError(name, problem);
+    const annotate = !isEmptyUpdate(annotation);
+    if (annotate) {
+      const reason = checkAnnotation(annotation!, value);
+      if (reason) throw unrecordableAnnotationError(name, reason);
+      // An unreadable file or too many keys refuses here, before the value
+      // changes, rather than after it as a half-done write.
+      this.annotations.preview(name, annotation!);
+    }
     const key = `${SECRET_PREFIX}/${name}`;
     await this.backend.store(key, value);
+    if (!annotate) return;
+    try {
+      this.annotations.update(name, annotation!);
+    } catch (err) {
+      throw new Error(
+        `Stored ${name}, but its description and metadata were not recorded: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Description and metadata recorded for a name. Never reads the value. */
+  getAnnotation(name: string): SecretAnnotation | undefined {
+    validateSecretName(name);
+    return this.annotations.get(name);
+  }
+
+  /** Every recorded description and metadata, keyed by name. Never reads a value. */
+  listAnnotations(): AnnotationMap {
+    return this.annotations.all();
   }
 
   /** Retrieve a secret value by name. Returns undefined if not found. */
@@ -86,11 +131,27 @@ export class SecretStore {
     return names.sort();
   }
 
-  /** Remove a secret by name. Returns true if the secret existed. */
+  /**
+   * Remove a secret by name, and its description and metadata. Returns true if
+   * the secret existed.
+   *
+   * The value goes first: a damaged annotation file must not keep a credential
+   * in the store. If the annotation cannot be dropped afterwards, that is
+   * thrown with the value's removal stated, not hidden behind a success.
+   */
   async removeSecret(name: string): Promise<boolean> {
     validateSecretName(name);
     const key = `${SECRET_PREFIX}/${name}`;
-    return this.backend.delete(key);
+    const removed = await this.backend.delete(key);
+    try {
+      this.annotations.remove(name);
+    } catch (err) {
+      const head = removed
+        ? `Removed ${name} from the store, but its description and metadata were not removed`
+        : `${name} is not in the store, and its description and metadata could not be removed`;
+      throw new Error(`${head}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return removed;
   }
 
   /**
@@ -143,6 +204,20 @@ export class SecretStore {
     }
     return result;
   }
+}
+
+/** An annotation refused by `checkAnnotation`. Nothing was stored. */
+function unrecordableAnnotationError(name: string, reason: string): Error {
+  return new Error(
+    [
+      `${reason}`,
+      '',
+      `  Nothing was stored, and nothing recorded for ${name} changed.`,
+      '',
+      `  Verify:  secretless-ai secret show ${name}`,
+      `  Fix:     secretless-ai secret set ${name} --description "what it is for" --meta key=value`,
+    ].join('\n'),
+  );
 }
 
 /** Most unmatched names we compute a near-miss hint for. */
