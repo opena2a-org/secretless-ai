@@ -205,6 +205,96 @@ describe('init', { timeout: 30_000 }, () => {
     });
   });
 
+  // The template exemption and the block rules both read the NAME the tool was
+  // given. A symlink carries any name it likes, so `config.env.example -> .env`
+  // was exempt as a template while the Read returned the real `.env`, and a
+  // repository can ship such a link. The hook must judge the file the path
+  // reaches: the resolved target is classified again, a template target stays
+  // allowed, and a link it cannot resolve is refused.
+  describe('a symlinked path is judged by the file it reaches', () => {
+    const FAKE = 'API_KEY=FAKE_PLACEHOLDER_NOT_A_SECRET\n';
+
+    function runHook(hookPath: string, filePath: string, tool = 'Read'): boolean {
+      const input = JSON.stringify({ tool_name: tool, tool_input: { file_path: filePath } });
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', cwd: dir });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    function write(rel: string, content = FAKE): string {
+      const p = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content);
+      return p;
+    }
+
+    function link(rel: string, target: string): string {
+      const p = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.symlinkSync(target, p);
+      return p;
+    }
+
+    it('denies a template-named or plain-named link whose target is a secret file', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      write('.env');
+      write('server.key');
+      write('deploy/.env.production');
+      write('home/.aws/credentials');
+      write('home/.ssh/id_ed25519');
+      write('outside/.env');
+
+      const mustBlock: Array<[string, string]> = [
+        ['dotfile target', link('config.env.example', '.env')],
+        ['suffix target', link('server.key.sample', 'server.key')],
+        ['absolute target', link('settings.template', path.join(dir, 'deploy', '.env.production'))],
+        ['home credential store target', link('aws.dist', path.join(dir, 'home', '.aws', 'credentials'))],
+        ['ssh key target', link('id.example', path.join(dir, 'home', '.ssh', 'id_ed25519'))],
+        ['parent-traversal target', link('sub/dir/app.example', path.join('..', '..', 'outside', '.env'))],
+        ['chain of template links', link('outer.example', 'config.env.example')],
+        ['plain-named link', link('notes.txt', '.env')],
+        ['file under a linked directory', path.join(link('store', path.join(dir, 'home', '.aws')), 'credentials')],
+      ];
+      for (const [form, p] of mustBlock) {
+        expect(runHook(hookPath, p), `expected hook to BLOCK ${form} (${p})`).toBe(true);
+        expect(runHook(hookPath, path.relative(dir, p)), `expected hook to BLOCK relative ${form}`).toBe(true);
+      }
+      // Grep and Edit reach the same file through the same path.
+      expect(runHook(hookPath, mustBlock[0][1], 'Grep')).toBe(true);
+      expect(runHook(hookPath, mustBlock[0][1], 'Edit')).toBe(true);
+    });
+
+    it('denies a link it cannot resolve', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const broken = link('missing.example', 'does-not-exist.example');
+      const loopA = link('loop-a.example', 'loop-b.example');
+      link('loop-b.example', 'loop-a.example');
+      expect(runHook(hookPath, broken), 'broken symlink must be denied').toBe(true);
+      expect(runHook(hookPath, loopA), 'symlink loop must be denied').toBe(true);
+    });
+
+    it('still allows templates, template-to-template links and new files', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const regular = write('.env.example', 'API_KEY=\n');
+      write('.env.sample', 'API_KEY=\n');
+      write('README.md', '# readme\n');
+
+      const mustAllow: Array<[string, string]> = [
+        ['regular template file', regular],
+        ['template-named link to another template', link('config.env.example', '.env.sample')],
+        ['plain link to a plain file', link('docs.md', 'README.md')],
+        ['new file not yet written', path.join(dir, 'src', 'new-file.ts')],
+        ['new template not yet written', path.join(dir, 'fresh.env.example')],
+      ];
+      for (const [form, p] of mustAllow) {
+        expect(runHook(hookPath, p), `expected hook to ALLOW ${form} (${p})`).toBe(false);
+      }
+      expect(runHook(hookPath, path.join(dir, 'src', 'new-file.ts'), 'Write')).toBe(false);
+    });
+  });
+
   // Release-test 2026-07-16 P1: `secretless-ai env` prints every stored secret as
   // plaintext export statements. `secret get` is TTY-guarded and `run -- env` was
   // already denied, but the direct `env` command had neither a deny rule nor a
