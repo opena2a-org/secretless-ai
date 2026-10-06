@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { init, DEPRECATED_DENY_RULES } from './init';
-import { SECRET_FILE_PATTERNS } from './patterns';
+import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS } from './patterns';
 import { scan } from './scan';
 import { status } from './status';
 import { detectAITools } from './detect';
@@ -1500,5 +1500,116 @@ describe('generated instructions name the channel the guard cannot see (#129)', 
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// #129, the general case. The guard decides on the command text before the
+// command runs, so `curl -H "Authorization: Bearer $TOKEN" <config endpoint>`
+// passes it and whatever the endpoint returns lands in context unread. `init`
+// now installs a PostToolUse check that reads Bash output after the command
+// and warns on a credential-shaped value. Values are assembled at run time so
+// the tree never carries a provider-shaped literal.
+describe('PostToolUse output check for credentials a command prints (#129)', () => {
+  const ghToken = ['ghp', '_', 'Q7wZk2Lm9Rt4'.repeat(3)].join('');
+  const awsKey = ['AK', 'IA', 'Q3MZ7TRW2XNP5KDL'].join('');
+  const command = 'curl -s -H "Authorization: Bearer $SOME_API_TOKEN" https://api.example-cloud.test/v1/projects/ref/config';
+  let dir: string;
+
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  const hookPath = (): string => path.join(dir, '.claude', 'hooks', 'secretless-output-check.cjs');
+
+  // Run the hook the way Claude Code does: by path, payload on stdin.
+  function runHook(payload: unknown): { status: number | null; stdout: string } {
+    const input = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    const r = spawnSync(hookPath(), [], { input, encoding: 'utf-8', timeout: 20_000 });
+    return { status: r.status, stdout: r.stdout };
+  }
+
+  const bashResponse = (stdout: string) => ({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_response: { stdout, stderr: '', interrupted: false },
+  });
+
+  it('init installs the check and wires it to Bash as a PostToolUse hook, once', () => {
+    const result = init(dir);
+
+    expect(result.filesCreated).toContain('.claude/hooks/secretless-output-check.cjs');
+    expect(fs.statSync(hookPath()).mode & 0o111).toBeGreaterThan(0);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+    expect(settings.hooks.PostToolUse).toEqual([{
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/secretless-output-check.cjs' }],
+    }]);
+
+    const again = init(dir);
+    expect(again.filesCreated).not.toContain('.claude/hooks/secretless-output-check.cjs');
+    expect(again.filesModified).not.toContain('.claude/hooks/secretless-output-check.cjs');
+    expect(again.filesModified).not.toContain('.claude/settings.json');
+    const after = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+    expect(after.hooks.PostToolUse).toHaveLength(1);
+  });
+
+  it('adds the check to an install made before it existed', () => {
+    init(dir);
+    const settingsPath = path.join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    delete settings.hooks.PostToolUse;
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    fs.rmSync(hookPath());
+
+    const result = init(dir);
+    expect(result.filesCreated).toContain('.claude/hooks/secretless-output-check.cjs');
+    expect(result.filesModified).toContain('.claude/settings.json');
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8')).hooks.PostToolUse).toHaveLength(1);
+  });
+
+  it('embeds the whole credential catalog, not a copy that can drift', () => {
+    init(dir);
+    const script = fs.readFileSync(hookPath(), 'utf-8');
+    for (const p of CREDENTIAL_PATTERNS) {
+      expect(script, p.id).toContain(JSON.stringify(p.regex.source));
+    }
+  });
+
+  it('warns when the output of a command carries a credential, naming the pattern and never the value', () => {
+    init(dir);
+    const body = JSON.stringify({ envs: [{ key: 'GH_TOKEN', value: ghToken }, { key: 'AWS', value: awsKey }] });
+    const { status, stdout } = runHook(bashResponse(body));
+
+    expect(status).toBe(0);
+    expect(stdout).not.toContain(ghToken);
+    expect(stdout).not.toContain(awsKey);
+    const out = JSON.parse(stdout);
+    expect(out.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+    expect(out.hookSpecificOutput.additionalContext).toContain('GitHub Token');
+    expect(out.hookSpecificOutput.additionalContext).toContain('AWS Access Key');
+    expect(out.hookSpecificOutput.additionalContext).toContain('Treat the matched text as an exposed credential');
+    // Detection, not prevention, and the user is told so.
+    expect(out.systemMessage).toContain('cannot keep the value out');
+  });
+
+  it('finds a credential deep inside one long output line', () => {
+    init(dir);
+    const { stdout } = runHook(bashResponse('x'.repeat(100_000) + ghToken + 'y'.repeat(100_000)));
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain('GitHub Token');
+  });
+
+  it('stays silent on output without a credential, on documented example keys, and on input it cannot parse', () => {
+    init(dir);
+    for (const clean of [
+      JSON.stringify({ envs: [{ key: 'API_URL', value: 'https://api.example.test' }] }),
+      ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join(''),
+      '',
+    ]) {
+      const { status, stdout } = runHook(bashResponse(clean));
+      expect(status).toBe(0);
+      expect(stdout).toBe('');
+    }
+    expect(runHook('not json')).toEqual({ status: 0, stdout: '' });
   });
 });
