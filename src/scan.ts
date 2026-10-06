@@ -1116,6 +1116,28 @@ function realpathOrNull(p: string): string | null {
   }
 }
 
+/**
+ * Order two names by Unicode code point, which is the byte order of their UTF-8
+ * form.
+ *
+ * Node documents no order for `readdir`. It returns byte order on macOS and
+ * Linux only because its I/O layer sorts; APFS and ext4 themselves return hash
+ * order. Byte order keeps those two platforms' output as it was. Not `<`, which
+ * compares UTF-16 units and puts an emoji before `Ａ` (U+FF21), and not
+ * `localeCompare`, whose result moves with the locale.
+ */
+function compareCodePoints(a: string, b: string): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a.codePointAt(i)!;
+    const y = b.codePointAt(i)!;
+    if (x !== y) return x - y;
+    // Equal astral code points: both strings hold the same surrogate pair.
+    if (x > 0xffff) i++;
+  }
+  return a.length - b.length;
+}
+
 /** Per-walk behaviour: which directories to descend, which files to keep. */
 interface WalkSpec {
   /**
@@ -1211,6 +1233,10 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
       unreadable.push(rel(current));
       continue;
     }
+    // The samples and the `Scan one:` command name the first entries the walk
+    // meets, so the order is the walk's own rather than whatever `readdir`
+    // returned. It also settles which files fill `maxFiles` on a truncated scan.
+    entries.sort((a, b) => compareCodePoints(a.name, b.name));
 
     for (const entry of entries) {
       const entryPath = path.join(current, entry.name);
