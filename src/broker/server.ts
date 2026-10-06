@@ -23,6 +23,7 @@ import { PolicyEngine } from './policy';
 import { CredentialResolver } from './resolver';
 import { AuditLogger } from './audit';
 import { AimClient } from './aim-client';
+import { parseJsonRefusingDuplicates } from './strict-json';
 import type { GrantResolver, GrantResolveInput } from './grant-resolver';
 
 /** Default path to the broker authentication token file. */
@@ -321,9 +322,34 @@ export class BrokerServer {
     const startTime = Date.now();
 
     this.readBody(req).then(async (body) => {
+      // The same duplicate-member scan as /grant, on the raw body before
+      // JSON.parse keeps the last copy of a repeated member. A scanner that
+      // will not load withholds the request rather than parsing without it.
+      const scanned = await parseJsonRefusingDuplicates(body);
+      if (!scanned.ok) {
+        if (scanned.reason === 'scanner-unavailable') {
+          this.audit.logEvent(
+            'error', 'broker', '', '', 'denied',
+            `Duplicate-member scanner (@opena2a/atx-verify) failed to load; every resolve request is ` +
+            `refused until it resolves: ${scanned.detail}`,
+            0,
+          );
+          this.sendJson(res, 503, {
+            error: 'Credential resolution is unavailable on this broker (see the broker audit log)',
+          });
+        } else if (scanned.reason === 'duplicate-member') {
+          this.sendJson(res, 400, {
+            error: `Duplicate member "${scanned.member}" in request body (duplicate JSON names are parser-divergent and refused)`,
+          });
+        } else {
+          this.sendJson(res, 400, { error: 'Invalid JSON' });
+        }
+        return;
+      }
+
       let request: ResolveRequest;
       try {
-        request = parseResolveRequest(body);
+        request = parseResolveRequest(scanned.value);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Invalid request';
         this.sendJson(res, 400, { error: message });
@@ -538,15 +564,8 @@ export class BrokerServer {
   }
 }
 
-/** Parse and validate a resolve request body. */
-function parseResolveRequest(body: string): ResolveRequest {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new Error('Invalid JSON');
-  }
-
+/** Validate a parsed resolve request body. */
+function parseResolveRequest(parsed: unknown): ResolveRequest {
   if (!parsed || typeof parsed !== 'object') {
     throw new Error('Request body must be a JSON object');
   }

@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as http from 'http';
-import { startDaemon, getDaemonStatus, getLiveDaemonStatus } from './daemon';
+import { startDaemon, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning } from './daemon';
 import { TOKEN_FILE } from './server';
 
 /**
@@ -150,6 +150,77 @@ describe('getLiveDaemonStatus', () => {
     } finally {
       await server.stop();
       cleanupDaemonFiles();
+    }
+  });
+});
+
+/**
+ * The two JSON reads in daemon.ts refuse a repeated member name rather than
+ * letting JSON.parse keep the last copy.
+ */
+describe('daemon status reads refuse a duplicated member name', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-daemon-dup-'));
+  const pidFile = path.join(dir, 'broker.pid');
+
+  afterEach(() => {
+    try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
+    try { fs.unlinkSync(TOKEN_FILE); } catch { /* ignore */ }
+  });
+
+  function writePidFile(httpPort: number): void {
+    // The exact shape startDaemon writes.
+    fs.writeFileSync(pidFile, JSON.stringify({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      socketPath: path.join(dir, 'broker.sock'),
+      httpPort,
+    }));
+  }
+
+  it('reads a PID file as startDaemon writes it (control)', () => {
+    writePidFile(1);
+    expect(getDaemonStatus(pidFile)?.pid).toBe(process.pid);
+    expect(isDaemonRunning(pidFile)).toBe(true);
+  });
+
+  it('reads a PID file that repeats a member as no daemon', () => {
+    // The live pid comes last, so JSON.parse alone would report a running
+    // daemon and stopDaemon would signal that process.
+    fs.writeFileSync(
+      pidFile,
+      `{"pid":999999999,"startedAt":"2026-10-06T00:00:00.000Z","httpPort":1,"pid":${process.pid}}`,
+    );
+    expect(getDaemonStatus(pidFile)).toBeNull();
+    expect(isDaemonRunning(pidFile)).toBe(false);
+  });
+
+  it('falls back to the PID-file status when /status repeats a member', async () => {
+    let statusBody = '';
+    const statusServer = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(statusBody);
+    });
+    await new Promise<void>((resolve) => { statusServer.listen(0, '127.0.0.1', resolve); });
+    const port = (statusServer.address() as { port: number }).port;
+    writePidFile(port);
+    fs.mkdirSync(path.dirname(TOKEN_FILE), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(TOKEN_FILE, 'test-token', { mode: 0o600 });
+
+    try {
+      // Control: a clean response is read as live status.
+      statusBody = '{"requestCount":3,"aimConfigured":false,"aimReachable":false,"policyCount":7}';
+      const live = await getLiveDaemonStatus(pidFile);
+      expect(live!.policyCount).toBe(7);
+      expect(live!.requestCount).toBe(3);
+
+      statusBody =
+        '{"requestCount":3,"aimConfigured":false,"aimReachable":false,"policyCount":2,"policyCount":7}';
+      const fallback = await getLiveDaemonStatus(pidFile);
+      expect(fallback).not.toBeNull();
+      expect(fallback!.policyCount).toBe(0);
+      expect(fallback!.requestCount).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => { statusServer.close(() => resolve()); });
     }
   });
 });

@@ -12,6 +12,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { BrokerConfig, BrokerStatus } from './types';
 import { BrokerServer, TOKEN_FILE } from './server';
+import { parseJsonRefusingDuplicates } from './strict-json';
 
 const SECRETLESS_DIR = path.join(os.homedir(), '.secretless-ai');
 const DEFAULT_PID_FILE = path.join(SECRETLESS_DIR, 'broker.pid');
@@ -305,11 +306,12 @@ export async function getLiveDaemonStatus(pidFile?: string): Promise<BrokerStatu
           res.on('data', (chunk) => { body += chunk; });
           res.on('end', () => {
             if (res.statusCode !== 200) return resolve(null);
-            try {
-              resolve(JSON.parse(body));
-            } catch {
-              resolve(null);
-            }
+            // A repeated member is refused rather than kept last-wins, and the
+            // caller falls back to the PID-file status as for any unreadable reply.
+            parseJsonRefusingDuplicates(body).then(
+              (parsed) => resolve(parsed.ok ? (parsed.value as Partial<BrokerStatus>) : null),
+              () => resolve(null),
+            );
           });
         },
       );
@@ -369,7 +371,16 @@ function readPidFile(
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
     try {
       const data = JSON.parse(raw);
-      if (data && typeof data === 'object' && typeof data.pid === 'number') {
+      // startDaemon writes this file with JSON.stringify, so a file it wrote
+      // re-serializes to the same text. One that does not was not written by
+      // it, and that includes a file repeating a member, which JSON.parse would
+      // resolve last-wins into the pid stopDaemon signals. This reader is sync
+      // (isDaemonRunning, getDaemonStatus and stopDaemon are), so it cannot load
+      // the ESM duplicate-member scanner the async parse sites use.
+      if (
+        data && typeof data === 'object' && typeof data.pid === 'number' &&
+        JSON.stringify(data) === raw
+      ) {
         return data;
       }
     } catch {
