@@ -1891,3 +1891,132 @@ describe('PostToolUse output check for credentials a command prints (#129)', () 
     expect(runHook('not json')).toEqual({ status: 0, stdout: '' });
   });
 });
+
+// The block's last section used to say that credentials in the conversation
+// are redacted. Nothing redacts them: a value the assistant can read has
+// already been sent to the model, and the only cleanup `init` installs is a
+// Claude Code Stop hook that rewrites the local session file afterwards. The
+// section must say so for the tool that has the hook, and say nothing about a
+// cleanup for a tool that has none.
+describe('generated instructions state what happens to a credential in the conversation', () => {
+  const MARKER = '<!-- secretless:managed -->';
+  const HEADING = '## Credentials in the conversation';
+  const ASK = '- NEVER ask users to paste API keys, tokens, or passwords into the conversation';
+  const WARN = '- If a user pastes a credential, immediately warn them and suggest using environment variables';
+  const EXPOSED = '- A credential value that appears in this conversation has already reached the model and its provider. Treat it as exposed and tell the user to rotate it';
+  const CLEANUP = '- After each turn, a Claude Code hook runs `secretless-ai clean --last`, which rewrites the newest session file in each project directory under `~/.claude/projects` and replaces values that match known credential patterns. It does not stop a value from reaching the model or its provider. Do not rely on it to remove a value';
+  const BARRED = ['automatically redacted', 'redacted by Secretless', 'Transcript Protection'];
+
+  let dir: string;
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  /** Every file under `dir` that carries the managed block: what `init` wrote. */
+  function blockFiles(root: string): string[] {
+    const found: string[] = [];
+    const walk = (d: string): void => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.isFile() && fs.readFileSync(p, 'utf-8').includes(MARKER)) found.push(path.relative(root, p));
+      }
+    };
+    walk(root);
+    return found.sort();
+  }
+
+  /** The section from the heading to the end of the block. */
+  function section(content: string): string {
+    const at = content.indexOf(HEADING);
+    return at === -1 ? '' : content.slice(at).trimEnd();
+  }
+
+  function expectNoClaim(content: string): void {
+    for (const s of BARRED) expect(content).not.toContain(s);
+    for (const line of content.split('\n').filter(l => /conversation/i.test(l))) {
+      expect(line).not.toMatch(/redact|scrub|protected|automatically/i);
+    }
+  }
+
+  // Markers for every tool that gets an instruction block, in the layouts
+  // `init` creates and the legacy ones it appends to.
+  const LAYOUTS: Array<[string, string[], string[]]> = [
+    ['documented layouts', ['.claude', '.cursor', '.copilot', '.windsurf', '.cline'], []],
+    ['legacy single files', ['.claude'], ['.cursorrules', '.clinerules', '.windsurfrules', '.github/copilot-instructions.md']],
+  ];
+
+  for (const [name, dirs, files] of LAYOUTS) {
+    it(`no file init writes claims redaction (${name})`, () => {
+      for (const d of dirs) fs.mkdirSync(path.join(dir, d), { recursive: true });
+      for (const f of files) {
+        fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+        fs.writeFileSync(path.join(dir, f), '# existing rules\n');
+      }
+      const result = init(dir);
+      expect(result.toolsConfigured).toEqual(
+        expect.arrayContaining(['claude-code', 'cursor', 'copilot', 'windsurf', 'cline']),
+      );
+
+      const written = blockFiles(dir);
+      expect(written).toContain('CLAUDE.md');
+      expect(written.length).toBeGreaterThanOrEqual(5);
+
+      for (const rel of written) {
+        const content = fs.readFileSync(path.join(dir, rel), 'utf-8');
+        expectNoClaim(content);
+        expect(content).toContain('has already reached the model and its provider');
+        expect(content).toContain('Treat it as exposed');
+        if (rel === 'CLAUDE.md') {
+          expect(section(content)).toBe([HEADING, ASK, WARN, EXPOSED, CLEANUP].join('\n'));
+        } else {
+          expect(section(content)).toBe([HEADING, ASK, WARN, EXPOSED].join('\n'));
+          expect(content).not.toContain('clean --last');
+        }
+      }
+    });
+  }
+
+  it('describes the cleanup only alongside the Stop hook that runs it', () => {
+    init(dir);
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+    const stop = (settings.hooks.Stop as any[]).flatMap(h => h.hooks.map((hh: any) => hh.command));
+    expect(stop.some((c: string) => c.includes('secretless-ai clean --last'))).toBe(true);
+
+    const claudeMd = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
+    expect(claudeMd).toContain('It does not stop a value from reaching the model or its provider');
+    expect(claudeMd.indexOf(EXPOSED)).toBeLessThan(claudeMd.indexOf(CLEANUP));
+  });
+
+  it('describes the cleanup when the Stop hook was already in settings.json', () => {
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'npx secretless-ai clean --last' }] }] },
+    }));
+    init(dir);
+    expect(section(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8')))
+      .toBe([HEADING, ASK, WARN, EXPOSED, CLEANUP].join('\n'));
+  });
+
+  it('says nothing about a cleanup when settings.json could not be merged and no hook was added', () => {
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{ "model": "opus", }');
+    const result = init(dir);
+    expect(result.settingsUnusable).toBeDefined();
+
+    const claudeMd = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
+    expectNoClaim(claudeMd);
+    expect(claudeMd).not.toContain('clean --last');
+    expect(section(claudeMd)).toBe([HEADING, ASK, WARN, EXPOSED].join('\n'));
+  });
+
+  it('status still reports every initialised tool as configured', async () => {
+    for (const d of ['.claude', '.cursor', '.copilot', '.windsurf', '.cline']) {
+      fs.mkdirSync(path.join(dir, d), { recursive: true });
+    }
+    init(dir);
+    const s = await status(dir);
+    expect(s.configuredTools).toEqual(
+      expect.arrayContaining(['claude-code', 'cursor', 'copilot', 'windsurf', 'cline']),
+    );
+  });
+});
