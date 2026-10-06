@@ -260,6 +260,15 @@ secret-file arm that already did.
 
 ### Changed
 
+- `PolicyEngine` and `BrokerServer` no longer accept a caller-supplied
+  enforcement path. `new PolicyEngine({ rateLimiter })` and
+  `new BrokerServer(config, { policy })` now throw a `TypeError`: the engine
+  always enforces the `rateLimit` constraint with its own limiter, and the
+  server always builds its engine from `config.policyFile`. The supplied
+  limiter or engine replaced the decision itself, so one that always allowed
+  removed the policy's limits while the policy still reported as loaded. The
+  CLI never passed either option. Library callers remove the option, and set
+  `config.policyFile` to choose the server's policy (#146).
 - The instructions `init` writes into `CLAUDE.md` and the other tools' rule
   files state that command output is not guarded. A command that returns
   credential values (`aws secretsmanager get-secret-value`,
