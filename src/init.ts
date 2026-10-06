@@ -1248,14 +1248,49 @@ except Exception:
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full secret-store dump via secretless-ai env"}}'
     exit 0
   fi
-  # Block direct access to secretless data directory. The same filename-versus-
-  # pattern ambiguity as the two arms above: a source search FOR the directory
+  # Block every reader of the secretless data directory except secretless-ai
+  # itself. This arm used to list reading verbs (cat, head, awk, ...) and so
+  # allowed every reader it did not name: python3, node, ruby and perl
+  # one-liners and a plain shell redirect (\`< ~/.secretless-ai/config.json\`)
+  # all read the store through it, and no list of verbs can name every program
+  # that opens a file. The rule is now an allowlist: a command naming the
+  # directory is refused unless the WHOLE command is one plain secretless-ai
+  # invocation.
+  #
+  # "Plain" is what keeps the allowlist from being a prefix test. The command
+  # must be one line holding the program name and words made only of letters,
+  # digits and \`_ . / ~ : = @ + , -\`. That leaves out every shell operator that
+  # can start a second program (\`; & | < > ( )\`, a backquote, \`$\`, a line
+  # break) and every quote and backslash, so the words the shell runs are the
+  # words matched here and \`"run"\` or \`r\\un\` cannot hide a subcommand. \`run\` and
+  # \`vault exec\` start a program of the caller's choice, so a command carrying
+  # either word is refused too. A copy reached by another name
+  # (\`./secretless-ai\`, \`node dist/cli.js\`) is not on the list.
+  #
+  # The search-pattern over-block is kept: a source search FOR the directory
   # name (grep -rn for the literal string) reads no store and is refused anyway,
   # so the reason names it and points at the tools whose path guard can tell the
   # difference.
-  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|grep|awk|sed|strings|xxd|ls)\\s+.*\\.secretless-ai'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to secretless data directory. This guard matches command text and cannot tell a filename from a search pattern, so a command that merely searches source for the directory name is blocked too. Safe path: open files with the Read tool and search with the Grep tool instead of Bash."}}'
-    exit 0
+  if echo "$COMMAND" | grep -qiE '\\.secretless-ai|\\.opena2a/secretless-ai'; then
+    SECRETLESS_ONLY=0
+    case "$COMMAND" in
+      *$'\\n'*) ;;
+      *)
+        if printf '%s' "$COMMAND" | grep -qE '^[[:blank:]]*(npx[[:blank:]]+(-y[[:blank:]]+|--yes[[:blank:]]+)?)?secretless-ai(@[A-Za-z0-9._-]+)?([[:blank:]]+[A-Za-z0-9_./~:=@+,-]+)*[[:blank:]]*$'; then
+          # The words are plain here, so a case match finds them. It is not a
+          # negated grep on purpose: under pipefail, a writer killed by SIGPIPE
+          # after grep -q exits early would turn that negation into an allow.
+          case " $COMMAND " in
+            *[[:blank:]][Rr][Uu][Nn][[:blank:]]*|*[[:blank:]][Ee][Xx][Ee][Cc][[:blank:]]*) ;;
+            *) SECRETLESS_ONLY=1 ;;
+          esac
+        fi
+        ;;
+    esac
+    if [ "$SECRETLESS_ONLY" -eq 0 ]; then
+      echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to secretless data directory. Only one plain secretless-ai command may name it; any other program, a shell redirect, or a command that chains, substitutes or starts another program is refused. This guard matches command text and cannot tell a filename from a search pattern, so a command that merely searches source for the directory name is blocked too. Safe path: open files with the Read tool and search with the Grep tool instead of Bash."}}'
+      exit 0
+    fi
   fi
 ${customRules ? customRulesToHookBlocks(customRules) : ''}  exit 0
 fi
