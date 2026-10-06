@@ -14,8 +14,10 @@ second slash into everything that matches a real path — the `cat`, `grep`,
 `awk`, `sed`, `strings` and `xxd` command rules, and the generated guard hook's
 path globs — where it matched nothing that can exist, leaving the hook, the
 layer that refuses the read, silent for exactly the file the rule names. Both
-spellings now generate the same rules: the root prefix in the Read rule, a
-single slash everywhere a path or a typed command is matched. Re-running
+spellings now generate the same Read and command rules: the root prefix in the
+Read rule, a single slash everywhere a path or a typed command is matched. The
+Grep rule is left as written, so it still carries the second slash for the
+`//` spelling. Re-running
 `npx secretless-ai init` installs the working rules over an existing project
 config and refreshes the hook; the single-slash rule an older version wrote is
 left in place, where it matches only a path of that name under the project.
