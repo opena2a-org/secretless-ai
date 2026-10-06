@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { execFileSync, spawnSync } from 'child_process';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync, spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as http from 'http';
+import type { AddressInfo } from 'net';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -20,6 +22,89 @@ function runCli(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } 
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: opts.cwd,
     env: opts.env ?? process.env,
+  });
+}
+
+/**
+ * A store that answers, with no OS credential-store CLI in reach.
+ *
+ * The suite runs with SECRETLESS_OS_KEYCHAIN=off (vitest.config.ts), and on
+ * macOS the default store IS the Keychain, so a CLI child that has to read the
+ * store meets the refusal before the behaviour under test can answer. These
+ * fixtures point a temporary HOME at the vault backend and the vault at a
+ * local stub that holds nothing: every read and list is a 404, which the
+ * backend reports as an empty store. The stub counts requests, so a test can
+ * prove the store was consulted rather than refused.
+ */
+interface EmptyVaultStub { addr: string; requests: () => number; close: () => Promise<void> }
+
+function startEmptyVaultStub(): Promise<EmptyVaultStub> {
+  let count = 0;
+  const server = http.createServer((req, res) => {
+    count += 1;
+    req.resume();
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'application/json');
+    res.end('{"errors":[]}');
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        addr: `http://127.0.0.1:${port}`,
+        requests: () => count,
+        close: () => new Promise((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
+/** A name the keychain controls record in the key index, so a read needs the OS CLI. */
+const INDEXED = 'SECRETLESS_CLI_TEST_INDEXED_NAME';
+
+/**
+ * A temporary HOME whose config selects `backend`, with the result cache off so
+ * every CLI run reaches the store; the caller removes it. The keychain HOME
+ * records one name in the backends' key index: the index is only names, and a
+ * store whose index is empty never asks the OS CLI anything, so a control that
+ * omitted this would pass without the refusal ever being reached.
+ */
+function homeWithBackend(backend: 'vault' | 'keychain'): string {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `secretless-${backend}-home-`));
+  fs.mkdirSync(path.join(home, '.secretless-ai'));
+  fs.writeFileSync(path.join(home, '.secretless-ai', 'config.json'), JSON.stringify({ backend, cacheTtl: 0 }) + '\n');
+  if (backend === 'keychain') {
+    const storeDir = path.join(home, '.secretless-ai', 'store');
+    fs.mkdirSync(storeDir, { mode: 0o700 });
+    fs.writeFileSync(path.join(storeDir, 'keychain-index.json'), JSON.stringify([`secret/${INDEXED}`]) + '\n', { mode: 0o600 });
+  }
+  return home;
+}
+
+function emptyStoreEnv(home: string, stub: EmptyVaultStub): NodeJS.ProcessEnv {
+  return {
+    ...process.env, HOME: home, OPENA2A_TELEMETRY: 'off', NO_COLOR: '1',
+    VAULT_ADDR: stub.addr, VAULT_TOKEN: 'stub-vault-token-for-an-empty-store',
+  };
+}
+
+function keychainStoreEnv(home: string): NodeJS.ProcessEnv {
+  return { ...process.env, HOME: home, OPENA2A_TELEMETRY: 'off', NO_COLOR: '1' };
+}
+
+/** spawnSync would block the event loop the vault stub answers on. */
+function cliAsync(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  cwd?: string,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI_PATH, ...args], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
   });
 }
 
@@ -526,23 +611,61 @@ describe('a flag never widens scope (0.22.1 argv layer)', () => {
   });
 
   // --- run: the selector whose absence means "inject everything" ------------
+  //
+  // Both forms read the store, so they run against the empty vault stub: a
+  // name the store lacks is only known once the store has answered, and a
+  // refused store (the keychain control below) answers the bound and the
+  // unbound form alike.
 
   const ABSENT = 'SECRETLESS_ARGV_NO_SUCH_SECRET';
+  const EXIT_7 = ['--', process.execPath, '-e', 'process.exit(7)'];
+  let stub: EmptyVaultStub;
+  let vaultHome: string;
+  let keychainHome: string;
 
-  itIfBuilt('CONTROL: `run --only NAME` fails closed on a name the store lacks', () => {
-    const res = cli(['run', '--only', ABSENT, '--', process.execPath, '-e', 'process.exit(7)']);
-    expect(res.status).not.toBe(7);
-    expect(res.stderr).toContain(ABSENT);
+  beforeAll(async () => {
+    stub = await startEmptyVaultStub();
+    vaultHome = homeWithBackend('vault');
+    keychainHome = homeWithBackend('keychain');
+  });
+  afterAll(async () => {
+    await stub.close();
+    fs.rmSync(vaultHome, { recursive: true, force: true });
+    fs.rmSync(keychainHome, { recursive: true, force: true });
   });
 
-  itIfBuilt('`run --only=NAME` binds the selector rather than injecting the whole store', () => {
-    const res = cli(['run', `--only=${ABSENT}`, '--', process.execPath, '-e', 'process.exit(7)']);
+  itIfBuilt('CONTROL: `run --only NAME` fails closed on a name the store lacks', async () => {
+    const before = stub.requests();
+    const res = await cliAsync(['run', '--only', ABSENT, ...EXIT_7], emptyStoreEnv(vaultHome, stub));
+    expect(res.status).not.toBe(7);
+    expect(res.stderr).toContain(ABSENT);
+    expect(res.stderr).not.toContain('was not started');
+    expect(stub.requests(), 'the store was consulted').toBeGreaterThan(before);
+  });
+
+  itIfBuilt('`run --only=NAME` binds the selector rather than injecting the whole store', async () => {
+    const before = stub.requests();
+    const res = await cliAsync(['run', `--only=${ABSENT}`, ...EXIT_7], emptyStoreEnv(vaultHome, stub));
     // On v0.22.0 `--only=NAME` is unparsed, so `only` stays undefined, undefined
     // means "inject every credential in the store", and the child RUNS —
     // exiting 7. The selector naming a nonexistent secret is what makes this
     // observable without printing anything: bound, it must refuse and name it.
     expect(res.status).not.toBe(7);
     expect(res.stderr).toContain(ABSENT);
+    expect(res.stderr).not.toContain('was not started');
+    expect(stub.requests(), 'the store was consulted').toBeGreaterThan(before);
+  });
+
+  itIfBuilt('CONTROL: with the OS keychain as the store, SECRETLESS_OS_KEYCHAIN=off refuses `run` before the store can answer', async () => {
+    expect(process.env.SECRETLESS_OS_KEYCHAIN, 'vitest.config.ts sets the switch').toBe('off');
+    const before = stub.requests();
+    const res = await cliAsync(['run', '--only', INDEXED, ...EXIT_7], keychainStoreEnv(keychainHome));
+    expect(res.status).not.toBe(7);
+    expect(res.stderr).toContain('SECRETLESS_OS_KEYCHAIN=off');
+    // The refusal is not read as "absent": the index names the secret, the OS
+    // CLI that would read it was never started, and nothing says "not found".
+    expect(res.stderr).not.toMatch(/not found/i);
+    expect(stub.requests()).toBe(before);
   });
 });
 
@@ -659,6 +782,24 @@ describe('secret list does not accept a filter it will not apply', () => {
     }
   }
 
+  // The listing reads the store, so it runs against the empty vault stub (see
+  // startEmptyVaultStub): under SECRETLESS_OS_KEYCHAIN=off the macOS default
+  // store is refused before it can list anything.
+  let stub: EmptyVaultStub;
+  let vaultHome: string;
+  let keychainHome: string;
+
+  beforeAll(async () => {
+    stub = await startEmptyVaultStub();
+    vaultHome = homeWithBackend('vault');
+    keychainHome = homeWithBackend('keychain');
+  });
+  afterAll(async () => {
+    await stub.close();
+    fs.rmSync(vaultHome, { recursive: true, force: true });
+    fs.rmSync(keychainHome, { recursive: true, force: true });
+  });
+
   itIfBuilt('refuses a positional rather than silently listing everything', () => {
     const res = run(['secret', 'list', 'ZZZ_NO_SUCH_PREFIX']);
     expect(res.status).toBe(2);
@@ -668,9 +809,23 @@ describe('secret list does not accept a filter it will not apply', () => {
     expect(res.stdout).not.toMatch(/secret\(s\):/);
   });
 
-  itIfBuilt('CONTROL: `secret list` with no argument still lists, exit 0', () => {
-    const res = run(['secret', 'list']);
-    expect(res.status).toBe(0);
+  itIfBuilt('CONTROL: `secret list` with no argument still lists, exit 0', async () => {
+    const before = stub.requests();
+    const res = await cliAsync(['secret', 'list'], emptyStoreEnv(vaultHome, stub));
+    expect(res.status, res.stderr).toBe(0);
     expect(res.stderr).not.toMatch(/takes no arguments/);
+    expect(res.stdout).toContain('No secrets stored');
+    expect(stub.requests(), 'the store was consulted').toBeGreaterThan(before);
+  });
+
+  itIfBuilt('CONTROL: with the OS keychain as the store, SECRETLESS_OS_KEYCHAIN=off refuses `secret list` and never reports an empty store', async () => {
+    // The listing resolves every name the key index records, so the first
+    // listed name is the read that has to meet the refusal.
+    expect(process.env.SECRETLESS_OS_KEYCHAIN, 'vitest.config.ts sets the switch').toBe('off');
+    const res = await cliAsync(['secret', 'list'], keychainStoreEnv(keychainHome));
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain('SECRETLESS_OS_KEYCHAIN=off');
+    expect(res.stdout).not.toContain('No secrets stored');
+    expect(res.stdout).not.toMatch(/secret\(s\):/);
   });
 });
