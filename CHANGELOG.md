@@ -289,6 +289,25 @@ lines and their lengths. The exit code is unchanged. `cleanTranscripts`
 returns every such line to library callers as `linesNotRead` and
 `totalLinesNotRead`.
 
+**`secret sync --from <backend>` seeds this machine's store from a shared
+backend by name (#176).** `secret sync --from 1password` (or `vault`,
+`gcp-sm`, `keychain`, `local`) copies the required names of `./.secretless`,
+the names given with `--only K1,K2`, or the required names of
+`--manifest <file>`, into the configured store. Each name is read from the
+source by its own key, so a source token that can read entries but not list
+them still syncs. A local value that differs is left as it is and reported as
+a conflict unless `--force` is given; a name in neither store, a conflict and
+a read or write failure each exit 1 and are named. `--dry-run` reports what
+would be created, updated or left alone and writes nothing; it exits with the
+code the real run would. The source is checked for health before any entry is
+read, an unreachable source is reported as the source rather than as the
+configured backend, values are never printed, and the source is read without
+the cache layer,
+whose file is keyed by name alone and would otherwise serve the shared value as
+the local one. `setup --check` now names `secret sync` when required names are
+missing. The sync flags are refused on the other `secret` subcommands, so
+`secret set --dry-run` cannot store the value it was asked to preview.
+
 **`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
 CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS
 Keychain and Linux Secret Service CLIs; reads and writes through those backends

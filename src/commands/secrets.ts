@@ -1,10 +1,17 @@
+import * as fs from 'fs';
 import * as path from 'path';
-import { SecretStore } from '../secret-store';
+import { SecretStore, isValidSecretName } from '../secret-store';
 import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
 import { describeSecretShape } from '../secret-value';
 import { isEmptyUpdate } from '../secret-annotations';
 import type { AnnotationUpdate, SecretAnnotation } from '../secret-annotations';
+import { createBackend } from '../backends/factory';
+import type { SelectableBackendType } from '../backends/config';
+import type { SecretBackend } from '../backends/types';
+import { parseManifestDetailed, MANIFEST_FORMAT_HINT } from '../manifest';
+import { syncSecrets, displayName } from '../secret-sync';
+import type { SyncAction, SyncResult } from '../secret-sync';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -172,6 +179,9 @@ function annotationJson(name: string, annotation: SecretAnnotation | undefined):
   };
 }
 
+/** Flags only `secret sync` reads. Refused on the other subcommands (below). */
+const SYNC_ONLY_FLAGS = ['--from', '--only', '--manifest', '--dry-run'];
+
 export interface RunSecretOptions {
   /** `--json`, as read by the dispatcher. */
   json?: boolean;
@@ -195,7 +205,22 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
   const parsed = parsedOrError;
   const json = options.json === true || parsed.switches.has('--json');
 
+  // The `secret` verb registers one flag list for all its subcommands. A sync
+  // flag given to another subcommand would be dropped without a word, and
+  // `secret set --dry-run NAME=VALUE` would then store the value it was asked
+  // only to preview.
+  if (subcommand !== 'sync') {
+    const misplaced = args.slice(1).find((a) => SYNC_ONLY_FLAGS.includes(a));
+    if (misplaced !== undefined) {
+      console.error(`\n  ${misplaced} applies to \`secret sync\` only. \`secret ${subcommand}\` was not run. Nothing was changed.\n`);
+      return 2;
+    }
+  }
+
   switch (subcommand) {
+    case 'sync':
+      return runSecretSync(args.slice(1));
+
     case 'set': {
       const nameArg = parsed.rest[0];
       if (!nameArg) {
@@ -463,14 +488,252 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       // (#80). Reserve the "Unknown secret command" error for a real unrecognized token.
       if (subcommand === undefined) {
         console.log(`\n  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
-        console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)\n`);
+        console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
+        console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]\n`);
         return 0;
       }
       console.error(`\n  Unknown secret command: ${subcommand}`);
       console.log(`  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
-      console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)\n`);
+      console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
+      console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]\n`);
       return 1;
   }
+}
+
+const SYNC_SOURCES: readonly SelectableBackendType[] = ['local', 'keychain', '1password', 'vault', 'gcp-sm'];
+
+/** The command that checks a source backend by itself, same as the factory's. */
+const SOURCE_VERIFY: Partial<Record<SelectableBackendType, string>> = {
+  '1password': 'op account get',
+  vault: 'vault token lookup',
+  'gcp-sm': 'gcloud auth application-default print-access-token',
+};
+
+/** Row label per action: `[after a run, on a dry run]`. */
+const SYNC_LABEL: Record<SyncAction, [string, string]> = {
+  create: ['created', 'would create'],
+  update: ['updated', 'would update'],
+  unchanged: ['unchanged', 'unchanged'],
+  conflict: ['conflict', 'conflict'],
+  'local-only': ['kept', 'kept'],
+  'not-found': ['not found', 'not found'],
+  failed: ['failed', 'failed'],
+};
+
+export interface SecretSyncDeps {
+  /** Builds the source backend. Default: the factory, strict, in the source role (no cache layer). */
+  createSource?: (type: SelectableBackendType) => SecretBackend;
+  /** This machine's store. Default: the configured backend. */
+  store?: SecretStore;
+  /** Directory whose `.secretless` is the default selection. Default: the working directory. */
+  cwd?: string;
+}
+
+/**
+ * `secret sync --from <backend> [--only K1,K2 | --manifest <file>] [--dry-run] [--force]`
+ *
+ * Copies the selected names from a shared backend into this machine's store
+ * (#176). The selection is `--only`, else the required names of `--manifest`,
+ * else the required names of `.secretless` in the working directory. Prints
+ * names and what happened to each; never a value.
+ *
+ * Exit 0 when every selected name ends up stored here with nothing left over,
+ * 1 when a name conflicts, is in neither store, or fails, 2 on a usage error.
+ * A dry run exits with the code the real run would.
+ */
+export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): Promise<number> {
+  let from: string | undefined;
+  let only: string[] | undefined;
+  let manifestArg: string | undefined;
+  let dryRun = false;
+  let force = false;
+  const stray: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--from') { from = args[++i]; continue; }
+    if (a === '--only') { only = (args[++i] ?? '').split(',').map((n) => n.trim()).filter(Boolean); continue; }
+    if (a === '--manifest') { manifestArg = args[++i]; continue; }
+    if (a === '--dry-run') { dryRun = true; continue; }
+    if (a === '--force') { force = true; continue; }
+    stray.push(a);
+  }
+
+  const usage = `  Usage: ${CLI_BARE} secret sync --from <${SYNC_SOURCES.join('|')}> [--only K1,K2 | --manifest <file>] [--dry-run] [--force]\n`;
+  const usageError = (message: string): number => {
+    console.error(`\n  ${message}`);
+    console.error('  Nothing was read or written.\n');
+    console.error(usage);
+    return 2;
+  };
+
+  if (stray.length > 0) {
+    return usageError(`\`secret sync\` takes no positional arguments, but "${stray[0]}" was given.`);
+  }
+  if (from === undefined) {
+    return usageError('--from is required: name the backend to copy from.');
+  }
+  if (!(SYNC_SOURCES as readonly string[]).includes(from)) {
+    return usageError(`Unknown backend "${from}". Valid: ${SYNC_SOURCES.join(', ')}.`);
+  }
+  const fromType = from as SelectableBackendType;
+  if (only !== undefined && manifestArg !== undefined) {
+    return usageError('--only and --manifest both choose the names to sync; give one of them.');
+  }
+  if (only !== undefined && only.length === 0) {
+    return usageError('--only was given but named no secrets.');
+  }
+  const badName = only?.find((n) => !isValidSecretName(n));
+  if (badName !== undefined) {
+    return usageError(`"${badName}" is not a secret name. Names allow letters, digits, '-' and '_'.`);
+  }
+
+  // Selection.
+  let names: string[];
+  let selection: string;
+  // `setup --check` reads `.secretless` in the working directory, so it is the
+  // check to point at only when that is the manifest the names came from.
+  let setupChecksSelection = false;
+  if (only !== undefined) {
+    names = [...new Set(only)];
+    selection = `${names.length} named by --only`;
+  } else {
+    const cwd = deps.cwd ?? process.cwd();
+    const given = manifestArg ?? '.secretless';
+    let manifestPath = path.resolve(cwd, given);
+    if (fs.existsSync(manifestPath) && fs.statSync(manifestPath).isDirectory()) {
+      manifestPath = path.join(manifestPath, '.secretless');
+    }
+    if (!fs.existsSync(manifestPath)) {
+      if (manifestArg === undefined) {
+        console.error('\n  No .secretless manifest in this directory, so no names were chosen to sync.');
+        console.error('  Nothing was read or written.\n');
+        console.error(`  Fix:     ${CLI} secret sync --from ${fromType} --only NAME1,NAME2`);
+        console.error(`  Or:      ${CLI} secret sync --from ${fromType} --manifest <path to .secretless>\n`);
+        return 2;
+      }
+      console.error(`\n  Manifest not found: ${given}`);
+      console.error('  Nothing was read or written.\n');
+      return 1;
+    }
+    const parsed = parseManifestDetailed(fs.readFileSync(manifestPath, 'utf-8'));
+    if (parsed.errors.length > 0) {
+      console.error(`\n  ${given} could not be parsed.\n`);
+      for (const e of parsed.errors) {
+        console.error(`    line ${e.line}: ${e.text}`);
+        console.error(`             ${e.reason}`);
+      }
+      console.error('\n  ' + MANIFEST_FORMAT_HINT.split('\n').join('\n  ') + '\n');
+      console.error('  Nothing was read or written, because the file does not say which names to sync.\n');
+      return 1;
+    }
+    names = parsed.entries.filter((e) => e.required).map((e) => e.name);
+    if (names.length === 0) {
+      console.log(`\n  ${given} declares no required names, so there is nothing to sync.`);
+      console.log(`  To copy optional ones, name them:  ${CLI} secret sync --from ${fromType} --only NAME1,NAME2\n`);
+      return 0;
+    }
+    setupChecksSelection = manifestPath === path.resolve(cwd, '.secretless');
+    selection = `${names.length} required in ${given}`;
+  }
+
+  let store: SecretStore;
+  let source: SecretBackend;
+  try {
+    store = deps.store ?? new SecretStore();
+    source = deps.createSource
+      ? deps.createSource(fromType)
+      : createBackend(fromType, undefined, true, { role: 'source' });
+  } catch (err) {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+
+  const fromName = displayName(source.name);
+  const toName = store.backendName;
+  if (fromName === toName) {
+    return usageError(`--from ${fromType} is this machine's own store (${toName}), so there is nothing to copy.`);
+  }
+
+  console.log('\n  Secretless Sync\n');
+  console.log(`  From:   ${fromName}`);
+  console.log(`  To:     ${toName} (this machine)`);
+  console.log(`  Names:  ${selection}`);
+  if (dryRun) console.log('  Dry run: nothing is written.');
+  console.log();
+
+  let result: SyncResult;
+  try {
+    result = await syncSecrets(source, store, names, { dryRun, force });
+  } catch (err) {
+    console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+    const verify = SOURCE_VERIFY[fromType];
+    if (verify) console.error(`\n  Verify:  ${verify}`);
+    console.error();
+    return 1;
+  }
+
+  printSyncReport(result, fromName);
+
+  const rerun = [`--from ${fromType}`];
+  if (only !== undefined) rerun.push(`--only ${names.join(',')}`);
+  else if (manifestArg !== undefined) rerun.push(`--manifest ${shellWord(manifestArg)}`);
+
+  const ofAction = (action: SyncAction): string[] =>
+    result.entries.filter((e) => e.action === action).map((e) => e.name);
+  const conflicts = ofAction('conflict');
+  const missing = ofAction('not-found');
+  const writes = ofAction('create').length + ofAction('update').length;
+
+  if (conflicts.length > 0) {
+    console.log(`  The local value of ${conflicts.join(', ')} differs from ${fromName}'s and was left as is.`);
+    console.log(`  Fix:     ${CLI} secret sync --from ${fromType} --only ${conflicts.join(',')} --force   (replace it with ${fromName}'s)\n`);
+  }
+  if (missing.length > 0) {
+    console.log(`  Not in ${fromName} and not stored on this machine: ${missing.join(', ')}`);
+    const verify = SOURCE_VERIFY[fromType];
+    if (verify) console.log(`  Verify:  ${verify}`);
+    console.log(`  Fix:     ${CLI} secret set ${missing[0]}   (or add it to ${fromName} and sync again)\n`);
+  }
+  if (result.dryRun && writes > 0) {
+    console.log(`  Apply:   ${CLI} secret sync ${[...rerun, ...(force ? ['--force'] : [])].join(' ')}\n`);
+  }
+  if (!result.dryRun && result.ok) {
+    console.log(`  Verify:  ${CLI} ${setupChecksSelection ? 'setup --check' : 'secret list'}\n`);
+  }
+  return result.ok ? 0 : 1;
+}
+
+function printSyncReport(result: SyncResult, fromName: string): void {
+  const col = result.dryRun ? 1 : 0;
+  const labelWidth = Math.max(...result.entries.map((e) => SYNC_LABEL[e.action][col].length));
+  const nameWidth = Math.max(...result.entries.map((e) => e.name.length));
+  for (const e of result.entries) {
+    const detail = syncDetail(e.action, result.dryRun, fromName) ?? e.error ?? '';
+    const row = `    ${SYNC_LABEL[e.action][col].padEnd(labelWidth)}  ${e.name.padEnd(nameWidth)}  ${detail}`;
+    console.log(row.trimEnd());
+  }
+
+  const counts = new Map<SyncAction, number>();
+  for (const e of result.entries) counts.set(e.action, (counts.get(e.action) ?? 0) + 1);
+  const parts = [...counts].map(([action, n]) => `${n} ${SYNC_LABEL[action][col]}`);
+  console.log(`\n  ${result.entries.length} name(s): ${parts.join(', ')}\n`);
+}
+
+function syncDetail(action: SyncAction, dryRun: boolean, fromName: string): string | undefined {
+  switch (action) {
+    case 'create': return '';
+    case 'update': return dryRun ? 'the local value would be replaced (--force)' : 'the local value was replaced (--force)';
+    case 'unchanged': return 'the local value already matches';
+    case 'conflict': return 'the local value differs; left as is (--force replaces it)';
+    case 'local-only': return `not in ${fromName}; the local value is left as is`;
+    case 'not-found': return `not in ${fromName}, and not stored on this machine`;
+    case 'failed': return undefined;
+  }
+}
+
+/** A path as one shell word, quoted only when it needs to be. */
+function shellWord(word: string): string {
+  return /^[\w./-]+$/.test(word) ? word : JSON.stringify(word);
 }
 
 /**

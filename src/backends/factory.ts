@@ -39,13 +39,23 @@ import type { SelectableBackendType } from './config';
  * @param strict - Default TRUE. Pass false ONLY for read-only diagnostics that
  *                 must render something even when the backend is down, and that
  *                 disclose which backend actually answered.
+ * @param options.role - Default 'configured'. 'source' is a backend read
+ *                 ALONGSIDE the configured one, such as the source of `secret
+ *                 sync`. It is built without the cache layer: the cache file is
+ *                 shared and keyed by entry name alone, so a value read from a
+ *                 second backend through it is later served as the configured
+ *                 backend's value for the same name. An unreachable-backend
+ *                 error names it as the source and offers no migration.
  */
 export function createBackend(
   type: SelectableBackendType,
   config?: Record<string, unknown>,
   strict: boolean = true,
+  options?: { role?: BackendRole },
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
+  const role: BackendRole = options?.role ?? 'configured';
+  const cacheTtl = (): number => (role === 'source' ? 0 : readCacheTtl());
 
   // When callers request 'local', prefer keychain if the platform supports it.
   // Use the prompt-free Likely check here — this path runs from MCP wrappers,
@@ -56,7 +66,7 @@ export function createBackend(
     if (keychainStatus.available) {
       try {
         backend = createKeychainBackend(config);
-        const ttlSeconds = readCacheTtl();
+        const ttlSeconds = cacheTtl();
         if (ttlSeconds > 0) {
           return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000 });
         }
@@ -79,7 +89,7 @@ export function createBackend(
           throw unavailableBackendError('1password', op.message, [
             'brew install 1password-cli && op signin',
             'Enable "Integrate with 1Password CLI" in the 1Password app under Settings > Developer',
-          ], 'op account get');
+          ], 'op account get', role);
         }
         return degradedFallback('1password', op.message, config);
       }
@@ -93,7 +103,7 @@ export function createBackend(
         if (strict) {
           throw unavailableBackendError('vault', why, [
             'export VAULT_ADDR=https://vault.example.com VAULT_TOKEN=<token>',
-          ], 'vault token lookup');
+          ], 'vault token lookup', role);
         }
         return degradedFallback('vault', why, config);
       }
@@ -107,7 +117,7 @@ export function createBackend(
         if (strict) {
           throw unavailableBackendError('gcp-sm', gcp.message, [
             'gcloud auth application-default login',
-          ], 'gcloud auth application-default print-access-token');
+          ], 'gcloud auth application-default print-access-token', role);
         }
         return degradedFallback('gcp-sm', gcp.message, config);
       }
@@ -122,12 +132,15 @@ export function createBackend(
   }
 
   // Wrap keychain and 1password backends with a TTL cache to reduce OS auth prompts
-  const ttlSeconds = readCacheTtl();
+  const ttlSeconds = cacheTtl();
   if (ttlSeconds > 0) {
     return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000 });
   }
   return backend;
 }
+
+/** Whether a backend is this machine's configured store or one read alongside it. */
+export type BackendRole = 'configured' | 'source';
 
 /**
  * Build the error raised when a user-configured backend cannot be reached.
@@ -145,22 +158,34 @@ export function unavailableBackendError(
   why: string,
   fixes: string[],
   verifyCmd: string,
+  role: BackendRole = 'configured',
 ): Error {
   // `why` is the `.message` of a caught error and can carry newlines. Left as
   // is, it breaks the block apart and the Verify/Fix lines stop reading as a
   // list — the recovery instructions are the whole point of this message.
   const reason = why.replace(/\s+/g, ' ').trim();
 
-  const lines = [
-    `Configured backend "${type}" is not reachable: ${reason}`,
-    '',
-    `  Your secrets are safe. Nothing was read from or written to another store.`,
-    '',
-    `  Verify:  ${verifyCmd}`,
-  ];
+  const lines = role === 'source'
+    ? [
+      `Source backend "${type}" is not reachable: ${reason}`,
+      '',
+      '  Nothing was read from it, and nothing on this machine was changed.',
+      '',
+      `  Verify:  ${verifyCmd}`,
+    ]
+    : [
+      `Configured backend "${type}" is not reachable: ${reason}`,
+      '',
+      `  Your secrets are safe. Nothing was read from or written to another store.`,
+      '',
+      `  Verify:  ${verifyCmd}`,
+    ];
   for (const fix of fixes) {
     lines.push(`  Fix:     ${fix}`);
   }
+  // A source is not the store secrets are written to, so there is nothing to
+  // migrate away from.
+  if (role === 'source') return new Error(lines.join('\n'));
   lines.push(
     '',
     `  Secretless will not silently use a different store, because a secret`,

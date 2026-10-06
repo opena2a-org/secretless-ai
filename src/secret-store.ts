@@ -15,7 +15,8 @@ import { editDistance, NEAR_MISS_MAX } from './near-miss';
 import { SecretAnnotations, checkAnnotation, defaultAnnotationsPath, isEmptyUpdate } from './secret-annotations';
 import type { AnnotationMap, AnnotationUpdate, SecretAnnotation } from './secret-annotations';
 
-const SECRET_PREFIX = 'secret';
+/** Key prefix for user secrets: `secret/<NAME>` in every backend. */
+export const SECRET_PREFIX = 'secret';
 
 /** Validates secret names: alphanumeric, dash, underscore only. */
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
