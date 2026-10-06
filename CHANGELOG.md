@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+**An absolute file pattern in `.secretless-rules.yaml` is enforced, in either
+way it can be written.** A `files:` pattern naming an absolute path
+(`/srv/app/creds/*.json`) produced a `.claude/settings.json` deny rule with one
+leading slash, and a rule path with one leading slash resolves under the
+project root: the rule matched `<project>/srv/app/creds/*.json` and never the
+file the operator named, so the Read went through. The Read rule is now written
+with the `//` root prefix, which names the absolute path. The pattern may also
+be written `//srv/app/creds/*.json` directly, and that form used to carry the
+second slash into everything that matches a real path — the `cat`, `grep`,
+`awk`, `sed`, `strings` and `xxd` command rules, and the generated guard hook's
+path globs — where it matched nothing that can exist, leaving the hook, the
+layer that refuses the read, silent for exactly the file the rule names. Both
+spellings now generate the same rules: the root prefix in the Read rule, a
+single slash everywhere a path or a typed command is matched. Re-running
+`npx secretless-ai init` installs the working rules over an existing project
+config and refreshes the hook; the single-slash rule an older version wrote is
+left in place, where it matches only a path of that name under the project.
+
 **`run` refuses to start a command whose arguments carry a stored value.**
 `secretless-ai run --only DB_URL -- psql "$DB_URL"` used to start psql with
 the connection URL as its argument, because the calling shell expands the

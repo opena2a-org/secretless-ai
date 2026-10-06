@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { detectAITools, toolDisplayName, type AITool } from './detect';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
-import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, mergeRules } from './custom-rules';
+import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filesystemPathForm, mergeRules } from './custom-rules';
 import type { CustomRules, RulesFileIssue } from './custom-rules';
 import { loadSecretlessIgnore } from './secretlessignore';
 
@@ -917,10 +917,16 @@ function generateClaudeHookScript(customRules?: CustomRules | null): string {
     'secrets/', '.opena2a/secretless-ai/', '.secretless-ai/',
   ];
 
-  // Merge custom file patterns from .secretless-rules.yaml into the right bucket.
+  // Merge custom file patterns from .secretless-rules.yaml into the right
+  // bucket. Each bucket below becomes a glob matched against the path the tool
+  // was given, so a pattern an operator wrote in the deny-rule grammar's
+  // absolute `//` form is reduced to the single slash a real path carries
+  // first: `*//srv/app/creds/*.json*` matches no path that exists, which left
+  // the guard hook — the layer that actually refuses the read — inert for
+  // exactly the pattern the operator wrote to be protected.
   if (customRules?.files) {
     for (const raw of customRules.files) {
-      const p = raw.trim();
+      const p = filesystemPathForm(raw.trim());
       if (!p) continue;
       const extMatch = p.match(/^\*?\.([A-Za-z0-9]+)$/); // `*.foo` or `.foo`
       if (extMatch && !p.includes('/')) {

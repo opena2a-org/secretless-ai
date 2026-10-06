@@ -292,22 +292,41 @@ function readRulePath(pattern: string): string {
 }
 
 /**
+ * The path form anything matching a real filesystem path needs: one leading
+ * slash, never two.
+ *
+ * `//` belongs to the deny-rule grammar above, not to any path on disk. An
+ * operator may write an absolute pattern in that form — it is a pattern the
+ * rules file accepts and `readRulePath` passes through — and every consumer
+ * that matches a real path, or the literal text a command would carry, has to
+ * drop the extra slash or it matches nothing: nobody types
+ * `cat //srv/app/creds/prod.json`, and the guard hook compares its globs
+ * against the path the Read tool was given. Collapsing the whole run of
+ * leading slashes also covers `///`, which the pattern charset admits.
+ */
+export function filesystemPathForm(pattern: string): string {
+  return pattern.replace(/^\/+/, '/');
+}
+
+/**
  * Generate settings.json deny rules from a single file pattern.
  * Each file pattern generates Read, Grep, and Bash command rules.
  *
  * Only the Read rule gets the `//` treatment for an absolute pattern. The Bash
  * rules match command text, where the path is the literal the agent would type,
- * so they keep the pattern exactly as written. Whether the Grep rule shares the
- * Read rule's path grammar has not been measured, so it is also left as written.
+ * so they carry the filesystem form however the operator wrote the pattern.
+ * Whether the Grep rule shares the Read rule's path grammar has not been
+ * measured, so it is left exactly as written.
  */
 export function filePatternToDenyRules(pattern: string): string[] {
   const cmds = ['cat', 'grep *', 'awk *', 'sed *', 'strings', 'xxd'];
+  const cmdPath = filesystemPathForm(pattern);
   const rules: string[] = [
     `Read(${readRulePath(pattern)})`,
     `Grep(${pattern})`,
   ];
   for (const cmd of cmds) {
-    rules.push(`Bash(${cmd} ${pattern})`);
+    rules.push(`Bash(${cmd} ${cmdPath})`);
   }
   return rules;
 }
@@ -389,8 +408,10 @@ export function customRulesToHookBlocks(rules: CustomRules): string {
  */
 export function customRulesToFilePatterns(rules: CustomRules): string[] {
   return rules.files.map((pattern) => {
-    // Convert glob to shell-compatible lowercase match pattern
-    return globToShellRegex(pattern);
+    // Convert glob to shell-compatible lowercase match pattern. These match a
+    // real path, so an absolute pattern written with the rule grammar's `//`
+    // prefix is reduced to the one slash a path on disk carries.
+    return globToShellRegex(filesystemPathForm(pattern));
   });
 }
 
