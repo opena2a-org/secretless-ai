@@ -269,7 +269,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       'init',
       'register <namespace> [options]',
       'list',
-      'rotate <namespace> [--value <value>] [--env <VAR>]',
+      'rotate <namespace> [--env <VAR>]',
       'revoke <namespace>',
       'exec <namespace> [--env-name <VAR>] -- <command> [args...]',
       'audit [--limit <n>] [--since <ISO-date>] [--namespace <ns>]',
@@ -279,7 +279,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     ],
     flags: {
       '--name': ['<name>', 'Agent name (init)'],
-      '--value': ['<value>', 'Credential value (or pipe via stdin)'],
+      '--value': ['<value>', 'Value as an argument (shell history keeps it); omit it to be prompted'],
       '--env': ['<VAR>', 'Read the value from an environment variable'],
       '--description': ['<desc>', 'Namespace description'],
       '--operations': ['<ops>', 'Comma-separated: read,write,delete,admin'],
@@ -291,6 +291,10 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--env-file': ['<path>', 'Migrate from a .env file'],
       '--dry-run': 'Preview the migration without writing',
     },
+    notes: [
+      'register and rotate read the value from a prompt, a pipe or --env <VAR>, which',
+      'keeps it out of shell history and the process list.',
+    ],
   },
 };
 

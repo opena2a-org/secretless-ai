@@ -277,7 +277,7 @@ export async function vaultInit(agentName?: string): Promise<void> {
   console.log(`  Crypto:      XSalsa20-Poly1305, Ed25519 identity-bound`);
   console.log(`  Identity:    ${AIM_DATA_DIR}\n`);
   console.log('  Next steps:');
-  console.log('    secretless-ai vault register github --value <token>');
+  console.log('    secretless-ai vault register github        (prompts for the token)');
   console.log('    secretless-ai vault list');
   console.log('    secretless-ai vault exec github -- curl https://api.github.com/user\n');
 
@@ -360,7 +360,7 @@ export async function vaultList(): Promise<void> {
 
   if (credentials.length === 0) {
     console.log('\n  No credentials in vault.\n');
-    console.log('  Register one:  secretless-ai vault register <namespace> --value <token>\n');
+    console.log('  Register one:  secretless-ai vault register <namespace>   (prompts for the value)\n');
     vault.zeroize(edSecretKey);
     store.lock();
     return;
@@ -524,9 +524,12 @@ export async function vaultScan(targetDir?: string): Promise<void> {
     const relPath = path.relative(dir, finding.file);
     console.log(`  ${relPath}:${finding.line}`);
     console.log(`    Pattern:  ${finding.patternId}`);
-    console.log(`    Migrate:  secretless-ai vault register ${finding.patternId.toLowerCase()} --value <value>`);
+    console.log(`    Migrate:  secretless-ai vault register ${finding.patternId.toLowerCase()}`);
     console.log();
   }
+
+  console.log('  register prompts for the value, reads it from a pipe, or takes --env <VAR>,');
+  console.log('  so the value stays out of shell history and the process list.\n');
 
   console.log('  After registering, use vault exec to inject credentials at runtime:');
   console.log('    secretless-ai vault exec <namespace> -- <command>\n');
