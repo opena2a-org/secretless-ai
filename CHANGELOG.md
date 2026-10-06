@@ -36,6 +36,16 @@ warning that the value is visible in process listings. Values shorter than
 eight characters are not checked. The vault guide's curl example now passes
 the header on stdin.
 
+**`clean` names the transcript lines it did not read.** A transcript line
+longer than 51200 characters is skipped whole, so a credential on it is
+neither reported nor redacted. `clean` used to print `No credentials found.
+Transcripts are clean.` over such a line; it now prints `No credentials found
+in the lines that were read.` and, after any findings, a `Not read:` block
+naming each file and line number it left unchanged, with a Verify line that
+lists those lines and their lengths. The exit code is unchanged.
+`cleanTranscripts` returns the same lines to library callers as
+`linesNotRead` and `totalLinesNotRead`.
+
 **`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
 CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS
 Keychain and Linux Secret Service CLIs; reads and writes through those backends

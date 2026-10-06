@@ -837,3 +837,72 @@ describe('secret list does not accept a filter it will not apply', () => {
     expect(res.stdout).not.toMatch(/secret\(s\):/);
   });
 });
+
+/**
+ * `clean` skips a line over its length cap whole. It used to say "No
+ * credentials found. Transcripts are clean." over a 60 KB line carrying a
+ * token, so a line it never read was reported as clean.
+ */
+describe('clean names the lines it did not read', () => {
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  // Split so this file is not itself a credential-bearing file.
+  const PAT = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+
+  function cli(args: string[]) {
+    return spawnSync(process.execPath, [CLI_PATH, ...args], {
+      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
+
+  function fixture(lines: string[]): { dir: string; file: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-clean-long-'));
+    const file = path.join(dir, 'session.jsonl');
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+    return { dir, file };
+  }
+
+  const shortLine = JSON.stringify({ role: 'user', content: 'hello' });
+  const longLine = JSON.stringify({ role: 'user', content: 'x'.repeat(60_000) + ' token ' + PAT });
+
+  itIfBuilt('a long line is named, and the transcript is not called clean', () => {
+    const { dir, file } = fixture([shortLine, longLine]);
+    try {
+      const res = cli(['clean', '--dry-run', '--path', file]);
+      expect(res.stdout).not.toContain('Transcripts are clean');
+      expect(res.stdout).toContain('No credentials found in the lines that were read.');
+      expect(res.stdout).toContain('Not read: 1 line longer than 51200 characters in 1 file, left unchanged.');
+      expect(res.stdout).toMatch(/session\.jsonl {2}line 2\n/);
+      expect(res.stdout).toContain(`Verify:   awk 'length($0) > 51200 { print FNR ": " length($0) }' `);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('the long lines are named after the findings that were redacted', () => {
+    const findingLine = JSON.stringify({ role: 'user', content: `token ${PAT}` });
+    const { dir, file } = fixture([findingLine, longLine, longLine]);
+    try {
+      const res = cli(['clean', '--path', file]);
+      expect(res.stdout).toContain('Redacted: 1');
+      expect(res.stdout).toContain('Not read: 2 lines longer than 51200 characters in 1 file, left unchanged.');
+      expect(res.stdout).toMatch(/session\.jsonl {2}lines 2, 3\n/);
+      const after = fs.readFileSync(file, 'utf-8').split('\n');
+      expect(after[1]).toBe(longLine);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itIfBuilt('CONTROL: a transcript with no long line is still called clean', () => {
+    const { dir, file } = fixture([shortLine]);
+    try {
+      const res = cli(['clean', '--dry-run', '--path', file]);
+      expect(res.stdout).toContain('No credentials found. Transcripts are clean.');
+      expect(res.stdout).not.toContain('Not read:');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
