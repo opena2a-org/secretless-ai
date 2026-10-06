@@ -28,7 +28,7 @@ ${banner}  Keep secrets out of AI context.
 
   Usage:
     ${CLI} init      Set up protections for your AI tools
-    ${CLI} scan      Scan config and source files for hardcoded secrets (--json for CI)
+    ${CLI} scan      Scan source and recognized config files for hardcoded secrets (--json for CI)
     ${CLI} status    Show protection status (--json for CI)
     ${CLI} verify    Verify keys are usable but hidden from AI (--all for full list)
     ${CLI} doctor    Diagnose shell profiles and plaintext git credentials (--fix: profiles)
