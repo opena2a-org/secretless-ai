@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { protectMcp } from '../mcp/protect';
-import { discoverMcpConfigs } from '../mcp/discover';
+import { discoverMcpConfigs, discoverMcpConfigsDetailed } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
 import { resolveBackendType } from '../backends/config';
@@ -88,9 +88,9 @@ export function runMcpStatus(): number {
   const backend = effectiveBackendName(resolveBackendType());
   console.log(`  Backend: ${backend}\n`);
 
-  const configs = discoverMcpConfigs();
+  const { configs, unparsed } = discoverMcpConfigsDetailed();
 
-  if (configs.length === 0) {
+  if (configs.length === 0 && unparsed.length === 0) {
     console.log('  No MCP configurations found.\n');
     return 0;
   }
@@ -117,10 +117,22 @@ export function runMcpStatus(): number {
     console.log();
   }
 
+  // A config that could not be parsed is never reported as clean or absent:
+  // its servers, and any plaintext secrets in them, were not checked.
+  for (const config of unparsed) {
+    console.log(`  ${config.client} (${config.filePath})`);
+    console.log(`    ? not checked: ${config.reason}`);
+    console.log();
+  }
+
   if (exposedCount > 0) {
     console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
   } else if (protectedCount > 0) {
     console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
+  }
+  if (unparsed.length > 0) {
+    console.log(`  ${unparsed.length} config(s) could not be parsed, so the servers in them were not checked.`);
+    console.log('  Fix the file(s) above, then run `npx secretless-ai mcp-status` again.\n');
   }
   return 0;
 }

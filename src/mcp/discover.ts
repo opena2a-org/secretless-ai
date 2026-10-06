@@ -32,6 +32,19 @@ export interface McpConfigFile {
   raw: Record<string, unknown>;
 }
 
+/** A config file that exists but could not be read or parsed, so its servers are unknown. */
+export interface UnparsedMcpConfig {
+  client: McpClient;
+  filePath: string;
+  /** What stopped the parse, e.g. "not valid JSON (line 4, column 1)". Never quotes the file's content. */
+  reason: string;
+}
+
+export interface McpConfigDiscovery {
+  configs: McpConfigFile[];
+  unparsed: UnparsedMcpConfig[];
+}
+
 // ---------------------------------------------------------------------------
 // Client config path definitions
 // ---------------------------------------------------------------------------
@@ -157,6 +170,18 @@ function parseServers(raw: Record<string, unknown>): McpServerEntry[] | null {
   return entries;
 }
 
+/**
+ * Describe a JSON.parse failure by its position only. The engine's message
+ * can quote the text around the error, and these files hold plaintext secrets.
+ */
+function describeJsonError(err: unknown, content: string): string {
+  const match = /at position (\d+)/.exec(err instanceof Error ? err.message : '');
+  if (!match) return 'not valid JSON';
+  const linesBefore = content.slice(0, Number(match[1])).split('\n');
+  const column = linesBefore[linesBefore.length - 1].length + 1;
+  return `not valid JSON (line ${linesBefore.length}, column ${column})`;
+}
+
 // ---------------------------------------------------------------------------
 // Main discovery function
 // ---------------------------------------------------------------------------
@@ -172,9 +197,20 @@ function parseServers(raw: Record<string, unknown>): McpServerEntry[] | null {
  * @returns Array of discovered config files with parsed server entries.
  */
 export function discoverMcpConfigs(homeOverride?: string, projectDirOverride?: string): McpConfigFile[] {
+  return discoverMcpConfigsDetailed(homeOverride, projectDirOverride).configs;
+}
+
+/**
+ * Same search as discoverMcpConfigs, but also returns the config files that
+ * exist and could not be read or parsed. A caller that reports on MCP configs
+ * must name these: their servers, and any secrets in them, were not checked.
+ * An empty or whitespace-only file holds no servers and is not reported.
+ */
+export function discoverMcpConfigsDetailed(homeOverride?: string, projectDirOverride?: string): McpConfigDiscovery {
   const home = homeOverride ?? os.homedir();
   const projectDir = projectDirOverride ?? process.cwd();
   const results: McpConfigFile[] = [];
+  const unparsed: UnparsedMcpConfig[] = [];
 
   const candidates: Array<{ client: McpClient; fullPath: string }> = getClientConfigPaths().map(
     ({ client, relativePath }) => ({ client, fullPath: path.join(home, relativePath) }),
@@ -186,12 +222,32 @@ export function discoverMcpConfigs(homeOverride?: string, projectDirOverride?: s
   for (const { client, fullPath } of candidates) {
     if (!fs.existsSync(fullPath)) continue;
 
-    let raw: Record<string, unknown>;
+    let content: string;
     try {
-      const content = fs.readFileSync(fullPath, 'utf-8');
-      raw = JSON.parse(content) as Record<string, unknown>;
-    } catch {
-      // Malformed JSON or read error — skip
+      content = fs.readFileSync(fullPath, 'utf-8');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      unparsed.push({ client, filePath: fullPath, reason: code ? `could not be read (${code})` : 'could not be read' });
+      continue;
+    }
+    if (content.trim() === '') continue;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch (err) {
+      unparsed.push({ client, filePath: fullPath, reason: describeJsonError(err, content) });
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      unparsed.push({ client, filePath: fullPath, reason: 'not a JSON object' });
+      continue;
+    }
+    const raw = parsed as Record<string, unknown>;
+
+    const serversValue = raw['mcpServers'] ?? raw['mcp-servers'];
+    if (serversValue !== undefined && serversValue !== null && typeof serversValue !== 'object') {
+      unparsed.push({ client, filePath: fullPath, reason: 'its MCP server list is not a JSON object' });
       continue;
     }
 
@@ -206,5 +262,5 @@ export function discoverMcpConfigs(homeOverride?: string, projectDirOverride?: s
     });
   }
 
-  return results;
+  return { configs: results, unparsed };
 }

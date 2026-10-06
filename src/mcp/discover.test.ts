@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { discoverMcpConfigs, McpConfigFile } from './discover';
+import { discoverMcpConfigs, discoverMcpConfigsDetailed, McpConfigFile } from './discover';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-test-'));
@@ -240,6 +240,96 @@ describe('discoverMcpConfigs', () => {
     const claudeDesktop = results.find(r => r.client === 'claude-desktop');
     expect(claudeDesktop).toBeDefined();
     expect(claudeDesktop!.filePath).toBe(path.join(dir, configPath));
+  });
+});
+
+describe('discoverMcpConfigsDetailed — configs that could not be parsed', () => {
+  let home: string;
+  let project: string;
+
+  beforeEach(() => { home = tmpDir(); project = tmpDir(); });
+  afterEach(() => { cleanup(home); cleanup(project); });
+
+  // Stands in for a plaintext secret value in the file.
+  const marker = 'PLAINTEXT-MARKER-0123456789';
+
+  function writeRaw(relativePath: string, content: string): string {
+    const fullPath = path.join(home, relativePath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content);
+    return fullPath;
+  }
+
+  it('reports a config with invalid JSON by client, path and position, never quoting its content', () => {
+    const configPath = writeRaw(
+      '.cursor/mcp.json',
+      `{\n  "mcpServers": {\n    "gh": { "command": "npx", "env": { "GITHUB_TOKEN": "${marker}" } },\n  }\n}\n`,
+    );
+
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(configs).toEqual([]);
+    expect(unparsed).toEqual([
+      { client: 'cursor', filePath: configPath, reason: 'not valid JSON (line 4, column 3)' },
+    ]);
+  });
+
+  it('never quotes the content even when the engine message would', () => {
+    // JSON.parse's message for this input quotes the text around the error.
+    const content = `{"mcpServers": ${marker}}`;
+    writeRaw('.cursor/mcp.json', content);
+    expect(() => JSON.parse(content)).toThrow(/PLAINTEXT/);
+
+    const { unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(unparsed.length).toBe(1);
+    expect(unparsed[0].reason).toMatch(/^not valid JSON/);
+    expect(unparsed[0].reason).not.toContain('PLAINTEXT');
+  });
+
+  it('reports a config path it could not read', () => {
+    const configPath = path.join(home, '.vscode', 'mcp.json');
+    fs.mkdirSync(configPath, { recursive: true });
+
+    const { unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(unparsed).toEqual([
+      { client: 'vscode', filePath: configPath, reason: 'could not be read (EISDIR)' },
+    ]);
+  });
+
+  it('reports a config whose top level is not a JSON object, and discoverMcpConfigs no longer throws on it', () => {
+    const configPath = writeRaw('.windsurf/mcp.json', 'null');
+
+    expect(discoverMcpConfigs(home, project)).toEqual([]);
+    const { unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(unparsed).toEqual([
+      { client: 'windsurf', filePath: configPath, reason: 'not a JSON object' },
+    ]);
+  });
+
+  it('reports a config whose server list is not an object', () => {
+    const configPath = writeRaw('.cursor/mcp.json', JSON.stringify({ mcpServers: 'gh' }));
+
+    const { unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(unparsed).toEqual([
+      { client: 'cursor', filePath: configPath, reason: 'its MCP server list is not a JSON object' },
+    ]);
+  });
+
+  it('reports the project-scope .mcp.json too', () => {
+    const configPath = path.join(project, '.mcp.json');
+    fs.writeFileSync(configPath, '{ "mcpServers": ');
+
+    const { unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(unparsed.map((u) => [u.client, u.filePath])).toEqual([['claude-code', configPath]]);
+  });
+
+  it('does not report empty files, configs without servers, or parsed configs', () => {
+    writeRaw('.cursor/mcp.json', '  \n');
+    writeConfig(home, '.claude/settings.json', { permissions: {} });
+    writeConfig(home, '.vscode/mcp.json', makeMcpServers());
+
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(unparsed).toEqual([]);
+    expect(configs.map((c) => c.client)).toEqual(['vscode']);
   });
 });
 
