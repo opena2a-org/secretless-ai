@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { deepScan, scanTranscriptFile, atomicWrite, discoverTranscripts, cleanTranscripts, MAX_LINE_SIZE, type TranscriptFinding } from './transcript';
 
 function tmpDir(): string {
@@ -409,5 +410,105 @@ describe('cleanTranscripts', () => {
 
     expect(result.totalLinesNotRead).toBe(0);
     expect(result.linesNotRead).toEqual([]);
+  });
+});
+
+describe('secret-named assignments with no vendor prefix', () => {
+  // Process listings and environment dumps print `NAME=value`. The values are
+  // generated per run: none of them carries a vendor prefix, so only the
+  // variable name can identify them as secrets.
+  const hex = (bytes: number) => crypto.randomBytes(bytes).toString('hex');
+  const jira = hex(12);
+  const gamma = ['sk', 'gamma', hex(21)].join('-');
+  const service = hex(16);
+  const listing = `npm exec x JIRA_TOKEN=${jira} GAMMA_API_KEY=${gamma} MY_SERVICE_TOKEN=${service}`;
+  const pat = 'ghp_' + 'A1b2C3d4E5'.repeat(4).slice(0, 36);
+
+  let dir: string;
+
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  function scan(text: string): { findings: TranscriptFinding[]; text: string } {
+    const findings: TranscriptFinding[] = [];
+    const result = deepScan({ message: { content: text } }, '', findings, { file: 'test.jsonl', line: 1 }) as any;
+    return { findings, text: result.message.content };
+  }
+
+  it('redacts each value and keeps the variable names', () => {
+    const { findings, text } = scan(listing);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].patternId).toBe('secret-assignment');
+    for (const value of [jira, gamma, service]) expect(text).not.toContain(value);
+    expect(text).toBe(
+      'npm exec x JIRA_TOKEN=[REDACTED:secret-assignment] GAMMA_API_KEY=[REDACTED:secret-assignment] ' +
+      'MY_SERVICE_TOKEN=[REDACTED:secret-assignment]',
+    );
+  });
+
+  it('redacts a quoted value and the common secret-name endings', () => {
+    const names = ['DB_PASSWORD', 'PGPASSWORD', 'CLIENT_SECRET', 'SECRET_KEY', 'SIGNING_PRIVATE_KEY', 'S3_ACCESS_KEY', 'SERVICE_CREDENTIAL'];
+    for (const name of names) {
+      const value = hex(10);
+      const { findings, text } = scan(`export ${name}="${value}"`);
+      expect(findings.map((f) => f.patternId), name).toEqual(['secret-assignment']);
+      expect(text).toBe(`export ${name}="[REDACTED:secret-assignment]"`);
+    }
+  });
+
+  it('reports a vendor-shaped value once, under its vendor pattern', () => {
+    const { findings, text } = scan(`control GITHUB_TOKEN=${pat}`);
+
+    expect(findings.map((f) => f.patternId)).toEqual(['github-pat']);
+    expect(text).toBe('control GITHUB_TOKEN=[REDACTED:github-pat]');
+  });
+
+  it('leaves names that only contain a secret word, references and env accessors alone', () => {
+    const benign = [
+      'TOKEN_COUNT=3 MAX_TOKENS=4096',
+      'MAX_TOKENS=409600000 TOKEN_LIMIT=100000000',
+      'GOOGLE_APPLICATION_CREDENTIALS=/home/me/service-account.json',
+      'API_KEY=$API_KEY GITHUB_TOKEN=${GITHUB_TOKEN} NPM_TOKEN=$(cat token-file)',
+      'API_KEY=process.env.API_KEY SECRET_KEY=os.environ.get',
+      'API_KEY=<your-api-key> PASSWORD=********',
+      'myAPI_KEY=abcdefgh1234 api_key=abcdefgh1234',
+      'API_KEY = abcdefgh1234',
+      'GITHUB_TOKEN=short',
+    ];
+    for (const line of benign) {
+      const { findings, text } = scan(line);
+      expect(findings, line).toHaveLength(0);
+      expect(text).toBe(line);
+    }
+  });
+
+  it('clean redacts the transcript lines and a second run finds nothing', () => {
+    const projectDir = path.join(dir, 'p1');
+    fs.mkdirSync(projectDir);
+    const record = (content: string) => JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content }] },
+    });
+    const t1 = path.join(projectDir, 't1.jsonl');
+    const t2 = path.join(projectDir, 't2.jsonl');
+    const t3 = path.join(projectDir, 't3.jsonl');
+    fs.writeFileSync(t1, record(listing) + '\n');
+    fs.writeFileSync(t2, record(`control GITHUB_TOKEN=${pat}`) + '\n');
+    fs.writeFileSync(t3, record('TOKEN_COUNT=3 MAX_TOKENS=4096') + '\n');
+    const t3Before = fs.readFileSync(t3, 'utf-8');
+
+    const dry = cleanTranscripts({ targetPath: dir, dryRun: true });
+    expect(dry.filesScanned).toBe(3);
+    expect(dry.filesWithSecrets).toBe(2);
+
+    const result = cleanTranscripts({ targetPath: dir });
+    expect(result.totalRedacted).toBe(2);
+    const t1After = fs.readFileSync(t1, 'utf-8');
+    for (const value of [jira, gamma, service]) expect(t1After).not.toContain(value);
+    expect(() => JSON.parse(t1After)).not.toThrow();
+    expect(fs.readFileSync(t3, 'utf-8')).toBe(t3Before);
+
+    expect(cleanTranscripts({ targetPath: dir, dryRun: true }).totalFindings).toBe(0);
   });
 });

@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { CREDENTIAL_PATTERNS } from './patterns';
+import { CREDENTIAL_PATTERNS, type CredentialPattern } from './patterns';
 import { redactMatches } from './redact';
 
 export interface TranscriptFinding {
@@ -49,6 +49,41 @@ const SKIP_KEYS = new Set([
 
 /** Max string/line size to process (ReDoS protection — 50KB per string value) */
 export const MAX_LINE_SIZE = 50 * 1024;
+
+/**
+ * A value assigned to a secret-named variable, whatever its format.
+ *
+ * Process listings and environment dumps print `NAME=value`, and most values
+ * carry no vendor prefix (`JIRA_TOKEN=<hex>`), so the vendor patterns never see
+ * them. Here the NAME is the signal: it must END in one of the words the guard
+ * hook already treats as secret (init.ts SECRET_VAR_WORDS), so `TOKEN_COUNT=3`
+ * and `MAX_TOKENS=4096` stay. Three of the hook's words are left out because
+ * they name configuration, not a secret: VAULT (`VAULT_ADDR`), DATABASE_URL
+ * and CONNECTION_STRING, whose embedded passwords the connection-string
+ * patterns already catch. SECRET_KEY is added for the Django and Flask name.
+ *
+ * Kept out of CREDENTIAL_PATTERNS on purpose: `scan`, `doctor` and `verify`
+ * read that list, and this is a transcript redaction only.
+ *
+ * Bounds, because `clean` rewrites the user's file:
+ * - uppercase names only, starting at an identifier boundary and with `=` right
+ *   after the name, the shape `env` and `ps` print;
+ * - a value of at least 8 characters, stopping at whitespace or a quote;
+ * - a value that is a reference rather than a secret is left alone: `$VAR`,
+ *   `${VAR}`, `$(cmd)`, `<placeholder>`, `****`, an env accessor, or a marker
+ *   this tool already wrote (so a second run finds nothing).
+ *
+ * The value is capture group 1, so redaction keeps the variable name visible.
+ */
+const SECRET_ASSIGNMENT_PATTERN: CredentialPattern = {
+  id: 'secret-assignment',
+  name: 'Secret-Named Variable',
+  regex: /(?<![A-Za-z0-9_])[A-Z0-9_]{0,64}(?:SECRET(?:_?KEY)?|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|TOKEN|CREDENTIAL)=["']?(?!\[REDACTED:[a-z0-9-]+\](?![^\s"'`])|process\.env|os\.environ|os\.getenv|import\.meta\.env|Deno\.env)([^\s"'`$<*][^\s"'`]{7,511})/,
+  envPrefix: '',
+};
+
+/** Vendor patterns first: a vendor-shaped value is reported under its own id. */
+const TRANSCRIPT_PATTERNS: CredentialPattern[] = [...CREDENTIAL_PATTERNS, SECRET_ASSIGNMENT_PATTERN];
 
 /**
  * Discover Claude Code transcript files.
@@ -158,13 +193,15 @@ function scanString(
   if (value.length > MAX_LINE_SIZE) return value;
 
   let result = value;
-  for (const pattern of CREDENTIAL_PATTERNS) {
+  for (const pattern of TRANSCRIPT_PATTERNS) {
     if (pattern.regex.test(result)) {
       // redactMatches replaces ALL occurrences AND extends across the tail of a
       // value longer than the pattern's fixed quantifier. Plain String.replace
       // wrote the tail of an over-length credential back into the user's
       // transcript while reporting the line as redacted.
-      const redacted = redactMatches(result, pattern.regex, `[REDACTED:${pattern.id}]`);
+      const redacted = redactMatches(result, pattern.regex, `[REDACTED:${pattern.id}]`, {
+        preferCaptureGroup: pattern === SECRET_ASSIGNMENT_PATTERN,
+      });
       const preview = redacted.substring(0, 80);
       findings.push({
         file: fileInfo.file,

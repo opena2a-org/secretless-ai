@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+**`clean`, `watch` and the Stop hook redact a secret printed as `NAME=value`
+when the value has no vendor prefix (#185).** Process listings and environment
+dumps print `JIRA_TOKEN=<hex>` or `MY_SERVICE_TOKEN=<hex>`; no vendor pattern
+matches such a value, so it stayed in the transcript. A value of 8 or more
+characters assigned to an uppercase name that ends in `TOKEN`, `SECRET`,
+`SECRET_KEY`, `PASSWORD`, `PASSWD`, `API_KEY`, `APIKEY`, `ACCESS_KEY`,
+`PRIVATE_KEY` or `CREDENTIAL` is now redacted as
+`[REDACTED:secret-assignment]`, and the name stays visible. A name that only
+contains one of those words (`TOKEN_COUNT=3`, `MAX_TOKENS=4096`,
+`GOOGLE_APPLICATION_CREDENTIALS=<path>`) is left alone, as is a value that is a
+reference (`$VAR`, `${VAR}`, `$(cmd)`, `<placeholder>`, `process.env.X`) or a
+marker an earlier run wrote. A vendor-shaped value is still reported once,
+under its vendor pattern. `verify` reads the five most recent transcripts with
+the same rule, so it can now fail on such a line: where it printed `PASS` and
+exited 0, a recent transcript holding `JIRA_TOKEN=<hex>` makes it print `FAIL`
+and exit 1, with `npx secretless-ai clean` as the next step. `status` counts
+these values in the transcript secrets it reports, so its count can rise.
+`scan` is unchanged.
+
 **`status` reads `~/.claude/settings.json` as well as the project's own
 settings, and says which one protects the project (#188).** From a project
 with no install of its own, `status` printed "Not protected" even after `init`
