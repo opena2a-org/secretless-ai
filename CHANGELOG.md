@@ -331,6 +331,14 @@ while restricting nothing. Notes are dropped at load and do not appear in
   search confirms is absence; anything else is an error that names the secret,
   never its value, and gives a read-only command that shows whether the
   default collection is locked (#130).
+- `<command> --help` and `<command> -h` print that command's usage and the
+  options it accepts. Every command used to answer with the full global help,
+  so `migrate --help` named neither `--from` nor `--to`, the two flags the
+  `migrate` error for an unknown option lists before it says
+  "Run `secretless-ai migrate --help` for usage." A subcommand asks its
+  command, so `broker start --help` prints the `broker` help. Bare `--help`,
+  no argument, and an unknown command still print the global help, `setup`
+  and `env` still print their own, and `--help` still runs nothing.
 
 ### Changed
 
