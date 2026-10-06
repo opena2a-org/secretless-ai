@@ -375,6 +375,27 @@ those: `secretless-ai vault register openai-proj` prompts for the value, and
 The `--value` entry in the help now says that shell history keeps it, and the
 `vault rotate` usage line no longer lists it. `--value` still works.
 
+**The Claude Code guard hook no longer refuses a command because a grep pattern
+or a heredoc mentions a secret file.** The hook's Bash arms match command text,
+so `grep -c '/\.env(\.local)?$/' src/init.ts`, `grep -c 'eval
+"$(secretless-ai env)"' src/setup.ts` and a `cat > notes.md <<'EOF'` that
+writes a note mentioning `~/.zshrc` and `.env` were refused as secret reads,
+though none of them opens a secret file. The hook now drops the pattern of a
+plain grep and the body of a heredoc before it matches, and only when it
+understands the whole command: no `$` expansion, backtick, subshell or brace
+expansion; only programs that neither run a command nor read file names from
+their input (`grep`, `cat`, `head`, `tail`, `wc`, `cut`, `tr`, `tee`, `sort`,
+`uniq`, `mkdir`, `echo`, `printf`); and grep options that GNU and BSD grep
+parse the same way. File operands are never dropped, so `grep -c x .env`,
+`grep -c x < .env` and `cat .env.example` are refused as before. So is any
+command that could turn the dropped text back into a filename, such as
+`grep -o '\.env' notes.md | xargs cat` or a heredoc that writes `x.sh` followed
+by `sh x.sh`. Without `python3` nothing is dropped. The arm for the
+secretless data directory still reads the whole command, so
+`grep -rn "\.secretless-ai" src` is still refused, as are a `git grep` for
+a secret-file token and the `node -e` and `python3 -c` one-liners. Run
+`npx secretless-ai@latest init` again to refresh an installed hook.
+
 **The instruction block no longer says that credentials in the conversation are
 redacted.** The block `init` writes ended with the line "Credentials in this
 conversation are automatically redacted by Secretless AI". That line was wrong.
