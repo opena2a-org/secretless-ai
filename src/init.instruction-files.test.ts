@@ -390,7 +390,7 @@ function snapshot(dir: string): Array<[string, string | null]> {
 
 type LinkCell = {
   name: string;
-  tool: 'cursor' | 'cline';
+  tool: 'cursor' | 'cline' | 'windsurf';
   /** The project-relative path that is the link. */
   linkRel: string;
   /** Build the project with the link in place; returns the link target. */
@@ -491,6 +491,32 @@ const LINK_CELLS: LinkCell[] = [
     control: dir => fs.mkdirSync(path.join(dir, '.clinerules')),
     controlFile: '.clinerules/secretless.md',
   },
+  {
+    name: '.windsurfrules linked to an outside file',
+    tool: 'windsurf',
+    linkRel: '.windsurfrules',
+    build: dir => {
+      const target = outsideDir();
+      fs.writeFileSync(path.join(target, 'victim.md'), 'victim\n');
+      fs.symlinkSync(path.join(target, 'victim.md'), path.join(dir, '.windsurfrules'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.windsurf')),
+    controlFile: '.windsurfrules',
+  },
+  {
+    name: 'dangling .windsurfrules link to an outside path, with .windsurf/ present',
+    tool: 'windsurf',
+    linkRel: '.windsurfrules',
+    build: dir => {
+      const target = outsideDir();
+      fs.mkdirSync(path.join(dir, '.windsurf'));
+      fs.symlinkSync(path.join(target, 'missing.md'), path.join(dir, '.windsurfrules'));
+      return target;
+    },
+    control: dir => fs.mkdirSync(path.join(dir, '.windsurf')),
+    controlFile: '.windsurfrules',
+  },
 ];
 
 describe('SLS-09.AC8 init never writes through a symbolic link or outside the project', () => {
@@ -539,5 +565,31 @@ describe('SLS-09.AC8 init never writes through a symbolic link or outside the pr
     expect(read(dir, '.cursorrules')).toBe('# Existing rules\n');
     expect(result.toolsConfigured).not.toContain('cursor');
     expect(result.pathsRefused.map(r => r.path)).toContain('.cursor/rules/secretless.mdc');
+  });
+});
+
+describe('Windsurf with a .windsurfrules entry that is not a regular file', () => {
+  it('a .windsurfrules directory: no throw, nothing written into it, Windsurf refused, Cline and Aider after it still configured', () => {
+    const dir = project();
+    const userRule = '# User rule\n';
+    write(dir, '.windsurfrules/user.md', userRule);
+    fs.mkdirSync(path.join(dir, '.cline'));
+    write(dir, '.aider.conf.yml', '');
+
+    let result: ReturnType<typeof init> | undefined;
+    expect(() => { result = init(dir); }).not.toThrow();
+
+    expect(fs.readdirSync(path.join(dir, '.windsurfrules'))).toEqual(['user.md']);
+    expect(read(dir, '.windsurfrules/user.md')).toBe(userRule);
+    expect(result!.toolsDetected).toContain('windsurf');
+    expect(result!.toolsConfigured).not.toContain('windsurf');
+    expect(result!.pathsRefused).toContainEqual({
+      tool: 'windsurf',
+      path: '.windsurfrules',
+      reason: 'is not a regular file',
+    });
+    expect(result!.toolsConfigured).toEqual(expect.arrayContaining(['cline', 'aider']));
+    expect(read(dir, '.clinerules/secretless.md')).toContain(BLOCK_HEAD);
+    expect(isFile(dir, '.aiderignore')).toBe(true);
   });
 });

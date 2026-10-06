@@ -24,6 +24,17 @@ them, and they have no effect unless the tool loads that file. The README's
 supported tools table named `.cursorrules` and `.clinerules` and now names the
 files `init` creates.
 
+**`init` checks Windsurf's rules file the way it checks Cursor's and Cline's.**
+`init` wrote Windsurf's instructions straight to `.windsurfrules`: when that
+path was a symbolic link, the block was appended to the file the link pointed
+at, and a dangling link had its target created, even outside the project. A
+`.windsurfrules` directory made `init` fail with `EISDIR`, and Cline and
+Aider, which `init` configures after Windsurf, were left unconfigured. When
+`.windsurfrules` is a symbolic link or is not a regular file, nothing is
+written for Windsurf, it is left off the `Configured:` line, and the tools
+after it are still configured. `init` still writes Windsurf's instructions to
+`.windsurfrules`.
+
 **Output longer than 8192 bytes reaches a Node 20 caller on macOS whole.** The
 CLI called `process.exit()` while the end of a long write could still be
 queued. On macOS, a Node 20 program that ran `secretless-ai` through
