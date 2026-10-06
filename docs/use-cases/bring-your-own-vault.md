@@ -57,8 +57,10 @@ npx secretless-ai backend
 
 ```bash
 npx secretless-ai secret set GITHUB_TOKEN=ghp_<your-real-token>
-npx secretless-ai run --only GITHUB_TOKEN -- curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user
+npx secretless-ai run --only GITHUB_TOKEN -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB_TOKEN" | curl -s -H @- https://api.github.com/user'
 ```
+
+The token is injected into the environment of `sh`, and `printf` is a shell builtin, so it reaches curl on stdin (`-H @-`). Passing it as `-H "Authorization: Bearer $GITHUB_TOKEN"` would put it on curl's command line, where `ps` shows it to every local process; `run` refuses that shape unless `--allow-argv` is given.
 
 The credential is stored in Vault under `<mount>/secret/GITHUB_TOKEN`. Default mount is `secret`, so full Vault path is `secret/secret/GITHUB_TOKEN`. Read it back with stock Vault tooling to confirm:
 

@@ -144,3 +144,30 @@ describe('runRun --only with an empty value fails closed', () => {
     expect(vi.mocked(runWithSecrets).mock.lastCall![2]).toEqual({ only: undefined });
   });
 });
+
+// `--allow-argv` is the named opt-in to start a child whose command line
+// carries a resolved value. It binds only before the separator: after it, the
+// token belongs to the wrapped command and must not switch the refusal off.
+describe('runRun --allow-argv', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('passes allowArgv when the flag comes before `--`', async () => {
+    const { runRun } = await import('./env-run');
+    const { runWithSecrets } = await import('../run');
+    vi.mocked(runWithSecrets).mockClear();
+    vi.mocked(runWithSecrets).mockResolvedValue(0);
+
+    await runRun(['--allow-argv', '--only', 'A', '--', 'psql', 'x']);
+    expect(vi.mocked(runWithSecrets).mock.lastCall![2]).toEqual({ only: ['A'], allowArgv: true });
+  });
+
+  it('does not pass allowArgv when the token is the child\'s', async () => {
+    const { runRun } = await import('./env-run');
+    const { runWithSecrets } = await import('../run');
+    vi.mocked(runWithSecrets).mockClear();
+    vi.mocked(runWithSecrets).mockResolvedValue(0);
+
+    await runRun(['--only', 'A', '--', 'tool', '--allow-argv']);
+    expect(vi.mocked(runWithSecrets).mock.lastCall![2]).not.toHaveProperty('allowArgv');
+  });
+});

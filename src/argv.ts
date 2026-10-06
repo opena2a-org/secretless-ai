@@ -221,7 +221,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
     unknownFlags: 'reject',
   },
   run: {
-    flags: { '--only': true },
+    flags: { '--only': true, '--allow-argv': false },
     unknownFlags: 'reject',
     passthrough: true,
   },

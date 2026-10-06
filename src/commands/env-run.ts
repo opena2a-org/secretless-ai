@@ -23,9 +23,12 @@ export async function runRun(args: string[]): Promise<number> {
     }
   }
 
+  // Only before the separator: after it, `--allow-argv` is the child's own token.
+  const allowArgv = args.slice(0, searchEnd).includes('--allow-argv');
+
   // Everything after -- is the child command
   if (separatorIdx === -1 || separatorIdx >= args.length - 1) {
-    console.error('\n  Usage: secretless-ai run [--only KEY1,KEY2] -- <command> [args...]\n');
+    console.error('\n  Usage: secretless-ai run [--only KEY1,KEY2] [--allow-argv] -- <command> [args...]\n');
     return 1;
   }
 
@@ -33,7 +36,7 @@ export async function runRun(args: string[]): Promise<number> {
   const childArgs = args.slice(separatorIdx + 2);
 
   try {
-    return await runWithSecrets(childCommand, childArgs, { only });
+    return await runWithSecrets(childCommand, childArgs, { only, ...(allowArgv ? { allowArgv } : {}) });
   } catch (err) {
     // Indent every line, not just the first, matching the top-level handler in
     // cli.ts. Today's messages happen to indent their own continuation lines,
