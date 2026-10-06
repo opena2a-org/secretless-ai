@@ -603,9 +603,17 @@ function configureCopilot(projectDir: string, result: InitResult): void {
 // Windsurf Configuration
 // ============================================================================
 
+const WINDSURF_RULES = '.windsurfrules';
+
 function configureWindsurf(projectDir: string, result: InitResult): void {
-  const rulesPath = path.join(projectDir, '.windsurfrules');
-  addSecretlessInstructions(rulesPath, 'windsurf', result);
+  // The same checks as Cursor and Cline. Writing straight to the path followed
+  // a `.windsurfrules` link wherever it led, created the target of a dangling
+  // one, and threw EISDIR on a directory, which left every tool configured
+  // after Windsurf (Cline, Aider) unconfigured.
+  if (refuseUnsafePaths(projectDir, 'windsurf', [WINDSURF_RULES], result)) {
+    return;
+  }
+  writeInstructionFile(projectDir, WINDSURF_RULES, 'windsurf', result);
 }
 
 // ============================================================================
