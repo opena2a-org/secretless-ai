@@ -133,11 +133,11 @@ export class PolicyEngine {
       // rather than at the one where the last instance turned up.
       if (!Array.isArray(parsed)) {
         for (const key of Object.keys(parsed)) {
-          if (KNOWN_ENVELOPE_KEYS.has(key)) continue;
-          const near = nearestMatch(key, [...KNOWN_ENVELOPE_KEYS]);
+          if (ENVELOPE_KEYS.has(key)) continue;
+          const near = nearestMatch(key, [...ENVELOPE_KEYS]);
           throw new Error(
             `Policy file has an unknown top-level key "${key}"${near ? ` (did you mean "${near}"?)` : ''}. ` +
-            `A policy file may carry: ${[...KNOWN_ENVELOPE_KEYS].join(', ')}. ` +
+            `A policy file may carry: ${[...ENVELOPE_KEYS].join(', ')}. ` +
             `Rules under a key this build does not read would never be loaded, and nothing ` +
             `downstream could tell that from a file that declared no such rules.`,
           );
@@ -429,9 +429,10 @@ function parseTimeToMinutes(time: string): number {
  * constraint added to the type without being added here fails the suite rather
  * than being silently refused at runtime — and one added here without an
  * enforcement branch in `checkConstraints` fails too. The set is a promise
- * about what is applied, not a list of what parses.
+ * about what is applied, not a list of what parses, and only this module can
+ * write to it: the export below is a read-only view (see `readOnlyView`).
  */
-export const KNOWN_CONSTRAINT_KEYS = new Set([
+const CONSTRAINT_KEYS = new Set([
   'timeWindow',
   'rateLimit',
   'minTrustScore',
@@ -458,7 +459,7 @@ export const KNOWN_CONSTRAINT_KEYS = new Set([
  * a key the operator did not write is a guess about intent inside the
  * authorization path; the error names the likely intent instead.
  */
-export const KNOWN_RULE_KEYS = new Set([
+const RULE_KEYS = new Set([
   'id',
   'agentSelector',
   'credentialSelector',
@@ -467,7 +468,49 @@ export const KNOWN_RULE_KEYS = new Set([
 ]);
 
 /** Top-level keys of the policy FILE. `version` is in the documented example. */
-export const KNOWN_ENVELOPE_KEYS = new Set(['version', 'rules']);
+const ENVELOPE_KEYS = new Set(['version', 'rules']);
+
+/**
+ * A read-only view of one of the accept-sets above, for export.
+ *
+ * They were exported as the `Set` instances the validators consult, and
+ * `const` stops rebinding, not mutation: a consumer's
+ * `KNOWN_CONSTRAINT_KEYS.add('minTrustScoree')` made every PolicyEngine in the
+ * process load that typo as an unconstrained ALLOW, and the same call on the
+ * rule and envelope sets re-opened the misspelled-container and dropped-deny-set
+ * defects. `Object.freeze` does not reach a Set's entries, so freezing the Set
+ * would not have closed it.
+ *
+ * The validators read the private Set. The view is a frozen plain object with
+ * the read half of the Set interface and no internal Set slot, so it has no
+ * `add`, `delete` or `clear`, `Set.prototype.add.call(view, key)` throws a
+ * TypeError, and `forEach` hands its callback the view, never the Set behind it.
+ */
+function readOnlyView(keys: Set<string>): ReadonlySet<string> {
+  const view: ReadonlySet<string> = Object.freeze({
+    get size() {
+      return keys.size;
+    },
+    has: (key: string) => keys.has(key),
+    forEach(callback: (value: string, value2: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+      keys.forEach((value) => callback.call(thisArg, value, value, view));
+    },
+    entries: () => keys.entries(),
+    keys: () => keys.keys(),
+    values: () => keys.values(),
+    [Symbol.iterator]: () => keys.values(),
+  });
+  return view;
+}
+
+/** Every constraint this build enforces. Read-only; see `readOnlyView`. */
+export const KNOWN_CONSTRAINT_KEYS = readOnlyView(CONSTRAINT_KEYS);
+
+/** The keys a policy rule may carry. Read-only; see `readOnlyView`. */
+export const KNOWN_RULE_KEYS = readOnlyView(RULE_KEYS);
+
+/** The top-level keys of a policy file. Read-only; see `readOnlyView`. */
+export const KNOWN_ENVELOPE_KEYS = readOnlyView(ENVELOPE_KEYS);
 
 /**
  * Sub-keys of each structured constraint.
@@ -542,11 +585,11 @@ function validateRule(raw: unknown): PolicyRule {
   // Top-level keys are checked BEFORE the constraint block, because the defect
   // this closes is that a misspelled container never reaches that block at all.
   for (const key of Object.keys(r)) {
-    if (KNOWN_RULE_KEYS.has(key)) continue;
-    const near = nearestMatch(key, [...KNOWN_RULE_KEYS]);
+    if (RULE_KEYS.has(key)) continue;
+    const near = nearestMatch(key, [...RULE_KEYS]);
     throw new Error(
       `Rule "${r.id}": unknown field "${key}"${near ? ` (did you mean "${near}"?)` : ''}. ` +
-      `A rule may carry: ${[...KNOWN_RULE_KEYS].join(', ')}. ` +
+      `A rule may carry: ${[...RULE_KEYS].join(', ')}. ` +
       `A field this build does not read is refused rather than ignored, because ignoring ` +
       `"${key}" would drop whatever it was meant to restrict and load the rule as written ` +
       `without it.`,
@@ -607,10 +650,10 @@ function validateRule(raw: unknown): PolicyRule {
       if (unenforced) {
         throw new Error(`Rule "${r.id}": ${unenforced}`);
       }
-      if (!KNOWN_CONSTRAINT_KEYS.has(key)) {
+      if (!CONSTRAINT_KEYS.has(key)) {
         throw new Error(
           `Rule "${r.id}": unknown constraint "${key}". ` +
-          `Known constraints: ${[...KNOWN_CONSTRAINT_KEYS].join(', ')}. ` +
+          `Known constraints: ${[...CONSTRAINT_KEYS].join(', ')}. ` +
           `A constraint this build cannot apply is refused rather than ignored, ` +
           `because ignoring it would widen the rule.`,
         );

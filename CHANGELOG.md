@@ -235,6 +235,16 @@ secret-file arm that already did.
   conversation, and no layer checks it. The README says the same under
   "What the guard cannot see". Existing installs keep their block until it is
   removed and `init` is run again (#129).
+- `KNOWN_CONSTRAINT_KEYS`, `KNOWN_RULE_KEYS` and `KNOWN_ENVELOPE_KEYS` from
+  `secretless-ai/dist/broker/policy` are read-only views, not `Set` instances.
+  They were the sets the policy loader consults, so
+  `KNOWN_CONSTRAINT_KEYS.add('minTrustScoree')` loaded that typo as an
+  unconstrained allow in every `PolicyEngine` in the process, and the same call
+  on the other two let a misspelled `constraints` container load unconstrained
+  and a file's `denyRules` be dropped. The loader now reads private sets.
+  `has`, `size`, `forEach`, `keys`, `values`, `entries` and iteration behave as
+  before; `add`, `delete` and `clear` are gone, `Set.prototype.add.call` on a
+  view throws a `TypeError`, and `instanceof Set` is now false (#148).
 
 ## [0.23.1] - YYYY-MM-DD
 
