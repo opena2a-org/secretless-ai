@@ -341,7 +341,10 @@ reads the files `init` writes: an initialised Cursor project used to be
 reported as not protected. These are instruction files: nothing enforces
 them, and they have no effect unless the tool loads that file. The README's
 supported tools table named `.cursorrules` and `.clinerules` and now names the
-files `init` creates.
+files `init` creates. The use case `docs/use-cases/protect-my-credentials.md`
+said `init` creates `.cursorrules` and showed output `init` does not print; it
+now shows the output of a run in a project that Claude Code and Cursor both
+use, names the files that run writes, and says which of them is enforced.
 
 **`init` checks Windsurf's rules file the way it checks Cursor's and Cline's.**
 `init` wrote Windsurf's instructions straight to `.windsurfrules`: when that
