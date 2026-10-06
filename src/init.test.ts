@@ -1033,6 +1033,107 @@ describe('init', { timeout: 30_000 }, () => {
     });
   });
 
+  // The data-directory arm used to list reading verbs (cat, head, awk, ...), so
+  // every reader it did not name walked through it: a python3 one-liner read
+  // ~/.secretless-ai/config.json and the hook allowed it. The arm is now an
+  // allowlist: a command naming the directory is refused unless the whole
+  // command is one secretless-ai invocation.
+  describe('only secretless-ai itself may name the data directory', () => {
+    const hasPython3 = (() => {
+      try { execSync('command -v python3', { stdio: 'ignore' }); return true; } catch { return false; }
+    })();
+
+    function runHookCmdRaw(hookPath: string, command: string): string {
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      return execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+    }
+
+    const store = '~/.secretless-ai/config.json';
+
+    // The quoted one-liners need the python3 command parse; without it the
+    // grep fallback stops at the first quote, before the path.
+    (hasPython3 ? it : it.skip)('refuses a read of the data directory by any other program or a shell redirect', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const readers = [
+        `python3 -c "print(open('/Users/x/.secretless-ai/config.json').read())"`,
+        `node -e "console.log(require('fs').readFileSync('/Users/x/.secretless-ai/config.json', 'utf8'))"`,
+        `ruby -e 'puts File.read(File.expand_path("${store}"))'`,
+        `perl -ne 'print' ${store}`,
+        `awk '{print}' ${store}`,
+        `while read l; do echo "$l"; done < ${store}`,
+        `echo "$(< ${store})"`,
+        `base64 ${store}`,
+        `cp ${store} /tmp/c.json`,
+        `cd ~/.secretless-ai && python3 -c "print(open('config.json').read())"`,
+        `perl -ne 'print' ~/.opena2a/secretless-ai/config.json`,
+        `python3 -c "print(open('/Users/x/.SECRETLESS-AI/config.json').read())"`,
+      ];
+      for (const c of readers) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to BLOCK: ${c}`).toBe(true);
+        expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).toMatch(/secretless data directory/);
+      }
+    });
+
+    (hasPython3 ? it : it.skip)('refuses a secretless-ai command that chains, substitutes or starts another program', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const smuggled = [
+        `secretless-ai status; python3 -c "print(open('/Users/x/.secretless-ai/config.json').read())"`,
+        `secretless-ai status && perl -ne 'print' ${store}`,
+        `secretless-ai status | cat ${store}`,
+        `secretless-ai status\nperl -ne 'print' ${store}`,
+        `secretless-ai scan $(perl -ne 'print' ${store})`,
+        `secretless-ai scan \`perl -ne 'print' ${store}\``,
+        `secretless-ai scan . > ${store}`,
+        `secretless-ai run -- perl -ne 'print' ${store}`,
+        `secretless-ai "run" -- perl -ne 'print' ${store}`,
+        `secretless-ai r\\un -- perl -ne 'print' ${store}`,
+        `secretless-ai vault exec ns -- perl -ne 'print' ${store}`,
+        `npx secretless-ai run -- perl -ne 'print' ${store}`,
+        `./secretless-ai scan ${store}`,
+        `node dist/cli.js scan ${store}`,
+        `FOO=1 secretless-ai scan ${store}`,
+      ];
+      for (const c of smuggled) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+    });
+
+    it('allows one plain secretless-ai invocation that names the directory', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      for (const c of [
+        'secretless-ai scan ~/.secretless-ai',
+        'secretless-ai status ~/.secretless-ai',
+        'npx secretless-ai scan ~/.secretless-ai',
+        'npx -y secretless-ai@latest scan ~/.secretless-ai',
+      ]) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    it('leaves commands that do not name the directory as they were', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      for (const c of [
+        `python3 -c "print(1)"`, `node -e "console.log(1)"`, `perl -e 'print 1'`,
+        `ruby -e 'puts 1'`, 'awk 1 README.md', 'cat README.md < /dev/null',
+        'secretless-ai status', 'cat .secretlessignore', 'grep -rn secretless-ai package.json',
+      ]) {
+        const out = runHookCmdRaw(hookPath, c);
+        expect(/"permissionDecision":"deny"/.test(out), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+  });
+
   // Older `init` was additive-only: it appended new deny rules and only wrote
   // the guard hook when absent. So upgrading the CLI did NOT migrate an existing
   // `.claude/settings.json` — the broad `.env*` glob and a stale hook survived,

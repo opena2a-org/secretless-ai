@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+**The guard hook lets only `secretless-ai` itself name the data directory.**
+The hook's data-directory rule listed reading commands (`cat`, `head`, `awk`
+and others), so any reader it did not list passed: a `python3`, `node`, `ruby`
+or `perl` one-liner, or a shell redirect such as
+`< ~/.secretless-ai/config.json`, read the store's files through it. A Bash
+command that names `~/.secretless-ai` or `~/.opena2a/secretless-ai` is now
+refused unless the whole command is one `secretless-ai` or `npx secretless-ai`
+invocation made of plain words. A command that chains, pipes, redirects or
+substitutes, that quotes or escapes a word, or that uses `run` or `vault exec`
+to start another program is refused. So is a command that only mentions the
+directory, such as `cd ~/.secretless-ai`; the deny reason says so and points
+at the Read and Grep tools for source searches. The rule still reads command
+text, so it sees the directory only where the command names it, and the
+native deny rules are unchanged.
+
 **The Claude Code guard hook refuses process listings that print environments
 or full command lines, and a bare `env`, as it already refused `printenv`
 (#187).** `pgrep` with `-l` or `-a` (`pgrep -fl`, `pgrep -a`,
