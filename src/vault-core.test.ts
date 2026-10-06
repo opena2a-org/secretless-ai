@@ -92,6 +92,21 @@ describeWithAimCore('vault-core', () => {
     consoleSpy.mockRestore();
   });
 
+  it('init next steps and the empty-list hint register without --value', async () => {
+    const { vaultInit, vaultList } = await import('./vault-core');
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await vaultInit('test-agent');
+    await vaultList();
+
+    const lines = consoleSpy.mock.calls.map((call) => call.join(' ')).join('\n').split('\n');
+    expect(lines.filter((l) => /secretless-ai\b.*--value\b/.test(l))).toEqual([]);
+    expect(lines.some((l) => /secretless-ai vault register github\s+\(prompts/.test(l))).toBe(true);
+    expect(lines.some((l) => /secretless-ai vault register <namespace>\s+\(prompts/.test(l))).toBe(true);
+
+    consoleSpy.mockRestore();
+  });
+
   it('vaultInit is idempotent — second call reports already initialized', async () => {
     const { vaultInit } = await import('./vault-core');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -355,5 +370,33 @@ describe('vault-core error message format', () => {
     expect(err.message).toContain('@opena2a/aim-core is required');
     expect(err.message).toContain('npm install');
     expect(err.message).toContain('npm link');
+  });
+});
+
+// `vault scan` needs no aim-core: it reuses `scan` and prints one migration
+// line per finding. That line is a command the user copies, so it must not put
+// the credential value on the command line, where shell history keeps it.
+describe('vaultScan migration line', () => {
+  it('names a register command that reads the value from a prompt, a pipe or --env', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-vault-scan-'));
+    // Assembled from parts so the tree never carries a whole key.
+    const key = ['sk-proj-', 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2'].join('');
+    fs.writeFileSync(path.join(dir, 'config.sh'), `OPENAI_API_KEY=${key}\n`);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const { vaultScan } = await import('./vault-core');
+      await vaultScan(dir);
+
+      const output = consoleSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+      const lines = output.split('\n');
+      expect(lines).toContain('    Migrate:  secretless-ai vault register openai-proj');
+      expect(lines.filter((l) => /--value\b/.test(l))).toEqual([]);
+      expect(output).toContain('--env <VAR>');
+      expect(output).not.toContain(key);
+    } finally {
+      consoleSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

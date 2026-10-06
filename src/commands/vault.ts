@@ -74,7 +74,8 @@ async function handleRegister(args: string[]): Promise<number> {
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Usage: secretless-ai vault register <namespace> [options]\n');
     console.error('  Options:');
-    console.error('    --value <value>       Credential value (or pipe via stdin)');
+    console.error('    --value <value>       Value as an argument (shell history keeps it);');
+    console.error('                          omit it to be prompted or to pipe the value');
     console.error('    --env <VAR>           Read value from environment variable');
     console.error('    --description <desc>  Namespace description');
     console.error('    --operations <ops>    Comma-separated: read,write,delete,admin');
@@ -119,7 +120,8 @@ async function handleList(): Promise<number> {
 async function handleRotate(args: string[]): Promise<number> {
   const namespace = args[0];
   if (!namespace || namespace.startsWith('-')) {
-    console.error('\n  Usage: secretless-ai vault rotate <namespace> [--value <value>] [--env <VAR>]\n');
+    console.error('\n  Usage: secretless-ai vault rotate <namespace> [--env <VAR>]');
+    console.error('  Without --env, the new value is read from a prompt or a pipe.\n');
     return 1;
   }
 
@@ -257,8 +259,9 @@ function printVaultHelp(): void {
     migrate [opts]           Migrate from SecretStore or .env file
 
   Register options:
-    --value <value>          Credential value (or pipe via stdin)
     --env <VAR>              Read value from environment variable
+    --value <value>          Value as an argument (shell history keeps it);
+                             omit it to be prompted or to pipe the value
     --description <desc>     Namespace description
     --operations <ops>       Comma-separated: read,write,delete,admin
     --url-patterns <pats>    Comma-separated URL patterns
@@ -277,7 +280,8 @@ function printVaultHelp(): void {
 
   Examples:
     secretless-ai vault init
-    secretless-ai vault register github --value ghp_abc123
+    secretless-ai vault register github                  (prompts for the value)
+    gh auth token | secretless-ai vault register github  (reads it from the pipe)
     secretless-ai vault register aws --env AWS_SECRET_ACCESS_KEY
     secretless-ai vault exec github -- curl https://api.github.com/user
     secretless-ai vault migrate --env-file .env --dry-run

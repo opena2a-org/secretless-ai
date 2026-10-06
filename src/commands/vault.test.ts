@@ -189,3 +189,49 @@ describe('runVault CLI dispatch', () => {
     expect(output).toContain('Identity Vault');
   });
 });
+
+// A value passed as an argument is kept by shell history and shown in the
+// process list. `register` and `rotate` read it from a prompt, a pipe or
+// --env, so no command line the vault help prints may carry `--value`.
+const VALUE_ON_COMMAND_LINE = /secretless-ai\b.*--value\b/;
+
+describe('vault help keeps the credential value off the command line', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  const printed = (spy: ReturnType<typeof vi.spyOn>): string[] =>
+    spy.mock.calls.map((call) => call.join(' ')).join('\n').split('\n');
+
+  it('the examples register a credential from the prompt, a pipe or --env', async () => {
+    await runVault(['--help']);
+    const lines = printed(consoleSpy);
+    expect(lines.filter((l) => VALUE_ON_COMMAND_LINE.test(l))).toEqual([]);
+    expect(lines.some((l) => /secretless-ai vault register github\s+\(prompts/.test(l))).toBe(true);
+    expect(lines.some((l) => /\| secretless-ai vault register github\b/.test(l))).toBe(true);
+    expect(lines.some((l) => l.includes('secretless-ai vault register aws --env AWS_SECRET_ACCESS_KEY'))).toBe(true);
+  });
+
+  it('the register and rotate usage errors name no --value command line', async () => {
+    await runVault(['register']);
+    await runVault(['rotate']);
+    expect(printed(consoleErrorSpy).filter((l) => VALUE_ON_COMMAND_LINE.test(l))).toEqual([]);
+  });
+
+  it('vault --help names no --value command line in its usage', async () => {
+    const { printCommandHelp } = await import('../command-help');
+    printCommandHelp('vault');
+    const lines = printed(consoleSpy);
+    expect(lines.filter((l) => VALUE_ON_COMMAND_LINE.test(l))).toEqual([]);
+    expect(lines.some((l) => l.includes('rotate <namespace> [--env <VAR>]'))).toBe(true);
+  });
+});

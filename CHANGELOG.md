@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+**`vault scan` and the `vault` help no longer tell you to put a credential on
+the command line.** For every finding, `vault scan` printed
+`Migrate:  secretless-ai vault register <namespace> --value <value>`, and the
+`vault` help example, the `vault init` next steps and the empty `vault list`
+hint showed `--value` too. An argument stays in shell history and shows in the
+process list. `vault register` and `vault rotate` already read the value from a
+prompt, from a pipe or from `--env <VAR>`, so the printed commands now use
+those: `secretless-ai vault register openai-proj` prompts for the value, and
+`gh auth token | secretless-ai vault register github` reads it from the pipe.
+The `--value` entry in the help now says that shell history keeps it, and the
+`vault rotate` usage line no longer lists it. `--value` still works.
+
 **The instruction block no longer says that credentials in the conversation are
 redacted.** The block `init` writes ended with the line "Credentials in this
 conversation are automatically redacted by Secretless AI". That line was wrong.
