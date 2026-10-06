@@ -282,3 +282,59 @@ describe('VaultBackend', () => {
     });
   });
 });
+
+describe('VaultBackend: every request is bounded end to end', () => {
+  const VALUE = 'planted-vault-value-7c1e';
+
+  /** A fetch that honours its abort signal and otherwise never settles. */
+  const silentFetch = (_url: string, init: { signal: AbortSignal }) =>
+    new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')));
+    });
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('a read Vault never answers: throws within 10s, names the request, and says what to do', async () => {
+    mockFetch.mockImplementationOnce(silentFetch);
+    const outcome = createVault().resolve('secret/K').then(() => null, (e: Error) => e);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const err = await outcome;
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain('Vault did not respond within 10s (GET /v1/secret/data/secret/K)');
+    expect(err!.message).toContain(`Verify:  curl -s ${TEST_ADDR}/v1/sys/health`);
+    expect(err!.message).toContain('Fix:');
+    expect(err!.message).not.toContain('aborted');
+  });
+
+  it('a read whose body never arrives: the body read is under the same 10s bound', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: () => new Promise(() => {}) });
+    const outcome = createVault().resolve('secret/K').then(() => null, (e: Error) => e);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const err = await outcome;
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain('Vault did not respond within 10s (GET /v1/secret/data/secret/K)');
+  });
+
+  it('a write Vault never answers: the error holds neither the token nor the value, nor userinfo in the address', async () => {
+    mockFetch.mockImplementationOnce(silentFetch);
+    const vault = createVault({ addr: 'http://ops:FAKE-pw-in-addr@127.0.0.1:8200' });
+    const outcome = vault.store('secret/K', VALUE).then(() => null, (e: Error) => e);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const err = await outcome;
+    expect(err!.message).toContain('Vault did not respond within 10s (POST /v1/secret/data/secret/K)');
+    expect(err!.message).toContain('may still have been applied');
+    for (const leaked of [VALUE, TEST_TOKEN, 'pw-in-addr', 'ops:']) {
+      expect(err!.message).not.toContain(leaked);
+    }
+  });
+
+  it('a health check Vault never answers: unhealthy within 5s, on one line, with a Verify command', async () => {
+    mockFetch.mockImplementationOnce(silentFetch);
+    const outcome = createVault().healthCheck();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const health = await outcome;
+    expect(health.healthy).toBe(false);
+    expect(health.message).toBe(`Vault did not respond within 5s. Verify: curl -s ${TEST_ADDR}/v1/sys/health`);
+  });
+});

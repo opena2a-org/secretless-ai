@@ -15,11 +15,13 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { WritableSecretBackend, BackendHealth } from './types';
+import { boundedFetch, describeRequest, type BoundedResponse } from './bounded-fetch';
 
 const SM_BASE_URL = 'https://secretmanager.googleapis.com';
 const OAUTH2_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const OAUTH2_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const REQUEST_TIMEOUT_MS = 10_000;
+const HEALTH_TIMEOUT_MS = 5_000;
 const TOKEN_LIFETIME_SECONDS = 3600; // 1 hour
 
 /**
@@ -27,6 +29,26 @@ const TOKEN_LIFETIME_SECONDS = 3600; // 1 hour
  * Names must be 1-255 characters, alphanumeric plus dash and underscore.
  */
 const SECRET_NAME_REGEX = /^[a-zA-Z0-9_-]{1,255}$/;
+
+/**
+ * A Google API request that did not complete in time. Names the host, which is
+ * one of the constants above, and the path; holds no token, assertion or body.
+ */
+function gcpTimeoutError(method: string, url: string, timeoutMs: number): Error {
+  const host = new URL(url).host;
+  return new Error(
+    [
+      `GCP Secret Manager: ${host} did not respond within ${timeoutMs / 1000}s (${describeRequest(method, url)}).`,
+      '',
+      '  The request was abandoned and its connection closed. A write that timed',
+      '  out may still have been applied by the server.',
+      '',
+      `  Verify:  curl -sI https://${host}/`,
+      '  Fix:     check the network path from this machine to Google APIs (proxy,',
+      '           firewall, DNS) and retry',
+    ].join('\n'),
+  );
+}
 
 export interface GCPSecretManagerConfig {
   /** GCP project ID. Overrides auto-detected project. */
@@ -145,41 +167,38 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
 
       // Try listing secrets (limit 1) to verify access
       const url = `${SM_BASE_URL}/v1/projects/${projectId}/secrets?pageSize=1`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
+      const response = await boundedFetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'User-Agent': 'secretless-ai/1.0',
+        },
+      }, {
+        timeoutMs: HEALTH_TIMEOUT_MS,
+        onTimeout: () => new Error(
+          `GCP Secret Manager did not respond within ${HEALTH_TIMEOUT_MS / 1000}s. Verify: curl -sI ${SM_BASE_URL}/`,
+        ),
+      });
 
-      try {
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'User-Agent': 'secretless-ai/1.0',
-          },
-          signal: controller.signal,
-        });
+      const latencyMs = Date.now() - start;
 
-        const latencyMs = Date.now() - start;
+      if (response.ok) {
+        return { healthy: true, latencyMs, message: `GCP Secret Manager (project: ${projectId})` };
+      }
 
-        if (response.ok) {
-          return { healthy: true, latencyMs, message: `GCP Secret Manager (project: ${projectId})` };
-        }
-
-        if (response.status === 403) {
-          return {
-            healthy: false,
-            latencyMs,
-            message: `Insufficient IAM permissions on project ${projectId}`,
-          };
-        }
-
+      if (response.status === 403) {
         return {
           healthy: false,
           latencyMs,
-          message: `GCP Secret Manager returned HTTP ${response.status}`,
+          message: `Insufficient IAM permissions on project ${projectId}`,
         };
-      } finally {
-        clearTimeout(timeout);
       }
+
+      return {
+        healthy: false,
+        latencyMs,
+        message: `GCP Secret Manager returned HTTP ${response.status}`,
+      };
     } catch (err) {
       return {
         healthy: false,
@@ -541,7 +560,7 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     url: string,
     token: string,
     body?: unknown,
-  ): Promise<Response> {
+  ): Promise<BoundedResponse> {
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${token}`,
       'User-Agent': 'secretless-ai/1.0',
@@ -560,27 +579,20 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   }
 
   /**
-   * Fetch with abort controller timeout.
+   * One request, bounded end to end: the headers and the body read share one
+   * deadline, and a request that misses it throws an error that says what to
+   * do.
    */
   private async fetchWithTimeout(
     method: string,
     url: string,
     headers: Record<string, string>,
     body?: string,
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-    try {
-      return await fetch(url, {
-        method,
-        headers,
-        body,
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+  ): Promise<BoundedResponse> {
+    return boundedFetch(url, { method, headers, body }, {
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      onTimeout: () => gcpTimeoutError(method, url, REQUEST_TIMEOUT_MS),
+    });
   }
 }
 

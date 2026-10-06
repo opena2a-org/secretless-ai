@@ -341,3 +341,58 @@ describe('isGCPAvailable', () => {
     expect(typeof result.message).toBe('string');
   });
 });
+
+describe('GCPSecretManagerBackend: every request is bounded end to end', () => {
+  const VALUE = 'planted-gcp-value-4b9d';
+
+  /** A fetch that honours its abort signal and otherwise never settles. */
+  const silentFetch = (_url: string, init: { signal: AbortSignal }) =>
+    new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')));
+    });
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('a read the API never answers: throws within 10s, names the host and request, and says what to do', async () => {
+    mockFetch.mockImplementationOnce(silentFetch);
+    const outcome = createGCPBackend().resolve('secret/MY_KEY').then(() => null, (e: Error) => e);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const err = await outcome;
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain(
+      `GCP Secret Manager: secretmanager.googleapis.com did not respond within 10s (GET /v1/projects/${TEST_PROJECT}/secrets/MY_KEY/versions/latest:access)`,
+    );
+    expect(err!.message).toContain('Verify:  curl -sI https://secretmanager.googleapis.com/');
+    expect(err!.message).toContain('Fix:');
+    expect(err!.message).not.toContain('aborted');
+  });
+
+  it('a read whose body never arrives: the body read is under the same 10s bound', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: () => new Promise(() => {}) });
+    const outcome = createGCPBackend().resolve('secret/MY_KEY').then(() => null, (e: Error) => e);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const err = await outcome;
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain('secretmanager.googleapis.com did not respond within 10s');
+  });
+
+  it('a write the API never answers: the error holds neither the token nor the value', async () => {
+    mockFetch.mockImplementationOnce(silentFetch);
+    const outcome = createGCPBackend().store('secret/MY_KEY', VALUE).then(() => null, (e: Error) => e);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const err = await outcome;
+    expect(err!.message).toContain('did not respond within 10s (POST ');
+    expect(err!.message).not.toContain(VALUE);
+    expect(err!.message).not.toContain(TEST_TOKEN);
+  });
+
+  it('a health check the API never answers: unhealthy within 5s, on one line, with a Verify command', async () => {
+    mockFetch.mockImplementationOnce(silentFetch);
+    const outcome = createGCPBackend().healthCheck();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const health = await outcome;
+    expect(health.healthy).toBe(false);
+    expect(health.message).toBe('GCP Secret Manager did not respond within 5s. Verify: curl -sI https://secretmanager.googleapis.com/');
+  });
+});

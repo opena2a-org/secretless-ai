@@ -36,6 +36,18 @@ warning that the value is visible in process listings. Values shorter than
 eight characters are not checked. The vault guide's curl example now passes
 the header on stdin.
 
+**The Vault and GCP Secret Manager backends bound the whole HTTP exchange,
+and a request that times out says what to do.** Each request's 10-second
+bound used to end when the response headers arrived, so a server that sent
+its headers and then stalled the body left `resolve`, `store` and `delete`
+waiting for as long as the connection stayed open. The bound now covers the
+response body as well, and the request is abandoned and its connection closed
+when it passes. A timed-out request used to fail with `This operation was
+aborted`; it now names the backend, the method and path (never the address's
+userinfo, the token or the value), notes that a timed-out write may still
+have been applied, and prints a Verify and a Fix line. A health check that
+times out after 5 seconds reports the same on one line.
+
 **`clean` names the transcript lines it did not read.** A transcript line
 longer than 51200 characters is skipped whole, so a credential on it is
 neither reported nor redacted. `clean` used to print `No credentials found.
