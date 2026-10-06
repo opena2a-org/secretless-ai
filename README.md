@@ -105,6 +105,21 @@ The command reads the value from its environment. `run` refuses to start a comma
 
 Reading a value back is TTY-gated: `secret get NAME` prints it in an interactive terminal, but is blocked in piped or AI-driven contexts unless `--force` is passed — and `init` installs deny rules so AI tools cannot run the `--force` form or dump an injected environment (`run -- env`).
 
+### Record what a credential is for
+
+A value alone does not say which app it belongs to or what it may do. `secret set` takes a description and repeatable `--meta key=value` fields, and `secret show` reads them back without the value:
+
+```bash
+npx secretless-ai secret set LINKEDIN_CLIENT_SECRET \
+  --description "Client secret, marketing agent app" \
+  --meta provider=linkedin --meta app=marketing_agent \
+  --meta scopes=r_basicprofile,w_member_social --meta tokenTtl=5184000
+npx secretless-ai secret show LINKEDIN_CLIENT_SECRET      # description and metadata, never the value
+npx secretless-ai secret list --long --app marketing_agent  # every entry recorded for one app
+```
+
+Descriptions and metadata are not secrets. They are kept in plain text beside the store (`~/.secretless-ai/secret-annotations.json`) and printed by `secret show` and `secret list --long`; neither command prints a value, and neither is blocked by the deny rules `init` installs. `set` refuses a description or field that contains the value or looks like a credential. Keys are free-form; `app`, `provider`, `scopes`, `tokenTtl`, `redirectUri` and `expiresAt` are conventions, not a schema. `--meta key=` removes a field, `set` without either flag keeps what was recorded, and `secret rm` removes both. `secret list --json` and `secret show --json` include the same fields.
+
 ### Ask your AI assistant to use a secret
 
 After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursorrules`, ...) lists which keys are available as environment variables and tells the tool to reference them as `$VAR_NAME` without reading values. So this works in Claude Code:
@@ -187,7 +202,7 @@ A command line the tool cannot bind is refused with exit 2 before anything runs,
 
 `scan`, `scan-staged` and `scan-history` refuse an unrecognised flag rather than warning and continuing, because their output is the answer: a typo in a coverage flag used to produce `No hardcoded credentials found.` at exit 0 over a narrower scan than the one you asked for. `feedback` and `diff` still warn, since they report no verdict.
 
-`--json` is implemented by `scan` and `status`. Passing it to any other command exits 2 and names those two, rather than printing human text and exiting 0 -- the caller of `--json` is a machine, and a machine reading exit 0 beside prose cannot tell it was ignored.
+`--json` is implemented by `scan`, `status`, `secret list` and `secret show`. Passing it to any other command exits 2 and names the commands that implement it, rather than printing human text and exiting 0 -- the caller of `--json` is a machine, and a machine reading exit 0 beside prose cannot tell it was ignored.
 
 Exit codes: `0` clean, `1` credentials found (or an incomplete scan), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
 

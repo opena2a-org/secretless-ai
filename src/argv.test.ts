@@ -431,8 +431,8 @@ describe('supportedFlags names only what the verb honors', () => {
     // Oracle is the SOURCE: the verbs whose dispatch actually reads the flag.
     const cli = fs.readFileSync(path.join(path.resolve(__dirname), 'cli.ts'), 'utf-8');
     const implementing = cli.split('\n').filter((l) => l.includes("includes('--json')")).length;
-    expect(implementing).toBe(2);
-    expect(advertising).toEqual(['scan', 'status']);
+    expect(implementing).toBe(3);
+    expect(advertising).toEqual(['scan', 'secret', 'status']);
   });
 
   it('a destructive verb does not offer --json in its refusal', () => {

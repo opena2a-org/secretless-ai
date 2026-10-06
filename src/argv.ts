@@ -112,6 +112,13 @@ export interface VerbSpec {
    * flag is either implemented or not a flag.
    */
   honorsJson?: boolean;
+  /**
+   * Value flags that may be given more than once, each occurrence adding a
+   * value rather than replacing one. Every other value flag refuses a repeat
+   * (#120). Only for a flag whose reader collects every occurrence: listing a
+   * flag here that is read once reopens the silent-drop #120 closed.
+   */
+  repeatable?: readonly string[];
 }
 
 /**
@@ -233,7 +240,22 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   doctor: { flags: { '--fix': false }, unknownFlags: 'reject' },
   import: { flags: { '--detect': false }, unknownFlags: 'reject' },
   setup: { flags: { '--check': false }, unknownFlags: 'reject' },
-  secret: { flags: { '--force': false }, unknownFlags: 'reject' },
+  // `--meta` is read once per occurrence by `secret set` (commands/secrets.ts),
+  // so it is the one repeatable flag. Each subcommand refuses the flags that
+  // belong to another one; see SECRET_SUBCOMMAND_FLAGS there.
+  secret: {
+    flags: {
+      '--force': false,
+      '--description': true,
+      '--meta': true,
+      '--long': false,
+      '--app': true,
+      '--json': false,
+    },
+    unknownFlags: 'reject',
+    honorsJson: true,
+    repeatable: ['--meta'],
+  },
   watch: { flags: {}, unknownFlags: 'reject' },
   hook: { flags: { '--check-only': false }, unknownFlags: 'reject' },
   warm: { flags: { '--ttl': true, '--no-broker': false }, unknownFlags: 'reject' },
@@ -407,6 +429,7 @@ function prepareWithSpec(
   // `scan --max-files 10 --max-files 20000` scanned ten files (#120).
   const given = new Map<string, string>();
   const takeValue = (name: string, value: string): void => {
+    if (spec.repeatable?.includes(name)) return;
     const previous = given.get(name);
     if (previous !== undefined) {
       errors.push(
