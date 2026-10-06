@@ -698,11 +698,13 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     addRow({ glyph: '✓', label: `Tool instructions: ${s.configuredTools.map(toolDisplayName).join(', ')}` });
   }
 
-  // Secrets in config files.
+  // Secrets in the project scan. The scan covers the file types it knows, not
+  // every config file: a key in values.yaml or main.tf is not read, so a clean
+  // result is a statement about the scanned files only.
   if (s.secretsFound > 0) {
-    addRow({ glyph: '⚠', label: `${s.secretsFound} credential${s.secretsFound === 1 ? '' : 's'} detected in config files`, action: 'secretless-ai scan' });
+    addRow({ glyph: '⚠', label: `${s.secretsFound} credential${s.secretsFound === 1 ? '' : 's'} detected in project files`, action: 'secretless-ai scan' });
   } else {
-    addRow({ glyph: '✓', label: 'No credentials in config files' });
+    addRow({ glyph: '✓', label: 'No credentials detected in scanned files' });
   }
 
   // Session warmth (only relevant when a backend that prompts is configured).

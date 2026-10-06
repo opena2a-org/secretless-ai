@@ -36,6 +36,14 @@ warning that the value is visible in process listings. Values shorter than
 eight characters are not checked. The vault guide's curl example now passes
 the header on stdin.
 
+**`status` says which files its credential row covers.** The row read `No
+credentials in config files` when the project scan found nothing, but the
+scan does not read every config file: a project with a key in `values.yaml`
+and another in `main.tf` printed that line. It now reads `No credentials
+detected in scanned files`, and a finding reads `N credential(s) detected in
+project files` instead of `in config files`. The count, the `--json` output
+and the exit code are unchanged.
+
 **The Vault Exec description no longer says the agent never sees the
 secret.** The README, the `vault` help text and the `vaultExec` type
 declaration in 0.23.0 and earlier releases said that the agent, the AI
