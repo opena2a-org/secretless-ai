@@ -333,6 +333,17 @@ written everything queued on them; a run with nothing left to write exits at
 once, as before. The exit code is unchanged, also when the reader closes the
 pipe early.
 
+**`scan` names the same skipped entries and the same `Scan one:` target on
+every platform.** The sample of files not opened and directories not entered,
+and the `Scan one:` command under each, are the first entries the walk meets,
+and the walk took each directory in whatever order the listing came back. Node
+returns byte order on macOS and Linux only because its I/O layer sorts; the
+order is not documented, and the filesystems themselves return hash order. The
+walk now sorts each directory's entries by code point, the byte order of the
+UTF-8 name, before visiting them. Output on macOS and Linux is unchanged; it no
+longer depends on the listing order, and neither does which files a scan that
+reaches the file cap opens.
+
 **`vault scan` and the `vault` help no longer tell you to put a credential on
 the command line.** For every finding, `vault scan` printed
 `Migrate:  secretless-ai vault register <namespace> --value <value>`, and the
