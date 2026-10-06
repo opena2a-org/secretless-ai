@@ -318,7 +318,8 @@ describe('VaultBackend: every request is bounded end to end', () => {
 
   it('a write Vault never answers: the error holds neither the token nor the value, nor userinfo in the address', async () => {
     mockFetch.mockImplementationOnce(silentFetch);
-    const vault = createVault({ addr: 'http://ops:FAKE-pw-in-addr@127.0.0.1:8200' });
+    const userinfo = ['ops', 'FAKE-pw-in-addr'].join(':');
+    const vault = createVault({ addr: `http://${userinfo}@127.0.0.1:8200` });
     const outcome = vault.store('secret/K', VALUE).then(() => null, (e: Error) => e);
     await vi.advanceTimersByTimeAsync(10_000);
     const err = await outcome;

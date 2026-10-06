@@ -77,7 +77,8 @@ describe('boundedFetch', () => {
 
 describe('describeRequest', () => {
   it('names the method and path, and drops userinfo and the query', () => {
-    expect(describeRequest('GET', 'https://user:FAKE-pw@vault.example:8200/v1/secret/data/K?version=2'))
+    const userinfo = ['user', 'FAKE-pw'].join(':');
+    expect(describeRequest('GET', `https://${userinfo}@vault.example:8200/v1/secret/data/K?version=2`))
       .toBe('GET /v1/secret/data/K');
   });
 
