@@ -287,6 +287,11 @@ while restricting nothing. Notes are dropped at load and do not appear in
 
 ### Fixed
 
+- The size `scan` prints for a file skipped for size reads as larger than the
+  cap. Both figures were rounded, so a 1,052,708-byte file over the 1 MB
+  source cap printed `(1.0 MB, cap 1.0 MB)`. When the rounded figures would
+  not show the file as larger, both are now exact byte counts:
+  `(1,052,708 bytes, cap 1,048,576 bytes)`.
 - `scan` opens source files whose extension is upper case (`Legacy.JS`,
   `main.PY`). The source matcher compared extensions exactly, unlike the key-file
   and config matchers, so those files were never read (#120).
