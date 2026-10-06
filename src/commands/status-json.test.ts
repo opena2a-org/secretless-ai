@@ -50,7 +50,16 @@ describe('runStatus --json', () => {
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
 
-    await runStatus(dir, { json: true });
+    // An empty home, so user-level settings on the machine running the suite
+    // cannot cover this project.
+    const savedHome = process.env.HOME;
+    process.env.HOME = tmpProject();
+    try {
+      await runStatus(dir, { json: true });
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
     const doc = JSON.parse(lines.join('\n'));
 
     expect(doc.hookInstalled).toBe(false);

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+**`status` reads `~/.claude/settings.json` as well as the project's own
+settings, and says which one protects the project (#188).** From a project
+with no install of its own, `status` printed "Not protected" even after `init`
+had been run from the home directory, whose deny patterns and Stop hook Claude
+Code applies in every project. It now reads both files. When only the
+user-level file covers the project, the verdict reads `Protected by user-level
+settings in ~/.claude/settings.json`, and the deny patterns and Stop hook it
+contributes are listed with that path. "Not protected" is printed only when
+neither file has the hooks. The guard hook is still reported as not installed
+in such a project: `init` wires it as
+`"$CLAUDE_PROJECT_DIR"/.claude/hooks/secretless-guard.sh`, which from the
+user-level file points at the project's own hooks directory, so it runs there
+only after `secretless-ai init` in the project. A user-level file that does not
+parse, or that repeats a key, gets a warning and does not count, and deny rules
+in a user-level file that wires no Secretless hook do not count either.
+`status --json` adds `protectionScope`, `userSettings` and
+`transcriptProtection.stopHookScope`.
+
 **`protect-mcp` refuses an MCP server value that holds terminal escapes or
 U+FFFD, the same rule `secret set` applies (#104).** A value in a server's
 `env` block containing an escape or other control character, a null byte, or

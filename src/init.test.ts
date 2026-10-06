@@ -1631,7 +1631,11 @@ describe('status', () => {
   afterEach(() => { cleanup(dir); });
 
   it('reports unprotected project', async () => {
-    const s = await status(dir);
+    // An empty home, so user-level settings on the machine running the suite
+    // cannot cover this project.
+    const home = tmpDir();
+    const s = await status(dir, { homeDir: home });
+    cleanup(home);
     expect(s.isProtected).toBe(false);
     expect(s.configuredTools).toHaveLength(0);
     expect(s.hookInstalled).toBe(false);
