@@ -714,6 +714,16 @@ while restricting nothing. Notes are dropped at load and do not appear in
   and no known key is set or exported, `doctor` still reports "No API keys
   found in env vars or shell profiles" and BROKEN (exit 1). `--fix` still
   copies only the known key names (#186).
+- The README and the `scan` line of `--help` said a scan covers config files
+  and source code. A directory scan checks source files by extension, key
+  files, and the config files it recognizes by name; it does not open other
+  files, such as `values.yaml`, `main.tf`, `.ipynb` notebooks, or most GitHub
+  Actions workflows and `.md` files. Both now say so. Releases 0.17.0 through
+  0.23.0 did not open these files either, so a clean result from them did not
+  cover them. From 0.21.1 on, naming a file scans it:
+  `npx secretless-ai scan deploy/values.yaml`. In 0.17.0 through 0.21.0,
+  `scan` did not read a file named on the command line, so a clean result did
+  not cover that file either (fixed in 0.21.1).
 
 ### Changed
 
