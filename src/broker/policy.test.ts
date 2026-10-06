@@ -889,6 +889,108 @@ describe('the key allowlists are pinned to the type declarations', () => {
 });
 
 /**
+ * The exported allowlists cannot widen what loads.
+ *
+ * They were exported as `Set` instances, and `const` stops rebinding, not
+ * mutation. Measured on the built artifact: `KNOWN_CONSTRAINT_KEYS.add(
+ * 'minTrustScoree')` loaded that typo as an unconstrained ALLOW,
+ * `KNOWN_ENVELOPE_KEYS.add('denyRules')` loaded a file's allow set and dropped
+ * its deny set, and `KNOWN_RULE_KEYS.add('contraints')` loaded a misspelled
+ * container as an unconstrained ALLOW. One call each re-opened the three
+ * fail-opens the blocks above close, in every PolicyEngine in the process.
+ */
+describe('the exported key allowlists cannot widen what loads', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
+  function engineFor(doc: unknown): PolicyEngine {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-accept-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'p.json');
+    fs.writeFileSync(file, JSON.stringify(doc));
+    return new PolicyEngine({ policyFile: file });
+  }
+
+  const ATTEMPTS: Array<[string, ReadonlySet<string>, string]> = [
+    ['KNOWN_CONSTRAINT_KEYS', KNOWN_CONSTRAINT_KEYS, 'minTrustScoree'],
+    ['KNOWN_RULE_KEYS', KNOWN_RULE_KEYS, 'contraints'],
+    ['KNOWN_ENVELOPE_KEYS', KNOWN_ENVELOPE_KEYS, 'denyRules'],
+  ];
+
+  /** Every route a caller holding the export has to adding a key to it. */
+  const ROUTES: Array<[string, (set: Set<string>, key: string) => unknown]> = [
+    ['.add', (set, key) => set.add(key)],
+    ['Set.prototype.add.call', (set, key) => Set.prototype.add.call(set, key)],
+    ['the set forEach hands its callback', (set, key) => set.forEach((_v, _k, owner) => owner.add(key))],
+  ];
+
+  /** Undo a landed add so a failure here does not leak into later tests. */
+  function restore(set: ReadonlySet<string>, key: string): void {
+    if (set instanceof Set) set.delete(key);
+  }
+
+  for (const [name, set, key] of ATTEMPTS) {
+    for (const [route, add] of ROUTES) {
+      it(`${name} refuses ${route}`, () => {
+        try {
+          expect(() => add(set as Set<string>, key)).toThrow(TypeError);
+          expect(set.has(key)).toBe(false);
+        } finally {
+          restore(set, key);
+        }
+      });
+    }
+  }
+
+  it('the three inputs are still refused through both load paths after every attempt', async () => {
+    try {
+      for (const [, set, key] of ATTEMPTS) {
+        for (const [, add] of ROUTES) {
+          try { add(set as Set<string>, key); } catch { /* the refusal is asserted above */ }
+        }
+      }
+
+      const typo = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow', constraints: { minTrustScoree: 999 } };
+      const container = { id: 'r2', agentSelector: '*', credentialSelector: '*', effect: 'allow', contraints: { minTrustScore: 999 } };
+      const envelope = {
+        rules: [{ id: 'a1', agentSelector: '*', credentialSelector: '*', effect: 'allow' }],
+        denyRules: [{ id: 'deny-all', agentSelector: '*', credentialSelector: '*', effect: 'deny' }],
+      };
+
+      expect(() => new PolicyEngine({}).loadRules([typo as unknown as PolicyRule])).toThrow(/unknown constraint "minTrustScoree"/);
+      await expect(engineFor({ rules: [typo] }).loadPolicies()).rejects.toThrow(/unknown constraint "minTrustScoree"/);
+      expect(() => new PolicyEngine({}).loadRules([container as unknown as PolicyRule])).toThrow(/unknown field "contraints"/);
+      await expect(engineFor({ rules: [container] }).loadPolicies()).rejects.toThrow(/unknown field "contraints"/);
+      await expect(engineFor(envelope).loadPolicies()).rejects.toThrow(/unknown top-level key "denyRules"/);
+    } finally {
+      for (const [, set, key] of ATTEMPTS) restore(set, key);
+    }
+  });
+
+  it('the read half still answers as it did', () => {
+    expect(KNOWN_ENVELOPE_KEYS.size).toBe(2);
+    expect([...KNOWN_ENVELOPE_KEYS]).toEqual(['version', 'rules']);
+    expect([...KNOWN_ENVELOPE_KEYS.keys()]).toEqual(['version', 'rules']);
+    expect([...KNOWN_ENVELOPE_KEYS.values()]).toEqual(['version', 'rules']);
+    expect([...KNOWN_ENVELOPE_KEYS.entries()]).toEqual([['version', 'version'], ['rules', 'rules']]);
+    const seen: string[] = [];
+    KNOWN_RULE_KEYS.forEach(function (this: string[], value, value2, owner) {
+      expect(value2).toBe(value);
+      expect(owner).toBe(KNOWN_RULE_KEYS);
+      this.push(value);
+    }, seen);
+    expect(seen).toEqual([...KNOWN_RULE_KEYS]);
+    expect(KNOWN_CONSTRAINT_KEYS.has('minTrustScore')).toBe(true);
+    expect(KNOWN_CONSTRAINT_KEYS.has('scopeCheck')).toBe(false);
+  });
+});
+
+/**
  * A glob DENY rule must not be defeated by a line terminator.
  *
  * `.` does not match `\n`, and `pattern === '*'` short-circuits before the
