@@ -213,7 +213,8 @@ export async function runSetupCommand(args: string[]): Promise<number> {
           console.log(`    - ${name}`);
         }
         console.log();
-        console.log('  FAIL: Run `secretless-ai setup` to configure missing secrets.\n');
+        console.log('  FAIL: Run `secretless-ai setup` to configure missing secrets.');
+        console.log('        Or copy them from a shared backend: `secretless-ai secret sync --from <1password|vault|gcp-sm>`\n');
         return 1;
       }
       console.log('  PASS: All required secrets are configured.\n');

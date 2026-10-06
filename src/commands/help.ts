@@ -47,6 +47,7 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} secret get <NAME>          Retrieve a secret value
     ${CLI} secret get --force <NAME>  Retrieve in non-interactive contexts
     ${CLI} secret rm <NAME>           Remove a secret
+    ${CLI} secret sync --from <backend>  Copy .secretless names from a shared backend
     ${CLI} import <file>              Import secrets from .env file
     ${CLI} import --detect            Auto-find and import .env files
     ${CLI} run [--only K1,K2] -- <cmd>  Run with secrets injected

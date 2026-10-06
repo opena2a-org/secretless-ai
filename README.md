@@ -275,6 +275,14 @@ npx secretless-ai backend set 1password               # switch backend
 npx secretless-ai migrate --from local --to 1password # migrate existing secrets
 ```
 
+To seed a new machine from a team's shared backend, `secret sync` copies the names a project's `.secretless` manifest requires (or the names given with `--only K1,K2`) into this machine's store. It prints names only, and leaves a local value that differs as it is unless `--force` is given:
+
+```bash
+npx secretless-ai secret sync --from 1password --dry-run  # created / updated / left alone, nothing written
+npx secretless-ai secret sync --from 1password            # copy the required names of ./.secretless
+npx secretless-ai setup --check                           # confirm nothing required is missing
+```
+
 Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS Keychain and Linux Secret Service CLIs; reads and writes through those backends then fail with an error instead of prompting, and nothing is read from or written to another store. The value is exactly `off`, in lowercase: `OFF`, `0` or `false` leave the OS keychain reachable.
 
 ## NanoMind integration

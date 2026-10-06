@@ -144,21 +144,26 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     flags: { '--check': 'Check for missing required secrets without prompting (CI)' },
   },
   secret: {
-    summary: 'Store, list, describe, retrieve or remove a secret.',
+    summary: 'Store, list, describe, retrieve, remove or sync secrets.',
     usage: [
       'set <NAME[=VALUE]> [--description <text>] [--meta <key=value>]...',
       'list [--long] [--json] [--app <name>]',
       'show [--json] <NAME>',
       'get [--force] <NAME>',
       'rm <NAME>',
+      'sync --from <backend> [--only K1,K2 | --manifest <file>] [--dry-run] [--force]',
     ],
     flags: {
-      '--force': 'get: retrieve in non-interactive contexts',
+      '--force': 'get: retrieve in non-interactive contexts. sync: replace local values that differ',
       '--description': ['<text>', 'set: record what the secret is for'],
       '--meta': ['<key=value>', 'set: record a metadata field; repeatable; key= removes it'],
       '--long': 'list: show descriptions and metadata',
       '--app': ['<name>', 'list: only secrets recorded with --meta app=<name>'],
       '--json': 'list, show: machine-readable JSON output',
+      '--from': ['<backend>', `sync: backend to copy from (${BACKENDS})`],
+      '--only': ['K1,K2', 'sync: copy only the named secrets'],
+      '--manifest': ['<file>', 'sync: copy the required names of this .secretless file'],
+      '--dry-run': 'sync: report what would be created, updated or left alone; write nothing',
     },
     notes: [
       'Descriptions and metadata are not secrets: they are kept beside the store in',
@@ -166,6 +171,9 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       'Keys are free-form; app, provider, scopes, tokenTtl, redirectUri and expiresAt',
       'are conventions, not a schema. Without --description or --meta, `set` keeps',
       'what was recorded before, so rotating a value does not erase it.',
+      'sync copies by name into this machine\'s store; values are never printed.',
+      'Without --only or --manifest it copies the required names of ./.secretless.',
+      'A local value that differs is left as is and reported unless --force is given.',
     ],
   },
   watch: {
