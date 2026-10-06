@@ -583,6 +583,20 @@ while restricting nothing. Notes are dropped at load and do not appear in
   command, so `broker start --help` prints the `broker` help. Bare `--help`,
   no argument, and an unknown command still print the global help, `setup`
   and `env` still print their own, and `--help` still runs nothing.
+- `doctor` lists every export of a secret-looking name in each shell profile
+  (`JIRA_TOKEN`, `DB_PASSWORD`, `CLIENT_SECRET`), with its name and line number
+  and never its value. It only looked for a fixed list of provider key names, so
+  a profile exporting any other secret read as "no keys" and the verdict was
+  HEALTHY. A secret written out in plain text under such a name is now a
+  warning, with `secretless-ai secret set NAME`, the line to remove and a
+  `Verify:` command that prints the line number and never the value, and the
+  verdict is DEGRADED (exit 1). A value fetched when the shell starts
+  (`$(gh auth token)`, `"$OTHER"`) or a file path (`~/keys/signing`, and a
+  path starting with `/`, `./` or `../`, quoted or not) is listed but not
+  reported, and it is not an API key: when the profiles hold only such exports
+  and no known key is set or exported, `doctor` still reports "No API keys
+  found in env vars or shell profiles" and BROKEN (exit 1). `--fix` still
+  copies only the known key names (#186).
 
 ### Changed
 

@@ -12,7 +12,7 @@ export { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CONFIG_FILES, CREDENTIAL_PRE
 export { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher, type LoadOptions as IgnoreLoadOptions } from './secretlessignore';
 export { cleanTranscripts, discoverTranscripts, type CleanResult, type CleanOptions, type TranscriptFinding } from './transcript';
 export { startWatch, stopWatch, isWatchRunning } from './watch';
-export { doctor, quickDiagnosis, fixProfiles, type DoctorOptions, type DoctorResult, type DoctorFinding, type QuickDiagnosisResult, type ProfileInfo, type FixResult, type Severity, type HealthStatus } from './doctor';
+export { doctor, quickDiagnosis, fixProfiles, type DoctorOptions, type DoctorResult, type DoctorFinding, type QuickDiagnosisResult, type ProfileInfo, type SecretExport, type FixResult, type Severity, type HealthStatus } from './doctor';
 
 // MCP protection
 export {

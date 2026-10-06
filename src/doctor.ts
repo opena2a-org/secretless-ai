@@ -37,13 +37,31 @@ export interface DoctorFinding {
   severity: Severity;
   message: string;
   fix?: string;
+  /** A command that confirms the finding without printing a secret value */
+  verify?: string;
+  /**
+   * 'plain-text' marks a secret written into a profile in plain text. Every
+   * other finding is about whether a known key reaches subprocesses.
+   */
+  kind?: 'plain-text';
+}
+
+/** One export of a secret-looking name in a profile. Never carries the value. */
+export interface SecretExport {
+  name: string;
+  /** 1-based line number in the profile */
+  line: number;
+  /** The value is written out literally, not fetched by `$(...)` or `$VAR` */
+  plainText: boolean;
 }
 
 export interface ProfileInfo {
   path: string;
   exists: boolean;
-  /** Which env var names have export lines (not commented out) */
+  /** Which known key names have export lines (not commented out) */
   exportedVars: string[];
+  /** Every export of a known key name or a secret-looking name, with its line */
+  secretExports: SecretExport[];
   /** Whether this profile is sourced by non-interactive shells */
   nonInteractive: boolean;
   /** Recommendation label for this profile */
@@ -116,6 +134,13 @@ function getKnownEnvVarNames(): string[] {
   return [...names];
 }
 
+/**
+ * Names whose last segment says secret: JIRA_TOKEN, DB_PASSWORD, CLIENT_SECRET,
+ * STRIPE_KEY. The known list only covers providers matched by value pattern, so
+ * without this a profile exporting any other secret reads as "no keys".
+ */
+const SECRET_NAME_RE = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIALS?)$/;
+
 // ── Profile scanning ─────────────────────────────────────────────────────────
 
 // POSIX (bash/zsh): export VAR_NAME="value"
@@ -144,6 +169,56 @@ function scanProfile(filePath: string, knownVars: string[], syntax: 'posix' | 'p
       found.push(match[1]);
     }
   }
+  return found;
+}
+
+/**
+ * Whether the right-hand side of an assignment is the secret itself rather
+ * than a lookup run at shell start: `$(gh auth token)`, `"$OTHER"`, a
+ * backtick command, PowerShell `(Get-Secret X)` or a `~/` path. A path
+ * starting with `/`, `./` or `../`, quoted or not, names a file rather than
+ * holding the secret. An empty value is not a secret either. Single quotes
+ * are literal in POSIX shells and PowerShell alike.
+ */
+function isLiteralValue(rhs: string): boolean {
+  const value = rhs.trim();
+  const quote = value.startsWith("'") || value.startsWith('"') ? value.charAt(0) : '';
+  if (/^(?:\/|\.\.?\/)/.test(value.slice(quote.length))) return false;
+  if (quote === "'") return value.length > 2;
+  const first = value.charAt(quote.length);
+  return first !== '' && !['"', '$', '`', '(', '~', '#'].includes(first);
+}
+
+/**
+ * A command that prints the line number of NAME's assignment in a profile and
+ * stops at the `=`, so the value is never printed.
+ */
+function verifyExportCommand(name: string, rel: string, syntax: 'posix' | 'powershell'): string {
+  if (syntax === 'powershell') {
+    return `Select-String -Path "$HOME${path.sep}${rel}" -Pattern '^\\s*\\$env:${name}\\s*=' | ForEach-Object LineNumber`;
+  }
+  return `grep -noE '^[[:space:]]*export[[:space:]]+${name}=' ~/${rel}`;
+}
+
+/** Exports of known or secret-looking names, with line numbers and no values */
+function scanSecretExports(filePath: string, knownVars: string[], syntax: 'posix' | 'powershell' = 'posix'): SecretExport[] {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return [];
+  }
+
+  const lineRe = syntax === 'powershell' ? PS_ENV_LINE_RE : EXPORT_LINE_RE;
+  const found: SecretExport[] = [];
+  content.split('\n').forEach((line, i) => {
+    if (COMMENT_RE.test(line)) return;
+    const match = lineRe.exec(line);
+    if (!match) return;
+    const name = match[1];
+    if (!knownVars.includes(name) && !SECRET_NAME_RE.test(name)) return;
+    found.push({ name, line: i + 1, plainText: isLiteralValue(line.slice(match[0].length)) });
+  });
   return found;
 }
 
@@ -239,10 +314,12 @@ export function doctor(options?: DoctorOptions): DoctorResult {
     const exists = fs.existsSync(fullPath);
     const syntax = spec.syntax ?? 'posix';
     const exportedVars = exists ? scanProfile(fullPath, knownVars, syntax) : [];
+    const secretExports = exists ? scanSecretExports(fullPath, knownVars, syntax) : [];
     return {
       path: fullPath,
       exists,
       exportedVars,
+      secretExports,
       nonInteractive: spec.nonInteractive,
       recommendation: spec.recommendation,
     };
@@ -333,6 +410,23 @@ export function doctor(options?: DoctorOptions): DoctorResult {
     }
   }
 
+  // Secrets under names doctor does not route sit in the profile in plain
+  // text. The way out is the store, not another profile.
+  profiles.forEach((profile, i) => {
+    const file = `~/${path.basename(profile.path)}`;
+    const rel = path.relative(home, profile.path);
+    for (const exp of profile.secretExports) {
+      if (!exp.plainText || knownVars.includes(exp.name)) continue;
+      findings.push({
+        severity: 'warn',
+        message: `${exp.name} is stored in plain text in ${file} (line ${exp.line})`,
+        fix: `Run: secretless-ai secret set ${exp.name}, then remove line ${exp.line} from ${file}`,
+        verify: verifyExportCommand(exp.name, rel, specs[i].syntax ?? 'posix'),
+        kind: 'plain-text',
+      });
+    }
+  });
+
   // Determine health
   let health: HealthStatus = 'healthy';
   if (findings.some((f) => f.severity === 'error')) {
@@ -340,6 +434,9 @@ export function doctor(options?: DoctorOptions): DoctorResult {
   } else if (findings.some((f) => f.severity === 'warn')) {
     health = 'degraded';
   } else if (varsInEnv.length === 0 && allExportedVars.size === 0) {
+    // A secret-looking name exported as a file path or as a value looked up
+    // at shell start is listed with its profile, but it is not a known API
+    // key, so a profile holding only such exports is still BROKEN.
     health = 'broken';
     const fixTarget = platform === 'win32'
       ? 'Use setx or Settings > System > Environment Variables'
