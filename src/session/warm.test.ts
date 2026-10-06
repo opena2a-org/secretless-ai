@@ -38,10 +38,12 @@ vi.mock('./touchid', () => ({
 vi.mock('../broker/daemon', () => ({
   isDaemonRunning: vi.fn().mockReturnValue(false),
   startDaemon: vi.fn().mockResolvedValue(undefined),
+  spawnDaemon: vi.fn().mockResolvedValue({}),
   getDaemonStatus: vi.fn().mockReturnValue({}),
 }));
 
 import { warm, preloadCache } from './warm';
+import { startDaemon, spawnDaemon } from '../broker/daemon';
 import { getSessionStatus } from './session-state';
 import { createBackend } from '../backends/factory';
 import { resolveBackendType, readCacheTtl, writeCacheTtl } from '../backends/config';
@@ -64,6 +66,26 @@ describe('warm', () => {
     it('returns sessionWarm=true after successful warmup', async () => {
       const result = await warm(300);
       expect(result.sessionWarm).toBe(true);
+    });
+
+    // Started in the warm process, the broker ended when the command exited,
+    // right after `warm` printed "Broker: started".
+    it('starts the broker in a detached process, not in this one', async () => {
+      const result = await warm(300);
+      expect(spawnDaemon).toHaveBeenCalledTimes(1);
+      expect(startDaemon).not.toHaveBeenCalled();
+      expect(result.brokerStarted).toBe(true);
+      expect(result.brokerRunning).toBe(true);
+    });
+
+    it('does not report the broker started when the new process did not answer', async () => {
+      vi.mocked(spawnDaemon).mockRejectedValueOnce(
+        new Error('Broker process exited before it answered (exit code 1)'),
+      );
+      const result = await warm(300);
+      expect(result.sessionWarm).toBe(true);
+      expect(result.brokerStarted).toBe(false);
+      expect(result.brokerRunning).toBe(false);
     });
 
     it('skips preload for local backend', async () => {

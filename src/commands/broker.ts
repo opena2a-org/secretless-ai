@@ -44,7 +44,12 @@ export async function runBroker(args: string[]): Promise<number> {
         console.log(`  AIM:          ${formatAimStatus(info.aimConfigured, info.aimReachable)}${aimUrl ? ` — ${aimUrl}` : ''}`);
         console.log(`  Policy file:  ${policyFile ?? '(default)'}`);
         console.log('\n  Press Ctrl+C to stop.\n');
-        return 0;
+        // The broker runs in this process, in the foreground. Returning here
+        // would hand an exit code to the dispatcher, whose process.exit() ends
+        // the broker that was just reported running. The process ends in the
+        // SIGTERM/SIGINT handler startDaemon installs, which closes the server
+        // and removes the PID file first.
+        return await new Promise<number>(() => {});
       } catch (err) {
         console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
         return 1;

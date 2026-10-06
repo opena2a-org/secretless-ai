@@ -123,6 +123,18 @@ value read back from the keychain keeps its own trailing whitespace. The
 `keychain-macos` and `keychain-linux` backends' tests now run their real child
 process path against a recorder program on Linux.
 
+**`broker start`, `watch start` and `warm` no longer report a service running
+that has already stopped (#132).** `broker start` and `watch start` run the
+broker or the watcher in the foreground, as their help says, until Ctrl+C or
+SIGTERM. Before, both printed that the service was running, and printed its
+PID, then exited, which ended the service. `broker status` and `watch status`
+then said it was not running. `watch start` now exits 1 and says the watcher
+did not start when there is no transcript directory to watch, instead of
+printing "Press Ctrl+C to stop" and exiting 0. `warm` now starts the broker in
+a separate background process and reports `Broker: started` only after that
+process answers on its port. Before, it started the broker inside its own
+process, which ended when `warm` exited.
+
 **Three commands no longer report a clean result over work they did not do
 (#125).** `status <dir>` and `verify <dir>` on a directory that does not exist
 now print `Directory not found: <dir>` on stderr and exit 1, the same as

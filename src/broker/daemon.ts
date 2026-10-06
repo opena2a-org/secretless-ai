@@ -5,7 +5,9 @@
  * Handles graceful shutdown on SIGTERM/SIGINT and cleans up resources.
  */
 
+import { spawn } from 'child_process';
 import * as fs from 'fs';
+import * as http from 'http';
 import * as path from 'path';
 import * as os from 'os';
 import type { BrokerConfig, BrokerStatus } from './types';
@@ -110,6 +112,89 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
   console.log(`Broker auth token: ${TOKEN_FILE}`);
 
   return server;
+}
+
+export interface SpawnDaemonOptions {
+  /** CLI entry point the broker process runs. Defaults to this package's cli.js. */
+  cliPath?: string;
+  /** HTTP port passed to `broker start --port`. Defaults to the broker's default. */
+  httpPort?: number;
+  /** PID file the started broker writes. Defaults to the broker's default. */
+  pidFile?: string;
+  /** How long to wait for the broker to answer before giving up. */
+  timeoutMs?: number;
+}
+
+/**
+ * Start the broker in a detached process of its own and wait until it answers.
+ *
+ * `startDaemon` runs the broker inside the calling process, so it lives only as
+ * long as that process does. A command that returns once the broker is up
+ * (`warm`) needs the broker to outlive it: this starts `broker start` detached
+ * and resolves only once that process holds the PID file and answers an
+ * authenticated /health request on its port. The token it authenticates with
+ * is the one that process wrote, so a 200 cannot come from another listener.
+ *
+ * Rejects if the process exits first or does not answer within `timeoutMs`;
+ * on timeout the process is stopped so nothing half-started is left behind.
+ */
+export async function spawnDaemon(options?: SpawnDaemonOptions): Promise<BrokerStatus> {
+  const cliPath = options?.cliPath ?? path.join(__dirname, '..', 'cli.js');
+  const pidFile = options?.pidFile ?? DEFAULT_PID_FILE;
+  const timeoutMs = options?.timeoutMs ?? 10_000;
+  const args = [cliPath, 'broker', 'start'];
+  if (options?.httpPort !== undefined) args.push('--port', String(options.httpPort));
+
+  const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore' });
+  const state: { ended?: string } = {};
+  child.once('error', (err) => {
+    state.ended = `could not be started: ${err.message}`;
+  });
+  child.once('exit', (code, signal) => {
+    state.ended = `exited before it answered (${signal ? `signal ${signal}` : `exit code ${code}`})`;
+  });
+  child.unref();
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (state.ended) throw new Error(`Broker process ${state.ended}`);
+    const status = getDaemonStatus(pidFile);
+    if (status && status.pid === child.pid && (await brokerAnswers(status.httpPort))) {
+      return status;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  try {
+    if (child.pid) process.kill(child.pid, 'SIGTERM');
+  } catch {
+    // Already gone
+  }
+  throw new Error(`Broker process did not answer within ${timeoutMs} ms`);
+}
+
+/** True when the broker on `port` accepts the token in the token file. */
+function brokerAnswers(port: number): Promise<boolean> {
+  const token = readBrokerToken();
+  if (!token) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/health',
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      },
+    );
+    req.setTimeout(500, () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
 }
 
 /**
