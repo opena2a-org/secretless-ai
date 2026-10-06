@@ -1974,6 +1974,81 @@ describe('README sample output matches the build', () => {
   });
 });
 
+/**
+ * The "keep my API keys out of AI tools" use case walks a user through `init`
+ * in a project that Claude Code and Cursor both use. Its sample output was never
+ * compared with the build: it showed lines init does not print, and the prose
+ * under it said init creates `.cursorrules`, a file init never creates.
+ */
+describe('protect-my-credentials use case matches the build', () => {
+  let dir: string;
+
+  // Resolved, because init lists some files relative to process.cwd(), which
+  // is the resolved path: on macOS the temp directory sits under the /var
+  // symlink, and an unresolved dir would list them as ../../(...)/var/...
+  beforeEach(() => { dir = fs.realpathSync(tmpDir()); });
+  afterEach(() => { cleanup(dir); });
+
+  const step1 = (): string => {
+    const doc = fs.readFileSync(
+      path.resolve(__dirname, '..', 'docs', 'use-cases', 'protect-my-credentials.md'), 'utf-8',
+    );
+    const section = doc.split(/^## Step 1: .*$/m)[1]?.split(/^## /m)[0];
+    expect(section, 'the use case no longer has a "## Step 1: ..." section').toBeDefined();
+    return section!;
+  };
+
+  // Run from inside the project, as the use case tells the user to: init lists
+  // some of the files it wrote relative to the current directory.
+  const initClaudeAndCursorProject = (): ReturnType<typeof init> => {
+    fs.mkdirSync(path.join(dir, '.claude'));
+    fs.mkdirSync(path.join(dir, '.cursor'));
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      return init(dir);
+    } finally {
+      process.chdir(cwd);
+    }
+  };
+
+  it('shows the output init prints for a Claude Code and Cursor project', () => {
+    const result = initClaudeAndCursorProject();
+    expect(result.toolsConfigured).toEqual(['claude-code', 'cursor']);
+
+    // The sample is the first untagged block; the command above it is tagged bash.
+    const sample = [...step1().matchAll(/^```(\w*)\n([\s\S]*?)^```$/gm)]
+      .find(m => m[1] === '')?.[2];
+    expect(sample, 'Step 1 no longer shows a sample init run').toBeDefined();
+    const lines = sample!.split('\n').map(l => l.trim());
+
+    const names = result.toolsConfigured.map(toolDisplayName).join(', ');
+    const configured = `${result.toolsConfigured.length} of ${result.toolsDetected.length} detected`;
+    expect(lines).toContain(`Configured: ${names} (${configured})`);
+
+    const created = lines.filter(l => l.startsWith('+ ')).map(l => l.slice(2));
+    expect(created).toEqual(result.filesCreated);
+
+    expect(result.filesModified).toEqual(['.claude/settings.json']);
+    expect(lines).toContain(`~ .claude/settings.json (added ${result.denyRulesAdded} deny patterns)`);
+  });
+
+  it('names only files init writes in the prose under the sample', () => {
+    const result = initClaudeAndCursorProject();
+    const touched = new Set([...result.filesCreated, ...result.filesModified]);
+
+    const prose = step1().replace(/^```[\s\S]*?^```$/gm, '');
+    const paths = [...prose.matchAll(/`([^`\s]+)`/g)]
+      .map(m => m[1])
+      .filter(t => t.includes('/') || t.startsWith('.') || t.endsWith('.md'));
+    expect(paths.length, 'Step 1 prose names no file').toBeGreaterThan(0);
+    for (const p of paths) {
+      expect(touched.has(p), `Step 1 names \`${p}\`, which init did not write`).toBe(true);
+    }
+    expect(paths).toContain('.cursor/rules/secretless.mdc');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Rules file that cannot be fully honoured — init must say so, not exit clean
 // ---------------------------------------------------------------------------
