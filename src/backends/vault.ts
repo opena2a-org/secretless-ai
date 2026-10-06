@@ -9,9 +9,40 @@
  */
 
 import type { WritableSecretBackend, BackendHealth } from './types';
+import { boundedFetch, describeRequest, type BoundedResponse } from './bounded-fetch';
 
 const DEFAULT_MOUNT_PATH = 'secret';
 const REQUEST_TIMEOUT_MS = 10_000;
+const HEALTH_TIMEOUT_MS = 5_000;
+
+/**
+ * Where to point a user whose Vault did not answer. The origin only: an
+ * address may carry userinfo, which is not ours to reprint.
+ */
+function vaultOrigin(addr: string): string {
+  try {
+    return new URL(addr).origin;
+  } catch {
+    return '$VAULT_ADDR';
+  }
+}
+
+/** A Vault request that did not complete in time. Holds no token and no body. */
+function vaultTimeoutError(addr: string, method: string, url: string, timeoutMs: number): Error {
+  const origin = vaultOrigin(addr);
+  return new Error(
+    [
+      `Vault did not respond within ${timeoutMs / 1000}s (${describeRequest(method, url)}).`,
+      '',
+      '  The request was abandoned and its connection closed. A write that timed',
+      '  out may still have been applied by the server.',
+      '',
+      `  Verify:  curl -s ${origin}/v1/sys/health`,
+      `  Fix:     check that ${origin} is reachable from this machine, or set`,
+      '           VAULT_ADDR to the Vault server, and retry',
+    ].join('\n'),
+  );
+}
 
 export interface VaultBackendConfig {
   /** Vault server address (overrides VAULT_ADDR env var). */
@@ -165,45 +196,43 @@ export class VaultBackend implements WritableSecretBackend {
 
     try {
       const url = `${this.addr}/v1/sys/health`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
+      const origin = vaultOrigin(this.addr);
+      const response = await boundedFetch(url, {
+        method: 'GET',
+        headers: { 'User-Agent': 'secretless-ai/1.0' },
+      }, {
+        timeoutMs: HEALTH_TIMEOUT_MS,
+        onTimeout: () => new Error(
+          `Vault did not respond within ${HEALTH_TIMEOUT_MS / 1000}s. Verify: curl -s ${origin}/v1/sys/health`,
+        ),
+      });
 
-      try {
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: { 'User-Agent': 'secretless-ai/1.0' },
-          signal: controller.signal,
-        });
+      const latencyMs = Date.now() - start;
 
-        const latencyMs = Date.now() - start;
-
-        // Vault health endpoint status codes:
-        // 200 = initialized, unsealed, active
-        // 429 = unsealed, standby
-        // 472 = data recovery replication secondary
-        // 473 = performance standby
-        // 501 = not initialized
-        // 503 = sealed
-        if (response.status === 200) {
-          return { healthy: true, latencyMs, message: 'Vault is healthy' };
-        }
-
-        if (response.status === 429 || response.status === 472 || response.status === 473) {
-          return { healthy: true, latencyMs, message: `Vault is healthy (standby, HTTP ${response.status})` };
-        }
-
-        if (response.status === 503) {
-          return { healthy: false, latencyMs, message: 'Vault is sealed' };
-        }
-
-        if (response.status === 501) {
-          return { healthy: false, latencyMs, message: 'Vault is not initialized' };
-        }
-
-        return { healthy: false, latencyMs, message: `Vault health check returned HTTP ${response.status}` };
-      } finally {
-        clearTimeout(timeout);
+      // Vault health endpoint status codes:
+      // 200 = initialized, unsealed, active
+      // 429 = unsealed, standby
+      // 472 = data recovery replication secondary
+      // 473 = performance standby
+      // 501 = not initialized
+      // 503 = sealed
+      if (response.status === 200) {
+        return { healthy: true, latencyMs, message: 'Vault is healthy' };
       }
+
+      if (response.status === 429 || response.status === 472 || response.status === 473) {
+        return { healthy: true, latencyMs, message: `Vault is healthy (standby, HTTP ${response.status})` };
+      }
+
+      if (response.status === 503) {
+        return { healthy: false, latencyMs, message: 'Vault is sealed' };
+      }
+
+      if (response.status === 501) {
+        return { healthy: false, latencyMs, message: 'Vault is not initialized' };
+      }
+
+      return { healthy: false, latencyMs, message: `Vault health check returned HTTP ${response.status}` };
     } catch (err) {
       return {
         healthy: false,
@@ -222,34 +251,31 @@ export class VaultBackend implements WritableSecretBackend {
     }
   }
 
+  /**
+   * One Vault request, bounded end to end: the headers and the body read share
+   * one deadline, and a request that misses it throws an error that says what
+   * to do.
+   */
   private async request(
     method: string,
     url: string,
     body?: unknown,
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  ): Promise<BoundedResponse> {
+    const headers: Record<string, string> = {
+      'X-Vault-Token': this.token,
+      'User-Agent': 'secretless-ai/1.0',
+    };
 
-    try {
-      const headers: Record<string, string> = {
-        'X-Vault-Token': this.token,
-        'User-Agent': 'secretless-ai/1.0',
-      };
+    const init: RequestInit = { method, headers };
 
-      const init: RequestInit = {
-        method,
-        headers,
-        signal: controller.signal,
-      };
-
-      if (body !== undefined) {
-        headers['Content-Type'] = 'application/json';
-        init.body = JSON.stringify(body);
-      }
-
-      return await fetch(url, init);
-    } finally {
-      clearTimeout(timeout);
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
     }
+
+    return boundedFetch(url, init, {
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      onTimeout: () => vaultTimeoutError(this.addr, method, url, REQUEST_TIMEOUT_MS),
+    });
   }
 }
