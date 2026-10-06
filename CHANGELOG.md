@@ -226,6 +226,10 @@ secret-file arm that already did.
 - A value flag given twice (`scan --max-files 10 --max-files 20000`,
   `run --only A --only B`) is refused with both values named. The first value
   used to win and the second was dropped silently (#120).
+- `scan` run from the filesystem root prints absolute paths in its coverage
+  warnings and their `Verify:` and `Fix:` commands. The path relative to `/`
+  dropped the leading slash (`private/tmp/app/big.js`), which runs only from
+  `/` and reads as a path under the current directory (#120).
 - `--help` names the third layer that keeps a directory out of a scan. The
   `--no-ignore` entry now says dependency and build output (`node_modules/`,
   `dist/`, `build/`, ...) is still not entered and can be scanned by its path,
