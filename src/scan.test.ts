@@ -1334,3 +1334,86 @@ describe('scan() — truncated means a candidate file was dropped (#120)', () =>
     expect(stats.truncated).toBe(true);
   });
 });
+
+// #127. The `--max-files` remediation was the cap times four: 30 eligible files
+// scanned with a cap of 2 were told to use 8, and that run was still truncated.
+// The walk now counts candidates past the cap so the suggestion is sized from
+// the tree, and says when a directory budget, not the cap, stopped it.
+describe('scan() — a truncated walk counts the files a cap would need (#127)', () => {
+  function projectOfJs(n: number): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-eligible-'));
+    for (let i = 0; i < n; i++) {
+      fs.mkdirSync(path.join(dir, `d${i % 3}`), { recursive: true });
+      fs.writeFileSync(path.join(dir, `d${i % 3}`, `f${i}.js`), 'const x = 1;\n');
+    }
+    return dir;
+  }
+
+  function freshStats(): { placeholdersSuppressed: number; truncated: boolean; eligibleFiles?: number; walkBudgetExceeded?: boolean } {
+    return { placeholdersSuppressed: 0, truncated: false };
+  }
+
+  it('counts every eligible file, not just the ones under the cap', () => {
+    const dir = projectOfJs(30);
+    const stats = freshStats();
+
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, stats);
+
+    expect(stats.truncated).toBe(true);
+    expect(stats.eligibleFiles).toBe(30);
+    expect(stats.walkBudgetExceeded).toBe(false);
+  });
+
+  it('a cap of the counted value clears the truncation in one run', () => {
+    const dir = projectOfJs(30);
+    const first = freshStats();
+    scan(dir, { scanGlobal: false, maxSourceFiles: 2 }, first);
+
+    const second = freshStats();
+    scan(dir, { scanGlobal: false, maxSourceFiles: first.eligibleFiles }, second);
+
+    expect(second.truncated).toBe(false);
+    expect(second.eligibleFiles).toBe(0);
+  });
+
+  it('CONTROL: an uncapped walk counts 0', () => {
+    const dir = projectOfJs(5);
+    const stats = freshStats();
+
+    scan(dir, { scanGlobal: false }, stats);
+
+    expect(stats.truncated).toBe(false);
+    expect(stats.eligibleFiles).toBe(0);
+  });
+
+  it('a stale count from an earlier scan does not survive into a complete one', () => {
+    const dir = projectOfJs(5);
+    const stats = { ...freshStats(), eligibleFiles: 99, walkBudgetExceeded: true };
+
+    scan(dir, { scanGlobal: false }, stats);
+
+    expect(stats.eligibleFiles).toBe(0);
+    expect(stats.walkBudgetExceeded).toBe(false);
+  });
+
+  it('flags a walk stopped by its directory budget, which no file cap can clear', () => {
+    // Twelve levels of two links each reach the deepest directory by far more
+    // than MAX_PATHS_PER_DIR routes.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-budget-'));
+    let prev = dir;
+    for (let level = 0; level < 12; level++) {
+      const next = path.join(prev, 'd');
+      fs.mkdirSync(next, { recursive: true });
+      fs.symlinkSync(next, path.join(prev, 'l1'), 'dir');
+      fs.symlinkSync(next, path.join(prev, 'l2'), 'dir');
+      prev = next;
+    }
+    fs.writeFileSync(path.join(prev, 'a.js'), 'const x = 1;\n');
+    const stats = freshStats();
+
+    scan(dir, { scanGlobal: false }, stats);
+
+    expect(stats.truncated).toBe(true);
+    expect(stats.walkBudgetExceeded).toBe(true);
+  });
+});

@@ -33,6 +33,22 @@ way. It now prints
 reads `Cause differs by path: permissions, ...`. Detection, exit codes and
 `--json` output are unchanged.
 
+**Five fresh-user findings fixed: a `--max-files` suggestion that clears the
+truncation, `-V`, and three messages that now end in a next step (#127).**
+A scan stopped at the file cap suggested four times the cap, so 30 eligible
+files scanned with `--max-files 2` were told to use 8 and stayed truncated. The
+walk now counts eligible files past the cap without opening them, and the Fix
+line suggests that count, which clears the cap in one run. When a directory
+limit rather than the file cap stopped the walk, the report says raising
+`--max-files` will not help. `-V` prints the version, as `-v` and `--version`
+do. `init` on a path that does not exist, or is a file, says so and gives
+Verify and Fix lines instead of a raw `ENOENT: ... mkdir` error; nothing is
+written. `diff` in a repository with no commits says there is no commit to
+compare against and suggests a first commit, instead of `git fetch`. `scope
+check` for a name with a stored baseline but no stored credential calls the
+baseline stale and offers `scope reset` or `secret set`. Scan findings, verdicts
+and exit codes are unchanged.
+
 **`status --json` and `vault scan` count a file skipped for size as
 unscanned.** `status --json` read `scanIncomplete: false` over a tree holding a
 file skipped for size, and `vault scan` printed `No hardcoded credentials

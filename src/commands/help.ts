@@ -179,8 +179,8 @@ ${banner}  Keep secrets out of AI context.
     --min-confidence <n>     Drop findings with composite confidence below n (0-1)
 
   Options:
-    -v, --version    Show version
-    -h, --help       Show this help
+    -v, -V, --version    Show version
+    -h, --help           Show this help
 
   Supports: Claude Code, Cursor, GitHub Copilot, Windsurf, Cline, Aider
 

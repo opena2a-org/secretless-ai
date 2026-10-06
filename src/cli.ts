@@ -69,7 +69,7 @@ const TELEMETRY_ACTIONS = ['on', 'off', 'status'];
 // Subcommands we don't track: pure-help / pure-config calls don't represent
 // the user actually using the tool, and tracking 'telemetry' itself creates
 // confusing self-referential events.
-const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '--help', '-h']);
+const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '-V', '--help', '-h']);
 
 /**
  * `git-credential get|store|erase` is run by git each time it authenticates,
@@ -121,7 +121,9 @@ async function main(): Promise<number> {
   }
 
   // --version: cli-ui versionLine helper appends the standard telemetry line.
-  if (command === '--version' || command === '-v') {
+  // `-V` too: it is the version flag in commander-based CLIs, and refusing it
+  // as an unknown command while `-v` works was a surprise with no upside.
+  if (command === '--version' || command === '-v' || command === '-V') {
     console.log(versionLine({ tool: TOOL, version: VERSION, telemetry: tele.status() }));
     return 0;
   }
