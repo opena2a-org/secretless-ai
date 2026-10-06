@@ -52,9 +52,17 @@ npx secretless-ai backend set vault
 ### GCP Secret Manager
 
 ```bash
-export GOOGLE_CLOUD_PROJECT=your-project-id
+gcloud auth application-default login
 npx secretless-ai backend set gcp-sm
 ```
+
+The project comes from the first of: a `gcp.projectId: <project-id>` line in
+the repository's `.secretless` (see Step 4), `gcp.projectId` in
+`~/.secretless-ai/config.json`, the service account key's `project_id`, and the
+Application Default Credentials quota project. A repository that names its own
+project never falls back to another, so two repositories on one machine can
+resolve from two projects. `npx secretless-ai status` shows which project
+applies and where it came from.
 
 ## Step 3: Add to your project
 
@@ -113,6 +121,13 @@ Create a `.secretless` manifest at the project root listing what secrets the pro
 STRIPE_KEY        required    Stripe API key for payments
 DATABASE_URL      required    PostgreSQL connection string
 SENTRY_DSN        optional    Error tracking DSN
+```
+
+On the `gcp-sm` backend, one more line names the GCP project this repository's
+secrets live in. It applies to commands run anywhere inside the repository:
+
+```
+gcp.projectId: acme-prod
 ```
 
 Developers run `setup` to interactively provide missing secrets:

@@ -12,6 +12,7 @@ import type { SecretBackend } from '../backends/types';
 import { parseManifestDetailed, MANIFEST_FORMAT_HINT } from '../manifest';
 import { syncSecrets, displayName } from '../secret-sync';
 import type { SyncAction, SyncResult } from '../secret-sync';
+import { resolveGcpProject, repositoryProjectNote } from '../backends/gcp-project';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -270,6 +271,10 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       }
 
       const store = createStore();
+      // Named before the write, so a value never lands in a project the
+      // repository chose without the user seeing which one (#177).
+      const projectNote = repositoryProjectNote(store.backendName);
+      if (projectNote) console.log(`  ${projectNote}`);
       try {
         await store.setSecret(name, value, annotation);
         // Shape, never content. A capture that lost most of the value reads
@@ -337,7 +342,14 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         // config), not project-scoped — running `secret list` in any directory
         // shows the same secrets. Say so, and name the backend, so a user is
         // never unsure whether they are looking at project or global state.
-        const scopeNote = `  Scope: global (${store.backendName} backend) — shared across all projects on this machine`;
+        // The one exception is a gcp-sm project named by this repository's
+        // .secretless (#177): that list belongs to this repository only.
+        const gcpProject = store.backendName === 'gcp-sm' ? resolveGcpProject() : undefined;
+        const scopeNote = !gcpProject?.projectId
+          ? `  Scope: global (${store.backendName} backend) — shared across all projects on this machine`
+          : gcpProject.source === 'manifest'
+            ? `  Scope: this repository (gcp-sm backend, project ${gcpProject.projectId} named by ${gcpProject.from})`
+            : `  Scope: global (gcp-sm backend, project ${gcpProject.projectId}) — shared by every project on this machine whose .secretless names no GCP project`;
         if (names.length === 0) {
           console.log('\n  No secrets stored.');
           console.log(scopeNote);
@@ -658,6 +670,8 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
   console.log('\n  Secretless Sync\n');
   console.log(`  From:   ${fromName}`);
   console.log(`  To:     ${toName} (this machine)`);
+  const projectNote = repositoryProjectNote(toName);
+  if (projectNote) console.log(`          ${projectNote}`);
   console.log(`  Names:  ${selection}`);
   if (dryRun) console.log('  Dry run: nothing is written.');
   console.log();

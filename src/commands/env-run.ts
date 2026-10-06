@@ -137,9 +137,16 @@ export async function runImport(args: string[], deps?: BundleCommandDeps): Promi
     }
 
     let totalImported = 0;
+    // Every file goes to the same store, so its project is named once (#177).
+    let projectNamed = false;
+    const beforeWrite = (projectNote: string): void => {
+      if (projectNamed) return;
+      projectNamed = true;
+      console.log(`  ${projectNote}\n`);
+    };
     for (const file of files) {
       try {
-        const result = await importEnvFile(file);
+        const result = await importEnvFile(file, { beforeWrite });
         console.log(`  ${path.basename(file)}: ${result.imported} imported`);
         if (result.skipped > 0) {
           console.log(`    (${result.skipped} skipped — invalid names)`);
@@ -167,7 +174,10 @@ export async function runImport(args: string[], deps?: BundleCommandDeps): Promi
     return 1;
   }
   try {
-    const result = await importEnvFile(resolvedPath);
+    const result = await importEnvFile(resolvedPath, {
+      // Named before the first write (#177).
+      beforeWrite: (projectNote) => console.log(`  ${projectNote}\n`),
+    });
     if (result.imported === 0) {
       console.log('  No secrets found in file.');
       console.log('  Expected format: KEY=value (one per line)\n');

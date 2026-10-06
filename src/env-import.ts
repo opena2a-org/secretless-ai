@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SecretStore } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
+import { repositoryProjectNote } from './backends/gcp-project';
 
 /** Known .env file names to auto-detect. */
 const ENV_FILE_NAMES = [
@@ -88,12 +89,22 @@ export interface ImportResult {
   entries: string[];
 }
 
+export interface ImportEnvOptions extends SecretStoreOptions {
+  /**
+   * Called once before the first write with the line naming the GCP project
+   * the entries go to when this repository's .secretless named it, so the
+   * caller can print it before anything is written (#177). Not called when
+   * the file holds nothing to write, nor for any other destination.
+   */
+  beforeWrite?: (projectNote: string) => void;
+}
+
 /**
  * Import secrets from a .env file into the secret store.
  */
 export async function importEnvFile(
   filePath: string,
-  options?: SecretStoreOptions,
+  options?: ImportEnvOptions,
 ): Promise<ImportResult> {
   const content = fs.readFileSync(filePath, 'utf-8');
   const entries = parseEnvFile(content);
@@ -110,6 +121,10 @@ export async function importEnvFile(
       continue;
     }
 
+    if (imported === 0) {
+      const projectNote = repositoryProjectNote(store.backendName);
+      if (projectNote) options?.beforeWrite?.(projectNote);
+    }
     await store.setSecret(entry.name, entry.value);
     imported++;
     names.push(entry.name);

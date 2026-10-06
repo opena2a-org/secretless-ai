@@ -359,3 +359,46 @@ describe('near-miss hint is bounded (self-review, not from an issue)', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
+
+describe('parseManifestDetailed — gcp.projectId names the repository\'s GCP project (#177)', () => {
+  it('reads the project and keeps the names, with no error', () => {
+    const parsed = parseManifestDetailed('gcp.projectId: acme-org-a   # org A\nDATABASE_URL\nSENTRY_DSN optional\n');
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.gcpProjectId).toBe('acme-org-a');
+    expect(parsed.entries.map((e) => e.name)).toEqual(['DATABASE_URL', 'SENTRY_DSN']);
+  });
+
+  it('an unusable value is a manifest error that does not echo the value', () => {
+    const PASTED = ['ghp_', 'FAKEnotAProjectIdPastedHere'].join('');
+    const parsed = parseManifestDetailed(`DATABASE_URL\ngcp.projectId: ${PASTED}\n`);
+    expect(parsed.gcpProjectId).toBeUndefined();
+    expect(parsed.errors).toEqual([{
+      line: 2,
+      text: 'gcp.projectId: [redacted]',
+      reason: 'gcp.projectId value is not a GCP project id or project number',
+    }]);
+    expect(JSON.stringify(parsed.errors)).not.toContain(PASTED);
+  });
+
+  it('a second gcp.projectId line is an error on that line', () => {
+    const parsed = parseManifestDetailed('gcp.projectId: acme-one\ngcp.projectId: acme-two\n');
+    expect(parsed.gcpProjectId).toBeUndefined();
+    expect(parsed.errors.map((e) => e.line)).toEqual([2]);
+  });
+
+  it('points the YAML-shaped spelling at the line format', () => {
+    const parsed = parseManifestDetailed('backend: gcp-sm\ngcp: { projectId: acme-org-a }\n');
+    expect(parsed.errors.map((e) => e.reason)).toEqual([
+      'the backend is chosen per machine with `secretless-ai backend set`; '
+        + '.secretless can name only the GCP project, as "gcp.projectId: <project-id>"',
+      'write the GCP project as "gcp.projectId: <project-id>" on its own line',
+    ]);
+  });
+
+  it('CONTROL: a manifest without the line has no project', () => {
+    expect(parseManifestDetailed('DATABASE_URL\n')).toEqual({
+      entries: [{ name: 'DATABASE_URL', required: true, description: '' }],
+      errors: [],
+    });
+  });
+});

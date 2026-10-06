@@ -10,6 +10,7 @@ import { readManifestDetailed, checkManifest, MANIFEST_FORMAT_HINT } from './man
 import type { ManifestError } from './manifest';
 import { SecretStore } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
+import { repositoryProjectNote } from './backends/gcp-project';
 
 export interface SetupOptions extends SecretStoreOptions {
   /** Check-only mode: exit 1 if required secrets are missing (for CI). */
@@ -117,6 +118,11 @@ export async function runSetup(
       complete: true,
     };
   }
+
+  // Named before the first prompt, so the user knows where each value they
+  // type will be written before writing it (#177). Prompts go to stderr too.
+  const projectNote = repositoryProjectNote(store.backendName);
+  if (projectNote) process.stderr.write(`  ${projectNote}\n\n`);
 
   const rl = readline.createInterface({
     input: process.stdin,

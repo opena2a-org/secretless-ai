@@ -121,7 +121,15 @@ export function createBackend(
         }
         return degradedFallback('gcp-sm', gcp.message, config);
       }
-      backend = new GCPSecretManagerBackend(config);
+      const gcpBackend = new GCPSecretManagerBackend(config);
+      // The value cache is one file keyed by secret name alone. A project named
+      // by a repository's .secretless is one of several on this machine, so a
+      // cached value would be served to the next repository that asks for the
+      // same name from a different project (#177).
+      if (gcpBackend.describeProject().source === 'manifest') {
+        return gcpBackend;
+      }
+      backend = gcpBackend;
       break;
     }
 
