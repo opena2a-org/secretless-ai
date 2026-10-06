@@ -8,6 +8,9 @@ import { toolDisplayName, type AITool } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles } from '../doctor';
 import { readBackendConfig, resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
+import { GCP_PROJECT_KEY, resolveGcpProject } from '../backends/gcp-project';
+import type { GcpProjectResolution } from '../backends/gcp-project';
+import { readManifestDetailed } from '../manifest';
 import { getDaemonStatus } from '../broker/daemon';
 import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
@@ -750,6 +753,9 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   // platform keychain, which prompts.
   const effectiveBackend = effectiveBackendName(resolveBackendType());
   const sessionRelevant = effectiveBackend.startsWith('keychain') || effectiveBackend === '1password';
+  // Which GCP project names resolve from in this directory, and why (#177).
+  // File reads only: status makes no request to GCP.
+  const gcpProject = effectiveBackend === 'gcp-sm' ? resolveGcpProject({ projectDir }) : undefined;
 
   // Build observation rows. Each row: glyph + label + optional → command.
   // Satisfied observations use ✓; needs-action use ⚠. Every ⚠ ends in a
@@ -846,6 +852,19 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     addRow({ glyph: '✓', label: 'No credentials detected in scanned files' });
   }
 
+  // GCP project (gcp-sm only). A repository's .secretless may name its own.
+  if (gcpProject?.error) {
+    addRow({ glyph: '⚠', label: gcpProject.error, action: 'fix that line, then re-run: secretless-ai status' });
+  } else if (gcpProject?.projectId) {
+    addRow({ glyph: '✓', label: `GCP project ${gcpProject.projectId} (${describeGcpProjectSource(gcpProject)})` });
+  } else if (gcpProject) {
+    addRow({
+      glyph: '⚠',
+      label: 'GCP project not set — gcp-sm cannot resolve any name',
+      action: `add "${GCP_PROJECT_KEY}: <project-id>" to .secretless, then re-run: secretless-ai status`,
+    });
+  }
+
   // Session warmth (only relevant when a backend that prompts is configured).
   if (sessionRelevant) {
     if (session.warm) {
@@ -933,6 +952,10 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       transcriptProtection: tp,
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,
+      // Null unless the backend is gcp-sm. `source` says which rule applied:
+      // explicit, manifest, user-config, service-account-key,
+      // adc-quota-project or none; `from` says where it was read.
+      gcpProject: gcpProject ?? null,
       session: { relevant: sessionRelevant, warm: session.warm },
       broker: {
         installed: brokerInstalled,
@@ -1027,6 +1050,8 @@ export function runVerify(projectDir: string, showAll = false): number {
     console.log(`  ${c.dim(`  ${unsetVars.length} known env vars not set (use --all to list)`)}`);
   }
 
+  printGcpProjectPerName(projectDir);
+
   // Show context exposure
   if (result.exposedInContext.length > 0) {
     console.log(divider('Exposed in AI Context'));
@@ -1097,6 +1122,45 @@ export function runVerify(projectDir: string, showAll = false): number {
   }
   console.log();
   return 0;
+}
+
+/** "named by <manifest line>" or "from <file>", for a resolved project. */
+function describeGcpProjectSource(project: GcpProjectResolution): string {
+  return `${project.source === 'manifest' ? 'named by' : 'from'} ${project.from}`;
+}
+
+/**
+ * Name the GCP project each manifest name resolves from (#177). A repository's
+ * .secretless can name its own project, so verify says which one was used and
+ * where that was decided. File reads only: no request is made and no value is
+ * read. Informational: it does not change the verdict.
+ */
+function printGcpProjectPerName(projectDir: string): void {
+  const manifest = readManifestDetailed(projectDir);
+  if (effectiveBackendName(resolveBackendType()) !== 'gcp-sm') {
+    if (manifest?.gcpProjectId) {
+      console.log(`\n  ${c.dim(`.secretless names GCP project ${manifest.gcpProjectId}; it applies only to the gcp-sm backend, and this machine uses another.`)}`);
+    }
+    return;
+  }
+
+  const project = resolveGcpProject({ projectDir });
+  console.log(divider('GCP Project (gcp-sm)'));
+  if (project.error) {
+    console.log(`  ${c.yellow('\u2502')} ${c.yellow('!')} ${project.error}`);
+    return;
+  }
+  if (!project.projectId) {
+    console.log(`  ${c.yellow('\u2502')} ${c.yellow('!')} No GCP project set. Add "${GCP_PROJECT_KEY}: <project-id>" to .secretless.`);
+    return;
+  }
+  const entries = manifest?.entries ?? [];
+  const width = Math.max(0, ...entries.map((e) => e.name.length));
+  for (const entry of entries) {
+    console.log(`  ${c.dim('\u2502')} ${entry.name.padEnd(width)}  project ${project.projectId}`);
+  }
+  console.log(`  ${c.dim(`Project ${project.projectId} ${describeGcpProjectSource(project)}`)}`);
+  console.log(`  ${c.dim(`Verify access: gcloud secrets list --project ${project.projectId} --limit 1`)}`);
 }
 
 export function runDoctor(autoFix: boolean): number {

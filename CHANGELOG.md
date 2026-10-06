@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+**The gcp-sm backend reads a repository's GCP project from its `.secretless`
+(#177).** A `gcp.projectId: <project-id>` line in a repository's `.secretless`
+names the GCP project that repository's names are read from and stored in, for
+commands run in the repository or any directory below it. It wins over
+`gcp.projectId` in `~/.secretless-ai/config.json`, the service account key's
+`project_id` and the ADC quota project; a machine with no such line resolves
+exactly as before. Outside a repository only the current directory's
+`.secretless` is read. A `gcp.projectId` line that is empty, appears twice, or
+is not a project id or project number is a manifest error, and the backend then
+refuses instead of using another project. `status` shows the project and the
+file or setting it came from (`gcpProject` in `--json`); `verify` names the
+project for each manifest name, with a `gcloud secrets list` command that checks
+access; `secret list` says when its list belongs to one repository. A permission
+error names the project and the manifest line that chose it, and a
+manifest-named project these credentials cannot list is an error instead of an
+empty list. Reads from a manifest-named project skip the value cache, which is
+keyed by name alone and would otherwise hand one repository's value to another.
+`backend:` and `gcp:` lines written as YAML are reported with the supported
+form. Project ids and file paths appear in output; values never do.
+
+**Every write to a project a repository named says so before it writes
+(#177).** A repository's `.secretless` arrives with the clone, so a value
+written there can land in a GCP project other than this machine's. Each command
+that writes to such a project prints `In GCP project <id>, named by <file> line
+<n>` before its first write: `secret set`; `secret sync`, under its `To:` line;
+`import` of a bundle, after every refusal has passed, and the line reporting
+the import and the line listing names that do not read back both name the
+project; `import <file>` and `import --detect` for `.env` files, once; and
+`setup`, on stderr before its first prompt. In a repository whose `.secretless`
+names no GCP project, these commands print as before.
+
 **`export` and `import` move a secret store to another machine (#175).**
 `secretless-ai export --out <file>.secretless-bundle [--only K1,K2]` writes the
 selected names and values, with the `required` flag and description the current

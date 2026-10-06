@@ -10,6 +10,7 @@ import { SecretStore, isValidSecretName } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
 import { findSecretValueProblem } from './secret-value';
 import { readManifest } from './manifest';
+import { repositoryProject, type RepositoryProject } from './backends/gcp-project';
 import {
   sealBundle,
   openBundle,
@@ -108,6 +109,12 @@ export async function exportBundle(
 export interface ImportBundleOptions extends SecretStoreOptions {
   /** Replace names that already exist in this machine's store. */
   force?: boolean;
+  /**
+   * Called once, after every refusal and before the first write, with the
+   * GCP project the entries go to when this repository's .secretless named
+   * it, so the caller can name it before anything is written (#177).
+   */
+  beforeWrite?: (project: RepositoryProject | undefined) => void;
 }
 
 export interface ImportBundleResult {
@@ -117,6 +124,8 @@ export interface ImportBundleResult {
   /** Names that did not read back with the imported value. Empty on success. */
   unresolved: string[];
   backendName: string;
+  /** The GCP project written to when this repository's .secretless named it (#177). */
+  project?: RepositoryProject;
 }
 
 /**
@@ -159,6 +168,10 @@ export async function importBundle(
     );
   }
 
+  const project = repositoryProject(store.backendName);
+  options.beforeWrite?.(project);
+  const where = project ? ` (GCP project ${project.projectId})` : '';
+
   const written: string[] = [];
   for (const entry of entries) {
     try {
@@ -167,7 +180,7 @@ export async function importBundle(
       const rest = entries.map((e) => e.name).filter((n) => !written.includes(n));
       throw new Error(
         `Storing ${entry.name} failed: ${err instanceof Error ? err.message : String(err)}\n\n` +
-        `  Stored: ${written.length > 0 ? written.join(', ') : 'none'}\n` +
+        `  Stored${where}: ${written.length > 0 ? written.join(', ') : 'none'}\n` +
         `  Not stored: ${rest.join(', ')}`,
       );
     }
@@ -178,5 +191,5 @@ export async function importBundle(
   for (const entry of entries) {
     if ((await store.getSecret(entry.name)) !== entry.value) unresolved.push(entry.name);
   }
-  return { entries, replaced, unresolved, backendName: store.backendName };
+  return { entries, replaced, unresolved, backendName: store.backendName, project };
 }

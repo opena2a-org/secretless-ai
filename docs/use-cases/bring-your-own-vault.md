@@ -82,7 +82,7 @@ That's the point: the credential is a normal Vault entry. No Secretless-propriet
 | Backend | Env vars to set |
 |---------|-----------------|
 | `1password` | `op` CLI signed in (or `OP_SERVICE_ACCOUNT_TOKEN` for CI) |
-| `gcp-sm` | `GOOGLE_CLOUD_PROJECT` (uses Application Default Credentials) |
+| `gcp-sm` | Application Default Credentials or `GOOGLE_APPLICATION_CREDENTIALS`; the project from `gcp.projectId: <id>` in the repository's `.secretless` or `~/.secretless-ai/config.json` |
 
 Then:
 

@@ -9,12 +9,17 @@
  *   DATABASE_URL                    # required, PostgreSQL connection
  *   STRIPE_SECRET_KEY  optional     # only needed for payments
  *   # Lines starting with # are comments
+ *
+ * One optional setting line, for the gcp-sm backend, names the GCP project
+ * this repository's secrets live in (see backends/gcp-project.ts):
+ *   gcp.projectId: acme-prod
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretStore, isValidSecretName } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
+import { GCP_PROJECT_KEY, parseGcpProjectDirective, readGcpProjectSetting } from './backends/gcp-project';
 
 const MANIFEST_FILENAME = '.secretless';
 
@@ -41,6 +46,8 @@ export interface ManifestError {
 export interface ParsedManifest {
   entries: ManifestEntry[];
   errors: ManifestError[];
+  /** The `gcp.projectId:` line's project, when the manifest has a valid one. */
+  gcpProjectId?: string;
 }
 
 /** The format, shown whenever a manifest fails to parse. */
@@ -68,6 +75,7 @@ export function parseManifestDetailed(content: string): ParsedManifest {
   const entries: ManifestEntry[] = [];
   const errors: ManifestError[] = [];
   const lines = content.split('\n');
+  const gcpSetting = readGcpProjectSetting(content);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -81,6 +89,15 @@ export function parseManifestDetailed(content: string): ParsedManifest {
     const beforeComment = commentIdx !== -1 ? line.slice(0, commentIdx).trim() : line;
     if (commentIdx !== -1) {
       description = line.slice(commentIdx + 1).trim();
+    }
+
+    // The project setting is not a name. Its error, if any, is the one
+    // readGcpProjectSetting found, so this parser and the backend agree.
+    if (parseGcpProjectDirective(beforeComment)) {
+      if (gcpSetting && 'reason' in gcpSetting && gcpSetting.line === i + 1) {
+        errors.push({ line: i + 1, text: `${GCP_PROJECT_KEY}: ${REDACTED}`, reason: gcpSetting.reason });
+      }
+      continue;
     }
 
     // Parse tokens: NAME [optional]
@@ -113,6 +130,9 @@ export function parseManifestDetailed(content: string): ParsedManifest {
     });
   }
 
+  if (gcpSetting && 'projectId' in gcpSetting) {
+    return { entries, errors, gcpProjectId: gcpSetting.projectId };
+  }
   return { entries, errors };
 }
 
@@ -206,6 +226,13 @@ function describeInvalidName(name: string): string {
   if (name.includes('=')) {
     return 'looks like dotenv (NAME=VALUE) — .secretless declares names only, never values; '
       + 'write just the name and store the value with `secretless-ai secret set <NAME>`';
+  }
+  if (name.toLowerCase() === 'backend:') {
+    return 'the backend is chosen per machine with `secretless-ai backend set`; '
+      + `.secretless can name only the GCP project, as "${GCP_PROJECT_KEY}: <project-id>"`;
+  }
+  if (/^gcp[.:]/i.test(name)) {
+    return `write the GCP project as "${GCP_PROJECT_KEY}: <project-id>" on its own line`;
   }
   if (name.endsWith(':')) {
     return 'looks like a YAML key — .secretless is not YAML; write the name on its own line';

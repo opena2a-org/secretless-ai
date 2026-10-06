@@ -16,6 +16,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import type { WritableSecretBackend, BackendHealth } from './types';
 import { boundedFetch, describeRequest, type BoundedResponse } from './bounded-fetch';
+import { resolveGcpProject } from './gcp-project';
+import type { GcpProjectResolution } from './gcp-project';
 
 const SM_BASE_URL = 'https://secretmanager.googleapis.com';
 const OAUTH2_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -55,6 +57,11 @@ export interface GCPSecretManagerConfig {
   projectId?: string;
   /** Path to service account key file. Overrides GOOGLE_APPLICATION_CREDENTIALS. */
   keyFilePath?: string;
+  /**
+   * Directory whose `.secretless` may name the project. Default: the current
+   * working directory, so commands run inside a repository use its project.
+   */
+  projectDir?: string;
 }
 
 interface ServiceAccountKey {
@@ -76,6 +83,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
 
   private projectId: string | undefined;
   private keyFilePath: string | undefined;
+  private projectDir: string | undefined;
+  private resolution: GcpProjectResolution | undefined;
 
   // Token cache
   private accessToken: string | null = null;
@@ -85,6 +94,23 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     const c = (config ?? {}) as GCPSecretManagerConfig;
     this.projectId = c.projectId;
     this.keyFilePath = c.keyFilePath;
+    this.projectDir = c.projectDir;
+  }
+
+  /**
+   * Which project this backend reads and writes, and where that was decided.
+   * File reads only; no request is made. A resolved project is kept for the
+   * life of the backend.
+   */
+  describeProject(): GcpProjectResolution {
+    if (this.resolution) return this.resolution;
+    const resolution = resolveGcpProject({
+      explicit: this.projectId,
+      projectDir: this.projectDir,
+      keyFilePath: this.keyFilePath,
+    });
+    if (resolution.projectId) this.resolution = resolution;
+    return resolution;
   }
 
   /**
@@ -148,7 +174,7 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
 
     if (response.status === 403) {
       throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions. Grant 'Secret Manager Admin' role.`
+        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Admin' role.`
       );
     }
 
@@ -183,14 +209,14 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
       const latencyMs = Date.now() - start;
 
       if (response.ok) {
-        return { healthy: true, latencyMs, message: `GCP Secret Manager (project: ${projectId})` };
+        return { healthy: true, latencyMs, message: `GCP Secret Manager (${this.projectLabel(projectId)})` };
       }
 
       if (response.status === 403) {
         return {
           healthy: false,
           latencyMs,
-          message: `Insufficient IAM permissions on project ${projectId}`,
+          message: `Insufficient IAM permissions on ${this.projectLabel(projectId)}`,
         };
       }
 
@@ -229,7 +255,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     if (!projectId) {
       throw new Error(
         'GCP Secret Manager: project ID not configured. ' +
-        'Set it in ~/.secretless-ai/config.json under gcp.projectId, ' +
+        'Name it in the repository\'s .secretless as "gcp.projectId: <project-id>", ' +
+        'set it in ~/.secretless-ai/config.json under gcp.projectId, ' +
         'or use a service account key with a project_id field.'
       );
     }
@@ -239,53 +266,27 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   }
 
   /**
-   * Resolve GCP project ID from config, service account key, or ADC.
+   * Resolve the GCP project ID. Throws when the repository's manifest names a
+   * project that cannot be used: falling back to another project would read
+   * and write across the boundary the manifest exists to keep (#177).
    */
   private resolveProjectId(): string | undefined {
-    if (this.projectId) return this.projectId;
-
-    // Try to read from config file
-    try {
-      const configPath = path.join(os.homedir(), '.secretless-ai', 'config.json');
-      const raw = fs.readFileSync(configPath, 'utf-8');
-      const config = JSON.parse(raw) as { gcp?: { projectId?: string } };
-      if (config.gcp?.projectId) {
-        this.projectId = config.gcp.projectId;
-        return this.projectId;
-      }
-    } catch {
-      // No config or invalid JSON
+    const resolution = this.describeProject();
+    if (resolution.error) {
+      throw new Error(
+        `GCP Secret Manager: ${resolution.error}. Nothing was read from or written to another project.`
+      );
     }
+    return resolution.projectId;
+  }
 
-    // Try to extract from service account key
-    const keyPath = this.keyFilePath ?? process.env.GOOGLE_APPLICATION_CREDENTIALS;
-    if (keyPath) {
-      try {
-        const raw = fs.readFileSync(keyPath, 'utf-8');
-        const key = JSON.parse(raw) as ServiceAccountKey;
-        if (key.project_id) {
-          this.projectId = key.project_id;
-          return this.projectId;
-        }
-      } catch {
-        // Invalid key file
-      }
+  /** `project <id>`, plus the manifest line when a repository named it. */
+  private projectLabel(projectId: string): string {
+    const resolution = this.resolution;
+    if (resolution?.source === 'manifest' && resolution.projectId === projectId) {
+      return `project ${projectId} (named by ${resolution.from})`;
     }
-
-    // Try to extract from ADC quota_project_id
-    try {
-      const adcPath = path.join(os.homedir(), '.config', 'gcloud', 'application_default_credentials.json');
-      const raw = fs.readFileSync(adcPath, 'utf-8');
-      const adc = JSON.parse(raw) as { quota_project_id?: string };
-      if (adc.quota_project_id) {
-        this.projectId = adc.quota_project_id;
-        return this.projectId;
-      }
-    } catch {
-      // No ADC file
-    }
-
-    return undefined;
+    return `project ${projectId}`;
   }
 
   /**
@@ -420,12 +421,12 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     const response = await this.request('GET', url, token);
 
     if (response.status === 404) {
-      throw new Error(`Secret '${secretName}' not found in project ${projectId}`);
+      throw new Error(`Secret '${secretName}' not found in ${this.projectLabel(projectId)}`);
     }
 
     if (response.status === 403) {
       throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions. Grant 'Secret Manager Secret Accessor' role.`
+        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Secret Accessor' role.`
       );
     }
 
@@ -463,7 +464,7 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
 
     if (response.status === 403) {
       throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions. Grant 'Secret Manager Admin' role.`
+        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Admin' role.`
       );
     }
 
@@ -492,7 +493,7 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
 
     if (response.status === 403) {
       throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions. Grant 'Secret Manager Admin' role.`
+        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Admin' role.`
       );
     }
 
@@ -521,6 +522,15 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
       const response = await this.request('GET', url, token);
 
       if (!response.ok) {
+        // A project named by a repository manifest that cannot be listed is
+        // reported, not read as "no secrets": an empty answer would look like
+        // missing names rather than a project these credentials cannot use.
+        if (this.resolution?.source === 'manifest') {
+          throw new Error(
+            `GCP Secret Manager: cannot list secrets in ${this.projectLabel(projectId)} (HTTP ${response.status}). `
+            + `Verify access: gcloud secrets list --project ${projectId} --limit 1`
+          );
+        }
         return results;
       }
 

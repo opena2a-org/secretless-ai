@@ -5,6 +5,7 @@ import { detectAgentRuntime } from '../env';
 import { EXIT_USAGE } from '../argv';
 import type { SecretStoreOptions } from '../secret-store';
 import { CLI } from './utils';
+import { describeRepositoryProject } from '../backends/gcp-project';
 
 /**
  * Where a passphrase comes from. Never an argument: an argument is visible in
@@ -150,9 +151,17 @@ export async function runBundleImport(
       console.error('  Nothing was written.\n');
       return 1;
     }
-    const result = await importBundle(bundlePath, passphrase, { ...deps.storeOptions, force });
+    const result = await importBundle(bundlePath, passphrase, {
+      ...deps.storeOptions,
+      force,
+      // Named before the first write, once every refusal has passed (#177).
+      beforeWrite: (project) => {
+        if (project) console.log(`  ${describeRepositoryProject(project)}\n`);
+      },
+    });
     const replaced = new Set(result.replaced);
-    console.log(`  Imported ${result.entries.length} secret(s) from ${path.basename(bundlePath)} into ${result.backendName}:\n`);
+    const into = result.project ? `${result.backendName} (GCP project ${result.project.projectId})` : result.backendName;
+    console.log(`  Imported ${result.entries.length} secret(s) from ${path.basename(bundlePath)} into ${into}:\n`);
     for (const entry of result.entries) {
       const notes: string[] = [];
       if (replaced.has(entry.name)) notes.push('replaced');
@@ -161,7 +170,7 @@ export async function runBundleImport(
       console.log(`    + ${entry.name}${notes.length > 0 ? `   (${notes.join(', ')})` : ''}`);
     }
     if (result.unresolved.length > 0) {
-      console.error(`\n  These names do not read back from ${result.backendName} with the imported value: ${result.unresolved.join(', ')}`);
+      console.error(`\n  These names do not read back from ${into} with the imported value: ${result.unresolved.join(', ')}`);
       console.error(`  Verify:  ${CLI} secret list\n`);
       return 1;
     }
