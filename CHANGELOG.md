@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+**The broker refuses a repeated JSON member name on `/resolve`, in the AIM
+identity response and in its own status reads, as it already did on `/grant`
+and in the policy file (#147).** A `/resolve` body that repeats a member name,
+at any depth and including a case variant or an escaped spelling, is now
+answered `400` with `Duplicate member "<name>"`; before, `JSON.parse` kept the
+last copy and the credential was served. If the duplicate-member scanner cannot
+be loaded, `/resolve` answers `503` and writes the cause to the broker audit
+log instead of parsing without it. An AIM agent response that repeats a member
+is read as no agent identity, so a `minTrustScore` or `requireCapability`
+constraint denies the request. `broker status` reads a `/status` reply that
+repeats a member as unreadable and prints the PID-file status. A PID file that
+does not re-serialize to the text the daemon writes, which includes one that
+repeats a member, is read as no running daemon, so `broker stop` signals no
+process from it.
+
 **`secret set` records what a credential is for, and `secret show` reads it
 back without the value (#172).** `secret set NAME --description "..." --meta
 key=value` stores a description and any number of metadata fields beside the

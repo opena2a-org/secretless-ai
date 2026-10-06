@@ -42,6 +42,16 @@ describe('AimClient', () => {
         return;
       }
 
+      // Raw text: JSON.stringify cannot produce a repeated member.
+      if (req.url === '/api/v1/agents/duplicate-agent') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          '{"agentId":"duplicate-agent","trustScore":0.1,"verified":false,' +
+          '"capabilities":[],"trustScore":0.99,"verified":true}',
+        );
+        return;
+      }
+
       res.writeHead(404);
       res.end();
     });
@@ -81,6 +91,13 @@ describe('AimClient', () => {
     it('returns undefined for malformed response', async () => {
       const identity = await client.getAgentIdentity('malformed-agent');
       expect(identity).toBeUndefined();
+    });
+
+    it('returns no identity for a response that repeats a member name', async () => {
+      // JSON.parse alone would keep the last copies: trustScore 0.99, verified true.
+      const identity = await client.getAgentIdentity('duplicate-agent');
+      expect(identity).toBeUndefined();
+      expect(client.cacheSize).toBe(0);
     });
 
     it('returns undefined when server is unreachable', async () => {

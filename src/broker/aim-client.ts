@@ -9,6 +9,7 @@
 import * as http from 'http';
 import * as https from 'https';
 import type { AgentIdentity } from './types';
+import { parseJsonRefusingDuplicates } from './strict-json';
 
 /** Cache entry with TTL tracking. */
 interface CacheEntry {
@@ -176,12 +177,15 @@ export class AimClient {
             chunks.push(chunk);
           });
           res.on('end', () => {
-            try {
-              const body = Buffer.concat(chunks).toString('utf-8');
-              resolve(JSON.parse(body));
-            } catch {
-              resolve(undefined);
-            }
+            // Scanned for a repeated member before JSON.parse can keep the
+            // last copy: this body becomes the identity that trust-score and
+            // capability constraints are judged against. A refused body is
+            // read as no identity, which those constraints deny.
+            const body = Buffer.concat(chunks).toString('utf-8');
+            parseJsonRefusingDuplicates(body).then(
+              (parsed) => resolve(parsed.ok ? (parsed.value as Record<string, unknown>) : undefined),
+              () => resolve(undefined),
+            );
           });
         },
       );
