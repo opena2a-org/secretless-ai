@@ -659,6 +659,154 @@ describe('PolicyEngine — a rule field we do not read refuses the rule', () => 
 });
 
 /**
+ * A rule may carry notes under `x-` keys, and an `x-` key cannot impersonate a
+ * policy field (#143).
+ *
+ * The block above refuses `comment` and `description`, and operators write
+ * them, so notes need a supported home. `x-` is a shared prefix, though: a bare
+ * `startsWith('x-')` allowlist would accept `x-constraints` as a sanctioned,
+ * ignored key that reads exactly like it carries the operator's restriction —
+ * the 0.22.1 fail-open again, behind a prefix.
+ */
+describe('PolicyEngine — x- annotations on a rule', () => {
+  const tmpDirs: string[] = [];
+
+  function engineFor(policy: unknown): PolicyEngine {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-annotation-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'p.json');
+    fs.writeFileSync(file, JSON.stringify(policy));
+    return new PolicyEngine({ policyFile: file });
+  }
+
+  async function refusal(policy: unknown): Promise<string> {
+    const engine = engineFor(policy);
+    try { await engine.loadPolicies(); } catch (err) { return (err as Error).message; }
+    return '';
+  }
+
+  const BASE = { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow' };
+  // Closed window: a rule that keeps its constraints denies, one that lost them allows.
+  const CLOSED_WINDOW = { timeWindow: { start: '00:00', end: '00:01' } };
+
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
+  it('loads a rule carrying x- notes, and the rule is enforced exactly as written', async () => {
+    const engine = engineFor({ version: 1, rules: [{
+      ...BASE,
+      'x-comment': 'deploy bot, owned by the platform team',
+      'x-description': 'allow deploys inside the release window',
+      'x-note': '',
+      constraints: CLOSED_WINDOW,
+    }] });
+    expect(await engine.loadPolicies()).toBe(1);
+    expect(engine.getRules()[0].constraints.timeWindow).toEqual(CLOSED_WINDOW.timeWindow);
+    expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(false);
+  });
+
+  it('drops the notes at load: getRules() returns the five rule fields only', async () => {
+    const engine = engineFor({ rules: [{ ...BASE, 'x-comment': 'a note' }] });
+    await engine.loadPolicies();
+    expect(Object.keys(engine.getRules()[0]).sort()).toEqual([...KNOWN_RULE_KEYS].sort());
+  });
+
+  it('loadRules() accepts the same notes as the file loader', () => {
+    const engine = new PolicyEngine({ policyFile: path.join(os.tmpdir(), 'policy-annotation-unused.json') });
+    engine.loadRules([{ ...BASE, 'x-comment': 'a note', constraints: CLOSED_WINDOW } as never]);
+    expect(engine.ruleCount).toBe(1);
+    expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(false);
+  });
+
+  // Every rule field and every constraint name, read from the sets the loader
+  // uses, so a field added later is covered without editing this list.
+  const RESERVED = [...KNOWN_RULE_KEYS, ...KNOWN_CONSTRAINT_KEYS, 'scopeCheck'];
+
+  it.each(RESERVED)('refuses x-%s, which reads like the policy field it names', async (name) => {
+    const message = await refusal({ rules: [{ ...BASE, [`x-${name}`]: 'note' }] });
+    expect(message).toContain(`"x-${name}"`);
+    expect(message).toContain(`"${name}"`);
+  });
+
+  it.each([
+    ['a case variant', 'x-Constraints', 'constraints'],
+    ['a misspelling', 'x-contraints', 'constraints'],
+    ['a separator inside the name', 'x-agent-selector', 'agentSelector'],
+    ['a misplaced constraint', 'x-time_window', 'timeWindow'],
+    ['a prefix echo', 'x-x-effect', 'effect'],
+  ])('refuses %s of a policy field (%s)', async (_label, key, field) => {
+    const message = await refusal({ rules: [{ ...BASE, [key]: 'note', constraints: CLOSED_WINDOW }] });
+    expect(message).toContain(`"${key}"`);
+    expect(message).toContain(`"${field}"`);
+  });
+
+  it('refuses a bare x- with no name after the prefix', async () => {
+    expect(await refusal({ rules: [{ ...BASE, 'x-': 'note' }] })).toContain('"x-"');
+  });
+
+  it.each([
+    ['an object', { constraints: CLOSED_WINDOW }],
+    ['a number', 10],
+    ['a boolean', true],
+    ['null', null],
+    ['an array', ['note']],
+  ])('refuses a note whose value is %s', async (_label, value) => {
+    const message = await refusal({ rules: [{ ...BASE, 'x-comment': value }] });
+    expect(message).toContain('"x-comment" must be a string');
+  });
+
+  it('refuses a note inside constraints, and says it belongs on the rule', async () => {
+    const message = await refusal({ rules: [{ ...BASE, constraints: { ...CLOSED_WINDOW, 'x-comment': 'note' } }] });
+    expect(message).toContain('"x-comment"');
+    expect(message).toContain('on the rule itself');
+  });
+
+  it('refuses a note inside a structured constraint', async () => {
+    const message = await refusal({ rules: [{ ...BASE, constraints: { timeWindow: { start: '00:00', end: '00:01', 'x-comment': 'note' } } }] });
+    expect(message).toContain('unknown field "x-comment"');
+  });
+
+  it('refuses a note on the policy file envelope', async () => {
+    const message = await refusal({ 'x-comment': 'note', rules: [{ ...BASE }] });
+    expect(message).toContain('unknown top-level key "x-comment"');
+  });
+
+  it('nothing is loaded when a note is refused', async () => {
+    const engine = engineFor({ rules: [{ ...BASE, 'x-constraints': 'note' }] });
+    try { await engine.loadPolicies(); } catch { /* expected */ }
+    expect(engine.getRules()).toEqual([]);
+    expect(engine.evaluate('agent-1', 'DEPLOY_TOKEN').allowed).toBe(false);
+  });
+
+  it('the refusal of a bare note names the x- spelling that would load', async () => {
+    const message = await refusal({ rules: [{ ...BASE, comment: 'a note' }] });
+    expect(message).toContain('unknown field "comment"');
+    expect(message).toContain('"x-comment"');
+    // And the spelling it names does load.
+    const engine = engineFor({ rules: [{ ...BASE, 'x-comment': 'a note' }] });
+    expect(await engine.loadPolicies()).toBe(1);
+  });
+
+  it('refuses an upper-case X- prefix and names the lower-case spelling', async () => {
+    const message = await refusal({ rules: [{ ...BASE, 'X-comment': 'a note' }] });
+    expect(message).toContain('unknown field "X-comment"');
+    expect(message).toContain('"x-comment"');
+  });
+
+  it.each([
+    ['a misspelled field', 'contraints'],
+    ['a constraint written at rule level', 'timeWindow'],
+  ])('does not offer an x- spelling for %s, because that spelling would be refused', async (_label, key) => {
+    const message = await refusal({ rules: [{ ...BASE, [key]: CLOSED_WINDOW }] });
+    expect(message).toContain(`unknown field "${key}"`);
+    expect(message).not.toContain(`"x-${key}"`);
+  });
+});
+
+/**
  * A constraint we parse but do not enforce is refused, not accepted.
  *
  * `scopeCheck` sat in the known-constraint set and was documented as "deny if
