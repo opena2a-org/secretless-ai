@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+**`init` writes Cursor's and Cline's instructions where those tools document
+their rule files.** `init` used to write the Secretless block to `.cursorrules`
+for Cursor and to a single `.clinerules` file for Cline. Cursor documents
+project rules as `.cursor/rules/*.mdc` files and Cline documents a
+`.clinerules/` directory, so in a project with no rule file yet `init` now
+creates `.cursor/rules/secretless.mdc` (an always-applied rule) and
+`.clinerules/secretless.md`, and it never creates a `.cursorrules` file or a
+single-file `.clinerules`. A project that already has one keeps it and the
+block is appended there; a Cursor project whose rules live only in
+`.cursorrules` gets no `.mdc` file, so in a project an earlier version set up,
+re-running `init` leaves the existing file as it is. A Cline project with a
+`.cline/rules/` directory and no `.clinerules` gets
+`.cline/rules/secretless.md`, and a `.clinerules` directory no longer makes
+`init` fail with `EISDIR`. When a path `init` would write through for Cursor
+or Cline is a symbolic link or resolves outside the project, nothing is
+written for that tool and it is left off the `Configured:` line. `status` now
+reads the files `init` writes: an initialised Cursor project used to be
+reported as not protected. These are instruction files: nothing enforces
+them, and they have no effect unless the tool loads that file. The README's
+supported tools table named `.cursorrules` and `.clinerules` and now names the
+files `init` creates.
+
 **Output longer than 8192 bytes reaches a Node 20 caller on macOS whole.** The
 CLI called `process.exit()` while the end of a long write could still be
 queued. On macOS, a Node 20 program that ran `secretless-ai` through
