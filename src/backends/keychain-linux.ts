@@ -81,6 +81,79 @@ function secretToolStoreError(key: string, res: BoundedChildResult, timeoutMs: n
   );
 }
 
+/**
+ * What `secret-tool` does when asked for an entry, measured with libsecret
+ * 0.20.5 and 0.21.7 against gnome-keyring:
+ *
+ *   lookup, entry present, collection unlocked   exit 0, value on stdout
+ *   lookup, entry absent                         exit 1, nothing on either stream
+ *   lookup, entry present, collection locked     exit 1, nothing on either stream
+ *     (unlock dialog not shown or dismissed)
+ *   lookup, no session bus                       exit 1, "Cannot autolaunch D-Bus ..."
+ *   lookup, no Secret Service on the bus         exit 1, "The name org.freedesktop.secrets
+ *                                                was not provided by any .service files"
+ *   search, entry absent (locked or not)         exit 0, nothing on either stream
+ *   search, entry present, collection locked     exit 0, the item listed on stdout
+ *
+ * There is no exit status for "absent": the miss and the locked entry are the
+ * same bytes. `search` with the same attributes tells them apart, and it never
+ * opens an unlock dialog. Only a silent `lookup` settled by a silent, empty
+ * `search` is absence; every other outcome is a question we did not get an
+ * answer to.
+ */
+const LOOKUP_NOTHING_RETURNED_STATUS = 1;
+const SEARCH_COMPLETED_STATUS = 0;
+
+function saidNothing(res: BoundedChildResult, status: number): boolean {
+  return !res.spawnError && !res.timedOut && res.status === status
+    && res.stdout.length === 0 && res.stderr.length === 0;
+}
+
+/** Read-only check of the default collection's lock state; prints no value. */
+const LOCKED_CHECK =
+  'gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/aliases/default --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked';
+
+/**
+ * The Secret Service would not answer for this entry.
+ *
+ * `said` is what `lookup` printed on stderr, which is an error text and never
+ * the value (the value only goes to stdout on success). Nothing `search`
+ * printed is carried: for an unlocked item it prints the secret on stdout.
+ */
+function secretServiceUnreadableError(account: string, how: string, said: string, timedOut: boolean): Error {
+  return new Error(
+    [
+      `The Linux Secret Service would not return "${account}".`,
+      '',
+      '  Nothing was read. Refusing to report the secret as missing, because a',
+      '  keyring that will not answer is not a keyring without the entry.',
+      '',
+      `  ${how}`,
+      ...(said ? said.split('\n').map(l => `  ${l}`) : []),
+      '',
+      timedOut
+        ? '  The keyring is usually locked, with an unlock dialog waiting that could'
+        : '  The keyring is usually locked and its unlock dialog was dismissed or',
+      timedOut
+        ? '  not be shown or was not answered.'
+        : '  could not be shown, or no Secret Service is reachable from this session.',
+      '',
+      `  Verify:  ${LOCKED_CHECK}`,
+      '           (prints (<true>,) when the default collection is locked)',
+      '  Fix:     unlock the login keyring and retry, or run',
+      '           secretless-ai backend set local  to use the encrypted file store',
+    ].join('\n'),
+  );
+}
+
+function describeSecretToolFailure(verb: string, res: BoundedChildResult, timeoutMs: number): string {
+  return res.timedOut
+    ? `secret-tool ${verb} did not respond within ${timeoutMs / 1000}s and was ended.`
+    : res.spawnError
+      ? `secret-tool could not be started: ${res.spawnError.code ?? res.spawnError.message}`
+      : `secret-tool ${verb} exit status: ${typeof res.status === 'number' ? res.status : `signal ${res.signal ?? 'unknown'}`}`;
+}
+
 export class LinuxKeychainBackend implements WritableSecretBackend {
   readonly name = 'keychain-linux';
   private readonly indexPath: string;
@@ -193,16 +266,44 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
   }
 
   /**
-   * The stored value, or null. Every failure answers null here, as it did
-   * before the bound was added; a timeout is one of those failures. `lookup`
-   * prints the value with no trailing newline; a trailing newline that does
-   * arrive is removed, as before.
+   * The stored value, or null when the entry genuinely is not there.
+   *
+   * Every failure used to answer null, so a locked collection, a dismissed
+   * unlock dialog or a session with no Secret Service made every secret read
+   * as absent: `resolve` returned {}, `run` injected nothing, exit 0 (#130).
+   *
+   * A silent exit 1 from `lookup` is either absence or a locked entry (see
+   * the measurements above), so `search` is asked to settle it. Any other
+   * outcome of either call throws.
+   *
+   * `lookup` prints the value with no trailing newline; a trailing newline
+   * that does arrive is removed, as before.
    */
   private async lookupSecret(service: string, account: string): Promise<string | null> {
-    const res = await this.secretTool(['lookup', 'service', service, 'account', account]);
-    if (res.status !== 0) return null;
-    const value = res.stdout.trimEnd();
-    return value || null;
+    const attrs = ['service', service, 'account', account];
+    const res = await this.secretTool(['lookup', ...attrs]);
+    if (res.status === 0) {
+      const value = res.stdout.trimEnd();
+      return value || null;
+    }
+    if (!saidNothing(res, LOOKUP_NOTHING_RETURNED_STATUS)) {
+      throw secretServiceUnreadableError(
+        account,
+        describeSecretToolFailure('lookup', res, this.childTimeoutMs),
+        res.stderr.trim(),
+        res.timedOut,
+      );
+    }
+
+    const found = await this.secretTool(['search', ...attrs]);
+    if (saidNothing(found, SEARCH_COMPLETED_STATUS)) return null;
+    const searchCompleted = !found.spawnError && !found.timedOut && found.status === SEARCH_COMPLETED_STATUS;
+    const how = !searchCompleted
+      ? describeSecretToolFailure('search', found, this.childTimeoutMs)
+      : found.stdout.length > 0
+        ? 'The keyring holds an entry with these attributes and did not return its value.'
+        : 'secret-tool search exited 0 with output on stderr, which an empty result does not have.';
+    throw secretServiceUnreadableError(account, how, '', found.timedOut);
   }
 
   private readIndex(): string[] {

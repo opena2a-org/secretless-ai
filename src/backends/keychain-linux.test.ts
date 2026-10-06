@@ -90,17 +90,22 @@ describe('LinuxKeychainBackend', () => {
       expect(processIsGone(pid!)).toBe(true);
     });
 
-    it('SLS-10.AC4 a secret-tool that never exits: resolve and delete return within the bound and the child is gone', { timeout: 10_000 }, async () => {
+    it('SLS-10.AC4 a secret-tool that never exits: resolve throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
       fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['secret/K']));
       recorder.setMode({ kind: 'hang' });
       const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
 
-      let start = Date.now();
-      expect(await bounded.resolve('secret/K')).toEqual({});
+      const start = Date.now();
+      await expect(bounded.resolve('secret/K')).rejects.toThrow(/did not respond within 0\.5s/);
       expect(Date.now() - start).toBeLessThan(5_000);
       expect(processIsGone(recorder.hangPid()!)).toBe(true);
+    });
 
-      start = Date.now();
+    it('SLS-10.AC4 a secret-tool that never exits: delete returns within the bound and the child is gone', { timeout: 10_000 }, async () => {
+      recorder.setMode({ kind: 'hang' });
+      const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
+
+      const start = Date.now();
       expect(await bounded.delete('secret/K')).toBe(false);
       expect(Date.now() - start).toBeLessThan(5_000);
       expect(processIsGone(recorder.hangPid()!)).toBe(true);
@@ -128,6 +133,87 @@ describe('LinuxKeychainBackend', () => {
         JSON.stringify({ 'secretless\u0000mcp/client/server/KEY1': 'legacy-value' }),
       );
       expect(await backend.resolve('mcp/client/server')).toEqual({ 'mcp/client/server/KEY1': 'legacy-value' });
+    });
+
+    it('skips keys the Secret Service says are absent', async () => {
+      // An absent entry: `lookup` exits 1 saying nothing, and `search` with
+      // the same attributes exits 0 listing nothing. This one really is absent.
+      fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['mcp/client/server/KEY1']));
+
+      expect(await backend.resolve('mcp/client/server')).toEqual({});
+      // Both the per-key and the legacy service were asked, and each silent
+      // lookup was settled by a search for the same attributes.
+      expect(recorder.calls().map(c => c.argv.slice(0, 3))).toEqual([
+        ['lookup', 'service', 'Secretless: KEY1'],
+        ['search', 'service', 'Secretless: KEY1'],
+        ['lookup', 'service', 'secretless'],
+        ['search', 'service', 'secretless'],
+      ]);
+    });
+
+    it('does not search when lookup returns the value', async () => {
+      await backend.store('mcp/client/server/KEY1', 'value1');
+      const before = recorder.calls().length;
+
+      expect(await backend.resolve('mcp/client/server')).toEqual({ 'mcp/client/server/KEY1': 'value1' });
+      expect(recorder.calls().slice(before).map(c => c.argv[0])).toEqual(['lookup']);
+    });
+
+    it('refuses to report a key absent when its collection is locked', async () => {
+      // In a locked collection whose unlock dialog is not answered, `lookup`
+      // exits 1 saying nothing, exactly as it does for an absent entry. That
+      // used to make every secret read as missing with exit 0 (#130).
+      await backend.store('mcp/client/server/KEY1', 'locked-secret-value');
+      recorder.setMode({ kind: 'locked' });
+
+      const err = await backend.resolve('mcp/client/server').then(
+        () => { throw new Error('resolve did not reject'); },
+        (e: Error) => e,
+      );
+      expect(err.message).toMatch(/would not return "mcp\/client\/server\/KEY1"/);
+      expect(err.message).toMatch(/holds an entry with these attributes and did not return its value/);
+      expect(err.message).toContain('org.freedesktop.Secret.Collection Locked');
+      expect(err.message).not.toContain('locked-secret-value');
+    });
+
+    it('refuses to report a key absent when the legacy entry sits in a locked collection', async () => {
+      fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['mcp/client/server/KEY1']));
+      fs.writeFileSync(
+        path.join(recorder.dir, 'state.json'),
+        JSON.stringify({ 'secretless\u0000mcp/client/server/KEY1': 'legacy-value' }),
+      );
+      recorder.setMode({ kind: 'locked' });
+
+      await expect(backend.resolve('mcp/client/server')).rejects.toThrow(
+        /would not return "mcp\/client\/server\/KEY1"/,
+      );
+    });
+
+    it('refuses to report a key absent when no Secret Service is reachable', async () => {
+      // Measured: with no session bus, `lookup` exits 1 and says why on stderr.
+      fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['mcp/client/server/KEY1']));
+      recorder.setMode({ kind: 'fail', status: 1, stderr: 'secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY\n' });
+
+      const err = await backend.resolve('mcp/client/server').then(
+        () => { throw new Error('resolve did not reject'); },
+        (e: Error) => e,
+      );
+      expect(err.message).toMatch(/would not return "mcp\/client\/server\/KEY1"/);
+      expect(err.message).toContain('secret-tool lookup exit status: 1');
+      expect(err.message).toContain('Cannot autolaunch D-Bus without X11 $DISPLAY');
+      // The lookup's answer was an error, so no search was needed to settle it.
+      expect(recorder.calls().map(c => c.argv[0])).toEqual(['lookup']);
+    });
+
+    it('refuses to report a key absent when the search that would settle it also fails', async () => {
+      // A silent exit 1 from `search` is not what an absent entry looks like:
+      // that is exit 0 with nothing listed.
+      fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['mcp/client/server/KEY1']));
+      recorder.setMode({ kind: 'fail', status: 1, stderr: '' });
+
+      await expect(backend.resolve('mcp/client/server')).rejects.toThrow(
+        /would not return "mcp\/client\/server\/KEY1"[\s\S]*secret-tool search exit status: 1/,
+      );
     });
   });
 

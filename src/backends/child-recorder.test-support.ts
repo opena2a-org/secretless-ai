@@ -32,7 +32,9 @@ export type RecorderMode =
   /** Store a different value from the one given, then exit 0. */
   | { kind: 'wrong' }
   /** Answer `-w` but fail the `-g` encoding probe (security only). */
-  | { kind: 'probe-fails' };
+  | { kind: 'probe-fails' }
+  /** The collection is locked and no unlock dialog is answered (secret-tool only). */
+  | { kind: 'locked' };
 
 export interface Recorder {
   /** Directory holding the program, its records and its state. */
@@ -218,6 +220,13 @@ process.exit(run(argv));
  * Stands in for `secret-tool`: `store` reads the value from stdin, `lookup`
  * prints it with no trailing newline, `clear` removes it and exits 0 either
  * way, as libsecret's tool does.
+ *
+ * Models what was measured with libsecret 0.20.5 and 0.21.7 against
+ * gnome-keyring: `lookup` of an absent entry exits 1 and prints nothing on
+ * either stream; `search` of an absent entry exits 0 and prints nothing; in a
+ * locked collection (mode `locked`, unlock dialog not shown) `lookup` of a
+ * stored entry also exits 1 and prints nothing, while `search` still lists it,
+ * without its secret, and exits 0.
  */
 export function makeSecretToolRecorder(): Recorder {
   return makeRecorder('secretless-secret-tool-recorder-', 'secret-tool', `
@@ -227,6 +236,7 @@ function attrs(args) {
   return out;
 }
 function keyOf(a) { return String(a.service) + '\\u0000' + String(a.account); }
+const locked = control.kind === 'locked';
 const sub = argv[0];
 if (sub === 'store') {
   const rest = argv.slice(1).filter(x => !x.startsWith('--label='));
@@ -236,8 +246,18 @@ if (sub === 'store') {
 }
 if (sub === 'lookup') {
   const v = state[keyOf(attrs(argv.slice(1)))];
-  if (v === undefined) process.exit(1);
+  if (v === undefined || locked) process.exit(1);
   process.stdout.write(v);
+  process.exit(0);
+}
+if (sub === 'search') {
+  const a = attrs(argv.slice(1));
+  const v = state[keyOf(a)];
+  if (v === undefined) process.exit(0);
+  process.stdout.write('[/org/freedesktop/secrets/collection/login/1]\\nlabel = Secretless: ' + a.account + '\\n');
+  if (locked) process.stderr.write('secret-tool: Cannot get secret of a locked object\\n');
+  else process.stdout.write('secret = ' + v + '\\n');
+  process.stderr.write('attribute.account = ' + a.account + '\\nattribute.service = ' + a.service + '\\n');
   process.exit(0);
 }
 if (sub === 'clear') {
