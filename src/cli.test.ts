@@ -848,7 +848,7 @@ describe('clean names the lines it did not read', () => {
   const itIfBuilt = hasBuild ? it : it.skip;
 
   // Split so this file is not itself a credential-bearing file.
-  const PAT = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+  const PAT = ['gh', 'p_', 'FAKER1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6'].join('');
 
   function cli(args: string[]) {
     return spawnSync(process.execPath, [CLI_PATH, ...args], {

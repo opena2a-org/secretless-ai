@@ -204,7 +204,7 @@ describe('scanTranscriptFile', () => {
 
   it('returns the number of a line over the length cap, which it leaves unread', () => {
     const filePath = path.join(dir, 'session.jsonl');
-    const pat = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+    const pat = ['gh', 'p_', 'FAKER1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6'].join('');
     const long = JSON.stringify({ message: { content: 'x'.repeat(MAX_LINE_SIZE) + ' token ' + pat } });
     fs.writeFileSync(filePath, [JSON.stringify({ message: { content: 'hello' } }), long].join('\n') + '\n');
 
@@ -216,7 +216,7 @@ describe('scanTranscriptFile', () => {
 
   it('CONTROL: a line at the length cap is read, not reported as unread', () => {
     const filePath = path.join(dir, 'session.jsonl');
-    const pat = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+    const pat = ['gh', 'p_', 'FAKER1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6'].join('');
     const head = JSON.stringify({ message: { content: ' token ' + pat } });
     const content = 'x'.repeat(MAX_LINE_SIZE - head.length);
     const atCap = JSON.stringify({ message: { content: content + ' token ' + pat } });
@@ -380,7 +380,7 @@ describe('cleanTranscripts', () => {
 
   it('counts the lines over the length cap that it leaves unchanged, per file', () => {
     const filePath = path.join(dir, 'session.jsonl');
-    const pat = ['ghp_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+    const pat = ['gh', 'p_', 'FAKER1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6'].join('');
     const long = JSON.stringify({ message: { content: 'x'.repeat(MAX_LINE_SIZE) + ' token ' + pat } });
     const lines = [
       JSON.stringify({ message: { content: 'key: sk-ant-api03-abc123def456abc123def456abc123' } }),
