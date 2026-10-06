@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LocalBackend } from './local';
 import { MacOSKeychainBackend, SECURITY_PROGRAM } from './keychain-macos';
-import { BACKEND_CHILD_TIMEOUT_MS, execFileSyncBounded } from './bounded-child';
+import { BACKEND_CHILD_TIMEOUT_MS, OsKeychainRefusedError, execFileSyncBounded } from './bounded-child';
 import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
@@ -286,6 +286,10 @@ function probe(program: string, args: string[], internals?: ProbeInternals): voi
  * `isKeychainLikely()` for read-only display paths; reserve this for genuine
  * pre-flight checks (e.g. `backend set keychain`). `security` is run by its
  * absolute path: a program of that name earlier on PATH never runs.
+ *
+ * Under `SECRETLESS_OS_KEYCHAIN=off` the probe is refused before it starts;
+ * the answer is then "not available" with the refusal's own text, Verify and
+ * Fix lines included, as the message, not a generic "not accessible".
  */
 export function isKeychainAvailable(
   internals?: ProbeInternals,
@@ -296,7 +300,8 @@ export function isKeychainAvailable(
     try {
       probe(SECURITY_PROGRAM, ['default-keychain'], internals);
       return { available: true, platform: 'macOS', message: 'macOS Keychain is available' };
-    } catch {
+    } catch (err) {
+      if (err instanceof OsKeychainRefusedError) return { available: false, platform: 'macOS', message: err.message };
       return { available: false, platform: 'macOS', message: 'macOS Keychain is not accessible' };
     }
   }
@@ -305,7 +310,8 @@ export function isKeychainAvailable(
     try {
       probe('which', ['secret-tool'], internals);
       return { available: true, platform: 'Linux', message: 'secret-tool is available (Linux Secret Service)' };
-    } catch {
+    } catch (err) {
+      if (err instanceof OsKeychainRefusedError) return { available: false, platform: 'Linux', message: err.message };
       return {
         available: false,
         platform: 'Linux',

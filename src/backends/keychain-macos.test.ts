@@ -245,8 +245,26 @@ describe('MacOSKeychainBackend against a security recorder', () => {
     });
 
     it('SLS-10.AC3 a value that does not fit on one line is refused by name and no child starts', async () => {
-      const value = randomValue(2100);
+      // leaksAny reports any 4-character run the message shares with the value
+      // or its hex, so a value drawn from the full alphabet shares one with the
+      // fixed refusal text now and then, and the test failed at random. The
+      // text depends only on the value's length: read it once with a filler,
+      // then draw the value only from printable characters that text does not
+      // contain and whose hex form ends in a-f. No run of the value can then
+      // occur in the text, and a run of its hex would need the shape guarded
+      // below.
+      const filler = await backend.store('secret/BIG', '.'.repeat(2100)).catch((e: Error) => e);
+      expect(filler).toBeInstanceOf(KeychainLineError);
+      const fixedText = (filler as Error).message;
+      const alphabet = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) => String.fromCharCode(0x21 + i))
+        .filter((c) => c.charCodeAt(0) % 16 >= 10 && !fixedText.includes(c));
+      expect(alphabet.length, `characters left for the value: ${alphabet.join('')}`).toBeGreaterThanOrEqual(8);
+      expect(fixedText).not.toMatch(/[2-7][a-f][2-7][a-f]|[a-f][2-7][a-f][2-7]/);
+      let value = '';
+      for (let i = 0; i < 2100; i++) value += alphabet[Math.floor(Math.random() * alphabet.length)];
+
       const err = await backend.store('secret/BIG', value).catch((e: Error) => e);
+      expect((err as Error).message, 'the refusal text depends on the length alone').toBe(fixedText);
       expect(err).toBeInstanceOf(KeychainLineError);
       expect((err as KeychainLineError).reason).toBe('line-too-long');
       expect((err as Error).message).not.toContain(value);

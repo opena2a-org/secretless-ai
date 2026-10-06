@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { SecretStore } from '../secret-store';
 import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
-import { CLI, CLI_BARE } from './utils';
+import { CLI, CLI_BARE, formatCommandError } from './utils';
 import { describeSecretShape } from '../secret-value';
 
 /**
@@ -83,7 +83,7 @@ export async function runSecret(args: string[]): Promise<number> {
           ensureShellHook();
           return 0;
         } catch (err) {
-          console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+          console.error(formatCommandError(err));
           return 1;
         }
       }
@@ -109,7 +109,7 @@ export async function runSecret(args: string[]): Promise<number> {
         ensureShellHook();
         return 0;
       } catch (err) {
-        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(formatCommandError(err));
         return 1;
       }
     }
@@ -158,7 +158,7 @@ export async function runSecret(args: string[]): Promise<number> {
         console.log();
         return 0;
       } catch (err) {
-        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(formatCommandError(err));
         return 1;
       }
     }
@@ -198,7 +198,7 @@ export async function runSecret(args: string[]): Promise<number> {
         }
         return 0;
       } catch (err) {
-        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(formatCommandError(err));
         return 1;
       }
     }
@@ -221,7 +221,7 @@ export async function runSecret(args: string[]): Promise<number> {
         console.error(`  Secret not found: ${name}`);
         return 1;
       } catch (err) {
-        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(formatCommandError(err));
         return 1;
       }
     }

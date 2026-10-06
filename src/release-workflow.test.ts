@@ -229,7 +229,7 @@ describe('release.yml is split into build, tarball review and publish', () => {
     expect(stripComments(CI)).not.toContain('id-token');
   });
 
-  it('SLS-06.AC1 the post-publish verification is versioned and checks predicateType and dist.integrity against the recorded digest', () => {
+  it('SLS-06.AC1 the post-publish verification is versioned and compares predicateType and dist.integrity with the recorded digest', () => {
     const publish = jobBlock(RELEASE, 'publish');
     const verify = stepBlocks(publish).find((step) => step.includes('dist.attestations'));
     expect(verify, 'publish has no attestation verify step').toBeDefined();

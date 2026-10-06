@@ -4,6 +4,7 @@ import { importEnvFile, detectEnvFiles } from '../env-import';
 import { runSetup } from '../setup';
 import { MANIFEST_FORMAT_HINT } from '../manifest';
 import { generateEnvExports, detectAgentRuntime } from '../env';
+import { formatCommandError } from './utils';
 
 export async function runRun(args: string[]): Promise<number> {
   // Parse --only flag before --
@@ -38,12 +39,9 @@ export async function runRun(args: string[]): Promise<number> {
   try {
     return await runWithSecrets(childCommand, childArgs, { only, ...(allowArgv ? { allowArgv } : {}) });
   } catch (err) {
-    // Indent every line, not just the first, matching the top-level handler in
-    // cli.ts. Today's messages happen to indent their own continuation lines,
-    // so this is not what saves the Verify/Fix block for them — it is what
-    // keeps a message that does NOT self-indent from landing at column 0.
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`\n  ${message.split('\n').join('\n  ')}\n`);
+    // The same printer as the top-level handler in cli.ts and `secret`, so a
+    // store error reads the same whichever command reached the store.
+    console.error(formatCommandError(err));
     return 1;
   }
 }

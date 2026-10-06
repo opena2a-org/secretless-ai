@@ -48,3 +48,18 @@ export function formatRemainingTime(seconds: number): string {
   const mins = Math.floor((seconds % 3600) / 60);
   return `${hours}h ${mins}m`;
 }
+
+/**
+ * The one layout for an error a command prints in place of its result: a
+ * blank line, `Error:` and the message's first line, every further line
+ * indented two spaces, and a blank line. A line the message already indents
+ * (the Verify and Fix lines most messages carry) keeps its own indent rather
+ * than being pushed to four, and a line that carries none still lands
+ * indented, never at column 0. `console.error(formatCommandError(err))`.
+ */
+export function formatCommandError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const [first, ...rest] = message.split('\n');
+  const body = rest.map((line) => (line === '' || /^\s/.test(line) ? line : `  ${line}`));
+  return ['', `  Error: ${first}`, ...body, ''].join('\n');
+}

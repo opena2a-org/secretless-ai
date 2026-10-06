@@ -7,7 +7,7 @@
 
 import * as path from 'path';
 import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode': 'import' };
-import { VERSION, CLI_BARE } from './commands/utils';
+import { VERSION, CLI_BARE, formatCommandError } from './commands/utils';
 // @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
 // so they're loaded via dynamic import() inside the async main().
 import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize } from './commands/core';
@@ -378,10 +378,8 @@ main().then(
     // Set SECRETLESS_DEBUG=1 when the stack is what you actually need.
     if (process.env.SECRETLESS_DEBUG) {
       console.error(err);
-    } else if (err instanceof Error) {
-      console.error(`\n  ${err.message.split('\n').join('\n  ')}\n`);
     } else {
-      console.error(`\n  ${String(err)}\n`);
+      console.error(formatCommandError(err));
     }
     process.exit(1);
   },
