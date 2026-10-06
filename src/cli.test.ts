@@ -943,6 +943,15 @@ describe('the OS keychain refusal reads the same from every command', () => {
     expect(run.stderr).toBe(list.stderr);
   });
 
+  itIfBuilt('`secret show` prints the refusal as the same block as `secret list`', async () => {
+    expect(process.env.SECRETLESS_OS_KEYCHAIN, 'vitest.config.ts sets the switch').toBe('off');
+    const list = await cliAsync(['secret', 'list'], keychainStoreEnv(keychainHome));
+    const show = await cliAsync(['secret', 'show', INDEXED], keychainStoreEnv(keychainHome));
+    expect(show.status).toBe(1);
+    expect(show.stderr).toContain(SWITCH_TAIL);
+    expect(show.stderr).toBe(list.stderr);
+  });
+
   itIfBuilt('`backend set keychain` gives the refusal, with its Verify and Fix lines, as the reason', async () => {
     const res = await cliAsync(['backend', 'set', 'keychain'], keychainStoreEnv(plainHome));
     expect(res.status).toBe(1);

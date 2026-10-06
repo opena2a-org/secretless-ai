@@ -387,7 +387,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         console.log();
         return stored ? 0 : 1;
       } catch (err) {
-        console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(formatCommandError(err));
         return 1;
       }
     }
