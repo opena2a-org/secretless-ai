@@ -359,10 +359,16 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   const nodePath = require('path') as typeof import('path');
   const runnable = (rel: string) => {
     const abs = nodePath.resolve(projectDir, rel);
-    const fromCwd = nodePath.relative(process.cwd(), abs);
+    const cwd = process.cwd();
+    const fromCwd = nodePath.relative(cwd, abs);
+    // From the filesystem root every path is "inside cwd", and the relative
+    // form is the absolute path minus its leading slash: `private/tmp/x/a.js`
+    // runs there but reads as a path under the current directory anywhere it
+    // is pasted (#120).
+    const atRoot = nodePath.parse(cwd).root === cwd;
     // A bare relative path is only usable when it stays inside cwd AND does not
     // read as a flag; anything else falls back to the absolute path.
-    const chosen = fromCwd && !fromCwd.startsWith('..') && !fromCwd.startsWith('-') ? fromCwd : abs;
+    const chosen = fromCwd && !atRoot && !fromCwd.startsWith('..') && !fromCwd.startsWith('-') ? fromCwd : abs;
     return shellQuote(chosen);
   };
 

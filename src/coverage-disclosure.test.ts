@@ -148,3 +148,36 @@ describe('the summary discloses what was not looked at', () => {
     expect(doc.summary.notEntered).toBe(1);
   });
 });
+
+describe('coverage-warning paths are printed so they run where they are pasted (#120)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // A file over the size cap is the warning that prints a path, a `Verify:`
+  // and a `Fix:`; a tiny cap produces it without writing megabytes.
+  async function humanOutput(dir: string, cwd: string): Promise<string> {
+    const lines: string[] = [];
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
+    await runScan(dir, { maxFileSizeBytes: 8 });
+    return lines.join('\n');
+  }
+
+  it('prints absolute paths when run from the filesystem root', async () => {
+    // From `/` the cwd-relative form of `/tmp/x/big.js` is `tmp/x/big.js`:
+    // runnable there, but it reads as a path under the current directory.
+    const dir = tree({ 'big.js': 'export const x = 1;\n' });
+    const big = path.join(dir, 'big.js');
+    const out = await humanOutput(dir, path.parse(dir).root);
+
+    expect(out).toContain(`Verify: head -c 4096 ${big}`);
+    expect(out).toContain(`npx secretless-ai scan ${dir} --max-file-size`);
+    expect(out).not.toContain(` ${path.relative(path.parse(dir).root, big)}`);
+  });
+
+  it('CONTROL: from a parent directory the path stays relative', async () => {
+    const dir = tree({ 'big.js': 'export const x = 1;\n' });
+    const out = await humanOutput(dir, path.dirname(dir));
+
+    expect(out).toContain(`Verify: head -c 4096 ${path.join(path.basename(dir), 'big.js')}`);
+  });
+});
