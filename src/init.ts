@@ -282,7 +282,8 @@ function configureClaudeCode(
       kind: read.kind,
       reason: read.reason,
     };
-    addSecretlessInstructions(path.join(projectDir, 'CLAUDE.md'), 'claude-code', result);
+    // No Stop hook is added on this path, so the block says nothing about a cleanup.
+    addSecretlessInstructions(path.join(projectDir, 'CLAUDE.md'), 'claude-code', result, '', false);
     return;
   }
   const settings = read.status === 'ok' ? read.data : {};
@@ -332,9 +333,7 @@ function configureClaudeCode(
   // Add Stop hook for transcript cleaning after conversations
   if (!settings.hooks.Stop) settings.hooks.Stop = [];
 
-  const hasTranscriptHook = settings.hooks.Stop.some(
-    (h: any) => h.hooks?.some((hh: any) => hh.command?.includes('secretless-ai'))
-  );
+  const hasTranscriptHook = hasTranscriptStopHook(settings.hooks.Stop);
 
   if (!hasTranscriptHook) {
     settings.hooks.Stop.push({
@@ -516,9 +515,17 @@ function configureClaudeCode(
 
   writeJsonFile(settingsPath, settings);
 
-  // 3. Add Secretless instructions to CLAUDE.md
+  // 3. Add Secretless instructions to CLAUDE.md. The block describes the
+  // Stop-hook cleanup only when the settings just written carry that hook.
   const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
-  addSecretlessInstructions(claudeMdPath, 'claude-code', result);
+  addSecretlessInstructions(
+    claudeMdPath, 'claude-code', result, '', hasTranscriptStopHook(settings.hooks.Stop),
+  );
+}
+
+/** True when a Stop hook entry runs a `secretless-ai` command. */
+function hasTranscriptStopHook(stop: any[]): boolean {
+  return stop.some((h: any) => h.hooks?.some((hh: any) => hh.command?.includes('secretless-ai')));
 }
 
 // ============================================================================
@@ -694,7 +701,13 @@ const SECRETLESS_MARKER = '<!-- secretless:managed -->';
 // or a local path before the command runs, and no hook reads tool output, so a
 // credential returned by a provider API reaches context unchecked. It is an
 // instruction to the assistant, not an enforced control, and says so.
-function buildSecretlessInstructions(): string {
+//
+// The last section says what happens to a credential that reaches the
+// conversation: it has already been sent to the model, so it is treated as
+// exposed. Nothing redacts it. The Stop hook's `clean --last` rewrites the
+// local session file after the turn, and only Claude Code has that hook, so
+// the cleanup is described only in a Claude Code file whose settings carry it.
+function buildSecretlessInstructions(tool: string, cleanupHookInstalled: boolean): string {
   // Detect which env vars are actually set
   const availableKeys: string[] = [];
   for (const envVar of Object.keys(SERVICE_HINTS)) {
@@ -712,6 +725,10 @@ function buildSecretlessInstructions(): string {
       keyTable += `| \`$${envVar}\` | ${hint.service} | \`${hint.authHeader}\` |\n`;
     }
   }
+
+  const cleanup = tool === 'claude-code' && cleanupHookInstalled
+    ? '- After each turn, a Claude Code hook runs `secretless-ai clean --last`, which rewrites the newest session file in each project directory under `~/.claude/projects` and replaces values that match known credential patterns. It does not stop a value from reaching the model or its provider. Do not rely on it to remove a value\n'
+    : '';
 
   return `
 ${SECRETLESS_MARKER}
@@ -741,11 +758,11 @@ ${keyTable}
 
 Verify setup: \`npx secretless-ai verify\`
 
-## Transcript Protection
+## Credentials in the conversation
 - NEVER ask users to paste API keys, tokens, or passwords into the conversation
 - If a user pastes a credential, immediately warn them and suggest using environment variables
-- Credentials in this conversation are automatically redacted by Secretless AI
-`;
+- A credential value that appears in this conversation has already reached the model and its provider. Treat it as exposed and tell the user to rotate it
+${cleanup}`;
 }
 
 /** What is at a path: a regular file, a directory, something else, or nothing. */
@@ -875,8 +892,16 @@ function writeInstructionFile(
  * A file that already carries the marker is left byte-identical. `preamble`
  * is written ahead of the block only when the file is being created, for
  * formats that need a header (the Cursor `.mdc` frontmatter).
+ * `cleanupHookInstalled` is true only when this run left the Claude Code Stop
+ * hook in place; the block then describes the cleanup it runs.
  */
-function addSecretlessInstructions(filePath: string, tool: string, result: InitResult, preamble = ''): void {
+function addSecretlessInstructions(
+  filePath: string,
+  tool: string,
+  result: InitResult,
+  preamble = '',
+  cleanupHookInstalled = false,
+): void {
   const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
 
   if (existing.includes(SECRETLESS_MARKER)) {
@@ -884,7 +909,7 @@ function addSecretlessInstructions(filePath: string, tool: string, result: InitR
   }
 
   const head = existing ? existing : preamble;
-  fs.writeFileSync(filePath, head + buildSecretlessInstructions());
+  fs.writeFileSync(filePath, head + buildSecretlessInstructions(tool, cleanupHookInstalled));
   if (existing) {
     result.filesModified.push(path.relative(process.cwd(), filePath));
   } else {

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+**The instruction block no longer says that credentials in the conversation are
+redacted.** The block `init` writes ended with the line "Credentials in this
+conversation are automatically redacted by Secretless AI". That line was wrong.
+For Claude Code, a hook runs `secretless-ai clean --last` after each turn; it
+rewrites the newest session file in each project directory under
+`~/.claude/projects` and replaces values that match known credential patterns.
+It does not stop a value from reaching the model or its provider, and no
+cleanup is installed for any other tool. The block now says so, under the
+heading "Credentials in the conversation". A file written by an earlier version
+keeps the old line, because `init` leaves a file that already holds the
+`<!-- secretless:managed -->` marker unchanged. To refresh one, delete the
+block from the marker line through the end of the "Transcript Protection" list,
+then run `npx secretless-ai@latest init`. If a credential value appeared in a
+conversation while the old line was in place, rotate it.
+
 **The guard hook lets only `secretless-ai` itself name the data directory.**
 The hook's data-directory rule listed reading commands (`cat`, `head`, `awk`
 and others), so any reader it did not list passed: a `python3`, `node`, `ruby`
