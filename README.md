@@ -100,6 +100,8 @@ npx secretless-ai secret list                    # names only, values are never 
 npx secretless-ai run --only STRIPE_SECRET_KEY -- node charge.js
 ```
 
+The command reads the value from its environment. `run` refuses to start a command whose arguments carry a stored value, because `ps` shows a process's arguments to every local process; for `psql`, store the password as `PGPASSWORD` and pass host, user and database as arguments. `--allow-argv` starts it anyway, with a warning.
+
 Reading a value back is TTY-gated: `secret get NAME` prints it in an interactive terminal, but is blocked in piped or AI-driven contexts unless `--force` is passed — and `init` installs deny rules so AI tools cannot run the `--force` form or dump an injected environment (`run -- env`).
 
 ### Ask your AI assistant to use a secret

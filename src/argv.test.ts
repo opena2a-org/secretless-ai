@@ -128,6 +128,12 @@ describe('prepareArgv: the child command after `--` is untouched', () => {
     expect(p.warnings).toEqual([]);
   });
 
+  it('`run --allow-argv` is accepted, and after `--` it is the child\'s token', () => {
+    const p = prepareArgv('run', ['run', '--allow-argv', '--only=A', '--', 'tool', '--allow-argv']);
+    expect(p.errors).toEqual([]);
+    expect(p.args).toEqual(['run', '--allow-argv', '--only', 'A', '--', 'tool', '--allow-argv']);
+  });
+
   it('a second `--` belongs to the child', () => {
     const p = prepareArgv('run', ['run', '--only=A', '--', 'sh', '-c', '--', 'x']);
     expect(p.args.slice(3)).toEqual(['--', 'sh', '-c', '--', 'x']);

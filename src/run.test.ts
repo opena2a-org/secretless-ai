@@ -23,13 +23,16 @@ describe('runWithSecrets', () => {
     const store = new SecretStore({ backend });
     await store.setSecret('TEST_SECRET', 'hello123');
 
-    // Use node to print the env var
+    // The child reports what it received through a file: comparing against the
+    // value inside its own `-e` script would put the value on its command line,
+    // which `run` refuses.
+    const seen = path.join(tmpDir, 'seen');
     const code = await runWithSecrets('node', ['-e', `
-      const val = process.env.TEST_SECRET;
-      if (val !== 'hello123') { process.exit(1); }
+      require('fs').writeFileSync(${JSON.stringify(seen)}, process.env.TEST_SECRET || '');
     `], { backend });
 
     expect(code).toBe(0);
+    expect(fs.readFileSync(seen, 'utf-8')).toBe('hello123');
   });
 
   it('injects only specified secrets with --only', async () => {
@@ -59,12 +62,14 @@ describe('runWithSecrets', () => {
     const store = new SecretStore({ backend });
     await store.setSecret('INJECTED', 'from-store');
 
+    const seen = path.join(tmpDir, 'seen');
     const code = await runWithSecrets('node', ['-e', `
       if (!process.env.HOME) process.exit(1);
-      if (process.env.INJECTED !== 'from-store') process.exit(2);
+      require('fs').writeFileSync(${JSON.stringify(seen)}, process.env.INJECTED || '');
     `], { backend });
 
     expect(code).toBe(0);
+    expect(fs.readFileSync(seen, 'utf-8')).toBe('from-store');
   });
 });
 
@@ -236,11 +241,13 @@ describe('run never writes a secret value to stderr (#117)', () => {
     const store = new SecretStore({ backend });
     await store.setSecret('OK_SECRET', 'sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L');
 
+    const seen = path.join(tmpDir, 'seen');
     const code = await runWithSecrets(
-      'node', ['-e', 'process.exit(process.env.OK_SECRET === "sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L" ? 0 : 3)'],
+      'node', ['-e', `require('fs').writeFileSync(${JSON.stringify(seen)}, process.env.OK_SECRET || '')`],
       { backend },
     );
     expect(code).toBe(0);
+    expect(fs.readFileSync(seen, 'utf-8')).toBe('sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L');
     expect(written).toBe('');
   });
 
@@ -252,11 +259,158 @@ describe('run never writes a secret value to stderr (#117)', () => {
     const value = 'sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L';
     await store.setSecret('TOKEN', value);
 
+    // `allowArgv`, because without it the value in the command name is refused
+    // before spawn is reached, and this test is about what spawn's error carries.
     const code = await runWithSecrets(
-      `no-such-command-${value}`, [], { backend },
+      `no-such-command-${value}`, [], { backend, allowArgv: true },
     );
     expect(code).toBe(1);
+    expect(written).toContain('Failed to start');
     expect(written).not.toContain(value);
     expect(written).not.toContain('QQ7ZX9');
+  });
+});
+
+/**
+ * A resolved value on the child's command line. `run --only DB_URL -- psql
+ * "$DB_URL"` hands psql the connection URL as an argument — the calling shell
+ * expands the reference before `run` starts — and a process's arguments are
+ * readable by every local process for as long as it runs. `ps` showed the
+ * whole URL, password included, for the life of the psql session.
+ *
+ * The value here is assembled at run time so this file never carries a
+ * connection-URL literal.
+ */
+describe('run refuses a resolved value on the child command line', () => {
+  let tmpDir: string;
+  let backend: LocalBackend;
+  let marker: string;
+  let written: string;
+  let restore: (() => void) | null = null;
+
+  const PASSWORD = 'Hq7vZ2pLx9Kd4mWt';
+  const DB_URL = ['postgres', '://', 'app_user', ':', PASSWORD, '@', 'db.example.test', ':5432/appdb'].join('');
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-run-argv-'));
+    backend = new LocalBackend({ storeDir: tmpDir, key: 'test-key' });
+    marker = path.join(tmpDir, 'child-ran');
+    written = '';
+    const original = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: unknown }).write = (chunk: unknown) => {
+      written += String(chunk);
+      return true;
+    };
+    restore = () => { (process.stderr as unknown as { write: unknown }).write = original; };
+  });
+
+  afterEach(() => {
+    if (restore) restore();
+    restore = null;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A child that records that it started, then exits 0. */
+  const MARK = () => ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`];
+
+  it('does not start the child when an argument carries the value, and names only the variable', async () => {
+    await new SecretStore({ backend }).setSecret('REGISTRY_DATABASE_URL', DB_URL);
+
+    const code = await runWithSecrets('node', [...MARK(), DB_URL], {
+      backend, only: ['REGISTRY_DATABASE_URL'],
+    });
+
+    expect(code).toBe(1);
+    expect(fs.existsSync(marker), 'child started with the value on its command line').toBe(false);
+    expect(written).toContain('REGISTRY_DATABASE_URL');
+    expect(written).toContain('--allow-argv');
+    expect(written).not.toContain(DB_URL);
+    expect(written).not.toContain(PASSWORD);
+  });
+
+  it('catches the value inside a larger argument and in its URL-encoded form', async () => {
+    const raw = 'p@ss/w:rd#Q7vZ2pLx';
+    await new SecretStore({ backend }).setSecret('PGPASS_RAW', raw);
+
+    const embedded = await runWithSecrets('node', [...MARK(), `--password=${raw}`], { backend });
+    expect(embedded).toBe(1);
+
+    const encoded = ['postgres', '://', 'app_user:', encodeURIComponent(raw), '@db.example.test/appdb'].join('');
+    const viaUrl = await runWithSecrets('node', [...MARK(), encoded], { backend });
+    expect(viaUrl).toBe(1);
+
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(written).not.toContain(raw);
+    expect(written).not.toContain(encodeURIComponent(raw));
+  });
+
+  it('checks the command position too, without echoing it', async () => {
+    await new SecretStore({ backend }).setSecret('TOKEN', 'sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L');
+
+    const code = await runWithSecrets('no-such-command-sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L', [], { backend });
+    expect(code).toBe(1);
+    expect(written).toContain('TOKEN');
+    expect(written).not.toContain('QQ7ZX9');
+  });
+
+  it('points psql at the environment shape', async () => {
+    await new SecretStore({ backend }).setSecret('REGISTRY_DATABASE_URL', DB_URL);
+
+    const code = await runWithSecrets('psql', [DB_URL], { backend });
+    expect(code).toBe(1);
+    expect(written).toContain('PGPASSWORD');
+    expect(written).toContain('PGHOST');
+    expect(written).toContain('service=');
+  });
+
+  it('points curl at a header read from stdin or a file', async () => {
+    await new SecretStore({ backend }).setSecret('API_TOKEN', 'tok-QQ7ZX9WKPV4RJT2MHB6');
+
+    const code = await runWithSecrets(
+      '/usr/bin/curl', ['-H', 'Authorization: Bearer tok-QQ7ZX9WKPV4RJT2MHB6', 'https://api.example.test'], { backend },
+    );
+    expect(code).toBe(1);
+    expect(written).toContain('-H @');
+    expect(written).not.toContain('QQ7ZX9');
+  });
+
+  it('--allow-argv starts the child and warns that the value is visible in process listings', async () => {
+    await new SecretStore({ backend }).setSecret('REGISTRY_DATABASE_URL', DB_URL);
+
+    const code = await runWithSecrets('node', [...MARK(), DB_URL], {
+      backend, only: ['REGISTRY_DATABASE_URL'], allowArgv: true,
+    });
+
+    expect(code).toBe(0);
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(written).toContain('REGISTRY_DATABASE_URL');
+    expect(written).toMatch(/process listing/);
+    expect(written).not.toContain(DB_URL);
+    expect(written).not.toContain(PASSWORD);
+  });
+
+  it('CONTROL: the psql environment shape runs, with the value only in the environment', async () => {
+    await new SecretStore({ backend }).setSecret('PGPASSWORD', PASSWORD);
+    const seen = path.join(tmpDir, 'seen');
+
+    const code = await runWithSecrets('node', [
+      '-e', `require('fs').writeFileSync(${JSON.stringify(seen)}, process.env.PGPASSWORD || '')`,
+      '--', '-h', 'db.example.test', '-U', 'app_user', '-d', 'appdb',
+    ], { backend, only: ['PGPASSWORD'] });
+
+    expect(code).toBe(0);
+    expect(fs.readFileSync(seen, 'utf-8')).toBe(PASSWORD);
+    expect(written).toBe('');
+  });
+
+  it('CONTROL: a value shorter than eight characters does not block a matching argument', async () => {
+    // `NODE_ENV=test` stored alongside real credentials must not refuse
+    // `run -- npm test`.
+    await new SecretStore({ backend }).setSecret('MODE', 'test');
+
+    const code = await runWithSecrets('node', [...MARK(), 'test'], { backend });
+    expect(code).toBe(0);
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(written).toBe('');
   });
 });

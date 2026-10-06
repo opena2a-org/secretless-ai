@@ -107,8 +107,16 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
   },
   run: {
     summary: 'Run a command with secrets injected into its environment.',
-    usage: ['[--only KEY1,KEY2] -- <command> [args...]'],
-    flags: { '--only': ['KEY1,KEY2', 'Inject only the named secrets'] },
+    usage: ['[--only KEY1,KEY2] [--allow-argv] -- <command> [args...]'],
+    flags: {
+      '--only': ['KEY1,KEY2', 'Inject only the named secrets'],
+      '--allow-argv': 'Start the command even when a secret value is on its command line',
+    },
+    notes: [
+      'A secret value on the command line is visible in process listings (ps), so',
+      'run refuses it unless --allow-argv is given. Let the command read the value',
+      'from its environment instead.',
+    ],
   },
   env: {
     summary: 'Output export statements for the shell.',

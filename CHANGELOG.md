@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**`run` refuses to start a command whose arguments carry a stored value.**
+`secretless-ai run --only DB_URL -- psql "$DB_URL"` used to start psql with
+the connection URL as its argument, because the calling shell expands the
+reference before `run` starts; a process's arguments are readable by every
+local process (`ps`, process monitors, crash reports) for as long as it runs.
+`run` now compares the command and its arguments against each injected value
+of eight or more characters, verbatim and URL-encoded, and when one matches it
+exits 1 without starting the command. The message names the variable, never
+the value, and gives the environment shape for the program: `PGPASSWORD` with
+host, user and database as arguments (or a `service=` entry) for psql and the
+other libpq tools, a header read from stdin with `-H @-` for curl. The new
+`--allow-argv` flag, given before `--`, starts the command anyway and prints a
+warning that the value is visible in process listings. Values shorter than
+eight characters are not checked. The vault guide's curl example now passes
+the header on stdin.
+
 **`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
 CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS
 Keychain and Linux Secret Service CLIs; reads and writes through those backends
