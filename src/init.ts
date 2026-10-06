@@ -1096,6 +1096,356 @@ const CMD_POSITION =
 // after `.env` is a dot, not an identifier character.
 const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9]|$)';
 
+// The Bash arms below match command TEXT, so they refused commands that only
+// CARRY a secret-file token without opening anything: a count-only grep whose
+// pattern names `.env` inside a JavaScript regex, a grep for the shell-hook line
+// `eval "$(secretless-ai env)"`, and a heredoc that writes a note mentioning a
+// shell rc file and `.env`. This program, run by the hook under python3, removes
+// exactly that text before the arms run: the PATTERN operand of a plain grep, and
+// the BODY of a heredoc. Every file a command opens stays in the text, so
+// `grep -c x .env`, `grep -c x < .env` and `cat .env.example` are refused as
+// before.
+//
+// Removing text is only sound when nothing in the command can turn the removed
+// text back into a filename; that is the bypass that sank the template exemption
+// (see NOTE ON TEMPLATE FILES). So the program prints a reduced command only when
+// it understands the WHOLE command, and prints nothing otherwise, which leaves the
+// arms on the full text:
+//   - no expansion at all: no `$` outside single quotes (so no `$_`, `$(...)` or
+//     `${...}`), no backtick, no `(` `)` `{` `}`, no comment, no zsh numeric
+//     glob (`<1-5>`, which zsh does not read as a redirection);
+//   - every command is one of a few programs that neither run a command nor read
+//     file NAMES from their input (grep, cat, head, tail, wc, cut, tr, tee, sort,
+//     uniq, mkdir, echo, printf), and none but grep, echo and printf takes a long
+//     option (`sort --files0-from=-` would read names from a pipe);
+//   - grep's options are ones GNU and BSD grep parse the same way, none follows
+//     an operand (argument order must not depend on POSIXLY_CORRECT), and the
+//     pattern word has no unquoted glob character, so the shell cannot expand it
+//     into extra file operands;
+//   - a heredoc body is removed only when its delimiter is quoted, or when the
+//     body has no `$`, backtick or backslash to expand.
+// `xargs`, `sh`, `python3`, `git` and anything else is not understood, so
+// `grep -o '\.env' f | xargs cat` and `cat > x.sh <<'EOF' ... sh x.sh` are judged
+// on their full text, as before. Without python3 nothing is reduced.
+//
+// The reduction is in addition to the accessor rewrite (NOTE ON ENVIRONMENT
+// ACCESSORS), which still covers git grep: the file-read arm refuses only a match
+// that survives both. The data-directory arm, the process-listing, bare-env and
+// git-credential arms, and custom rules read the full command.
+//
+// Kept free of backticks and `${` so it can sit in the template literal below.
+const GUARD_COMMAND_ANALYZER = String.raw`import sys
+
+SAFE = {"grep", "egrep", "fgrep", "cat", "head", "tail", "wc", "cut", "tr",
+        "tee", "sort", "uniq", "mkdir", "echo", "printf"}
+GREPS = {"grep", "egrep", "fgrep"}
+NOARG = set("abcEFGHhIiLlnoqRrsUvwxZz")
+LONG_NOARG = {
+    "--count", "--files-with-matches", "--files-without-match", "--ignore-case",
+    "--line-number", "--recursive", "--no-filename", "--with-filename",
+    "--only-matching", "--quiet", "--silent", "--invert-match", "--word-regexp",
+    "--line-regexp", "--extended-regexp", "--fixed-strings", "--basic-regexp",
+    "--no-messages", "--byte-offset", "--text", "--null", "--line-buffered",
+    "--color", "--colour",
+}
+LONG_GLOB = ("--include=", "--exclude=", "--exclude-dir=")
+LONG_VALUE = ("--color=", "--colour=", "--max-count=", "--context=",
+              "--after-context=", "--before-context=", "--binary-files=")
+PLAIN = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.,:/@%+=-")
+BLANKS = (" ", "\t")
+OPS = ("&>>", "<<<", "<<-", "&&", "||", ";;", "|&", "<<", ">>", ">|", "<&", ">&",
+       "<>", "&>", "|", "&", ";", "<", ">")
+SEPARATORS = ("|", "||", "&&", ";", "&", "|&")
+REDIRECTS = ("&>>", "<<<", "<<-", "<<", ">>", ">|", "<&", ">&", "<>", "&>", "<", ">")
+SQ, DQ, BSL, BTK = chr(39), chr(34), chr(92), chr(96)
+
+
+class Bail(Exception):
+    pass
+
+
+class Word:
+    def __init__(self, start, end, value, plain):
+        self.start, self.end, self.value, self.plain = start, end, value, plain
+
+
+def read_word(cmd, i):
+    n = len(cmd)
+    start, val, plain = i, [], True
+    while i < n:
+        c = cmd[i]
+        if c in BLANKS or c == "\n" or c in "|&;<>":
+            break
+        if c in "(){}$" or c == BTK:
+            raise Bail
+        if c == SQ:
+            j = cmd.find(SQ, i + 1)
+            if j < 0:
+                raise Bail
+            val.append(cmd[i + 1:j])
+            i = j + 1
+            continue
+        if c == DQ:
+            i += 1
+            while True:
+                if i >= n:
+                    raise Bail
+                d = cmd[i]
+                if d == DQ:
+                    i += 1
+                    break
+                if d == "$" or d == BTK:
+                    raise Bail
+                if d == BSL and i + 1 < n and cmd[i + 1] in ("$", BTK, DQ, BSL, "\n"):
+                    if cmd[i + 1] != "\n":
+                        val.append(cmd[i + 1])
+                    i += 2
+                    continue
+                val.append(d)
+                i += 1
+            continue
+        if c == BSL:
+            if i + 1 >= n:
+                raise Bail
+            if cmd[i + 1] != "\n":
+                val.append(cmd[i + 1])
+            i += 2
+            continue
+        if c == "#" and i == start:
+            raise Bail
+        if c not in PLAIN or (c in "=~" and i == start):
+            plain = False
+        val.append(c)
+        i += 1
+    return Word(start, i, "".join(val), plain), i
+
+
+def read_body(cmd, i, delim, dash, quoted, bodies):
+    n, start = len(cmd), i
+    while i < n:
+        j = cmd.find("\n", i)
+        end = n if j < 0 else j
+        line = cmd[i:end]
+        if (line.lstrip("\t") if dash else line) == delim:
+            body = cmd[start:i]
+            if not quoted and any(ch in body for ch in ("$", BTK, BSL)):
+                raise Bail
+            bodies.append((start, i))
+            return n if j < 0 else j + 1
+        if j < 0:
+            break
+        i = j + 1
+    raise Bail
+
+
+def tokenize(cmd):
+    n, i = len(cmd), 0
+    commands, current, pending, bodies = [], [], [], []
+    expect_delim = None
+    while i < n:
+        c = cmd[i]
+        if c in BLANKS:
+            i += 1
+            continue
+        if c == BSL and i + 1 < n and cmd[i + 1] == "\n":
+            i += 2
+            continue
+        if c == "\n":
+            if expect_delim is not None:
+                raise Bail
+            if current:
+                commands.append(current)
+                current = []
+            i += 1
+            for delim, dash, quoted in pending:
+                i = read_body(cmd, i, delim, dash, quoted, bodies)
+            pending = []
+            continue
+        if c in "|&;<>":
+            if c == "<":
+                # zsh reads <1-5> and <-> as a numeric glob, not a redirection
+                j = i + 1
+                while j < n and cmd[j].isdigit():
+                    j += 1
+                if j < n and cmd[j] == "-":
+                    j += 1
+                    while j < n and cmd[j].isdigit():
+                        j += 1
+                    if j < n and cmd[j] == ">":
+                        raise Bail
+            op = next(o for o in OPS if cmd.startswith(o, i))
+            if expect_delim is not None or op == ";;":
+                raise Bail
+            if op in SEPARATORS:
+                if not current:
+                    raise Bail
+                commands.append(current)
+                current = []
+            else:
+                current.append(("op", i, op))
+                if op in ("<<", "<<-"):
+                    expect_delim = op == "<<-"
+            i += len(op)
+            continue
+        word, j = read_word(cmd, i)
+        if expect_delim is not None:
+            if not word.value or "\n" in word.value:
+                raise Bail
+            quoted = any(q in cmd[i:j] for q in (SQ, DQ, BSL))
+            pending.append((word.value, expect_delim, quoted))
+            expect_delim = None
+        current.append(("word", word))
+        i = j
+    if pending or expect_delim is not None:
+        raise Bail
+    if current:
+        commands.append(current)
+    return commands, bodies
+
+
+def grep_patterns(args):
+    patterns, positional, explicit, end_opts, k = [], [], False, False, 0
+    while k < len(args):
+        w = args[k]
+        v = w.value
+        if not end_opts and v == "--":
+            if positional:
+                raise Bail
+            end_opts = True
+            k += 1
+            continue
+        if end_opts or not v.startswith("-") or v == "-":
+            positional.append(w)
+            k += 1
+            continue
+        if positional:
+            raise Bail
+        nxt = args[k + 1] if k + 1 < len(args) else None
+        if v.startswith("--"):
+            if v.startswith(LONG_GLOB):
+                k += 1
+                continue
+            if not w.plain:
+                raise Bail
+            if v in LONG_NOARG or v.startswith(LONG_VALUE):
+                k += 1
+            elif v.startswith("--regexp="):
+                explicit = True
+                patterns.append(w)
+                k += 1
+            elif v == "--regexp":
+                if nxt is None or not nxt.plain:
+                    raise Bail
+                explicit = True
+                patterns.append(nxt)
+                k += 2
+            elif v.startswith("--file="):
+                explicit = True
+                k += 1
+            elif v == "--file":
+                if nxt is None:
+                    raise Bail
+                explicit = True
+                k += 2
+            else:
+                raise Bail
+            continue
+        if not w.plain:
+            raise Bail
+        body = v[1:]
+        if body.isdigit():
+            k += 1
+            continue
+        step = 1
+        for idx, ch in enumerate(body):
+            rest = body[idx + 1:]
+            if ch in NOARG:
+                continue
+            if ch in "ABCm":
+                if rest:
+                    if not rest.isdigit():
+                        raise Bail
+                elif ch == "C" or nxt is None or not nxt.value.isdigit():
+                    raise Bail
+                else:
+                    step = 2
+            elif ch == "e":
+                explicit = True
+                if rest:
+                    patterns.append(w)
+                elif nxt is None or not nxt.plain:
+                    raise Bail
+                else:
+                    patterns.append(nxt)
+                    step = 2
+            elif ch == "f":
+                explicit = True
+                if not rest:
+                    if nxt is None:
+                        raise Bail
+                    step = 2
+            else:
+                raise Bail
+            break
+        k += step
+    if not explicit:
+        if not positional or not positional[0].plain:
+            raise Bail
+        patterns.append(positional[0])
+    return patterns
+
+
+def reducible_spans(cmd):
+    commands, bodies = tokenize(cmd)
+    spans = [(s, e, "") for s, e in bodies]
+    for tokens in commands:
+        words, k = [], 0
+        while k < len(tokens):
+            if tokens[k][0] == "op":
+                if tokens[k][2] not in REDIRECTS:
+                    raise Bail
+                if k + 1 >= len(tokens) or tokens[k + 1][0] != "word":
+                    raise Bail
+                k += 2
+                continue
+            w = tokens[k][1]
+            if (w.value.isdigit() and cmd[w.start:w.end] == w.value and k + 1 < len(tokens)
+                    and tokens[k + 1][0] == "op" and tokens[k + 1][1] == w.end):
+                k += 1
+                continue
+            words.append(w)
+            k += 1
+        if not words:
+            continue
+        name = words[0]
+        if cmd[name.start:name.end] != name.value or name.value not in SAFE:
+            raise Bail
+        if name.value in GREPS:
+            spans.extend((p.start, p.end, SQ + SQ) for p in grep_patterns(words[1:]))
+        elif name.value not in ("echo", "printf"):
+            if any(w.value.startswith("--") and w.value != "--" for w in words[1:]):
+                raise Bail
+    return spans
+
+
+def main():
+    try:
+        cmd = sys.stdin.buffer.read().decode("utf-8")
+        spans = sorted(reducible_spans(cmd))
+    except Exception:
+        return
+    out, last = [], 0
+    for start, end, repl in spans:
+        out.append(cmd[last:start])
+        out.append(repl)
+        last = end
+    out.append(cmd[last:])
+    sys.stdout.buffer.write(("OK:" + "".join(out)).encode("utf-8"))
+
+
+main()
+`;
+
 function generateClaudeHookScript(customRules?: CustomRules | null): string {
   // Three categories of secret-file signals. Each matches differently:
   //  - extensions: suffix match on basename, e.g. `server.key`, `prod.env`, `id_rsa.pem`.
@@ -1333,8 +1683,30 @@ SECRETLESS_SEARCH_SHAPE
       [ -z "$SEARCH_PATTERN" ] || FILE_READ_COMMAND="$SEARCH_HEAD$SEARCH_PATTERN$SEARCH_TAIL"
     fi
   fi
-  # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
-  if echo "$FILE_READ_COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
+  # OPERATION BEFORE TEXT. What the guard CAN remove is text that names no file
+  # the command opens: a plain grep's pattern and a heredoc's body. The analyzer
+  # prints the command without them, and only when it understands the whole
+  # command; otherwise SCAN_TEXT stays the full command. File operands are never
+  # removed, so the template over-block above is unchanged. The arms below that
+  # read SCAN_TEXT match the reduced text; the data-directory arm, the arms for
+  # process listings, a bare env and git credentials, and custom rules read the
+  # full command.
+  SCAN_TEXT="$COMMAND"
+  if command -v python3 >/dev/null 2>&1; then
+    IFS= read -r -d '' GUARD_ANALYZER <<'SECRETLESS_ANALYZER' || true
+${GUARD_COMMAND_ANALYZER}
+SECRETLESS_ANALYZER
+    REDUCED=$(printf '%s' "$COMMAND" | python3 -c "$GUARD_ANALYZER" 2>/dev/null || true)
+    case "$REDUCED" in
+      OK:*) SCAN_TEXT="\${REDUCED#OK:}" ;;
+    esac
+  fi
+  # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd).
+  # A match is refused only when it survives both exemptions above: the accessor
+  # rewrite and the analyzer's reduction each remove only text that names no file
+  # the command opens, so a match either one removes was never a file read.
+  if echo "$FILE_READ_COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}' \\
+    && echo "$SCAN_TEXT" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi
@@ -1344,28 +1716,28 @@ SECRETLESS_SEARCH_SHAPE
   # refused all the same, because this is a denylist over command TEXT. The
   # decision has to stand — see NOTE ON TEMPLATE FILES — so the reason carries the
   # ambiguity and the route out.
-  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
-  if echo "$COMMAND" | grep -qiE '(python3?|node)\\s+-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)\\s+-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret environment variables"}}'
     exit 0
   fi
   # Block eval-based env var extraction
-  if echo "$COMMAND" | grep -qiE '(eval\\s+echo|\\$\\{!).*${SECRET_VAR_REF}'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(eval\\s+echo|\\$\\{!).*${SECRET_VAR_REF}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked eval-based secret extraction"}}'
     exit 0
   fi
   # Block commands that echo secret env vars. The variable name may carry any
   # prefix: $ANTHROPIC_API_KEY and \${GITHUB_TOKEN} count, not just $API_KEY.
-  if echo "$COMMAND" | grep -qiE '(echo|printenv)\\s+${SAME_COMMAND}${SECRET_VAR_REF}'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(echo|printenv)\\s+${SAME_COMMAND}${SECRET_VAR_REF}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
     exit 0
   fi
   # printenv takes a bare NAME with no \`$\`, so the arm above never sees it.
-  if echo "$COMMAND" | grep -qiE 'printenv\\s+(-[A-Za-z0]+\\s+)*${SECRET_VAR_NAME}'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'printenv\\s+(-[A-Za-z0]+\\s+)*${SECRET_VAR_NAME}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
     exit 0
   fi
@@ -1373,7 +1745,7 @@ SECRETLESS_SEARCH_SHAPE
   # naming every secret variable at once. \`env\` is NOT matched here: it is
   # overwhelmingly used as a prefix (\`env -u VAR cmd\`), so its dump form has its
   # own arm below that tells the two apart.
-  if echo "$COMMAND" | grep -qiE '(^|[;&|]\\s*)printenv\\s*(-0\\s*)?$'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(^|[;&|]\\s*)printenv\\s*(-0\\s*)?$'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via printenv"}}'
     exit 0
   fi
@@ -1422,7 +1794,7 @@ SECRETLESS_SEARCH_SHAPE
     exit 0
   fi
   # Block secretless-ai secret extraction with --force
-  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+secret\\s+get.*--force'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+secret\\s+get.*--force'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked forced secret extraction"}}'
     exit 0
   fi
@@ -1439,13 +1811,13 @@ SECRETLESS_SEARCH_SHAPE
   # Block secretless-ai run with env/printenv to dump injected secrets. The
   # trailing boundary keeps env/printenv a whole word so "-- envsubst" (a legit
   # templating program) is not caught.
-  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+run.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+run.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai run"}}'
     exit 0
   fi
   # Block secretless-ai vault exec with env/printenv (same shape as run -- env,
   # for the identity vault's injected namespace credential).
-  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+vault\\s+exec.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+vault\\s+exec.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai vault exec"}}'
     exit 0
   fi
@@ -1455,7 +1827,7 @@ SECRETLESS_SEARCH_SHAPE
   # \`env\` as a whole subcommand: followed by any non-identifier char (space,
   # \`)\` in \`$(secretless-ai env)\`, \`;\`, \`|\`, a quote) or end of string — but
   # NOT a word char, so \`environment\` does not match.
-  if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+env([^a-zA-Z0-9_]|$)'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+env([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full secret-store dump via secretless-ai env"}}'
     exit 0
   fi
@@ -1482,6 +1854,9 @@ SECRETLESS_SEARCH_SHAPE
   # name (grep -rn for the literal string) reads no store and is refused anyway,
   # so the reason names it and points at the tools whose path guard can tell the
   # difference.
+  # This arm reads the full command, not SCAN_TEXT, so the analyzer's reduction
+  # (OPERATION BEFORE TEXT) does not lift that over-block or let a heredoc body
+  # name the directory.
   if echo "$COMMAND" | grep -qiE '\\.secretless-ai|\\.opena2a/secretless-ai'; then
     SECRETLESS_ONLY=0
     case "$COMMAND" in

@@ -500,10 +500,12 @@ describe('init', { timeout: 30_000 }, () => {
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
       // Both dead-end shapes from the contract: a committed template read, and
-      // a search pattern that merely contains a secret-file token.
+      // a search pattern that merely contains a secret-file token. A plain grep's
+      // pattern no longer reaches the arms (guard-command-operation.test.ts), so
+      // the pattern shape is a search the hook does not parse.
       const deadEnds = [
         'cat .env.example',
-        'grep -rn "dotenv(.env)" src',
+        'git grep -n "dotenv(.env)"',
       ];
       for (const c of deadEnds) {
         const out = runHookCmdRaw(hookPath, c);
@@ -526,13 +528,15 @@ describe('init', { timeout: 30_000 }, () => {
       // Pinned pre-change corpus for the secret-file-read arm. Every command
       // here denied before the message change and must still deny — including
       // the deliberate template over-block (exempting the template NAME from
-      // the command guard is a credential bypass; see init.ts).
+      // the command guard is a credential bypass; see init.ts). The pattern-only
+      // search is a git grep: a plain grep with the same pattern is now allowed,
+      // which guard-command-operation.test.ts pins.
       const mustBlock = [
         'cat .env',
         'cat .env.example',
         'head -5 prod.env',
         'grep AWS_SECRET .env',
-        'grep -rn "dotenv(.env)" src',
+        'git grep -n "dotenv(.env)"',
         'xxd server.key',
         'sed -n 1p client.pem',
         'strings cert.p12',
@@ -642,11 +646,14 @@ describe('init', { timeout: 30_000 }, () => {
       // secret files" arm) and a source search for the data-directory name (the
       // "secretless data directory" arm). Both still deny — a denylist over
       // command TEXT cannot tell the two apart, see NOTE ON TEMPLATE FILES in
-      // init.ts — so what the fix owes them is the reason, not the decision.
+      // init.ts — so what the fix owes them is the reason, not the decision. (The
+      // data-directory arm reads the whole command, so a plain grep's pattern
+      // still reaches it.)
       const patternOnly = [
         String.raw`node -e "re = new RegExp('\.env')"`,
         String.raw`python3 -c "import re; re.compile(r'\.pem')"`,
         String.raw`grep -rn "\.secretless-ai" src`,
+        String.raw`git grep -n "\.secretless-ai"`,
       ];
       for (const c of patternOnly) {
         const out = runHookCmdRaw(hookPath, c);
@@ -682,7 +689,7 @@ describe('init', { timeout: 30_000 }, () => {
       // `cat .env.example` over-block, and nothing allowed is newly blocked.
       for (const c of [
         'cat .env', 'cat .env.example', 'head -5 prod.env', 'grep AWS_SECRET .env',
-        'grep -rn "dotenv(.env)" src', 'xxd server.key', 'sed -n 1p client.pem',
+        'git grep -n "dotenv(.env)"', 'xxd server.key', 'sed -n 1p client.pem',
         'strings cert.p12',
       ]) {
         const out = runHookCmdRaw(hookPath, c);
