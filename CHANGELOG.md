@@ -246,6 +246,17 @@ secret-file arm that already did.
   with the engine. It copied each rule shallowly, so the returned `constraints`
   was the object `evaluate()` reads, and deleting `minTrustScore` from it turned
   a denying policy into an allowing one (#145).
+- The Linux Secret Service backend no longer reads a locked or unreachable
+  keyring as an empty one. Every `secret-tool lookup` failure was taken as
+  "not found", so a locked collection, a dismissed unlock dialog, a timed-out
+  lookup or a session with no Secret Service made `resolve` return nothing and
+  `run` inject nothing, with exit 0. `secret-tool` exits 1 and prints nothing
+  both for an absent entry and for an entry in a locked collection, so a silent
+  miss is now checked with `secret-tool search` on the same attributes, which
+  lists a locked entry without opening an unlock dialog. Only a miss that the
+  search confirms is absence; anything else is an error that names the secret,
+  never its value, and gives a read-only command that shows whether the
+  default collection is locked (#130).
 
 ### Changed
 
