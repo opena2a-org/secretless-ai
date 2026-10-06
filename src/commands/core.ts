@@ -281,6 +281,19 @@ export function shellQuote(p: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
 }
 
+/** C0 controls, DEL and C1 controls: bytes a terminal acts on instead of showing. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Show control characters in a scanned file name as `\xNN`. A file name in a
+ * scanned repository is attacker-chosen, and printed raw an escape sequence in
+ * it can clear or rewrite the lines around it.
+ */
+function visibleControls(s: string): string {
+  return s.replace(new RegExp(CONTROL_CHARS.source, 'g'), ch => `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+
 /**
  * Human-readable byte size for coverage warnings ("11 MB", "1.0 MB"), with the
  * byte count the rounded figure stands for.
@@ -550,8 +563,25 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       if (first) {
         console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(first.path)}`);
       }
-      if (stats.skips.fileCount > 0) {
-        console.log(`  ${c.dim(`${stats.skips.fileCount} file(s) were not opened (unsupported type, or a test file).`)}`);
+      console.log();
+    }
+    // Files are their own block, not a line inside the directory block. Nested
+    // there, a tree with no pruned directory printed nothing about a file it
+    // never opened, so a planted AWS key in `notes.txt` read as "No hardcoded
+    // credentials found." with no qualification. Naming a file scans it
+    // whatever its type, so `Scan one:` names a file, not a flag.
+    if (stats.skips.fileCount > 0) {
+      const n = stats.skips.fileCount;
+      console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)} — declared boundaries, not findings.`);
+      for (const f of stats.skips.files.slice(0, 8)) {
+        console.log(`  ${c.dim(`  ${visibleControls(runnable(f.path))} — ${f.reason}`)}`);
+      }
+      if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
+      // A name holding a control character cannot be copied as it reads, so it
+      // is listed but never offered as the command.
+      const first = stats.skips.files.find(f => !CONTROL_CHARS.test(f.path));
+      if (first) {
+        console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(first.path)}`);
       }
       console.log();
     }

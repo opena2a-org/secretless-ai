@@ -107,6 +107,7 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} scan --include-tests          Include test files in the source scan
     ${CLI} scan --include-config         Also scan config files not on the built-in list
     ${CLI} scan dist                     Scan a dependency or build output directory by path
+    ${CLI} scan notes.txt                Scan a file the scan did not open, whatever its type
 
   Shell History:
     ${CLI} scan --history         Scan shell history for credentials
