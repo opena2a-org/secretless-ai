@@ -11,7 +11,7 @@ import { effectiveBackendName } from '../backends/factory';
 import { getDaemonStatus } from '../broker/daemon';
 import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
-import { VERSION, IS_EMBEDDED, formatUptime, formatRemainingTime } from './utils';
+import { VERSION, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime } from './utils';
 import { explainFinding, isEngineAvailable } from '../nanomind';
 import { c, divider } from './colors';
 
@@ -1120,11 +1120,15 @@ export function runDoctor(autoFix: boolean): number {
           ? ' (login-only)'
           : '';
     const profileStatus = profile.exists
-      ? (profile.exportedVars.length > 0
-          ? `${profile.exportedVars.length} key(s)`
+      ? (profile.secretExports.length > 0
+          ? `${profile.secretExports.length} key(s)`
           : 'no keys')
       : 'not found';
     console.log(`    ${profile.exists ? '+' : '-'} ~/${require('path').basename(profile.path)}${tag}: ${profileStatus}`);
+    // Name and line only: the value never leaves the profile.
+    for (const exp of profile.secretExports) {
+      console.log(`        ${exp.name} (line ${exp.line})`);
+    }
   }
   console.log();
 
@@ -1134,6 +1138,9 @@ export function runDoctor(autoFix: boolean): number {
     for (const finding of result.findings) {
       const label = finding.severity.toUpperCase();
       console.log(`    [${label}] ${finding.message}`);
+      if (finding.verify) {
+        console.log(`        Verify: ${finding.verify}`);
+      }
       if (finding.fix) {
         console.log(`           Fix: ${finding.fix}`);
       }
@@ -1141,8 +1148,13 @@ export function runDoctor(autoFix: boolean): number {
     console.log();
   }
 
+  // --fix only moves known keys between profiles; a plain-text secret is
+  // moved into the store by the user, so it alone does not trigger it.
+  const plainText = result.findings.filter((f) => f.kind === 'plain-text');
+  const accessProblem = result.findings.some((f) => f.severity !== 'info' && f.kind !== 'plain-text');
+
   // Auto-fix if requested or if there are fixable issues
-  if (autoFix && result.health !== 'healthy') {
+  if (autoFix && accessProblem) {
     const fix = fixProfiles();
     if (fix) {
       console.log('  Auto-fix applied:');
@@ -1164,6 +1176,14 @@ export function runDoctor(autoFix: boolean): number {
     degraded: 'DEGRADED: Keys work in your terminal but may fail in subprocesses.',
     broken: 'BROKEN: Keys are not available to subprocesses.',
   };
+  if (!accessProblem && plainText.length > 0) {
+    const what = plainText.length === 1
+      ? 'A shell profile holds a secret in plain text.'
+      : `Shell profiles hold ${plainText.length} secrets in plain text.`;
+    console.log(`  DEGRADED: ${what}\n`);
+    console.log(`  Store each one with \`${CLI_BARE} secret set NAME\`, then remove its export line.\n`);
+    return 1;
+  }
   console.log(`  ${verdictMap[result.health]}\n`);
 
   if (result.health !== 'healthy') {

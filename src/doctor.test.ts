@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { spawnSync } from 'child_process';
 import { doctor, quickDiagnosis, fixProfiles } from './doctor';
 
 function tmpDir(): string {
@@ -384,6 +385,269 @@ describe('quickDiagnosis', () => {
 
     // .bash_profile is login-only, key not in env
     expect(result.wrongProfile).toContain('GITHUB_TOKEN');
+  });
+});
+
+describe('doctor: secrets under names outside the known list', () => {
+  let home: string;
+  // A synthetic value; the assertions below check it never leaves the profile.
+  const VALUE = 'FAKE-synthetic-jira-value-7f3a9c';
+
+  beforeEach(() => {
+    home = tmpDir();
+  });
+
+  afterEach(() => {
+    cleanup(home);
+  });
+
+  it('lists a plain-text export per profile and does not call it healthy', () => {
+    fs.writeFileSync(path.join(home, '.zprofile'), `export JIRA_TOKEN=${VALUE}\n`);
+    fs.writeFileSync(path.join(home, '.zshenv'), 'export ANTHROPIC_API_KEY="sk-ant-..."\n');
+
+    const result = doctor({
+      homeDir: home,
+      shell: '/bin/zsh',
+      platform: 'darwin',
+      envOverride: { ANTHROPIC_API_KEY: 'set' },
+    });
+
+    const zprofile = result.profiles.find((p) => p.path.endsWith('.zprofile'))!;
+    expect(zprofile.secretExports).toEqual([{ name: 'JIRA_TOKEN', line: 1, plainText: true }]);
+    const zshenv = result.profiles.find((p) => p.path.endsWith('.zshenv'))!;
+    expect(zshenv.secretExports).toEqual([{ name: 'ANTHROPIC_API_KEY', line: 1, plainText: true }]);
+
+    expect(result.health).toBe('degraded');
+    const plainText = result.findings.filter((f) => f.kind === 'plain-text');
+    expect(plainText).toHaveLength(1);
+    expect(plainText[0].severity).toBe('warn');
+    expect(plainText[0].message).toBe('JIRA_TOKEN is stored in plain text in ~/.zprofile (line 1)');
+    expect(plainText[0].fix).toContain('secretless-ai secret set JIRA_TOKEN');
+    expect(plainText[0].fix).toContain('remove line 1 from ~/.zprofile');
+    expect(plainText[0].verify).toBe("grep -noE '^[[:space:]]*export[[:space:]]+JIRA_TOKEN=' ~/.zprofile");
+    expect(JSON.stringify(result)).not.toContain(VALUE);
+  });
+
+  it('does not call a file path a plain-text secret, quoted or not', () => {
+    fs.writeFileSync(
+      path.join(home, '.zshenv'),
+      [
+        'export SIGNING_KEY=/Users/me/.keys/signing',
+        'export SIGNING_KEY="/Users/me/.keys/signing"',
+        "export SIGNING_KEY='/Users/me/.keys/signing'",
+        'export SSH_KEY=./keys/id_ed25519',
+        'export SSH_KEY="./keys/id_ed25519"',
+        "export SSH_KEY='../keys/id_ed25519'",
+        'export SSH_KEY=../keys/id_ed25519',
+        '',
+      ].join('\n'),
+    );
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    const zshenv = result.profiles.find((p) => p.path.endsWith('.zshenv'))!;
+    expect(zshenv.secretExports.map((e) => [e.name, e.line, e.plainText])).toEqual([
+      ['SIGNING_KEY', 1, false],
+      ['SIGNING_KEY', 2, false],
+      ['SIGNING_KEY', 3, false],
+      ['SSH_KEY', 4, false],
+      ['SSH_KEY', 5, false],
+      ['SSH_KEY', 6, false],
+      ['SSH_KEY', 7, false],
+    ]);
+    expect(result.findings.filter((f) => f.kind === 'plain-text')).toHaveLength(0);
+    // A file path is not an API key, so with nothing else the verdict is BROKEN.
+    expect(result.health).toBe('broken');
+    expect(result.findings.filter((f) => f.severity === 'error').map((f) => f.message)).toEqual([
+      'No API keys found in env vars or shell profiles',
+    ]);
+
+    // The literal JIRA_TOKEN beside them is still reported.
+    fs.writeFileSync(path.join(home, '.zprofile'), `export JIRA_TOKEN=${VALUE}\n`);
+    const withLiteral = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+    expect(withLiteral.findings.filter((f) => f.kind === 'plain-text').map((f) => f.message)).toEqual([
+      'JIRA_TOKEN is stored in plain text in ~/.zprofile (line 1)',
+    ]);
+    expect(withLiteral.health).toBe('degraded');
+  });
+
+  const itPosix = process.platform !== 'win32' ? it : it.skip;
+
+  itPosix('gives a Verify command that finds the line and never prints the value', () => {
+    fs.writeFileSync(
+      path.join(home, '.zshenv'),
+      `export PATH="$HOME/bin:$PATH"\n  export   JIRA_TOKEN="${VALUE}"\n`,
+    );
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    const [finding] = result.findings.filter((f) => f.kind === 'plain-text');
+    expect(finding.message).toBe('JIRA_TOKEN is stored in plain text in ~/.zshenv (line 2)');
+    const res = spawnSync('/bin/sh', ['-c', finding.verify!], {
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH, HOME: home },
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout.trim()).toBe('2:  export   JIRA_TOKEN=');
+    expect(res.stdout).not.toContain(VALUE);
+  });
+
+  it('reports the line of each export, not only the first', () => {
+    fs.writeFileSync(
+      path.join(home, '.zshenv'),
+      `# tokens\nexport PATH="$HOME/bin:$PATH"\nexport DB_PASSWORD='${VALUE}'\nexport CLIENT_SECRET="${VALUE}"\n`,
+    );
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    const zshenv = result.profiles.find((p) => p.path.endsWith('.zshenv'))!;
+    expect(zshenv.secretExports.map((e) => [e.name, e.line])).toEqual([
+      ['DB_PASSWORD', 3],
+      ['CLIENT_SECRET', 4],
+    ]);
+    expect(result.findings.filter((f) => f.kind === 'plain-text').map((f) => f.message)).toEqual([
+      'DB_PASSWORD is stored in plain text in ~/.zshenv (line 3)',
+      'CLIENT_SECRET is stored in plain text in ~/.zshenv (line 4)',
+    ]);
+  });
+
+  it('lists a secret fetched at shell start without calling it plain text', () => {
+    fs.writeFileSync(
+      path.join(home, '.zshenv'),
+      [
+        'export GH_TOKEN=$(gh auth token)',
+        'export JIRA_TOKEN="$(cat ~/.config/jira)"',
+        'export NPM_KEY=`pass show npm`',
+        'export DEPLOY_SECRET="${OTHER_SECRET}"',
+        'export SIGNING_KEY=~/.keys/signing',
+        'export EMPTY_TOKEN=',
+        'export BLANK_TOKEN=""',
+        '',
+      ].join('\n'),
+    );
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    const zshenv = result.profiles.find((p) => p.path.endsWith('.zshenv'))!;
+    expect(zshenv.secretExports.map((e) => e.name)).toEqual([
+      'GH_TOKEN', 'JIRA_TOKEN', 'NPM_KEY', 'DEPLOY_SECRET', 'SIGNING_KEY', 'EMPTY_TOKEN', 'BLANK_TOKEN',
+    ]);
+    expect(zshenv.secretExports.every((e) => !e.plainText)).toBe(true);
+    expect(result.findings.filter((f) => f.kind === 'plain-text')).toHaveLength(0);
+    // Listed, but a value looked up at shell start is not an API key doctor
+    // found, so with nothing else the verdict is BROKEN.
+    expect(result.findings.some((f) => f.message === 'No API keys found in env vars or shell profiles')).toBe(true);
+    expect(result.health).toBe('broken');
+  });
+
+  it('does not list exports whose names do not read as secrets', () => {
+    fs.writeFileSync(
+      path.join(home, '.zshenv'),
+      'export EDITOR=vim\nexport PASSWORD_STORE_DIR=/opt/pass\nexport KEYTIMEOUT=1\nexport MONKEY=1\nexport TOKENIZERS_PARALLELISM=false\n',
+    );
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    expect(result.profiles.every((p) => p.secretExports.length === 0)).toBe(true);
+    expect(result.findings.filter((f) => f.kind === 'plain-text')).toHaveLength(0);
+  });
+
+  it('ignores commented-out secret exports', () => {
+    fs.writeFileSync(path.join(home, '.zshrc'), `# export JIRA_TOKEN=${VALUE}\n`);
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    expect(result.profiles.every((p) => p.secretExports.length === 0)).toBe(true);
+  });
+
+  it('reports a plain-text $env: assignment in a PowerShell profile', () => {
+    const psDir = path.join(home, 'Documents', 'PowerShell');
+    fs.mkdirSync(psDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(psDir, 'Microsoft.PowerShell_profile.ps1'),
+      `$env:JIRA_TOKEN = "${VALUE}"\n$env:VAULT_TOKEN = (Get-Secret vault)\n`,
+    );
+
+    const result = doctor({ homeDir: home, platform: 'win32', envOverride: {} });
+
+    const ps = result.profiles.find((p) => p.path.includes(path.join('Documents', 'PowerShell')))!;
+    expect(ps.secretExports).toEqual([
+      { name: 'JIRA_TOKEN', line: 1, plainText: true },
+      { name: 'VAULT_TOKEN', line: 2, plainText: false },
+    ]);
+    const plainText = result.findings.filter((f) => f.kind === 'plain-text');
+    expect(plainText.map((f) => f.message)).toEqual([
+      'JIRA_TOKEN is stored in plain text in ~/Microsoft.PowerShell_profile.ps1 (line 1)',
+    ]);
+    const psRel = path.join('Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
+    expect(plainText[0].verify).toBe(
+      `Select-String -Path "$HOME${path.sep}${psRel}" -Pattern '^\\s*\\$env:JIRA_TOKEN\\s*=' | ForEach-Object LineNumber`,
+    );
+    expect(result.health).toBe('degraded');
+  });
+
+  it('leaves --fix copying known keys only', () => {
+    fs.writeFileSync(path.join(home, '.zprofile'), `export JIRA_TOKEN=${VALUE}\n`);
+
+    const result = fixProfiles({ homeDir: home, shell: '/bin/zsh', platform: 'darwin' });
+
+    expect(result).toBeNull();
+    expect(fs.existsSync(path.join(home, '.zshenv'))).toBe(false);
+  });
+});
+
+describe('doctor CLI output for a secret outside the known list', () => {
+  const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
+  const itIfBuilt = fs.existsSync(CLI_PATH) && process.platform !== 'win32' ? it : it.skip;
+  const VALUE = 'FAKE-synthetic-jira-value-7f3a9c';
+  let home: string;
+
+  beforeEach(() => {
+    home = tmpDir();
+  });
+
+  afterEach(() => {
+    cleanup(home);
+  });
+
+  function runDoctorCli(): { status: number | null; stdout: string } {
+    const res = spawnSync(process.execPath, [CLI_PATH, 'doctor'], {
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH, HOME: home, SHELL: '/bin/zsh', SECRETLESS_OS_KEYCHAIN: 'off' },
+    });
+    return { status: res.status, stdout: res.stdout };
+  }
+
+  itIfBuilt('names the export and its line, says how to store it, and exits 1', () => {
+    fs.writeFileSync(path.join(home, '.zprofile'), `export JIRA_TOKEN=${VALUE}\n`);
+    fs.writeFileSync(path.join(home, '.zshenv'), 'export ANTHROPIC_API_KEY=placeholder-value\n');
+
+    const { status, stdout } = runDoctorCli();
+
+    expect(stdout).toContain('~/.zprofile (login-only): 1 key(s)');
+    expect(stdout).toContain('JIRA_TOKEN (line 1)');
+    expect(stdout).toContain('ANTHROPIC_API_KEY (line 1)');
+    expect(stdout).toContain('[WARN] JIRA_TOKEN is stored in plain text in ~/.zprofile (line 1)');
+    expect(stdout).toContain("Verify: grep -noE '^[[:space:]]*export[[:space:]]+JIRA_TOKEN=' ~/.zprofile");
+    expect(stdout).toContain('secretless-ai secret set JIRA_TOKEN');
+    expect(stdout).toContain('DEGRADED: A shell profile holds a secret in plain text.');
+    expect(stdout).not.toContain('HEALTHY');
+    expect(stdout).not.toContain('doctor --fix');
+    expect(stdout).not.toContain(VALUE);
+    expect(status).toBe(1);
+  });
+
+  itIfBuilt('lists a secret fetched rather than written out and stays BROKEN with no API key', () => {
+    fs.writeFileSync(path.join(home, '.zshenv'), 'export JIRA_TOKEN="$(cat ~/.config/jira)"\n');
+
+    const { status, stdout } = runDoctorCli();
+
+    expect(stdout).toContain('JIRA_TOKEN (line 1)');
+    expect(stdout).not.toContain('plain text');
+    expect(stdout).toContain('[ERROR] No API keys found in env vars or shell profiles');
+    expect(stdout).toContain('BROKEN');
+    expect(stdout).not.toContain('HEALTHY');
+    expect(status).toBe(1);
   });
 });
 
