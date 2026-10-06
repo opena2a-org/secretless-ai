@@ -856,6 +856,183 @@ describe('init', { timeout: 30_000 }, () => {
     });
   });
 
+  // The hook refused `printenv` and let every other way of printing a process
+  // environment through: `ps -E` and the BSD `e` modifier print it outright,
+  // `pgrep -fl`/`-a`, `ps ... ww` and `ps -o command` print full command lines,
+  // which carry it for a process that rewrites its title (`npm exec`), and
+  // `/proc/<pid>/environ` and a bare `env` print it directly.
+  describe('process listings that print environments or command lines are blocked (#187)', () => {
+    function runHookCmdRaw(hookPath: string, command: string): string {
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      return execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+    }
+    function runHookCmd(hookPath: string, command: string): boolean {
+      return /"permissionDecision":"deny"/.test(runHookCmdRaw(hookPath, command));
+    }
+
+    it('pgrep forms that print names or full argument lists are blocked, pgrep -f is not', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      for (const c of [
+        'pgrep -fl node',
+        'pgrep -lf node',
+        'pgrep -l node',
+        'pgrep -a node',
+        'pgrep -af node',
+        'pgrep -f -l node',
+        'pgrep --list-full node',
+        'pgrep --list-name node',
+        '/usr/bin/pgrep -fl node',
+        'echo start; pgrep -fl node',
+        'sudo pgrep -lf node',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+      for (const c of [
+        'pgrep -f node',
+        'pgrep -x node',
+        'pgrep -nf node',
+        'pgrep -f "npm exec --yes"',
+        // A pattern argument is not a flag cluster.
+        'pgrep -f "java -jar app.jar"',
+        'kill $(pgrep -f mk-1)',
+        'pgrep -f node | xargs ps -p',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    it('ps forms that print the environment, unlimited width or the command column are blocked', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      for (const c of [
+        // The environment: -E, and the BSD `e` modifier in the first argument.
+        'ps -E -p 123',
+        'ps -Ep 123',
+        'ps -axE',
+        'ps -E -ww -o command= -p 123',
+        'ps eww 123',
+        'ps e',
+        'ps auxe',
+        '/bin/ps -E',
+        // Unlimited width.
+        'ps auxww',
+        'ps -axww',
+        'ps -efww',
+        // The command column by name.
+        'ps -p 123 -o command=',
+        'ps -ocommand -p 123',
+        'ps -o pid,command',
+        'ps -axo pid,args',
+        'ps -eo pid,args',
+        'ps -o "pid command"',
+        'ps -O command',
+        'ps --format=pid,cmd',
+        'ps -o cmd',
+        'ps axo pid,command',
+        // Command position: after sudo, xargs, `$(` or a separator.
+        'sudo ps -E',
+        'pgrep -f node | xargs ps -E -p',
+        'echo "$(ps eww 1)"',
+        'echo start && ps auxww',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+      for (const c of [
+        // -e is "every process" on macOS and Linux, not the environment.
+        'ps -e',
+        'ps -ef',
+        'ps -A',
+        'ps aux',
+        'ps -p 123 -o pid,comm',
+        'ps -o pid,ppid,etime,ucomm',
+        'ps -o pid= -p 123',
+        'ps -o pid,ucmd',
+        'ps -o user -p 1',
+        'ps -u www-data',
+        // The -E belongs to grep, after the pipe.
+        'ps aux | grep -E "node|python"',
+        'docker ps -a',
+        'docker ps --format "table {{.ID}} {{.Command}}"',
+        // Words that merely end in "ps", and ps that is not the command.
+        'npm run steps -E',
+        'echo maps eww',
+        'docker compose ps web',
+        'git commit -m "ps eww output is parsed"',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    it('/proc/<pid>/environ is blocked, other /proc files are not', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      for (const c of [
+        'cat /proc/123/environ',
+        'cat /proc/self/environ',
+        "tr '\\0' '\\n' < /proc/$(pgrep -f node)/environ",
+        'xargs -0 -n1 < /proc/1/task/1/environ',
+        'cd /proc/123 && cat environ',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+      for (const c of [
+        'cat /proc/cpuinfo',
+        'cat /proc/self/status',
+        'grep -rn environment /proc/meminfo',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    it('a bare env is blocked, env as a prefix that runs a command is not', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      for (const c of [
+        'env',
+        'env | grep -i proxy',
+        'env|sort',
+        'env -0',
+        'env -u GITHUB_TOKEN',
+        'env FOO=bar',
+        'echo start; env',
+        'make build && env',
+        'echo "$(env)"',
+        '/usr/bin/env',
+        'sudo env',
+        'env > /tmp/dump.txt',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+      for (const c of [
+        'env -u GITHUB_TOKEN git push',
+        'env FOO=1 node app.js',
+        'env -i PATH=/usr/bin:/bin node -e "console.log(1)"',
+        '/usr/bin/env node script.js',
+        'git commit -m "fix env"',
+        'python3 -m venv env',
+        'source env/bin/activate',
+        'cd app && env/bin/python main.py',
+        'printenv PATH',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+    });
+
+    it('the deny reason names the PID-only form', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      for (const c of ['pgrep -fl node', 'ps -E -p 123', 'cat /proc/1/environ']) {
+        const out = runHookCmdRaw(hookPath, c);
+        const reason = JSON.parse(out).hookSpecificOutput.permissionDecisionReason as string;
+        expect(reason, c).toContain('pgrep -f <pattern>');
+      }
+      const out = runHookCmdRaw(hookPath, 'env');
+      const reason = JSON.parse(out).hookSpecificOutput.permissionDecisionReason as string;
+      expect(reason).toContain('printenv NAME');
+    });
+  });
+
   // Older `init` was additive-only: it appended new deny rules and only wrote
   // the guard hook when absent. So upgrading the CLI did NOT migrate an existing
   // `.claude/settings.json` — the broad `.env*` glob and a stale hook survived,

@@ -923,6 +923,14 @@ const SECRET_VAR_NAME = '[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
 // a separate `echo $SECRET` later on still matches on its own.
 const SAME_COMMAND = '[^;&|\\n]*';
 
+// Command position: line start, or after a separator, `(` or a backtick,
+// optionally behind a wrapper (sudo, xargs, watch, ...) and a directory
+// (/bin/ps). A command name matched after it is the program being run, not a
+// word inside an argument: `docker compose ps web` and a commit message that
+// mentions ps are not read as a call to ps.
+const CMD_POSITION =
+  '(^|[;&|({`])\\s*((sudo|command|exec|nohup|time|nice|xargs|watch)(\\s+-[^[:space:]]*)*\\s+)*([^[:space:];&|()]*/)?';
+
 // A secret file extension must END there. Without a boundary, `.key` matched
 // `.keys()` and `.keychain`, and `.env` matched `.envelope`, so ordinary work
 // was blocked: `python3 -c "...json.load(f).keys()"` was refused as if it were
@@ -1161,11 +1169,55 @@ except Exception:
     exit 0
   fi
   # Bare \`printenv\` prints the whole environment, which is the same disclosure as
-  # naming every secret variable at once. \`env\` is deliberately NOT matched here:
-  # it is overwhelmingly used as a prefix (\`env -u VAR cmd\`), and the full-dump
-  # form is covered by the deny rules.
+  # naming every secret variable at once. \`env\` is NOT matched here: it is
+  # overwhelmingly used as a prefix (\`env -u VAR cmd\`), so its dump form has its
+  # own arm below that tells the two apart.
   if echo "$COMMAND" | grep -qiE '(^|[;&|]\\s*)printenv\\s*(-0\\s*)?$'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via printenv"}}'
+    exit 0
+  fi
+  # Process listings that print environments or full command lines (#187).
+  # Refusing printenv alone left the other routes open: \`ps -E\` (and the BSD \`e\`
+  # modifier) prints a process environment outright, \`/proc/<pid>/environ\` holds
+  # it, and a full command line carries it for a process that rewrites its title
+  # (\`npm exec\` does), so \`pgrep -l\`/\`-a\`, \`ps ... ww\` and \`ps -o command\`
+  # print it too. The patterns are matched case-sensitively, because \`ps -e\`
+  # (every process, on macOS and Linux) and \`ps -E\` (the environment) differ only
+  # in case; command names are bracketed instead, so \`PS\` on a case-insensitive
+  # disk is still caught. \`ps\` and \`pgrep\` are matched in command position (line
+  # start, after a separator, \`(\` or a backtick, after sudo/xargs/watch-style
+  # prefixes, or as a path like /bin/ps), so \`docker compose ps web\` and a commit
+  # message that mentions ps are not refused.
+  #
+  # A plain listing (\`ps aux\`, \`ps -ef\`) prints the command column too and is
+  # NOT matched: it is the everyday process listing, and refusing it is how a
+  # guard gets switched off. Matched are the forms that ask for the environment,
+  # for unlimited width or for the command column by name. When output is not a
+  # terminal, macOS ps already uses unlimited width, so there \`ps aux\` prints
+  # the same lines as \`ps auxww\`; that gap is known, not closed.
+  #   1. pgrep with -l/-a in a flag cluster, or --list-name/--list-full. The
+  #      cluster is restricted to pgrep's own flag letters, so a pattern such as
+  #      \`pgrep -f "java -jar"\` is not mistaken for one.
+  #   2. ps with E or ww in a dashed cluster, or e or ww in a dashless (BSD
+  #      style) first argument: \`ps -E\`, \`ps -axww\`, \`ps eww <pid>\`, \`ps auxww\`.
+  #   3. ps -o/-O/--format (or BSD \`o\`) naming command, args or cmd; comm,
+  #      ucomm and ucmd print the program name without its arguments.
+  #   4. Any reference to a /proc environ file.
+  if echo "$COMMAND" | grep -qE \\
+      -e '${CMD_POSITION}[Pp][Gg][Rr][Ee][Pp](\\s[^;&|]*)?\\s(-[acfilnoqvwxAIS]*[la][acfilnoqvwxAIS]*([^A-Za-z0-9_-]|$)|--list-(name|full))' \\
+      -e '${CMD_POSITION}[Pp][Ss]((\\s[^;&|]*)?\\s-[A-Za-z]*(E|ww)|\\s+[A-Za-z]*(e|ww)[A-Za-z]*([^A-Za-z0-9_-]|$))' \\
+      -e '${CMD_POSITION}[Pp][Ss]((\\s[^;&|]*)?\\s(-[A-Za-z]*[oO]|--format)|\\s+[A-Za-z]*[oO])([^;&|]*[^A-Za-z0-9_])?(command|args|cmd)([^A-Za-z0-9_]|$)' \\
+      -e '/proc/.*environ([^A-Za-z0-9_]|$)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked process listing that can print environment variables or full command lines, which can hold the credentials of other processes. Safe path: pgrep -f <pattern> prints process IDs only, and ps -p <pid> -o pid,comm prints the program name without its arguments."}}'
+    exit 0
+  fi
+  # A bare \`env\` prints the whole environment, the same disclosure as a bare
+  # printenv. \`env\` followed only by its own options and NAME=value assignments
+  # runs no command and so prints the environment (\`env -u X\`, \`env FOO=1\`,
+  # \`env | grep KEY\`); once a command word follows (\`env -u X git push\`,
+  # \`/usr/bin/env node\`) it is a prefix and is allowed.
+  if echo "$COMMAND" | grep -qE '${CMD_POSITION}[Ee][Nn][Vv](\\s+(-[iv0]+|-|--(ignore-environment|null|debug)|-u\\s*[A-Za-z_][A-Za-z0-9_]*|--unset[=[:space:]]\\s*[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*))*\\s*($|[;&|)}\`<>]|[0-9]+>)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via env. Safe path: printenv NAME prints one non-secret variable, and env as a prefix that runs a command (env -u NAME cmd) is not blocked."}}'
     exit 0
   fi
   # Block secretless-ai secret extraction with --force
