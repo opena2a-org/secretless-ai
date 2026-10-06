@@ -133,15 +133,12 @@ describe('MacOSKeychainBackend against a security recorder', () => {
           expect(planted.ran()).toBe(false);
 
           // Without the seam: the program is /usr/bin/security, by absolute
-          // path. This is a read (`default-keychain`), the same probe the
-          // factory's availability check has always made; nothing is written.
+          // path. The suite runs with SECRETLESS_OS_KEYCHAIN=off
+          // (vitest.config.ts), so that exact program is refused before it
+          // starts, and the refusal names the variable. PATH decided nothing.
           const plain = new MacOSKeychainBackend({ storeDir: dir });
-          const health = await plain.healthCheck();
+          await expect(plain.healthCheck()).rejects.toThrow(/SECRETLESS_OS_KEYCHAIN/);
           expect(planted.ran()).toBe(false);
-          // Where /usr/bin/security does not exist (this lane, CI) the answer
-          // is "not accessible"; where it does (a Mac) it is "available". In
-          // neither case did PATH decide what ran.
-          expect(health.healthy).toBe(fs.existsSync(SECURITY_PROGRAM));
         });
       } finally {
         planted.cleanup();
@@ -158,9 +155,10 @@ describe('MacOSKeychainBackend against a security recorder', () => {
         for (const name of ['SECRETLESS_SECURITY_PROGRAM', 'SECURITY_PROGRAM', 'SECURITY', 'SECRETLESS_SECURITY']) {
           process.env[name] = recorder.program;
         }
-        const health = await configured.healthCheck();
+        // Refused under SECRETLESS_OS_KEYCHAIN=off, which only refuses the
+        // exact program /usr/bin/security: the recorder was not the program.
+        await expect(configured.healthCheck()).rejects.toThrow(/SECRETLESS_OS_KEYCHAIN/);
         expect(recorder.calls()).toEqual([]);
-        expect(health.healthy).toBe(fs.existsSync(SECURITY_PROGRAM));
       } finally {
         for (const name of Object.keys(process.env)) {
           if (!(name in saved)) delete process.env[name];
@@ -169,7 +167,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       }
     });
 
-    it('SLS-10.AC2 keychain-macos.ts and factory.ts read nothing from the environment that could name a program or a bound', () => {
+    it('SLS-10.AC2 keychain-macos.ts, factory.ts and bounded-child.ts read nothing from the environment that could name a program or a bound', () => {
       const read = (file: string) => fs.readFileSync(path.join(__dirname, file), 'utf-8');
       const envReads = (source: string) => [...source.matchAll(/process\.env\.(\w+)/g)].map(m => m[1]);
 
@@ -184,6 +182,12 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(factory).not.toMatch(/process\.argv/);
       // Every `security` the factory names is the absolute one.
       expect(factory).not.toMatch(/['"]security['"]/);
+
+      // The one variable the chokepoint reads can only refuse a program.
+      const boundedChild = read('bounded-child.ts');
+      expect(new Set(envReads(boundedChild))).toEqual(new Set(['SECRETLESS_OS_KEYCHAIN']));
+      expect(boundedChild).not.toMatch(/process\.env\[/);
+      expect(boundedChild).not.toMatch(/process\.argv/);
     });
   });
 

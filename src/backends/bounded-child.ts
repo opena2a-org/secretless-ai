@@ -27,6 +27,34 @@ import { spawn, execFileSync, type ExecFileSyncOptions } from 'child_process';
 export const BACKEND_CHILD_TIMEOUT_MS = 30_000;
 
 /**
+ * `SECRETLESS_OS_KEYCHAIN=off` refuses to start the OS credential-store CLIs.
+ * It can only refuse: a refused call is a thrown error at the call site, never
+ * a null, an empty result or a different store. It cannot name a program or a
+ * bound. Exact program match, so the recorder seam is unaffected.
+ */
+export const OS_KEYCHAIN_SWITCH = 'SECRETLESS_OS_KEYCHAIN';
+const OS_KEYCHAIN_PROGRAMS: ReadonlySet<string> = new Set(['/usr/bin/security', 'secret-tool']);
+
+export function osKeychainRefused(program: string, args: readonly string[]): boolean {
+  if (process.env.SECRETLESS_OS_KEYCHAIN !== 'off') return false;
+  if (OS_KEYCHAIN_PROGRAMS.has(program)) return true;
+  // The Secret Service probes run `which secret-tool`; refused with it, so no
+  // probe reports a store the next call will refuse.
+  return program === 'which' && args.length === 1 && OS_KEYCHAIN_PROGRAMS.has(args[0]);
+}
+
+export function osKeychainRefusedError(program: string): Error {
+  return new Error([
+    `${program} was not started: ${OS_KEYCHAIN_SWITCH}=off is set in this process.`,
+    '',
+    '  Nothing was read from or written to any store.',
+    '',
+    `  Verify:  printenv ${OS_KEYCHAIN_SWITCH}`,
+    `  Fix:     unset ${OS_KEYCHAIN_SWITCH}`,
+  ].join('\n'));
+}
+
+/**
  * Signal used when the bound elapses. SIGKILL rather than SIGTERM: the point of
  * the bound is that the child is gone when the call returns, and a child that
  * is blocked inside a system dialog is exactly the kind that may not act on a
@@ -55,9 +83,10 @@ export interface BoundedChildOptions {
 
 /**
  * Run `program` with `args`, collecting both output streams, and resolve once
- * the child is gone. Never rejects: a failure to start, a non-zero exit and a
- * timeout are all reported in the result, so the caller decides what each
- * means and which words reach the user.
+ * the child is gone. For a child that was attempted it never rejects: a failure
+ * to start, a non-zero exit and a timeout are all reported in the result. The
+ * one rejection is the `SECRETLESS_OS_KEYCHAIN=off` refusal, which no caller
+ * may read as "absent".
  *
  * The child's argv is exactly `args`; the only data path for anything that must
  * stay off the command line is `input`.
@@ -67,6 +96,7 @@ export function runBoundedChild(
   args: readonly string[],
   opts: BoundedChildOptions,
 ): Promise<BoundedChildResult> {
+  if (osKeychainRefused(program, args)) return Promise.reject(osKeychainRefusedError(program));
   return new Promise((resolve) => {
     let settled = false;
     let stdout = '';
@@ -129,6 +159,7 @@ export function execFileSyncBounded(
   timeoutMs: number,
   opts?: Omit<ExecFileSyncOptions, 'timeout' | 'killSignal'>,
 ): Buffer | string {
+  if (osKeychainRefused(program, args)) throw osKeychainRefusedError(program);
   return execFileSync(program, [...args], {
     stdio: 'pipe',
     ...opts,

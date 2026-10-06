@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
+CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS
+Keychain and Linux Secret Service CLIs; reads and writes through those backends
+then fail with an error instead of prompting, and nothing is read from or
+written to another store. The value is compared exactly: any value other than
+`off` changes nothing. The refusal is made where every backend child starts,
+so `/usr/bin/security`, `secret-tool` and the `which secret-tool` probe are
+never started, and the error names the variable with a Verify and a Fix line.
+The test suite sets it for every worker and every CLI child it starts.
+
 **The macOS Keychain backend hands the value to `security` on stdin, runs
 `/usr/bin/security` by absolute path, and every backend child call is bounded
 in time.** `secret set` on the keychain backend now writes one

@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { isKeychainAvailable } from './factory';
-import { SECURITY_PROGRAM } from './keychain-macos';
 import {
   makeHangingProgram,
   makeMarkerProgram,
@@ -31,10 +30,11 @@ describe('factory probes: program custody', () => {
         withPathPrefix(planted.dir, () => isKeychainAvailable()));
       expect(planted.ran()).toBe(false);
       expect(result.platform).toBe('macOS');
-      // Where /usr/bin/security does not exist (this lane, CI) the probe says
-      // not accessible; where it does (a Mac) it says available. PATH had no
-      // part in either answer.
-      expect(result.available).toBe(fs.existsSync(SECURITY_PROGRAM));
+      // The suite runs with SECRETLESS_OS_KEYCHAIN=off (vitest.config.ts):
+      // /usr/bin/security is refused before it starts, on every host, so the
+      // probe says not accessible. PATH had no part in the answer.
+      expect(result.available).toBe(false);
+      expect(result.message).toBe('macOS Keychain is not accessible');
     } finally {
       planted.cleanup();
     }
@@ -64,6 +64,7 @@ describe('factory probes: every child call is bounded', () => {
     platform: NodeJS.Platform,
     pathPrefix: string,
     childTimeoutMs: number,
+    env: NodeJS.ProcessEnv = process.env,
   ): Promise<Outcome> {
     if (!fs.existsSync(DIST_FACTORY)) {
       throw new Error(`${DIST_FACTORY} is missing; run \`npm run build\` before this suite`);
@@ -81,13 +82,13 @@ Object.defineProperty(process, 'platform', { value: platform, configurable: true
 const factory = require(dist);
 const start = Date.now();
 const result = factory[fn]({ childTimeoutMs: Number(ms) });
-process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start }));
+process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, osKeychainSwitch: process.env.SECRETLESS_OS_KEYCHAIN ?? null }));
 `);
     return new Promise((resolve) => {
       const child = spawn(
         process.execPath,
         [harness, DIST_FACTORY, fn, platform, pathPrefix, String(childTimeoutMs)],
-        { stdio: ['ignore', 'pipe', 'pipe'], timeout: OUTER_DEADLINE_MS, killSignal: 'SIGKILL' },
+        { stdio: ['ignore', 'pipe', 'pipe'], timeout: OUTER_DEADLINE_MS, killSignal: 'SIGKILL', env },
       );
       let stdout = '';
       let stderr = '';
@@ -105,15 +106,22 @@ process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start }));
   it('SLS-10.AC4 isKeychainAvailable on linux: a which that never exits returns "not available" within the bound and the child is gone', { timeout: OUTER_DEADLINE_MS + 5_000 }, async () => {
     const hanging = makeHangingProgram('which');
     try {
-      const out = await runProbeInChild('isKeychainAvailable', 'linux', hanging.dir, 500);
+      // SECRETLESS_OS_KEYCHAIN=off would refuse `which secret-tool` before it
+      // starts, and this cell needs the child to start. It is removed for this
+      // one harness only: its platform is forced to linux, so the probe's only
+      // child is `which secret-tool`, which resolves to the hanging `which`
+      // first on PATH. No keychain CLI is reachable from it.
+      const { SECRETLESS_OS_KEYCHAIN: _off, ...withoutSwitch } = process.env;
+      const out = await runProbeInChild('isKeychainAvailable', 'linux', hanging.dir, 500, withoutSwitch);
       expect(out.signal, `probe did not return before the outer deadline\n${out.stderr}`).toBeNull();
       expect(out.status, out.stderr).toBe(0);
-      const { result, elapsedMs } = JSON.parse(out.stdout);
+      const { result, elapsedMs, osKeychainSwitch } = JSON.parse(out.stdout);
+      expect(osKeychainSwitch).toBeNull();
       expect(result.available).toBe(false);
       expect(result.platform).toBe('Linux');
       expect(elapsedMs).toBeLessThan(5_000);
       const pid = hanging.pid();
-      expect(pid).not.toBeNull();
+      expect(pid, `the hanging which left no pid; probe elapsed ${elapsedMs}ms\n${out.stderr}`).not.toBeNull();
       expect(processIsGone(pid!)).toBe(true);
     } finally {
       hanging.cleanup();
