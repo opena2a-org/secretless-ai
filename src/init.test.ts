@@ -810,6 +810,56 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
+    // #119: the runtime environment accessors contain the `.env` token, so a
+    // grep for how a codebase reads its configuration was refused as if it read
+    // the dotfile. An accessor is exempt only as the pattern argument of a
+    // search. A file called `process.env` is a `name.env` file, so the same
+    // text as a file argument or under any other command still blocks, as do a
+    // real env file in the same command and any command that could rewrite the
+    // accessor into `.env`.
+    it('an environment accessor in a search pattern is not a secret file (#119)', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustAllow = [
+        'grep -c "process\\.env" src/services/hibp.ts',
+        'grep -rn "process.env" src',
+        'grep -rn "process.env" src | head -20',
+        'grep -rn "import.meta.env" src',
+        "grep -rn 'import\\.meta\\.env\\.VITE_' src",
+        'grep -rn "Deno.env.get" src',
+        'git grep -n "process.env" -- src',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+
+      const mustBlock = [
+        'cat .env.local',
+        'grep -rn "process.env" .env.local',
+        'grep -c "process\\.env" src/app.ts .env',
+        'cat myprocess.env',
+        'cat "$(basename process.env | cut -c8-)"',
+        'head `printf %s process.env | cut -c8-`',
+        "awk 'BEGIN{f=substr(\"process.env\",8); while ((getline l < f) > 0) print l}'",
+        "sed -n '1{s/.*/process.env/;s/process/cat /e;p}' README.md",
+        // The accessor's text as a file name, outside a search pattern.
+        'cat process.env',
+        'head -5 Deno.env',
+        'grep -f process.env src',
+        'grep API_KEY process.env',
+        // grep prints the accessor; a pipe that rewrites its output into `.env`.
+        'grep -o "process.env" README.md | cut -c8- | xargs cat',
+        // A later -e makes the first word a file; brace expansion splits one
+        // word into a pattern and a file.
+        'grep "process.env" -e x',
+        'grep {process.env,process.env} src',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+    });
+
     it('deny rules cover the same prefixed variables as the hook', () => {
       init(dir);
       const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
