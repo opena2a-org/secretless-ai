@@ -2,7 +2,7 @@ import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips } from '../scan';
-import { status } from '../status';
+import { status, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, type AITool } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles } from '../doctor';
@@ -743,6 +743,7 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   const brokerStatus = getDaemonStatus();
   const brokerInstalled = isDaemonInstalled();
   const tp = s.transcriptProtection;
+  const user = s.userSettings;
   const configuredBackend = readBackendConfig();
   // Session warmth only matters for backends that trigger OS auth prompts, and
   // that is a property of the EFFECTIVE backend: `local` upgrades to the
@@ -785,12 +786,47 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   } else if (s.hookInstalled) {
     const denyText = (s.denyRuleCount ?? 0) > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
     addRow({ glyph: '✓', label: `Claude Code hook installed (.claude/settings.json${denyText})` });
+  } else if (user?.coversProject && user.guardReachable) {
+    const denyText = (user.denyRuleCount ?? 0) > 0 ? ` — ${user.denyRuleCount} deny pattern${user.denyRuleCount === 1 ? '' : 's'}` : '';
+    addRow({ glyph: '✓', label: `Claude Code hook installed at user level (${user.path}${denyText})` });
+  } else if (user?.guardWired && !user.guardReachable) {
+    // `init` run from the home directory wires the guard as
+    // "$CLAUDE_PROJECT_DIR"/.claude/hooks/secretless-guard.sh, which from the
+    // user-level file resolves to THIS project — where there is no script.
+    addRow({
+      glyph: '⚠',
+      label: `Claude Code hook not installed in this project (${user.path} expects it here)`,
+      action: 'secretless-ai init',
+    });
   } else {
     addRow({ glyph: '⚠', label: 'Claude Code hook not installed', action: 'secretless-ai init' });
   }
 
+  // User-level settings, when this project has no guard of its own. Claude
+  // Code applies their deny patterns in every project, so they are what is
+  // enforced here; a file that cannot be read as written gets no green row.
+  if (user && !s.hookInstalled && !s.settingsUnreadable) {
+    if (user.unreadable) {
+      addRow({
+        glyph: '⚠',
+        label: `${user.path} does not parse — user-level deny patterns and hooks cannot be read`,
+        action: `node -e 'JSON.parse(require("fs").readFileSync(require("os").homedir()+"/.claude/settings.json","utf8"))'`,
+      });
+    } else if (user.ambiguous) {
+      addRow({
+        glyph: '⚠',
+        label: `${user.path} ${user.ambiguous.reason} — the user-level deny patterns cannot be read as configured`,
+        action: 'delete the repeated key, then re-run: secretless-ai status',
+      });
+    } else if (user.coversProject && !user.guardReachable) {
+      addRow({ glyph: '✓', label: `User-level deny patterns apply (${user.path} — ${user.denyRuleCount} deny pattern${user.denyRuleCount === 1 ? '' : 's'})` });
+    }
+  }
+
   // Stop hook (transcript redaction).
-  if (tp.stopHookInstalled) {
+  if (tp.stopHookInstalled && tp.stopHookScope === 'user') {
+    addRow({ glyph: '✓', label: `Stop hook installed at user level (${USER_SETTINGS_PATH}, transcript redaction)` });
+  } else if (tp.stopHookInstalled) {
     addRow({ glyph: '✓', label: 'Stop hook installed (transcript redaction)' });
   } else {
     addRow({ glyph: '⚠', label: 'Stop hook not installed (transcripts unredacted)', action: 'secretless-ai init' });
@@ -874,6 +910,8 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       tool: 'secretless-ai',
       version: VERSION,
       isProtected: s.isProtected,
+      // `project` or `user`: which settings scope `isProtected` rests on.
+      protectionScope: s.protectionScope,
       hookInstalled: s.hookInstalled,
       denyRuleCount: s.denyRuleCount,
       configuredTools: s.configuredTools,
@@ -889,6 +927,9 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // read as written. `denyRuleCount: 0` now means measured, and none.
       settingsUnreadable: s.settingsUnreadable ?? null,
       settingsAmbiguous: s.settingsAmbiguous ?? null,
+      userSettings: user
+        ? { ...user, unreadable: user.unreadable ?? null, ambiguous: user.ambiguous ?? null }
+        : null,
       transcriptProtection: tp,
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,
@@ -938,13 +979,18 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     } else {
       console.log('  Not protected. Run `secretless-ai init` to install hooks.');
     }
-  } else if (warningCount === 0) {
-    console.log('  Protected — Clean');
   } else {
-    const credSuffix = s.secretsFound > 0
-      ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need${s.secretsFound === 1 ? 's' : ''} review)`
-      : ` (${warningCount} observation${warningCount === 1 ? '' : 's'} need attention)`;
-    console.log(`  Protected${credSuffix}`);
+    // Say when the protection comes from the user-level file, so a project
+    // covered only by it does not read as having an install of its own.
+    const scopeText = s.protectionScope === 'user' && user ? ` by user-level settings in ${user.path}` : '';
+    if (warningCount === 0) {
+      console.log(`  Protected${scopeText} — Clean`);
+    } else {
+      const credSuffix = s.secretsFound > 0
+        ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need${s.secretsFound === 1 ? 's' : ''} review)`
+        : ` (${warningCount} observation${warningCount === 1 ? '' : 's'} need attention)`;
+      console.log(`  Protected${scopeText}${credSuffix}`);
+    }
   }
 
   console.log();

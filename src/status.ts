@@ -3,6 +3,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { detectAITools, type AITool } from './detect';
 import { scan } from './scan';
@@ -17,8 +18,53 @@ import { isWatchRunning } from './watch';
  */
 export const TRANSCRIPT_SAMPLE_SIZE = 3;
 
+/** How `status` names the user-level Claude Code settings file. */
+export const USER_SETTINGS_PATH = '~/.claude/settings.json';
+
+/**
+ * What `~/.claude/settings.json` contributes to a project that is not the home
+ * directory itself. Claude Code applies that file in every project, so a
+ * project with no install of its own can still be covered by it.
+ */
+export interface UserSettingsStatus {
+  path: string;
+  /** The file wires a Secretless hook: the PreToolUse guard or the Stop hook. */
+  secretlessInstalled: boolean;
+  /** PreToolUse runs a `secretless-guard` command. */
+  guardWired: boolean;
+  /**
+   * That command names a script that exists when it runs from this project.
+   * `init` writes it as `"$CLAUDE_PROJECT_DIR"/.claude/hooks/...`, which from
+   * the user-level file resolves to THIS project's hooks directory, not to
+   * the home directory where `init` ran. Wired is not the same as running.
+   */
+  guardReachable: boolean;
+  /** Null when the file could not be read as written, as for the project. */
+  denyRuleCount: number | null;
+  stopHookInstalled: boolean;
+  unreadable?: { path: string; reason: string };
+  ambiguous?: { path: string; reason: string };
+  /**
+   * The file protects this project on its own: it wires Secretless, reads as
+   * written, and either its guard runs here or its deny patterns apply here.
+   */
+  coversProject: boolean;
+}
+
 export interface StatusResult {
   isProtected: boolean;
+  /**
+   * Which settings scope `isProtected` rests on: `project` when this project's
+   * own install does, `user` when only `~/.claude/settings.json` does, null
+   * when neither does.
+   */
+  protectionScope: 'project' | 'user' | null;
+  /**
+   * `~/.claude/settings.json`, when it exists and is not this project's own
+   * settings file (running `status` from the home directory reads it once, as
+   * the project's). Null otherwise.
+   */
+  userSettings: UserSettingsStatus | null;
   configuredTools: AITool[];
   hookInstalled: boolean;
   /**
@@ -66,6 +112,8 @@ export interface StatusResult {
   settingsAmbiguous?: { path: string; reason: string };
   transcriptProtection: {
     stopHookInstalled: boolean;
+    /** Which settings file the Stop hook was found in, project first. */
+    stopHookScope: 'project' | 'user' | null;
     watcherRunning: boolean;
     transcriptFiles: number;
     /**
@@ -84,12 +132,153 @@ export interface StatusResult {
   };
 }
 
+/** A Claude Code settings file, read the way `status` reports on one. */
+interface SettingsRead {
+  /** The parsed top-level object; undefined when the file did not parse as one. */
+  settings?: any;
+  unreadable?: { path: string; reason: string };
+  ambiguous?: { path: string; reason: string };
+  denyRuleCount: number | null;
+}
+
+/**
+ * Read one settings file. The project's and the user's go through the same
+ * steps, so both scopes report an unreadable or colliding file the same way.
+ */
+async function readClaudeSettings(settingsPath: string, displayPath: string): Promise<SettingsRead> {
+  const read: SettingsRead = { denyRuleCount: 0 };
+
+  // A settings file we cannot read is not a settings file with no rules in
+  // it. Both used to render as "0 deny patterns", so a project whose
+  // protection had never been wired up looked exactly like a healthy one.
+  let settings: any;
+  // Hoisted so the duplicate scan below reads the SAME bytes the parser
+  // consumed. Re-reading the file there would let the two judge different
+  // content, which is the defect one level over.
+  let rawSettings = '';
+  try {
+    rawSettings = fs.readFileSync(settingsPath, 'utf-8');
+
+    const parsed = JSON.parse(rawSettings);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      read.unreadable = {
+        path: displayPath,
+        reason: 'its top level is not a JSON object',
+      };
+    } else {
+      settings = parsed;
+    }
+  } catch (err) {
+    read.unreadable = {
+      path: displayPath,
+      reason: (err as Error).message,
+    };
+  }
+
+  if (!settings) {
+    // Could not read it at all: the initial 0 would read as a measurement.
+    read.denyRuleCount = null;
+    return read;
+  }
+
+  // Scanned on the RAW TEXT — the same bytes JSON.parse consumed, never the
+  // parsed object, because the parser resolves a repeated member before any
+  // consumer can see it.
+  //
+  // Ordered AFTER the parse has classified the file, not because the scan
+  // needs the result but because the two failures are DIFFERENT states: text
+  // that does not parse is `unreadable`, and running the scan on it first set
+  // both flags and collapsed the distinction the fix exists to create. A file
+  // only reaches here if it parsed.
+  try {
+    const { firstDuplicateMember } = await import('@opena2a/atx-verify');
+    const dup = firstDuplicateMember(rawSettings);
+    if (dup !== null) {
+      read.ambiguous = {
+        path: displayPath,
+        reason: `repeats "${dup}", so only the last copy is in effect`,
+      };
+    }
+  } catch (err) {
+    // The scan could not run over text that DID parse: an installation
+    // fault, or input the parser accepted and the scanner will not vouch
+    // for. Reported, not thrown — this is a reporting command and an
+    // installation fault is not a broken project — and not swallowed,
+    // which would restore the green this exists to remove.
+    read.ambiguous = {
+      path: displayPath,
+      reason: `keys could not be checked for collisions: ${(err as Error).message}`,
+    };
+  }
+
+  read.settings = settings;
+  // Left null when a collision means the file does not say what it reads as.
+  read.denyRuleCount = read.ambiguous
+    ? null
+    : settings?.permissions?.deny?.length || 0;
+  return read;
+}
+
+/** The command strings a settings object registers for one hook event. */
+function hookCommands(settings: any, event: string): string[] {
+  const entries = settings?.hooks?.[event];
+  if (!Array.isArray(entries)) return [];
+  const commands: string[] = [];
+  for (const entry of entries) {
+    const hooks = entry?.hooks;
+    if (!Array.isArray(hooks)) continue;
+    for (const hook of hooks) {
+      if (typeof hook?.command === 'string') commands.push(hook.command);
+    }
+  }
+  return commands;
+}
+
+/**
+ * The file a hook command runs, as Claude Code would resolve it from this
+ * project, or null when it names a variable this cannot expand. Expands the
+ * forms `init` and hand edits use: `$CLAUDE_PROJECT_DIR`, `$HOME` and `~`.
+ */
+function hookScriptPath(command: string, marker: string, projectDir: string, homeDir: string): string | null {
+  const word = command.split(/\s+/).find(w => w.includes(marker));
+  if (!word) return null;
+  const expanded = word
+    .replace(/["']/g, '')
+    .replace(/^\$(?:\{CLAUDE_PROJECT_DIR\}|CLAUDE_PROJECT_DIR)(?=\/)/, () => projectDir)
+    .replace(/^\$(?:\{HOME\}|HOME)(?=\/)/, () => homeDir)
+    .replace(/^~(?=\/)/, () => homeDir);
+  if (expanded.includes('$')) return null;
+  return path.resolve(projectDir, expanded);
+}
+
+function isFile(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function sameFile(a: string, b: string): boolean {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return path.resolve(a) === path.resolve(b);
+  }
+}
+
 /**
  * Check the current protection status of the project.
+ *
+ * `homeDir` locates `~/.claude/settings.json`; it defaults to the user's home
+ * directory.
  */
-export async function status(projectDir: string): Promise<StatusResult> {
+export async function status(projectDir: string, options?: { homeDir?: string }): Promise<StatusResult> {
+  const homeDir = options?.homeDir ?? os.homedir();
   const result: StatusResult = {
     isProtected: false,
+    protectionScope: null,
+    userSettings: null,
     configuredTools: [],
     hookInstalled: false,
     denyRuleCount: 0,
@@ -97,6 +286,7 @@ export async function status(projectDir: string): Promise<StatusResult> {
     scanIncomplete: false,
     transcriptProtection: {
       stopHookInstalled: false,
+      stopHookScope: null,
       watcherRunning: false,
       transcriptFiles: 0,
       transcriptFilesScanned: 0,
@@ -110,82 +300,55 @@ export async function status(projectDir: string): Promise<StatusResult> {
 
   // Check Claude Code deny rules and Stop hook
   const settingsPath = path.join(projectDir, '.claude', 'settings.json');
-  if (fs.existsSync(settingsPath)) {
-    // A settings file we cannot read is not a settings file with no rules in
-    // it. Both used to render as "0 deny patterns", so a project whose
-    // protection had never been wired up looked exactly like a healthy one.
-    let settings: any;
-    // Hoisted so the duplicate scan below reads the SAME bytes the parser
-    // consumed. Re-reading the file there would let the two judge different
-    // content, which is the defect one level over.
-    let rawSettings = '';
-    try {
-      rawSettings = fs.readFileSync(settingsPath, 'utf-8');
+  const projectSettingsExists = fs.existsSync(settingsPath);
+  if (projectSettingsExists) {
+    const read = await readClaudeSettings(settingsPath, '.claude/settings.json');
+    if (read.unreadable) result.settingsUnreadable = read.unreadable;
+    if (read.ambiguous) result.settingsAmbiguous = read.ambiguous;
+    result.denyRuleCount = read.denyRuleCount;
 
-      const parsed = JSON.parse(rawSettings);
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        result.settingsUnreadable = {
-          path: '.claude/settings.json',
-          reason: 'its top level is not a JSON object',
-        };
-      } else {
-        settings = parsed;
-      }
-    } catch (err) {
-      result.settingsUnreadable = {
-        path: '.claude/settings.json',
-        reason: (err as Error).message,
-      };
+    // Check for Stop hook
+    if (hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'))) {
+      result.transcriptProtection.stopHookInstalled = true;
+      result.transcriptProtection.stopHookScope = 'project';
     }
+  }
 
-    if (!settings) {
-      // Could not read it at all: the initial 0 would read as a measurement.
-      result.denyRuleCount = null;
-    }
+  // User-level settings apply in every project, so a project with no install
+  // of its own was reported "Not protected" while Claude Code was enforcing
+  // the deny patterns and running the Stop hook from `~/.claude/settings.json`.
+  // Read it as a second scope — unless it IS this project's settings file,
+  // which is the case when `status` runs from the home directory.
+  const userSettingsPath = path.join(homeDir, '.claude', 'settings.json');
+  if (fs.existsSync(userSettingsPath)
+    && !(projectSettingsExists && sameFile(settingsPath, userSettingsPath))) {
+    const read = await readClaudeSettings(userSettingsPath, USER_SETTINGS_PATH);
+    const guardCommands = hookCommands(read.settings, 'PreToolUse').filter(c => c.includes('secretless-guard'));
+    const guardReachable = guardCommands.some(c => {
+      const script = hookScriptPath(c, 'secretless-guard', projectDir, homeDir);
+      return script !== null && isFile(script);
+    });
+    const stopHookInstalled = hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'));
+    const secretlessInstalled = guardCommands.length > 0 || stopHookInstalled;
+    const user: UserSettingsStatus = {
+      path: USER_SETTINGS_PATH,
+      secretlessInstalled,
+      guardWired: guardCommands.length > 0,
+      guardReachable,
+      denyRuleCount: read.denyRuleCount,
+      stopHookInstalled,
+      coversProject: secretlessInstalled
+        && !read.unreadable
+        && !read.ambiguous
+        && (guardReachable || (read.denyRuleCount ?? 0) > 0),
+    };
+    if (read.unreadable) user.unreadable = read.unreadable;
+    if (read.ambiguous) user.ambiguous = read.ambiguous;
+    result.userSettings = user;
 
-    // Scanned on the RAW TEXT — the same bytes JSON.parse consumed, never the
-    // parsed object, because the parser resolves a repeated member before any
-    // consumer can see it.
-    //
-    // Ordered AFTER the parse has classified the file, not because the scan
-    // needs the result but because the two failures are DIFFERENT states: text
-    // that does not parse is `settingsUnreadable`, and running the scan on it
-    // first set both flags and collapsed the distinction the fix exists to
-    // create. A file only reaches here if it parsed.
-    if (settings) {
-      try {
-        const { firstDuplicateMember } = await import('@opena2a/atx-verify');
-        const dup = firstDuplicateMember(rawSettings);
-        if (dup !== null) {
-          result.settingsAmbiguous = {
-            path: '.claude/settings.json',
-            reason: `repeats "${dup}", so only the last copy is in effect`,
-          };
-        }
-      } catch (err) {
-        // The scan could not run over text that DID parse: an installation
-        // fault, or input the parser accepted and the scanner will not vouch
-        // for. Reported, not thrown — this is a reporting command and an
-        // installation fault is not a broken project — and not swallowed,
-        // which would restore the green this exists to remove.
-        result.settingsAmbiguous = {
-          path: '.claude/settings.json',
-          reason: `keys could not be checked for collisions: ${(err as Error).message}`,
-        };
-      }
-    }
-
-    if (settings) {
-      // Left null when a collision means the file does not say what it reads as.
-      result.denyRuleCount = result.settingsAmbiguous
-        ? null
-        : settings?.permissions?.deny?.length || 0;
-
-      // Check for Stop hook
-      const stopHooks = settings?.hooks?.Stop || [];
-      result.transcriptProtection.stopHookInstalled = stopHooks.some(
-        (h: any) => h.hooks?.some((hh: any) => hh.command?.includes('secretless-ai'))
-      );
+    if (stopHookInstalled && !result.transcriptProtection.stopHookInstalled) {
+      result.transcriptProtection.stopHookInstalled = true;
+      result.transcriptProtection.stopHookScope = 'user';
     }
   }
 
@@ -259,8 +422,13 @@ export async function status(projectDir: string): Promise<StatusResult> {
   // PreToolUse wiring could not be read at all. The guard script existing on
   // disk is not protection on its own, so claiming `isProtected` here would be
   // asserting something we never verified — fail closed instead.
-  result.isProtected = !result.settingsUnreadable
-    && (result.hookInstalled || result.configuredTools.length > 0);
+  //
+  // Otherwise the project's own install decides first; user-level settings
+  // count only where they actually reach this project (`coversProject`).
+  const projectProtects = result.hookInstalled || result.configuredTools.length > 0;
+  const userProtects = result.userSettings?.coversProject === true;
+  result.isProtected = !result.settingsUnreadable && (projectProtects || userProtects);
+  result.protectionScope = !result.isProtected ? null : projectProtects ? 'project' : 'user';
 
   return result;
 }
