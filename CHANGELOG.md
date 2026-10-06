@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+**The Claude Code guard hook refuses process listings that print environments
+or full command lines, and a bare `env`, as it already refused `printenv`
+(#187).** `pgrep` with `-l` or `-a` (`pgrep -fl`, `pgrep -a`,
+`--list-name`, `--list-full`), `ps` asking for the environment (`-E`, or `e`
+in a BSD-style first argument such as `ps eww <pid>`), for unlimited width
+(`ww`, as in `ps auxww`) or for the command column by name (`-o command`,
+`args` or `cmd`), and any read of `/proc/<pid>/environ` are now denied, with
+`pgrep -f <pattern>` (process IDs only) named as the safe form. `env` followed
+only by its own options and `NAME=value` assignments, which runs no command
+and prints the environment, is denied; `env` as a prefix that runs a command
+(`env -u NAME cmd`, `/usr/bin/env node`) is still allowed. A plain `ps aux` or
+`ps -ef` is not matched, although it prints the same command column. Re-run
+`secretless-ai init` to refresh an installed hook.
+
 **The broker refuses a repeated JSON member name on `/resolve`, in the AIM
 identity response and in its own status reads, as it already did on `/grant`
 and in the policy file (#147).** A `/resolve` body that repeats a member name,
