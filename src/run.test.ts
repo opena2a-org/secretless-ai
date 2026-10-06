@@ -239,7 +239,7 @@ describe('run never writes a secret value to stderr (#117)', () => {
   it('CONTROL: an ordinary secret still runs and is injected', async () => {
     // Without this, refusing every run would satisfy the tests above.
     const store = new SecretStore({ backend });
-    await store.setSecret('OK_SECRET', 'sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L');
+    await store.setSecret('OK_SECRET', 'sk-live-QQ7ZX9WKPV4RJT2MHB6FAKEFGC3L');
 
     const seen = path.join(tmpDir, 'seen');
     const code = await runWithSecrets(
@@ -247,7 +247,7 @@ describe('run never writes a secret value to stderr (#117)', () => {
       { backend },
     );
     expect(code).toBe(0);
-    expect(fs.readFileSync(seen, 'utf-8')).toBe('sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L');
+    expect(fs.readFileSync(seen, 'utf-8')).toBe('sk-live-QQ7ZX9WKPV4RJT2MHB6FAKEFGC3L');
     expect(written).toBe('');
   });
 
@@ -345,9 +345,9 @@ describe('run refuses a resolved value on the child command line', () => {
   });
 
   it('checks the command position too, without echoing it', async () => {
-    await new SecretStore({ backend }).setSecret('TOKEN', 'sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L');
+    await new SecretStore({ backend }).setSecret('TOKEN', 'sk-live-QQ7ZX9WKPV4RJT2MHB6FAKEFGC3L');
 
-    const code = await runWithSecrets('no-such-command-sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L', [], { backend });
+    const code = await runWithSecrets('no-such-command-sk-live-QQ7ZX9WKPV4RJT2MHB6FAKEFGC3L', [], { backend });
     expect(code).toBe(1);
     expect(written).toContain('TOKEN');
     expect(written).not.toContain('QQ7ZX9');
