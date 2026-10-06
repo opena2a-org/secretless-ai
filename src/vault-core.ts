@@ -4,8 +4,9 @@
  * @opena2a/aim-core is an optional peer dependency. All vault imports are dynamic
  * so secretless-ai works without it (just shows an actionable install message).
  *
- * CR-001: credential never in agent context
- * CR-010: no proxy, no sidecar — pipes/fds only for cross-process isolation
+ * A credential is resolved per call and handed to one child process in its
+ * environment. See vaultExec for what that keeps private and what it does not.
+ * No proxy and no sidecar.
  */
 
 import { spawn } from 'child_process';
@@ -532,16 +533,18 @@ export async function vaultScan(targetDir?: string): Promise<void> {
 }
 
 /**
- * Execute a command with vault credentials injected as env vars.
+ * Run a command with one vault credential set in its environment.
  *
- * This is the Tier 2 security mechanism — the key innovation:
- * 1. Resolve credential via policy-checked flow (signed request)
- * 2. Spawn child process with credential as env var
- * 3. Child exits → zeroize credential
- * 4. Agent process never sees credential values
+ * 1. Resolve the credential through the policy-checked flow (signed request).
+ * 2. Start the child with the credential as an environment variable. The
+ *    child inherits this process's standard streams.
+ * 3. When the child exits, zeroize the credential bytes and the signing key.
+ *    The decoded string handed to the child cannot be zeroized.
  *
- * CR-001: credential never in agent context
- * CR-010: pipes/fds only for cross-process isolation
+ * The value is not exported to the calling shell and is not placed on a
+ * command line. The child holds it in its environment while it runs. What
+ * the child prints is not masked and reaches the caller, and another process
+ * running as the same user can read a running child's environment.
  */
 export async function vaultExec(
   namespace: string,

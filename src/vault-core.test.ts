@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -203,6 +204,40 @@ describeWithAimCore('vault-core', () => {
 
     const allOutput = output.join('');
     expect(allOutput).not.toContain('should_not_appear_in_stdout');
+  });
+
+  // The child inherits the caller's standard streams and nothing masks them,
+  // so a wrapped command that prints the credential hands it to whoever ran
+  // `vault exec`. The README and help text state this limit; a change that
+  // masks the child's output has to update this test on purpose.
+  it('vault exec returns the value to the caller when the child prints it', async () => {
+    const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+    expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+
+    const { vaultInit, vaultRegister } = await import('./vault-core');
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await vaultInit('test-agent');
+    await vaultRegister('printed-cred', {
+      value: 'synthetic_marker_7f3a',
+      operations: ['read'],
+    });
+    consoleSpy.mockRestore();
+
+    const run = (cmd: string[]) =>
+      spawnSync(process.execPath, [cliPath, 'vault', 'exec', 'printed-cred', '--', ...cmd], {
+        env: { ...process.env, HOME: tmpHome },
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+
+    const printed = run([process.execPath, '-e', 'process.stdout.write(process.env.PRINTED_CRED ?? "")']);
+    expect(printed.status).toBe(0);
+    expect(printed.stdout).toContain('synthetic_marker_7f3a');
+
+    // Control: the same wrap with a child that prints nothing returns nothing.
+    const silent = run([process.execPath, '-e', 'process.exit(0)']);
+    expect(silent.status).toBe(0);
+    expect(silent.stdout).not.toContain('synthetic_marker_7f3a');
   });
 
   it('vaultExec with custom env name', async () => {
