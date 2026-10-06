@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+**`scan` prints a control character in a file name or an excerpt as a visible escape.**
+The report printed names and excerpts from the scanned files as they were,
+so a line feed in a directory name started a new report line that read like
+the scanner's own, and an escape character reached the terminal as a control
+sequence. The human report now prints each control character (U+0000 to
+U+001F and U+007F to U+009F) and each Unicode format character in every name
+and excerpt it shows as an escape such as `\n`, `\t`, `\e` or `\x07`, the
+same escapes `hackmyagent` prints. A literal backslash that could be read as
+one of these escapes is doubled, so `dir\nx` and a name holding a line feed
+print apart. A `Verify:` or `Fix:` command names the first listed path that
+prints as itself, and `<path>` when none does; a `Scan one:` line names such a
+path or is left out. `scan --explain` prints generated context line by line
+under its own indent. Escaping happens after detection and masking. Detection,
+exit codes and `--json` output are unchanged.
+
 **`scan` words its coverage lines with the separators `vault scan` uses.**
 The coverage section joined each heading to its explanation with a dash, and
 each directory not entered and each file not opened to its reason the same
@@ -668,9 +683,8 @@ of an unsupported type printed "No hardcoded credentials found." with nothing
 beside it: an AWS access key id in `notes.txt` was never read, and the report
 did not say so. Files not opened now have their own block, listed with the
 reason each was not opened, followed by a `Scan one:` command that names a
-file, because naming a file scans it whatever its type. In the "files not
-opened" and "directories not entered" blocks, and only there, a control
-character in a listed name is shown as `\xNN`, and such a name is never
+file, because naming a file scans it whatever its type. A control character
+in a listed name is shown as a visible escape, and such a name is never
 offered as the command. What the scan detects, the exit code and the `--json`
 output are unchanged. `--help` lists scanning a single file under Scan
 Coverage.

@@ -17,6 +17,7 @@ import { isDaemonInstalled } from '../session/install';
 import { VERSION, CLI, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime } from './utils';
 import { findGitCredentialExposure, describeExposure } from '../git-credential-files';
 import { explainFinding, isEngineAvailable } from '../nanomind';
+import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard } from '../display-safe';
 import { c, divider } from './colors';
 
 export function runInit(projectDir: string): number {
@@ -281,19 +282,6 @@ export function shellQuote(p: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
 }
 
-/** C0 controls, DEL and C1 controls: bytes a terminal acts on instead of showing. */
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
-
-/**
- * Show control characters in a scanned file name as `\xNN`. A file name in a
- * scanned repository is attacker-chosen, and printed raw an escape sequence in
- * it can clear or rewrite the lines around it.
- */
-function visibleControls(s: string): string {
-  return s.replace(new RegExp(CONTROL_CHARS.source, 'g'), ch => `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`);
-}
-
 /**
  * Human-readable byte size for coverage warnings ("11 MB", "1.0 MB"), with the
  * byte count the rounded figure stands for.
@@ -456,10 +444,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   // command that does not run is a dead end, which is exactly what this whole
   // release is about.
   const nodePath = require('path') as typeof import('path');
-  const runnable = (rel: string) => {
+  const fromCwd = (rel: string) => {
     const abs = nodePath.resolve(projectDir, rel);
     const cwd = process.cwd();
-    const fromCwd = nodePath.relative(cwd, abs);
+    const relToCwd = nodePath.relative(cwd, abs);
     // From the filesystem root every path is "inside cwd", and the relative
     // form is the absolute path minus its leading slash: `private/tmp/x/a.js`
     // runs there but reads as a path under the current directory anywhere it
@@ -467,9 +455,31 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     const atRoot = nodePath.parse(cwd).root === cwd;
     // A bare relative path is only usable when it stays inside cwd AND does not
     // read as a flag; anything else falls back to the absolute path.
-    const chosen = fromCwd && !atRoot && !fromCwd.startsWith('..') && !fromCwd.startsWith('-') ? fromCwd : abs;
-    return shellQuote(chosen);
+    return relToCwd && !atRoot && !relToCwd.startsWith('..') && !relToCwd.startsWith('-') ? relToCwd : abs;
   };
+  // A name in a list. Quoted so it can be copied, unless it holds a character
+  // that would reach the terminal as a control (a line feed in a directory name
+  // printed a forged `Scan one:` line): then it is shown escaped, and the
+  // escaped form describes the name rather than quoting it.
+  const shown = (rel: string) => {
+    const p = fromCwd(rel);
+    return hasDisplayHazard(p) ? escapePathForDisplay(p) : shellQuote(p);
+  };
+  // The first candidate that prints as itself, quoted for pasting, or null. A
+  // name that cannot be printed as itself cannot be an operand: the raw form is
+  // the hazard and the escaped form names a different file. `toPath` runs only
+  // until a candidate is chosen.
+  const firstOperand = (candidates: string[], toPath: (rel: string) => string = (rel) => rel) => {
+    for (const rel of candidates) {
+      const p = fromCwd(toPath(rel));
+      if (!hasDisplayHazard(p)) return shellQuote(p);
+    }
+    return null;
+  };
+  // The operand of a Fix or Verify command: `<path>` when no candidate prints
+  // as itself, which leaves the command's shape and the escaped names above it
+  // to go on.
+  const operand = (candidates: string[], toPath?: (rel: string) => string) => firstOperand(candidates, toPath) ?? '<path>';
 
   // A walk that stopped at the file cap left tree unvisited, and a file we could
   // not open was never read at all. Either way the findings are a SUBSET, so
@@ -482,14 +492,14 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     if (stats.truncated) {
       console.log(`  ${c.boldYellow('Scan incomplete')}: stopped at the ${capUsed}-file cap, so files were left unscanned.`);
       console.log(`  ${c.dim('This is not a clean result. Raise the cap, or scan a subtree at a time:')}`);
-      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4}`);
-      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4} --json | jq .summary.truncated\n`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --max-files ${capUsed * 4}`);
+      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${operand(['.'])} --max-files ${capUsed * 4} --json | jq .summary.truncated\n`);
     }
     if (stats.unreadable.length > 0) {
       const n = stats.unreadable.length;
       console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} could not be read`)}, so not known to be clean.`);
       for (const f of stats.unreadable.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
+        console.log(`  ${c.dim(`  ${shown(f)}`)}`);
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       // Do NOT assert the cause. "Unreadable" covers permissions, a symlink
@@ -499,35 +509,36 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       // needs the execute bit to be traversed, so `+r` alone leaves the scan
       // still unable to enter it.
       console.log(`  ${c.dim('Cause differs by path: permissions, a broken or looping symlink, or an I/O error.')}`);
-      console.log(`  ${c.cyan('Verify:')} ls -ld ${runnable(stats.unreadable[0])}`);
-      console.log(`  ${c.cyan('Fix:')}    chmod +rx ${runnable(stats.unreadable[0])}   ${c.dim('# if the cause is permissions')}\n`);
+      const target = operand(stats.unreadable.slice(0, 10));
+      console.log(`  ${c.cyan('Verify:')} ls -ld ${target}`);
+      console.log(`  ${c.cyan('Fix:')}    chmod +rx ${target}   ${c.dim('# if the cause is permissions')}\n`);
     }
     if (stats.outOfRoot.length > 0) {
       const n = stats.outOfRoot.length;
       console.log(`  ${c.boldYellow(`${n} symlink${n > 1 ? 's' : ''} ${n > 1 ? 'point' : 'points'} outside the scan root`)}, so not followed.`);
       for (const f of stats.outOfRoot.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
+        console.log(`  ${c.dim(`  ${shown(f)}`)}`);
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       console.log(`  ${c.dim('Following them would let a link to $HOME pull the whole home directory into the scan.')}`);
       // No `$(...)` here: the path is attacker-controlled (it is a filename in a
       // scanned repo), and a command substitution around it hands a
       // copy-pasting user an execution primitive.
-      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable(nodeFs.realpathSync(nodePath.resolve(projectDir, stats.outOfRoot[0])))}\n`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(stats.outOfRoot.slice(0, 10), (f) => nodeFs.realpathSync(nodePath.resolve(projectDir, f)))}\n`);
     }
     if (stats.oversize.length > 0) {
       const n = stats.oversize.length;
       console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} skipped for size`)}, so not known to be clean.`);
       for (const f of stats.oversize.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${runnable(f.path)} (${formatSizeOverCap(f.bytes, f.capBytes)})`)}`);
+        console.log(`  ${c.dim(`  ${shown(f.path)} (${formatSizeOverCap(f.bytes, f.capBytes)})`)}`);
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       // The cap is a resource guard, not a judgement — the same bytes under it
       // produce a finding, so an 11 MB config with a key on line 1 scanned to
       // zero and exited 0 before this was reported (#120).
       console.log(`  ${c.dim('The cap bounds memory use; it says nothing about the contents.')}`);
-      console.log(`  ${c.cyan('Verify:')} head -c 4096 ${runnable(stats.oversize[0].path)}`);
-      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-file-size ${Math.ceil(stats.oversize[0].bytes / (1024 * 1024)) + 1}mb\n`);
+      console.log(`  ${c.cyan('Verify:')} head -c 4096 ${operand(stats.oversize.slice(0, 10).map((f) => f.path))}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --max-file-size ${Math.ceil(stats.oversize[0].bytes / (1024 * 1024)) + 1}mb\n`);
     }
 
     // #124 — a config-format file whose name is not on the built-in list was
@@ -538,11 +549,15 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       const n = stats.unscannedConfig.count;
       console.log(`  ${c.boldYellow(`${n} config file${n > 1 ? 's' : ''} not scanned`)}: ${n > 1 ? 'their names are' : 'its name is'} not on the built-in config list, so not known to be clean.`);
       for (const f of stats.unscannedConfig.files.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
+        console.log(`  ${c.dim(`  ${shown(f)}`)}`);
       }
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
-      console.log(`  ${c.cyan('Fix:')}      npx secretless-ai scan ${runnable('.')} --include-config`);
-      console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(stats.unscannedConfig.files[0])}\n`);
+      console.log(`  ${c.cyan('Fix:')}      npx secretless-ai scan ${operand(['.'])} --include-config`);
+      // As in the boundary blocks below: a name that cannot be printed as
+      // itself is listed but never offered as the command.
+      const one = firstOperand(stats.unscannedConfig.files);
+      if (one) console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${one}`);
+      console.log();
     }
 
     // Declared boundaries. Reported in the same place as the gaps above and
@@ -561,14 +576,14 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       const n = stats.skips.dirCount;
       console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered for source files`)}: declared boundaries, not findings.`);
       for (const d of stats.skips.dirs.slice(0, 8)) {
-        console.log(`  ${c.dim(`  ${visibleControls(runnable(d.path))}: ${d.reason}`)}`);
+        console.log(`  ${c.dim(`  ${shown(d.path)}: ${d.reason}`)}`);
       }
       if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
-      // As for files below: a name holding a control character is listed in
-      // visible form but never offered as the command.
-      const first = stats.skips.dirs.find(d => !CONTROL_CHARS.test(d.path));
+      // As for files below: a name that cannot be printed as itself is listed
+      // in visible form but never offered as the command.
+      const first = firstOperand(stats.skips.dirs.map(d => d.path));
       if (first) {
-        console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(first.path)}`);
+        console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${first}`);
       }
       console.log();
     }
@@ -581,14 +596,14 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       const n = stats.skips.fileCount;
       console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)}, so not covered by the scan result.`);
       for (const f of stats.skips.files.slice(0, 8)) {
-        console.log(`  ${c.dim(`  ${visibleControls(runnable(f.path))}: ${f.reason}`)}`);
+        console.log(`  ${c.dim(`  ${shown(f.path)}: ${f.reason}`)}`);
       }
       if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
-      // A name holding a control character cannot be copied as it reads, so it
-      // is listed but never offered as the command.
-      const first = stats.skips.files.find(f => !CONTROL_CHARS.test(f.path));
+      // A name that cannot be printed as itself cannot be copied as it reads, so
+      // it is listed but never offered as the command.
+      const first = firstOperand(stats.skips.files.map(f => f.path));
       if (first) {
-        console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(first.path)}`);
+        console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${first}`);
       }
       console.log();
     }
@@ -619,7 +634,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     if (stats.confidenceSuppressed > 0) {
       const n = stats.confidenceSuppressed;
       console.log(`  ${c.dim(`${n} match${n > 1 ? 'es' : ''} scored below --min-confidence ${minConfidence} and ${n > 1 ? 'were' : 'was'} hidden.`)}`);
-      console.log(`  ${c.dim(`See ${n > 1 ? 'them' : 'it'}: npx secretless-ai scan ${runnable('.')}`)}\n`);
+      console.log(`  ${c.dim(`See ${n > 1 ? 'them' : 'it'}: npx secretless-ai scan ${operand(['.'])}`)}\n`);
     }
   };
 
@@ -697,8 +712,11 @@ function printFindings(findings: ReturnType<typeof scan>): void {
       : '';
     console.log();
     console.log(`  ${sevColor('\u2502')} ${c.bold(sevLabel)}  ${c.boldWhite(finding.patternName)}`);
-    console.log(`  ${sevColor('\u2502')} ${c.dim(`${finding.file}:${finding.line}`)}${fixtureSuffix}`);
-    console.log(`  ${sevColor('\u2502')} ${finding.preview}`);
+    // The name and the excerpt come from the scanned repository. Escaped at
+    // the print, after detection and redaction, so neither can split the line
+    // or send the terminal a control sequence.
+    console.log(`  ${sevColor('\u2502')} ${c.dim(`${escapePathForDisplay(finding.file)}:${finding.line}`)}${fixtureSuffix}`);
+    console.log(`  ${sevColor('\u2502')} ${escapeForDisplay(finding.preview)}`);
     console.log(`  ${sevColor('\u2502')} ${c.cyan('Confidence:')} ${tierColor(`${finding.confidenceTier} (${finding.confidence.toFixed(2)})`)}`);
     if (finding.fix) {
       console.log(`  ${sevColor('\u2502')} ${c.cyan('Fix:')} ${finding.fix}`);
@@ -728,8 +746,8 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
   for (const finding of findings) {
     const severity = finding.severity === 'critical' ? 'CRIT' : 'HIGH';
     console.log(`  [${severity}] ${finding.patternName}`);
-    console.log(`         ${finding.file}:${finding.line}`);
-    console.log(`         ${finding.preview}`);
+    console.log(`         ${escapePathForDisplay(finding.file)}:${finding.line}`);
+    console.log(`         ${escapeForDisplay(finding.preview)}`);
 
     // The deterministic fix ALWAYS prints. Generated text may only appear
     // alongside it, explicitly labelled, never in place of it — substituting
@@ -751,8 +769,12 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
     // exercised and can be re-enabled when a model earns it.
     if (process.env.SECRETLESS_NANOMIND_EXPLAIN === '1') {
       const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
+      // Generated from the finding's file name, so it can carry that name's
+      // bytes. Printed line by line under this block's own indent.
       if (explanation) {
-        console.log(`         Context (generated, unverified): ${explanation}`);
+        const [head, ...rest] = excerptLinesForDisplay(explanation);
+        console.log(`         Context (generated, unverified): ${head}`);
+        for (const line of rest) console.log(`         ${line}`);
       }
     }
     console.log();
