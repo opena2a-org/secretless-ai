@@ -527,7 +527,8 @@ describe('GrantPolicy: a loaded binding cannot be altered from outside', () => {
   // NOT asserted: that `evaluate()`'s returned `binding` is a copy. `private` is a compile-time
   // marker only, so an in-process caller already reaches `bindings` directly and a copy on the
   // way out buys no adversarial protection — the same measurement that put `PolicyEngine`'s
-  // `getRules()` at P3 rather than in a fix. The IN direction above is the one that matters,
+  // `getRules()` at P3; it now copies deeply because its docstring promised a copy, not as a
+  // boundary. The IN direction above is the one that matters,
   // because before this change the caller kept the only reference and the class had none.
 });
 

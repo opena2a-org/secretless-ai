@@ -257,9 +257,23 @@ export class PolicyEngine {
     return this.rules.length;
   }
 
-  /** Get a copy of the loaded rules. */
+  /**
+   * Get a copy of the loaded rules that shares no object with the engine.
+   *
+   * It used to copy each rule shallowly, so `constraints` (and the `timeWindow`
+   * and `rateLimit` objects inside it) were the ones `evaluate()` reads.
+   * Measured: deleting `minTrustScore` from the returned rule turned a denying
+   * policy into an allowing one with no further call into the engine.
+   *
+   * This is not a boundary against code already running in this process —
+   * `private` is a compile-time marker and `rules` is reachable directly. It
+   * keeps a caller that only meant to read the policy from changing it.
+   *
+   * `structuredClone` rather than a field-by-field copy, so a constraint added
+   * to `validateRule` later is copied too instead of shared or dropped.
+   */
   getRules(): PolicyRule[] {
-    return this.rules.map(r => ({ ...r }));
+    return this.rules.map(r => structuredClone(r));
   }
 
   private checkConstraints(

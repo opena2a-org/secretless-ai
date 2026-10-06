@@ -242,6 +242,10 @@ secret-file arm that already did.
   loop (`"*a" x 10` against forty characters took seconds; `x 14` did not
   return). It now matches with two cursors, bounded by selector length times
   value length, with the same `*` and `?` semantics (#141).
+- The broker's `PolicyEngine.getRules()` returns rules that share no object
+  with the engine. It copied each rule shallowly, so the returned `constraints`
+  was the object `evaluate()` reads, and deleting `minTrustScore` from it turned
+  a denying policy into an allowing one (#145).
 
 ### Changed
 

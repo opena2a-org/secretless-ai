@@ -361,6 +361,42 @@ describe('PolicyEngine', () => {
       returned[0].id = 'modified';
       expect(engine.getRules()[0].id).toBe('a');
     });
+
+    // The copy used to be shallow, so `constraints` was the object evaluate()
+    // reads: deleting the trust floor from the returned rule allowed the agent.
+    it('does not let a caller change a decision through the returned constraints', () => {
+      engine.loadRules([
+        { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow', constraints: { minTrustScore: 999 } },
+      ]);
+      const agent: AgentIdentity = { agentId: 'a1', trustScore: 10, capabilities: [] };
+      expect(engine.evaluate('a1', 'K', agent).allowed).toBe(false);
+
+      const handed = engine.getRules();
+      delete handed[0].constraints.minTrustScore;
+
+      expect(engine.evaluate('a1', 'K', agent)).toMatchObject({
+        allowed: false,
+        reason: 'Trust score 10 below minimum 999',
+      });
+      expect(engine.getRules()[0].constraints).toEqual({ minTrustScore: 999 });
+    });
+
+    it('does not share nested constraint objects with the engine', () => {
+      engine.loadRules([
+        {
+          id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow',
+          constraints: { timeWindow: { start: '00:00', end: '00:01' }, rateLimit: { maxPerMinute: 1 } },
+        },
+      ]);
+      const handed = engine.getRules();
+      handed[0].constraints.timeWindow!.end = '23:59';
+      handed[0].constraints.rateLimit!.maxPerMinute = 1000;
+
+      expect(engine.getRules()[0].constraints).toEqual({
+        timeWindow: { start: '00:00', end: '00:01' },
+        rateLimit: { maxPerMinute: 1 },
+      });
+    });
   });
 });
 
