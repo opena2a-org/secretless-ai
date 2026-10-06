@@ -29,6 +29,29 @@ export function runInit(projectDir: string): number {
   }
   console.log('  Keeping secrets out of AI\n');
 
+  // `init` sets up a directory that exists; it never creates one. A mistyped
+  // path reached the top-level catch as a raw `ENOENT: ... mkdir
+  // '/does/not/exist/.claude/hooks'`, which named neither the cause nor a next
+  // step. Checked before anything is written.
+  const notDir = notADirectoryReason(projectDir);
+  if (notDir) {
+    const quoted = shellQuote(projectDir);
+    if (notDir === 'missing') {
+      console.error(`  Directory not found: ${projectDir}`);
+      console.error('  Nothing was written. init sets up a project directory that already exists.');
+      console.error(`  Verify: ls -ld ${quoted}`);
+      console.error(`  Fix:    ${CLI} init   ${c.dim('# run from inside your project')}`);
+      console.error(`          mkdir -p ${quoted} && ${CLI} init ${quoted}   ${c.dim('# or create this directory first')}\n`);
+    } else {
+      const parent = path.dirname(projectDir);
+      console.error(`  Not a directory: ${projectDir}`);
+      console.error('  Nothing was written. init sets up a project directory, and this path is a file.');
+      console.error(`  Verify: ls -ld ${quoted}`);
+      console.error(`  Fix:    ${CLI} init ${shellQuote(parent)}\n`);
+    }
+    return 1;
+  }
+
   const result = init(projectDir);
 
   // Configured line: collapse Detected + Configured into one row that tells
@@ -282,6 +305,32 @@ export function shellQuote(p: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
 }
 
+/** Why `dir` cannot be set up by `init`, or null when it is a directory. */
+function notADirectoryReason(dir: string): 'missing' | 'file' | null {
+  const nodeFs = require('fs') as typeof import('fs');
+  try {
+    return nodeFs.statSync(dir).isDirectory() ? null : 'file';
+  } catch (err) {
+    // Only an absent path is "not found". Anything else (EACCES, ELOOP) is
+    // left to init, whose own error names it, rather than misreported here.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : null;
+  }
+}
+
+/** C0 controls, DEL and C1 controls: bytes a terminal acts on instead of showing. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Show control characters in a scanned file name as `\xNN`. A file name in a
+ * scanned repository is attacker-chosen, and printed raw an escape sequence in
+ * it can clear or rewrite the lines around it.
+ */
+function visibleControls(s: string): string {
+  return s.replace(new RegExp(CONTROL_CHARS.source, 'g'), ch => `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+
 /**
  * Human-readable byte size for coverage warnings ("11 MB", "1.0 MB"), with the
  * byte count the rounded figure stands for.
@@ -364,6 +413,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
       confidenceSuppressed: 0,
       unscannedConfig: { count: 0, files: [] as string[] },
+      eligibleFiles: 0, walkBudgetExceeded: false,
     };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
@@ -434,6 +484,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
     confidenceSuppressed: 0,
     unscannedConfig: { count: 0, files: [] as string[] },
+    eligibleFiles: 0, walkBudgetExceeded: false,
   };
   const findings = scan(projectDir, scanOpts, stats);
   const minConfidence = options?.minConfidence ?? 0;
@@ -489,11 +540,23 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   // Separators match `vault scan`: `: ` after a header that names the state,
   // `, so` before its consequence, `<path>: <reason>` for a listed name.
   const coverageWarnings = () => {
-    if (stats.truncated) {
+    if (stats.truncated && stats.walkBudgetExceeded) {
+      // A directory budget, not the file cap, stopped the walk. A `--max-files`
+      // suggestion here would be a fix that cannot work.
+      console.log(`  ${c.boldYellow('Scan incomplete')}: the walk reached its directory limit, so part of the tree was left unscanned.`);
+      console.log(`  ${c.dim('This is not a clean result. Raising --max-files does not lift this limit; scan one subdirectory at a time:')}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])}/<subdirectory>`);
+      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${operand(['.'])}/<subdirectory> --json | jq .summary.truncated\n`);
+    } else if (stats.truncated) {
+      // Sized from the files the walk counted past the cap, the way the
+      // --max-file-size suggestion is sized from the file itself. `cap * 4`
+      // left 30 eligible files truncated at a suggested 8, so following the
+      // Fix ran the same loop again.
+      const needed = Math.max(stats.eligibleFiles, capUsed + 1);
       console.log(`  ${c.boldYellow('Scan incomplete')}: stopped at the ${capUsed}-file cap, so files were left unscanned.`);
-      console.log(`  ${c.dim('This is not a clean result. Raise the cap, or scan a subtree at a time:')}`);
-      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --max-files ${capUsed * 4}`);
-      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${operand(['.'])} --max-files ${capUsed * 4} --json | jq .summary.truncated\n`);
+      console.log(`  ${c.dim(`This is not a clean result. Raise the cap to cover every eligible file (${needed}), or scan a subtree at a time:`)}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --max-files ${needed}`);
+      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${operand(['.'])} --max-files ${needed} --json | jq .summary.truncated\n`);
     }
     if (stats.unreadable.length > 0) {
       const n = stats.unreadable.length;

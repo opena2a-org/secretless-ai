@@ -140,6 +140,26 @@ function gitToplevel(cwd: string): string | null {
 }
 
 /**
+ * True when any ref in the repository points at a commit. `--all` rather than
+ * HEAD, so an unborn branch beside branches with history still counts as a
+ * repository with commits, where an unknown ref is a spelling question.
+ */
+function hasAnyCommit(rootDir: string): boolean {
+  try {
+    const out = execFileSync('git', ['rev-list', '-n', '1', '--all'], {
+      cwd: rootDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: gitDiscoveryFreeEnv(),
+    });
+    return out.trim() !== '';
+  } catch {
+    // Could not tell; keep the generic unknown-ref advice.
+    return true;
+  }
+}
+
+/**
  * Run `git diff <ref> -- <path>` for a single managed file. Returns the
  * unified-diff body, or empty string if there are no differences. On git
  * error (e.g. unknown ref), throws — caller catches and reports.
@@ -219,6 +239,19 @@ export function computeDiff(ref: string, cwd: string = process.cwd()): DiffResul
       env: gitDiscoveryFreeEnv(),
     });
   } catch {
+    // A repository with no commits has no ref at all, so `git fetch` and a
+    // spelling check were advice that cannot help: the fix is a first commit.
+    if (!hasAnyCommit(rootDir)) {
+      return {
+        exitCode: 2,
+        ref,
+        changes: [],
+        message: `This repository has no commits yet, so there is no ${ref} to compare against.\n`
+          + '  `diff` compares secretless-managed files with a commit. Make one, then re-run:\n'
+          + '  Fix:    git commit --allow-empty -m "Baseline before secretless"\n'
+          + '  Verify: git rev-parse --verify HEAD',
+      };
+    }
     return {
       exitCode: 2,
       ref,

@@ -106,7 +106,14 @@ export async function runScope(args: string[]): Promise<number> {
         return 1;
       }
       if (!value) {
-        console.error(`\n  Credential "${credentialName}" not found in secret store.\n`);
+        // A baseline with no credential behind it is stale: `scope list` still
+        // shows it, so a bare "not found" left the user with two commands that
+        // disagree and no way to reconcile them.
+        console.error(`\n  Credential "${credentialName}" not found in secret store.`);
+        console.error(`  A scope baseline for it is still stored (from ${baseline.checkedAt}), so the baseline is stale.`);
+        console.error(`  Fix:    ${CLI_BARE} scope reset ${credentialName}   (the credential is gone: remove the baseline)`);
+        console.error(`          ${CLI_BARE} secret set ${credentialName}    (the credential moved: store it again)`);
+        console.error(`  Verify: ${CLI_BARE} scope list\n`);
         return 1;
       }
 

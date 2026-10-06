@@ -158,6 +158,25 @@ export interface ScanStats {
    */
   truncated: boolean;
   /**
+   * How many files passed every filter in the largest walk that hit the file
+   * cap, counted past the cap without being opened. 0 when no walk's cap
+   * dropped a candidate; written on every scan, like `truncated`.
+   *
+   * This is what a `--max-files` suggestion is sized from. The suggestion used
+   * to be the cap times four, which is a guess: 30 eligible files scanned with
+   * a cap of 2 were told to use 8, and that run was still truncated. A cap of
+   * this count clears every walk's cap in one run — unless
+   * `walkBudgetExceeded` is also set, when the count is a lower bound.
+   */
+  eligibleFiles?: number;
+  /**
+   * True when a walk stopped on its directory budget (MAX_DIRS_VISITED, or
+   * MAX_PATHS_PER_DIR routes to one directory) rather than on the file cap.
+   * Raising `--max-files` cannot clear this, so a remediation must not say it
+   * will. Written on every scan, like `truncated`.
+   */
+  walkBudgetExceeded?: boolean;
+  /**
    * Paths that matched the scan but could not be read (permissions, I/O). "Could
    * not read" is a THIRD state: the same content, readable, produces a finding,
    * so dropping these silently reports a file we never opened as clean.
@@ -230,7 +249,7 @@ export function newScanStats(): Required<ScanStats> {
   return {
     placeholdersSuppressed: 0, truncated: false, unreadable: [], outOfRoot: [],
     oversize: [], skips: emptySkips(), confidenceSuppressed: 0,
-    unscannedConfig: { count: 0, files: [] },
+    unscannedConfig: { count: 0, files: [] }, eligibleFiles: 0, walkBudgetExceeded: false,
   };
 }
 
@@ -481,7 +500,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   const sourceCap = options?.maxFileSizeBytes ?? SOURCE_FILE_CAP_BYTES;
   // Written unconditionally so a complete walk actively reports "not truncated"
   // rather than leaving a stale or absent flag for the caller to misread.
-  if (stats) stats.truncated = false;
+  if (stats) {
+    stats.truncated = false;
+    stats.eligibleFiles = 0;
+    stats.walkBudgetExceeded = false;
+  }
 
   // A FILE target is scanned as that file. It used to be accepted, checked for
   // existence, then walked as a directory — which found nothing and reported
@@ -615,6 +638,12 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   const absorbWalk = (walk: WalkResult) => {
     if (!stats) return;
     if (walk.truncated) stats.truncated = true;
+    if (walk.budgetExceeded) stats.walkBudgetExceeded = true;
+    // The walks apply the cap one at a time, so the cap that clears all of
+    // them is the largest count among the walks that hit it.
+    if (walk.eligible > walk.files.length) {
+      stats.eligibleFiles = Math.max(stats.eligibleFiles ?? 0, walk.eligible);
+    }
     for (const p of walk.unreadable) {
       const k = dedupeKey(p);
       if (stats.unreadable && !seenUnreadable.has(k)) { seenUnreadable.add(k); stats.unreadable.push(p); }
@@ -905,6 +934,14 @@ interface WalkResult {
    * must never render as a clean scan — see `ScanStats.truncated`.
    */
   truncated: boolean;
+  /**
+   * Files that passed every filter, INCLUDING the ones dropped at the cap. The
+   * walk keeps counting past the cap (reading directories, never files) so a
+   * truncated scan can say how large a cap would have covered the tree.
+   */
+  eligible: number;
+  /** True when the walk stopped on its directory budget, not the file cap. */
+  budgetExceeded: boolean;
   /**
    * Directories that could not be listed and entries that could not be stat'd.
    * A `readdirSync` that throws used to `continue` with nothing recorded, so an
@@ -1221,6 +1258,8 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   const skips = emptySkips();
   const outOfRoot: string[] = [];
   let truncated = false;
+  let eligible = 0;
+  let budgetExceeded = false;
 
   const rootReal = realpathOrNull(dir) ?? path.resolve(dir);
   // Each entry carries the realpath chain of the directories above it.
@@ -1233,12 +1272,13 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   // `truncated` is a claim about FILES: a candidate that passed every filter
   // and was dropped because the cap was full. Reaching the cap with directories
   // still queued is not that — they may hold nothing — so the walk goes on
-  // reading directories (never files) until it meets a real candidate or runs
-  // out. A tree of exactly `maxFiles` files plus an empty directory used to
-  // report "Scan incomplete" and exit 1 with nothing unscanned (#120). The
-  // extra work is bounded by MAX_DIRS_VISITED, which still truncates.
-  walk: while (queue.length > 0) {
-    if (dirsVisited >= MAX_DIRS_VISITED) { truncated = true; break; }
+  // reading directories (never files) past the cap. A tree of exactly
+  // `maxFiles` files plus an empty directory used to report "Scan incomplete"
+  // and exit 1 with nothing unscanned (#120). Walking on to the end also gives
+  // `eligible`, the count a `--max-files` suggestion is sized from. The extra
+  // work is bounded by MAX_DIRS_VISITED, which still truncates.
+  while (queue.length > 0) {
+    if (dirsVisited >= MAX_DIRS_VISITED) { truncated = true; budgetExceeded = true; break; }
     const { dir: current, ancestors } = queue.shift()!;
 
     const currentReal = realpathOrNull(current);
@@ -1248,7 +1288,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     // Bound how many distinct routes to one directory we follow (see the
     // constant): the path count through a link lattice is exponential.
     const seenCount = visitsByReal.get(currentReal) ?? 0;
-    if (seenCount >= MAX_PATHS_PER_DIR) { truncated = true; continue; }
+    if (seenCount >= MAX_PATHS_PER_DIR) { truncated = true; budgetExceeded = true; continue; }
     visitsByReal.set(currentReal, seenCount + 1);
     const childAncestors = [...ancestors, currentReal];
     dirsVisited += 1;
@@ -1316,13 +1356,14 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         // Refusing it would drop a credential the repo is asking us to treat as
         // its own — the opposite of the unbounded-traversal risk above.
         // Checked AFTER the filters, so only a real candidate trips the cap.
-        if (files.length >= maxFiles) { truncated = true; break walk; }
+        eligible += 1;
+        if (files.length >= maxFiles) { truncated = true; continue; }
         files.push(spec.collect(entryPath, relFromRoot));
       }
     }
   }
 
-  return { files, truncated, unreadable, outOfRoot, skips };
+  return { files, truncated, eligible, budgetExceeded, unreadable, outOfRoot, skips };
 }
 
 /**

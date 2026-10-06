@@ -240,7 +240,7 @@ run the destructive form during smoke.
 
 ```bash
 $SL scan-history                    # Files scanned: N; findings show [service] + file:line, values masked
-$SL clean-history --dry-run         # "(dry run)" in header; Lines redacted count; file NOT modified
+$SL clean-history --dry-run         # "(dry run)" in header; "Files that would change" / "Lines that would be redacted" counts; file NOT modified
 ```
 
 Fail if `scan-history` prints raw credential values (previews must be masked)
