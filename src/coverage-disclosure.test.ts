@@ -260,9 +260,9 @@ describe('the human report names a file it did not open', () => {
     fs.writeFileSync(path.join(dir, hostile), 'nothing here\n');
     const { text } = await report(dir);
     expect(text).not.toContain('\u001b[2J');
-    expect(text).toContain('a\\x1b[2Jb.txt');
+    expect(text).toContain('a\\e[2Jb.txt');
     // No runnable command is offered for a name the terminal cannot show as typed.
-    expect(text).not.toMatch(/Scan one: npx secretless-ai scan .*a\\x1b/);
+    expect(text).not.toMatch(/Scan one: npx secretless-ai scan .*a\\e/);
   });
 
   it('prints a control character in a skipped directory name in visible form, never raw', async () => {
@@ -273,9 +273,9 @@ describe('the human report names a file it did not open', () => {
     const { text } = await report(dir);
     expect(text).not.toContain('\u001b[2J');
     expect(text).toMatch(/director(y|ies) not entered/);
-    expect(text).toContain('a\\x1b[2Jb/.cache');
+    expect(text).toContain('a\\e[2Jb/.cache');
     // No runnable command is offered for a name the terminal cannot show as typed.
-    expect(text).not.toMatch(/Scan one: npx secretless-ai scan .*a\\x1b/);
+    expect(text).not.toMatch(/Scan one: npx secretless-ai scan .*a\\e/);
   });
 
   it('CONTROL: an ordinary skipped directory is still offered as the command', async () => {
