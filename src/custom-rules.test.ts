@@ -235,6 +235,17 @@ describe('filePatternToDenyRules', () => {
     ]);
     expect(bash.some(r => r.includes('//'))).toBe(false);
   });
+
+  // The two written forms of the same absolute pattern must generate the same
+  // rules. `//` is the deny-rule grammar's root prefix, so a Bash rule that
+  // keeps it matches no command anyone would type.
+  it('keeps the Bash rules single-slash for a pattern written with the // prefix', () => {
+    const written = filePatternToDenyRules('//srv/app/creds/*.json');
+    expect(written.filter(r => r.startsWith('Bash('))).toEqual(
+      filePatternToDenyRules('/srv/app/creds/*.json').filter(r => r.startsWith('Bash(')),
+    );
+    expect(written).toContain('Bash(cat /srv/app/creds/*.json)');
+  });
 });
 
 describe('customRulesToDenyRules', () => {
@@ -287,6 +298,13 @@ describe('customRulesToFilePatterns', () => {
     const rules = { env: [], files: ['*.acme-credentials', '.corp-config'], bash: [] };
     const patterns = customRulesToFilePatterns(rules);
     expect(patterns).toEqual(['.*\\.acme-credentials', '\\.corp-config']);
+  });
+
+  // These patterns match a real path, so the deny-rule grammar's `//` root
+  // prefix is reduced to the one slash a path on disk carries.
+  it('reduces an absolute pattern written with the // prefix to one slash', () => {
+    const rules = { env: [], files: ['//srv/app/creds/*.json'], bash: [] };
+    expect(customRulesToFilePatterns(rules)).toEqual(['/srv/app/creds/.*\\.json']);
   });
 });
 

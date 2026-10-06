@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { init } from './init';
 import { RULES_FILENAME } from './custom-rules';
 
@@ -28,6 +29,14 @@ function cleanup(dir: string): void {
 function readDeny(dir: string): string[] {
   const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
   return settings.permissions.deny;
+}
+
+/** True when the generated guard hook refuses a Read of `filePath`. */
+function hookRefusesRead(dir: string, filePath: string): boolean {
+  const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+  const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: filePath } });
+  const out = execFileSync('bash', [hookPath], { input, encoding: 'utf-8' });
+  return /"permissionDecision":"deny"/.test(out);
 }
 
 describe('init with an absolute custom file pattern', () => {
@@ -65,4 +74,35 @@ describe('init with an absolute custom file pattern', () => {
     // The repaired config is reported as modified, not as already up to date.
     expect(result.filesModified).toContain('.claude/settings.json');
   });
+});
+
+// `//` is the deny-rule grammar's filesystem-root prefix, and it is a form an
+// operator may write in the rules file: both spellings name the same file. The
+// guard hook, which is the layer that actually refuses the read, compares its
+// globs against the path the Read tool was given — so a pattern that keeps the
+// second slash matched no path that can exist, and the hook stayed silent for
+// exactly the file the operator wrote the rule to protect.
+describe('an absolute custom file pattern in either written form', () => {
+  const TARGET = '/srv/app/creds/prod.json';
+
+  for (const written of ['/srv/app/creds/*.json', '//srv/app/creds/*.json']) {
+    it(`refuses a Read of the named file when the rules file says ${written}`, () => {
+      const dir = tmpDir();
+      try {
+        fs.writeFileSync(path.join(dir, RULES_FILENAME), `files:\n  - "${written}"\n`);
+
+        const result = init(dir);
+
+        expect(result.rulesFileProblem).toBeUndefined();
+        const deny = readDeny(dir);
+        // The Read rule names the absolute path through the root prefix, and
+        // the command rules carry the path as a command would type it.
+        expect(deny).toContain(EFFECTIVE_RULE);
+        expect(deny).toContain(`Bash(cat ${ABSOLUTE_PATTERN})`);
+        expect(hookRefusesRead(dir, TARGET)).toBe(true);
+      } finally {
+        cleanup(dir);
+      }
+    });
+  }
 });
