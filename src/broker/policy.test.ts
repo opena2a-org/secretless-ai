@@ -3,16 +3,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { PolicyEngine, matchGlob, isWithinTimeWindow, KNOWN_RULE_KEYS, KNOWN_CONSTRAINT_KEYS, KNOWN_ENVELOPE_KEYS } from './policy';
-import { RateLimiter } from './rate-limiter';
 import type { PolicyRule, AgentIdentity } from './types';
 
 describe('PolicyEngine', () => {
   let engine: PolicyEngine;
-  let rateLimiter: RateLimiter;
 
   beforeEach(() => {
-    rateLimiter = new RateLimiter();
-    engine = new PolicyEngine({ rateLimiter });
+    engine = new PolicyEngine();
   });
 
   afterEach(() => {
@@ -1054,7 +1051,7 @@ describe('matchGlob is not defeated by a line terminator', () => {
   });
 
   it('a deny rule fires on a newline-bearing credential name', () => {
-    const engine = new PolicyEngine({ rateLimiter: new RateLimiter() });
+    const engine = new PolicyEngine();
     engine.loadRules([
       { id: 'deny-aws', agentSelector: '*', credentialSelector: 'AWS_*', constraints: {}, effect: 'deny' },
       { id: 'allow-all', agentSelector: '*', credentialSelector: '*', constraints: {}, effect: 'allow' },

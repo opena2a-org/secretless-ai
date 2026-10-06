@@ -29,9 +29,25 @@ export class PolicyEngine {
   private readonly rateLimiter: RateLimiter;
   private readonly policyFile: string;
 
-  constructor(options?: { policyFile?: string; rateLimiter?: RateLimiter }) {
+  /**
+   * The engine always builds its own `RateLimiter`; there is no option to
+   * supply one. That limiter is the only implementation of the `rateLimit`
+   * constraint, so a caller-supplied one decided whether a loaded
+   * `maxPerMinute` was enforced at all: a limiter whose `check()` always
+   * answered true removed the constraint while the policy still read as
+   * loaded. A `rateLimiter` passed from JavaScript, where the type does not
+   * stop it, is refused rather than ignored, so a caller that relied on it
+   * finds out at construction.
+   */
+  constructor(options?: { policyFile?: string }) {
+    if ((options as Record<string, unknown> | undefined)?.rateLimiter !== undefined) {
+      throw new TypeError(
+        'PolicyEngine does not accept a rateLimiter option: the rateLimit constraint ' +
+        'is enforced by the engine\'s own limiter. Remove rateLimiter from the options.',
+      );
+    }
     this.policyFile = options?.policyFile ?? DEFAULT_POLICY_FILE;
-    this.rateLimiter = options?.rateLimiter ?? new RateLimiter();
+    this.rateLimiter = new RateLimiter();
   }
 
   /**

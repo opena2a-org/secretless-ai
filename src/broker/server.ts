@@ -47,18 +47,31 @@ export class BrokerServer {
   private authToken: Buffer | null = null;
   private aimReachable = false;
 
+  /**
+   * The policy engine is always built here from `config.policyFile`; `deps`
+   * has no `policy` entry. A caller-supplied engine replaced every allow and
+   * deny decision the broker makes, so an engine whose `evaluate()` always
+   * allowed served every credential while the server still loaded and
+   * reported the operator's policy. A `policy` passed from JavaScript, where
+   * the type does not stop it, is refused rather than ignored.
+   */
   constructor(
     config: BrokerConfig,
     deps?: {
-      policy?: PolicyEngine;
       resolver?: CredentialResolver;
       audit?: AuditLogger;
       aimClient?: AimClient | null;
       grantResolver?: GrantResolver | null;
     },
   ) {
+    if ((deps as Record<string, unknown> | undefined)?.policy !== undefined) {
+      throw new TypeError(
+        'BrokerServer does not accept a policy dependency: the policy engine is built ' +
+        'from config.policyFile. Set config.policyFile and remove policy from the dependencies.',
+      );
+    }
     this.config = config;
-    this.policy = deps?.policy ?? new PolicyEngine({ policyFile: config.policyFile });
+    this.policy = new PolicyEngine({ policyFile: config.policyFile });
     this.resolver = deps?.resolver ?? new CredentialResolver();
     this.audit = deps?.audit ?? new AuditLogger(config.auditLog);
     this.grantResolver = deps?.grantResolver ?? null;
