@@ -1283,8 +1283,52 @@ except Exception:
   # then, over-blocking a placeholder file is the correct trade against leaking
   # a real one.
   #
+  # NOTE ON ENVIRONMENT ACCESSORS. \`process.env\`, \`import.meta.env\` and
+  # \`Deno.env\` contain the \`.env\` token, so \`grep -c "process\\.env" app.ts\`,
+  # the first command of any audit of how a codebase reads its configuration,
+  # was refused as a secret-file read (#119). An accessor is rewritten to a
+  # neutral form before the file-read arm below ONLY inside the pattern argument
+  # of grep, egrep, fgrep or git grep: the first word after option groups that
+  # take no argument (none of e f A B C m d D), or the word after a lone -e.
+  # Everywhere else the text is untouched, because a file called process.env
+  # is a name.env file, which this guard treats as a secret file: a file
+  # argument (\`grep API_KEY process.env\`), the word after -f, and every other
+  # command (\`cat process.env\`) still block.
+  #
+  # The shape below is strict, so that the word it exempts is the one argument
+  # grep reads as its pattern. The pattern word is quoted in one piece or made
+  # of plain characters, so brace or glob expansion cannot split it into a
+  # pattern plus a file. After it come only plain words and \`--\`: grep
+  # permutes its options, and a later -e or -f, quoted or not, turns the first
+  # word into a file argument. The exemption is also withheld from any command
+  # carrying ; & > < $, a backtick or a control character, and from a pipe
+  # into anything but head, wc, sort or uniq with options only, because grep
+  # PRINTS the accessor: \`grep -o "process.env" README.md | cut -c8- | xargs
+  # cat\` rebuilds \`.env\` from its output, the derivation NOTE ON TEMPLATE
+  # FILES describes. The interpreter one-liner arm keeps the original text.
+  FILE_READ_COMMAND="$COMMAND"
+  SEARCH_WITHHELD=""
+  SEARCH_SHAPE=""
+  {
+    IFS= read -r SEARCH_WITHHELD || true
+    IFS= read -r SEARCH_SHAPE || true
+  } <<'SECRETLESS_SEARCH_SHAPE'
+[;&<>$\`[:cntrl:]]
+^([[:blank:]]*(grep|egrep|fgrep|git[[:blank:]]+grep)([[:blank:]]+-[a-cg-ln-zE-Z0-9]+)*[[:blank:]]+(-e[[:blank:]]+)?)("([^"\\]|[\\][^"])*"|'[^']*'|([A-Za-z0-9_./]|[\\][A-Za-z0-9_./])+)(([[:blank:]]+(--|[A-Za-z0-9_./*?@%+=:,][A-Za-z0-9_./*?@%+=:,-]*))*[[:blank:]]*([|][[:blank:]]*(head|wc|sort|uniq)([[:blank:]]+-[A-Za-z0-9]+)*[[:blank:]]*)*)$
+SECRETLESS_SEARCH_SHAPE
+  if [ -n "$SEARCH_WITHHELD" ] && [ -n "$SEARCH_SHAPE" ] \\
+    && ! [[ $COMMAND =~ $SEARCH_WITHHELD ]] && [[ $COMMAND =~ $SEARCH_SHAPE ]]; then
+    SEARCH_HEAD=\${BASH_REMATCH[1]-}
+    SEARCH_PATTERN=\${BASH_REMATCH[5]-}
+    SEARCH_TAIL=\${BASH_REMATCH[8]-}
+    # The three parts must rebuild the command exactly, or nothing is exempt.
+    if [ -n "$SEARCH_PATTERN" ] && [ "$SEARCH_HEAD$SEARCH_PATTERN$SEARCH_TAIL" = "$COMMAND" ]; then
+      SEARCH_PATTERN=$(printf '%s\\n' "$SEARCH_PATTERN" | sed -E 's#(^|[^A-Za-z0-9_$./])(process|import\\\\?\\.meta|Deno)\\\\?\\.env#\\1\\2_env#g' 2>/dev/null) || SEARCH_PATTERN=""
+      [ -z "$SEARCH_PATTERN" ] || FILE_READ_COMMAND="$SEARCH_HEAD$SEARCH_PATTERN$SEARCH_TAIL"
+    fi
+  fi
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd)
-  if echo "$COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
+  if echo "$FILE_READ_COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi

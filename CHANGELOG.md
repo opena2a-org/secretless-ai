@@ -289,6 +289,24 @@ lines and their lengths. The exit code is unchanged. `cleanTranscripts`
 returns every such line to library callers as `linesNotRead` and
 `totalLinesNotRead`.
 
+**The guard hook no longer reads an environment accessor in a search pattern
+as a secret file (#119).** `grep -c "process\.env" app.ts`, and the same
+search for `import.meta.env` or `Deno.env`, was refused as a secret-file read
+because the accessor contains the `.env` token. An accessor is now exempt
+from the Bash file-read check only as the pattern of `grep`, `egrep`, `fgrep`
+or `git grep`: the first word after options that take no argument, or the
+word after `-e`. A file called `process.env` is a `name.env` file, so the same
+text as a file argument or under another command (`grep API_KEY process.env`,
+`grep -f process.env src`, `cat process.env`) still blocks, as does a real env
+file in the same command (`grep -rn "process.env" .env.local`). The exemption
+is withheld from any command carrying `;`, `&`, `>`, `<`, `$` or a backtick,
+from one that pipes into anything but `head`, `wc`, `sort` or `uniq` with
+options only (`grep -o "process.env" README.md | cut -c8- | xargs cat`
+rebuilds `.env` from grep's output), and from one with options or quoted
+words after the pattern. The committed-template over-block
+(`grep API .env.example`) is unchanged, for the reason given in the hook's
+note on template files.
+
 **`secret sync --from <backend>` seeds this machine's store from a shared
 backend by name (#176).** `secret sync --from 1password` (or `vault`,
 `gcp-sm`, `keychain`, `local`) copies the required names of `./.secretless`,
