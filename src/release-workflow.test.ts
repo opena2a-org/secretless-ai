@@ -32,6 +32,35 @@ const CI = fs.readFileSync(path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml'
 /** The guard command AC4 fixes, verbatim. */
 const GUARD_GREP = String.raw`git ls-files | grep -E '(^|/)(\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|\.envrc)$'`;
 
+/**
+ * Git's repository-discovery variables. A git hook runs this suite with
+ * GIT_DIR exported for the repository the hook runs for (often with
+ * GIT_INDEX_FILE and GIT_WORK_TREE), and git honours them over the working
+ * directory: `git init` in a scratch directory re-initialises THAT repository,
+ * and `git add` there stages the scratch files into its index. Measured on
+ * 2026-10-06: one hook run left `index.js` and `packages/app/.envrc` staged in
+ * the worktree under test, and the two "delivered tree" cases below then failed
+ * on a tree the suite itself had dirtied. Every git call here drops the variables.
+ */
+const GIT_DISCOVERY_VARS = [
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_PREFIX',
+];
+
+function withoutGitDiscovery(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const name of GIT_DISCOVERY_VARS) delete env[name];
+  return env;
+}
+
+function git(args: string[], cwd: string, base?: NodeJS.ProcessEnv) {
+  return spawnSync('git', args, { cwd, encoding: 'utf-8', env: withoutGitDiscovery(base) });
+}
+
+function bash(script: string, cwd: string) {
+  return spawnSync('bash', ['-c', script], { cwd, encoding: 'utf-8', env: withoutGitDiscovery() });
+}
+
 // ---------------------------------------------------------------------------
 // Indent-walk helpers
 // ---------------------------------------------------------------------------
@@ -284,7 +313,7 @@ describe('every job that runs npm ci guards against tracked install-config files
   });
 
   it('SLS-06.AC4 on the delivered tree the guard grep prints nothing', () => {
-    const run = spawnSync('bash', ['-c', GUARD_GREP], { cwd: REPO_ROOT, encoding: 'utf-8' });
+    const run = bash(GUARD_GREP, REPO_ROOT);
     expect(run.stdout).toBe('');
     // grep exits 1 on no match, which the guard's `if` reads as "clean".
     expect(run.status).toBe(1);
@@ -294,30 +323,51 @@ describe('every job that runs npm ci guards against tracked install-config files
     const script = guardScript(jobBlock(RELEASE, 'build'));
 
     // Green: the delivered tree tracks no install-config file.
-    const clean = spawnSync('bash', ['-c', script], { cwd: REPO_ROOT, encoding: 'utf-8' });
+    const clean = bash(script, REPO_ROOT);
     expect(clean.status).toBe(0);
 
     // Red: a scratch repository with one tracked .npmrc. `git ls-files` reads
     // the index, so an added file is enough — no commit required.
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'npmrc-guard-'));
-    spawnSync('git', ['init', '--quiet'], { cwd: scratch });
+    git(['init', '--quiet'], scratch);
     fs.writeFileSync(path.join(scratch, '.npmrc'), 'registry=https://registry.evil.example/\n');
     fs.writeFileSync(path.join(scratch, 'index.js'), '\n');
-    spawnSync('git', ['add', '.npmrc', 'index.js'], { cwd: scratch });
+    git(['add', '.npmrc', 'index.js'], scratch);
 
-    const dirty = spawnSync('bash', ['-c', script], { cwd: scratch, encoding: 'utf-8' });
+    const dirty = bash(script, scratch);
     expect(dirty.status).toBe(1);
     expect(dirty.stdout).toContain('.npmrc');
 
     // A nested one is caught too: the pattern anchors on (^|/).
-    spawnSync('git', ['rm', '--cached', '--quiet', '.npmrc'], { cwd: scratch });
+    git(['rm', '--cached', '--quiet', '.npmrc'], scratch);
     fs.mkdirSync(path.join(scratch, 'packages', 'app'), { recursive: true });
     fs.writeFileSync(path.join(scratch, 'packages', 'app', '.envrc'), 'export X=1\n');
-    spawnSync('git', ['add', 'packages/app/.envrc'], { cwd: scratch });
-    const nested = spawnSync('bash', ['-c', script], { cwd: scratch, encoding: 'utf-8' });
+    git(['add', 'packages/app/.envrc'], scratch);
+    const nested = bash(script, scratch);
     expect(nested.status).toBe(1);
     expect(nested.stdout).toContain('packages/app/.envrc');
 
     fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it('SLS-06.AC4 the scratch repository never stages into the index an inherited GIT_DIR names', () => {
+    // A hook exports GIT_DIR for the repository it runs for. The scratch
+    // commands run without it, so a bystander repository named that way stays
+    // untouched and the scratch repository gets the file.
+    const bystander = fs.mkdtempSync(path.join(os.tmpdir(), 'npmrc-guard-bystander-'));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'npmrc-guard-'));
+    try {
+      expect(git(['init', '--quiet'], bystander).status).toBe(0);
+      const inherited = { ...process.env, GIT_DIR: path.join(bystander, '.git') };
+      expect(git(['init', '--quiet'], scratch, inherited).status).toBe(0);
+      fs.writeFileSync(path.join(scratch, '.npmrc'), 'registry=https://registry.evil.example/\n');
+      expect(git(['add', '.npmrc'], scratch, inherited).status).toBe(0);
+      expect(git(['ls-files'], scratch).stdout).toBe('.npmrc\n');
+      expect(git(['ls-files'], bystander).stdout).toBe('');
+      expect(bash(GUARD_GREP, bystander).status).toBe(1);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+      fs.rmSync(bystander, { recursive: true, force: true });
+    }
   });
 });
