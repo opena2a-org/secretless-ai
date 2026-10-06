@@ -134,9 +134,28 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     flags: { '--fix': 'Apply the fixes it finds' },
   },
   import: {
-    summary: 'Import secrets from a .env file.',
-    usage: ['<file>', '--detect'],
-    flags: { '--detect': 'Auto-find and import .env files' },
+    summary: 'Import secrets from a .env file, or from a bundle written by `export`.',
+    usage: ['<file>', '--detect', '<bundle> [--force]'],
+    flags: {
+      '--detect': 'Auto-find and import .env files',
+      '--force': 'Replace names already in this machine\'s store (bundle only)',
+    },
+    notes: [
+      'A bundle asks for its passphrase in the terminal, or reads SECRETLESS_EXPORT_PASSPHRASE.',
+      'Nothing is written when the passphrase is wrong or a name already exists without --force.',
+    ],
+  },
+  export: {
+    summary: 'Write secrets to an encrypted bundle, to move them to another machine.',
+    usage: ['--out <file>.secretless-bundle [--only KEY1,KEY2]'],
+    flags: {
+      '--out': ['<file>.secretless-bundle', 'The bundle to create; an existing file is never replaced'],
+      '--only': ['KEY1,KEY2', 'Export only the named secrets'],
+    },
+    notes: [
+      'The passphrase is asked for twice in the terminal, or read from SECRETLESS_EXPORT_PASSPHRASE;',
+      'it is never accepted as an argument. Import the bundle with `import <bundle>`.',
+    ],
   },
   setup: {
     summary: 'Set up secrets from the .secretless manifest.',

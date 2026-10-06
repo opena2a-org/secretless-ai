@@ -120,6 +120,17 @@ npx secretless-ai secret list --long --app marketing_agent  # every entry record
 
 Descriptions and metadata are not secrets. They are kept in plain text beside the store (`~/.secretless-ai/secret-annotations.json`) and printed by `secret show` and `secret list --long`; neither command prints a value, and neither is blocked by the deny rules `init` installs. `set` refuses a description or field that contains the value or looks like a credential. Keys are free-form; `app`, `provider`, `scopes`, `tokenTtl`, `redirectUri` and `expiresAt` are conventions, not a schema. `--meta key=` removes a field, `set` without either flag keeps what was recorded, and `secret rm` removes both. `secret list --json` and `secret show --json` include the same fields.
 
+### Move secrets to another machine
+
+A keychain or local store cannot be copied as a file. `export` writes the stored secrets into one bundle encrypted with a passphrase (scrypt, AES-256-GCM); `import` on the other machine stores them in that machine's backend:
+
+```bash
+npx secretless-ai export --out team.secretless-bundle            # add --only K1,K2 for a subset
+npx secretless-ai import team.secretless-bundle                  # on the other machine
+```
+
+The passphrase is asked for in the terminal, or read from `SECRETLESS_EXPORT_PASSPHRASE`; it is never accepted as an argument, and no value is printed. `import` writes nothing when the passphrase is wrong or a name already exists (`--force` replaces it), then reads each name back from the store and reports whether all of them resolve. The bundle also carries the `required` flag and description from the exporting project's `.secretless`. `scan` and `scan-staged` flag a `*.secretless-bundle` file, `clean` redacts a bundle printed into a transcript, and `verify` fails while one is in a recent transcript. Delete the bundle on both machines once it is imported. `export` refuses to run inside an AI agent session.
+
 ### Ask your AI assistant to use a secret
 
 After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursor/rules/secretless.mdc`, ...) lists which keys are available as environment variables and tells the tool to reference them as `$VAR_NAME` without reading values. So this works in Claude Code:

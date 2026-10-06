@@ -30,6 +30,18 @@ describe('scanStagedFiles', () => {
     expect(result.blockedFiles).toContain('.env');
   });
 
+  it('blocks a staged bundle written by export (#175)', () => {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) {
+        return 'backup/Team.SECRETLESS-BUNDLE\nsrc/app.ts\n';
+      }
+      return 'const x = 1;\n';
+    });
+
+    const result = scanStagedFiles();
+    expect(result.blockedFiles).toEqual(['backup/Team.SECRETLESS-BUNDLE']);
+  });
+
   it('detects credential patterns in staged content', () => {
     mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
       if (args && args.includes('--name-only')) {

@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+**`export` and `import` move a secret store to another machine (#175).**
+`secretless-ai export --out <file>.secretless-bundle [--only K1,K2]` writes the
+selected names and values, with the `required` flag and description the current
+directory's `.secretless` gives them, into one file encrypted under a passphrase
+(scrypt, AES-256-GCM). Nothing about the source machine is written. The file is
+created owner-only and an existing file is never replaced. `secretless-ai import
+<bundle>` on the other machine decrypts it and stores the entries in that
+machine's backend. A wrong passphrase, a changed file, or a name that already
+exists (without `--force`) is refused before anything is written. After writing,
+each name is read back from the store and compared with the bundle. The
+passphrase is read from the terminal without echo, or from
+`SECRETLESS_EXPORT_PASSPHRASE`, never from an argument, and neither command
+prints a value. `export` refuses inside an AI agent runtime, as `env` does,
+because a caller that picks the passphrase can decrypt the bundle. Importing a
+`.env` file is unchanged; `--force` is refused there, since that path already
+replaces names.
+
+**`scan`, `scan-staged`, `clean` and `verify` treat a bundle as a secret
+(#175).** A bundle holds every secret it was given behind one passphrase that
+can be guessed at offline, so these commands now report one where they said
+nothing before:
+- `scan` reports a `*.secretless-bundle` file by its presence, without reading
+  it, as a high-severity `secretless-bundle` finding (Secretless Encrypted
+  Bundle), so a tree holding one now exits 1.
+- `scan-staged` blocks a commit that stages a file ending in
+  `.secretless-bundle`, as it blocks a private key file.
+- `clean`, the Stop hook and `watch` redact a bundle printed into a transcript
+  as `[REDACTED:secretless-bundle]`.
+- `verify` counts such a bundle in one of the five most recent transcripts as a
+  credential exposed in a transcript, so it prints `FAIL` and exits 1 where it
+  passed, and `status` counts it among the transcript secrets it reports.
+
 **`clean`, `watch` and the Stop hook redact a secret printed as `NAME=value`
 when the value has no vendor prefix (#185).** Process listings and environment
 dumps print `JIRA_TOKEN=<hex>` or `MY_SERVICE_TOKEN=<hex>`; no vendor pattern

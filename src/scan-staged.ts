@@ -9,6 +9,7 @@ import { execFileSync } from 'child_process';
 import { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CREDENTIAL_PREFIX_QUICK_CHECK } from './patterns';
 import { findRealMatch } from './scan';
 import { loadSecretlessIgnore, type IgnoreMatcher } from './secretlessignore';
+import { BUNDLE_EXTENSION } from './bundle';
 
 export interface ScanStagedOptions {
   /** Repo root used to load `.secretlessignore`. Defaults to `git rev-parse --show-toplevel`. */
@@ -99,6 +100,12 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
   // Check filenames against secret file patterns
   for (const file of stagedFiles) {
     const basename = file.split('/').pop() ?? file;
+    // A bundle from `export`. Not in SECRET_FILE_PATTERNS, which is kept
+    // identical to the shared pattern package.
+    if (basename.toLowerCase().endsWith(BUNDLE_EXTENSION)) {
+      blockedFiles.push(file);
+      continue;
+    }
     for (const pattern of SECRET_FILE_PATTERNS) {
       if (pattern.includes('*')) {
         // Glob pattern: *.key, *.pem, etc.

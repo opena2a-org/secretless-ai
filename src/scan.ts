@@ -9,6 +9,7 @@ import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURC
 import { redactMatches } from './redact';
 import { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceTier } from './confidence';
+import { BUNDLE_EXTENSION } from './bundle';
 
 export interface ScanFinding {
   file: string;
@@ -718,7 +719,8 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     }
   }
 
-  // Scan standalone private-key files (server.key, id_rsa.pem, *.p12). These extensions
+  // Scan standalone private-key files (server.key, id_rsa.pem, *.p12), and bundles
+  // written by `export` (*.secretless-bundle), which are flagged by existence. These extensions
   // are in SECRET_FILE_PATTERNS (the block list) but were never fed to the scanner, so the
   // single most common private-key layout on disk reported clean. Text key files are
   // scanned for a PEM PRIVATE KEY block (public certs in .crt/.pem won't match); binary
@@ -734,6 +736,24 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       try {
         const stat = fs.statSync(filePath);
         if (!stat.isFile()) continue;
+        if (path.extname(filePath).toLowerCase() === BUNDLE_EXTENSION) {
+          // A bundle from `export` holds every secret it was given, behind one
+          // passphrase that can be guessed at offline. Presence is the finding,
+          // so this is checked before the size cap and nothing is read.
+          findings.push({
+            file: relPath,
+            line: 1,
+            patternId: 'secretless-bundle',
+            patternName: 'Secretless Encrypted Bundle',
+            severity: 'high',
+            preview: `${path.basename(filePath)} (encrypted secret bundle from export)`,
+            fix: 'Import it on the machine it was made for, then delete it. Never commit a bundle.',
+            confidence: 0.95,
+            confidenceTier: 'high',
+            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(relPath.replace(/\\/g, '/'))),
+          });
+          continue;
+        }
         if (stat.size > sourceCap) {
           // A private-key file over the cap is exactly the case worth naming.
           stats?.oversize?.push({
@@ -845,7 +865,7 @@ function isTestFile(name: string): boolean {
  * and again at the file level (in case the user uses a file-name glob).
  */
 /** Private-key file extensions scanned in addition to source/config files. */
-const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx']);
+const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx', BUNDLE_EXTENSION]);
 
 /** What a walker collected, and every reason its coverage fell short. */
 interface WalkResult {

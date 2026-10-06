@@ -5,6 +5,9 @@ import { runSetup } from '../setup';
 import { MANIFEST_FORMAT_HINT } from '../manifest';
 import { generateEnvExports, detectAgentRuntime } from '../env';
 import { formatCommandError } from './utils';
+import { isBundleFile } from '../bundle';
+import { EXIT_USAGE } from '../argv';
+import { runBundleImport, type BundleCommandDeps } from './bundle';
 
 export async function runRun(args: string[]): Promise<number> {
   // Parse --only flag before --
@@ -105,8 +108,25 @@ export async function runEnv(args: string[]): Promise<number> {
   }
 }
 
-export async function runImport(args: string[]): Promise<number> {
+export async function runImport(args: string[], deps?: BundleCommandDeps): Promise<number> {
   console.log('\n  Secretless Import\n');
+
+  // `--force` belongs to the bundle path only. The .env path has always
+  // replaced existing names, so accepting the flag there would honour nothing.
+  const force = args.includes('--force');
+  const positional = args.filter((a) => a !== '--force');
+  const bundleArg = positional[0];
+  const exists = !!bundleArg && !bundleArg.startsWith('-')
+    && (require('fs') as typeof import('fs')).existsSync(path.resolve(bundleArg));
+  if (exists && isBundleFile(path.resolve(bundleArg))) {
+    return runBundleImport(path.resolve(bundleArg), force, deps);
+  }
+  // A missing file falls through to "File not found" below, which is the answer.
+  if (force && (exists || args.includes('--detect'))) {
+    console.error('  --force applies only to an encrypted bundle from `export`.');
+    console.error('  A .env import already replaces names that exist. Nothing was imported.\n');
+    return EXIT_USAGE;
+  }
 
   if (args.includes('--detect')) {
     const dir = process.cwd();
@@ -133,7 +153,7 @@ export async function runImport(args: string[]): Promise<number> {
     return 0;
   }
 
-  const filePath = args[0];
+  const filePath = positional[0];
   if (!filePath) {
     console.error('  Usage: secretless-ai import <file> or secretless-ai import --detect\n');
     return 1;
