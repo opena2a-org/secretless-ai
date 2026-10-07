@@ -49,9 +49,16 @@ export function findSecretValueProblem(value: string): SecretValueProblem | null
       return { kind: 'replacement-char', found: 'U+FFFD (replacement character)', at: i + 1 };
     }
     const code = ch.charCodeAt(0);
-    const isControl = code < 0x20 || code === 0x7f;
+    // C1 (U+0080 to U+009F) is refused with C0: U+009B is the 8-bit form of
+    // ESC [, so accepting it would let through the same sequence the 0x1B
+    // check refuses.
+    const isC1 = code >= 0x80 && code <= 0x9f;
+    const isControl = code < 0x20 || code === 0x7f || isC1;
     if (isControl && !ALLOWED_CONTROLS.has(ch)) {
-      const name = code === 0x1b ? 'an escape character (0x1B)' : `a control character (0x${code.toString(16).toUpperCase().padStart(2, '0')})`;
+      const hex = code.toString(16).toUpperCase().padStart(2, '0');
+      const name = code === 0x1b
+        ? 'an escape character (0x1B)'
+        : isC1 ? `a C1 control character (U+00${hex})` : `a control character (0x${hex})`;
       return { kind: 'control-char', found: name, at: i + 1 };
     }
   }

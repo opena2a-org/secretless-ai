@@ -36,6 +36,23 @@ describe('findSecretValueProblem', () => {
       .toBe('control-char');
   });
 
+  it('rejects C1 control characters, including the 8-bit CSI (#230)', () => {
+    // U+009B is ESC [ in one character: refusing ESC and accepting it would
+    // store the same terminal sequence in its other encoding.
+    const csi = findSecretValueProblem('abc' + String.fromCharCode(0x9b) + '[2J');
+    expect(csi).toEqual({ kind: 'control-char', found: 'a C1 control character (U+009B)', at: 4 });
+    for (const code of [0x80, 0x85, 0x9f]) {
+      expect(findSecretValueProblem('abc' + String.fromCharCode(code))?.kind, code.toString(16))
+        .toBe('control-char');
+    }
+  });
+
+  it('CONTROL: accepts the first character after C1 and non-ASCII letters', () => {
+    // U+00A0 and above are printable, and a password may hold them.
+    expect(findSecretValueProblem('abc' + String.fromCharCode(0xa0))).toBeNull();
+    expect(findSecretValueProblem('pässwörd-ñ-日本')).toBeNull();
+  });
+
   it('accepts the credentials people actually store', () => {
     // The other direction, and the one that decides whether this rule is
     // usable: rejecting too widely would block real secrets.
@@ -103,6 +120,15 @@ describe('SecretStore.setSecret rejects an unstorable value (#104)', () => {
     for (let i = 0; i + 4 <= mangled.length; i++) {
       expect(err!.message).not.toContain(mangled.slice(i, i + 4));
     }
+  });
+
+  it('refuses an 8-bit CSI and stores nothing (#230)', async () => {
+    const mangled = 'sk-live-QQ7ZX9' + String.fromCharCode(0x9b) + '[2J';
+    const err = await store.setSecret('API_KEY', mangled).then(() => null, (e: Error) => e);
+
+    expect(err!.message).toMatch(/API_KEY.*was not stored/);
+    expect(err!.message).toContain('C1 control character (U+009B) at character 15');
+    expect(await store.listSecrets()).toEqual([]);
   });
 
   it('stores nothing when it refuses', async () => {
