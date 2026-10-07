@@ -568,6 +568,30 @@ wherever the shell runs the verb from: `cat .env`, `sudo cat .env`,
 ending. Re-running `npx secretless-ai init` refreshes the hook in an
 existing project.
 
+**The guard hook admits a write of text that names a secret file, and its
+refusal quotes what it matched.** A whole-word reader verb followed by a
+secret-file name was refused as a read even inside text being written to a
+file: `printf '%s\n' '... the head of process.env.PATH ...' >> notes.md` was
+refused because `head` came before `process.env.` on the line. Three write
+forms are admitted when they are the whole command: `printf` or `echo` of
+single-quoted text redirected with `>` or `>>`, which nothing admitted before,
+and `cat > FILE` or `cat >> FILE` fed a heredoc whose delimiter is
+single-quoted (`<<'EOF'`), which the command analyzer also admits. The shell
+neither expands nor runs that text; it copies it to the file. The target
+must be a plain path that is not itself a `.env`, `.key`, `.pem`, `.p12` or
+`.pfx` file, `cat` must have no file operand, and the command must hold
+nothing else: no pipe, no second command on the first line or after the
+heredoc's first terminator line, and no `$`, double quote or second redirect
+outside the single quotes. Any other program given the same heredoc,
+including `bash`, `zsh`, `command bash` and a name the hook does not know, has
+every line checked as before. The hook's other rules still read the whole
+command, so a note holding `echo $API_KEY` is refused as before, and without
+`python3` the hook checks the whole command as before. A refusal from either
+secret-file-read rule now quotes the text it matched, as in
+``Matched `cat .env` ``, and stays one JSON document when that text holds a
+quote, a backslash or `$(`. Re-running `npx secretless-ai init` refreshes the
+hook in an existing project.
+
 **The guard hook judges a symlinked path by the file it reaches.** The hook's
 file rules read only the name a tool was given, so a link named like a
 template (`config.env.example -> .env`) was allowed as a template while the

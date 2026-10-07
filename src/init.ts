@@ -1152,8 +1152,8 @@ const FILE_READERS =
 // on their full text, as before. Without python3 nothing is reduced.
 //
 // The reduction is in addition to the accessor rewrite (NOTE ON ENVIRONMENT
-// ACCESSORS), which still covers git grep: the file-read arm refuses only a match
-// that survives both. The data-directory arm, the process-listing, bare-env and
+// ACCESSORS), which still covers git grep, and to the inert-write scan below: the
+// file-read arm refuses only a match that survives all three. The data-directory arm, the process-listing, bare-env and
 // git-credential arms, and custom rules read the full command.
 //
 // Kept free of backticks and `${` so it can sit in the template literal below.
@@ -1469,6 +1469,78 @@ def main():
 main()
 `;
 
+// The two secret-file-read rules match command TEXT, so a command that only
+// WRITES text naming a secret file was refused as a read: a heredoc writing
+// code that uses `process.env` to a scratch file, or `printf` of a note saying
+// "the head of process.env.PATH", trips the reader-verb rule on its words.
+// This program, run on the command, prints the text those two rules should
+// see instead when the command is one write the shell can neither expand nor
+// run, and prints nothing otherwise, which leaves the whole command scanned.
+//
+// The admitted shapes are named by what consumes the text, never by how the
+// text is spelled, so an unknown program is never taken for a sink:
+//   cat > FILE <<'DELIM' ... DELIM   the heredoc body is dropped
+//   printf 'text' ... > FILE         the single-quoted text is dropped
+//   echo 'text' ... >> FILE          the single-quoted text is dropped
+// `cat` takes no operand here: an operand is a file it reads. printf and echo
+// read no file. The delimiter must be single-quoted, so the body is not
+// expanded. There is exactly one `>` or `>>`, its target is a plain path with
+// no secret-file suffix, and every other character outside single quotes is
+// one the shell gives no meaning to: no pipe, no `;` or `&&`, no `$`, no
+// double quote, no second redirect. The heredoc ends at the FIRST line equal
+// to the delimiter, as in the shell, and nothing but blank lines may follow
+// it: a command after the terminator runs and stays scanned.
+//
+// It runs under the python3 extraction only; the grep fallback scans the whole
+// command as before. It is written for `python3 -c '...'`, so it holds no
+// single quote; \x27 stands for one inside its regular expressions.
+const INERT_WRITE_SCAN_PY = String.raw`import re,sys
+WORD = r"(?:\x27[^\x27]*\x27|[A-Za-z0-9_%+,./:=@~-])+"
+TOKEN = re.compile(r"[ \t]+|>>?|" + WORD)
+PLAIN = re.compile(r"[A-Za-z0-9_%+,./:=@~-]+\Z")
+SECRET = re.compile(r"\.(env|key|pem|p12|pfx)([^A-Za-z0-9]|\Z)", re.I)
+HEREDOC = re.compile(r"([^<]*)<<[ \t]*\x27([A-Za-z0-9_.-]+)\x27([^<]*)\Z")
+def words(s):
+    out, i = [], 0
+    while i < len(s):
+        m = TOKEN.match(s, i)
+        if not m:
+            return None
+        if m.group().strip(" \t"):
+            out.append(m.group())
+        i = m.end()
+    return out
+def sink(ws):
+    ops = [i for i, w in enumerate(ws) if w in (">", ">>")]
+    if len(ops) != 1 or ops[0] + 1 >= len(ws):
+        return False
+    t = ws[ops[0] + 1]
+    return PLAIN.match(t) is not None and SECRET.search(t) is None
+def scan_text(cmd):
+    lines = cmd.split("\n")
+    m = HEREDOC.match(lines[0])
+    if m:
+        ws = words(m.group(1) + " " + m.group(3))
+        if ws is None or len(ws) != 3 or ws[0] != "cat" or not sink(ws):
+            return None
+        delim = m.group(2)
+        if delim not in lines[1:]:
+            return None
+        end = lines.index(delim, 1)
+        if "".join(lines[end + 1:]).strip():
+            return None
+        return lines[0] + "\n" + delim
+    ws = words(cmd.strip(" \t\n"))
+    if not ws or ws[0] not in ("printf", "echo") or not sink(ws):
+        return None
+    return re.sub(r"\x27[^\x27]*\x27", chr(39) * 2, cmd)
+try:
+    out = scan_text(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
+    if out:
+        sys.stdout.buffer.write(out.encode("utf-8", "surrogateescape"))
+except Exception:
+    pass`;
+
 function generateClaudeHookScript(customRules?: CustomRules | null): string {
   // Three categories of secret-file signals. Each matches differently:
   //  - extensions: suffix match on basename, e.g. `server.key`, `prod.env`, `id_rsa.pem`.
@@ -1619,6 +1691,7 @@ if [ "$TOOL_NAME" = "Bash" ]; then
   # fallback for hosts without python3 (there the native permissions.deny rules
   # remain the enforcing layer). Regression: adressed 2026-07-16 (issue #99).
   COMMAND=""
+  FILE_READ_SCAN=""
   if command -v python3 >/dev/null 2>&1; then
     # surrogatepass so a lone surrogate in the command can't raise mid-write and
     # leave us empty; write bytes so no encoding step can fail.
@@ -1628,6 +1701,15 @@ try:
     sys.stdout.buffer.write((ti.get("command") or "").encode("utf-8","surrogatepass"))
 except Exception:
     pass' 2>/dev/null || true)
+    # The text the two secret-file-read rules below match: the command with the
+    # text of one inert write left out (cat > FILE <<'DELIM', or printf or echo
+    # of single-quoted text into a file), so a note that names a secret file is
+    # not refused as a read of one. Empty for every other command, and on any
+    # error, and then the whole command is scanned. -I keeps a module in the
+    # working directory from standing in for the standard library.
+    if [ -n "$COMMAND" ]; then
+      FILE_READ_SCAN=$(printf '%s' "$COMMAND" | python3 -I -c '${INERT_WRITE_SCAN_PY}' 2>/dev/null || true)
+    fi
   fi
   # Fail CLOSED: if python is absent OR its extraction produced nothing (parse
   # error, odd input), fall back to the grep extraction rather than leaving
@@ -1637,6 +1719,19 @@ except Exception:
   if [ -z "$COMMAND" ]; then
     COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   fi
+  if [ -z "$FILE_READ_SCAN" ]; then
+    FILE_READ_SCAN="$COMMAND"
+  fi
+  # The text a command rule matched, for its deny reason, so the reason names
+  # what tripped it: the first span of $2 that pattern $1 matches, run on to the
+  # end of its word, without the boundary character before the verb and cut to
+  # 160 characters. Every character JSON cannot carry raw becomes ?, and quotes
+  # and backslashes are escaped, so the reason stays one JSON document whatever
+  # the command holds.
+  matched_text() {
+    printf '%s\\n' "$2" | grep -oiE "$1[^[:space:]]*" | head -1 | sed -E 's/^[^A-Za-z]//' \\
+      | tr -c '[:print:]\\n' '?' | cut -c1-160 | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' || true
+  }
   # NOTE ON TEMPLATE FILES. The command guard refuses \`cat <name>.env.example\`
   # even though the file-path guard below allows template files, so the two
   # layers disagree about committed placeholders. That is a known, deliberate
@@ -1725,12 +1820,16 @@ SECRETLESS_ANALYZER
     esac
   fi
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd).
-  # A match is refused only when it survives both exemptions above: the accessor
-  # rewrite and the analyzer's reduction each remove only text that names no file
-  # the command opens, so a match either one removes was never a file read.
+  # A match is refused only when it survives all three exemptions above: the
+  # accessor rewrite, the analyzer's reduction and the inert-write scan each
+  # remove only text that names no file the command opens, so a match any one
+  # of them removes was never a file read. The reason quotes the match in the
+  # command as written, not in the analyzer's reduced text.
   if echo "$FILE_READ_COMMAND" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' \\
-    && echo "$SCAN_TEXT" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
+    && echo "$SCAN_TEXT" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' \\
+    && echo "$FILE_READ_SCAN" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}'; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. Matched \`%s\`: a reader verb, then a secret-file name. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash. To write a note that names a secret file, use cat > FILE with a single-quoted heredoc delimiter, or printf or echo of single-quoted text into a file."}}\\n' \\
+      "$(matched_text '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
     exit 0
   fi
   # Block python/node one-liners that read secret files. Same dead-end as the arm
@@ -1739,8 +1838,10 @@ SECRETLESS_ANALYZER
   # refused all the same, because this is a denylist over command TEXT. The
   # decision has to stand — see NOTE ON TEMPLATE FILES — so the reason carries the
   # ambiguity and the route out.
-  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
+  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}' \\
+    && echo "$FILE_READ_SCAN" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. Matched \`%s\`: a python or node one-liner that names a secret file. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}\\n' \\
+      "$(matched_text '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
