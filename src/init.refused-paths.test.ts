@@ -1,11 +1,15 @@
 // `init` and the instruction paths it refuses.
 //
 // 1. `runInit` names every refused path with its reason and prints a Verify and
-//    a Fix line. It used to drop the tool from the Configured line and then say
-//    "Already up to date. No files changed." with nothing else.
-// 2. The writer does not follow a symbolic link put in place between its path
-//    checks and its write. The swap is made from inside `fs.mkdirSync`, which
-//    the writer calls after its last path check and right before it writes.
+//    a Fix line. The tool is still left off the Configured line; the run used
+//    to say "Already up to date. No files changed." without naming the path.
+// 2. The writer never writes the block through a symbolic link put in place
+//    between its path checks and its write. A link in place of the rule file
+//    itself is refused at the open. A link in place of a directory on the way
+//    is followed by the open, which can leave an empty file where it leads,
+//    and is refused by the check after the open. The swap is made from inside
+//    `fs.mkdirSync`, which the writer calls after its last path check and
+//    right before it writes.
 // 3. A rule file that cannot be opened for writing and already carries the
 //    block is left as it is, and the tools after it are still configured. An
 //    open for writing alone made such a file fail `init` with EACCES.
@@ -220,6 +224,32 @@ describe('init does not follow a link put in place after its path checks', () =>
 
     init(dir);
     expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toBe(appended);
+  });
+});
+
+describe('init and a directory on the way replaced by a link after its path checks', () => {
+  it('.cursor/rules replaced by a link to an outside directory: the block is not written there and Cursor is refused', () => {
+    const dir = project();
+    const outside = outsideDir();
+    const rulesDir = path.join(dir, '.cursor', 'rules');
+    fs.mkdirSync(rulesDir, { recursive: true });
+
+    race.dir = rulesDir;
+    race.swap = () => {
+      fs.rmdirSync(rulesDir);
+      fs.symlinkSync(outside, rulesDir);
+    };
+    const result = init(dir);
+
+    expect(race.swap, 'the swap never ran, so this cell tested nothing').toBeUndefined();
+    // The open follows a link at a directory on the way and can leave an empty
+    // file where it leads; the check after the open refuses the path before
+    // anything is written to it.
+    const reached = path.join(outside, 'secretless.mdc');
+    expect(fs.existsSync(reached) ? fs.readFileSync(reached, 'utf-8') : '').not.toContain(MARKER);
+    expect(result.toolsDetected).toEqual(['cursor']);
+    expect(result.toolsConfigured).not.toContain('cursor');
+    expect(result.pathsRefused).toContainEqual({ tool: 'cursor', path: '.cursor/rules', reason: 'is a symbolic link' });
   });
 });
 
