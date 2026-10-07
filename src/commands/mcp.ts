@@ -6,6 +6,7 @@ import { restoreConfig } from '../mcp/rewrite';
 import { resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import type { SelectableBackendType } from '../backends/config';
+import { listedName } from '../secret-value';
 
 function getWrapperPath(): string {
   return path.resolve(__dirname, '..', 'mcp-wrapper.js');
@@ -48,7 +49,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     for (const server of result.servers) {
       console.log(`  + ${server.client}/${server.server}`);
       for (const key of server.secretKeys) {
-        console.log(`      ${key} (encrypted)`);
+        console.log(`      ${listedName(key)} (encrypted)`);
       }
     }
     console.log();
@@ -62,7 +63,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     if (result.injectionWarnings.length > 0) {
       console.log(`  WARNING: ${result.injectionWarnings.length} potential prompt injection(s) detected:\n`);
       for (const w of result.injectionWarnings) {
-        console.log(`    ! ${w.client}/${w.server} -> ${w.key}`);
+        console.log(`    ! ${w.client}/${w.server} -> ${listedName(w.key)}`);
         console.log(`      Type: ${w.injectionType} (${w.severity})`);
       }
       console.log();

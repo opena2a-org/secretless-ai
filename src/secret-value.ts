@@ -92,17 +92,47 @@ export function unstorableMcpSecretError(
 ): Error {
   return new Error(
     [
-      `${JSON.stringify(envKey)} for MCP server ${client}/${server} was not stored: ${describeProblem(problem)}`,
+      `${quotedName(envKey)} for MCP server ${client}/${server} was not stored: ${describeProblem(problem)}`,
       '',
       ...problemCause(problem),
       '',
       '  Nothing was stored for this server.',
       '',
       '  Verify:  secretless-ai mcp-status   (shows the config file for each client)',
-      `  Fix:     correct ${envKey} in the "${server}" env block of that file,`,
+      `  Fix:     correct ${listedName(envKey)} in the "${server}" env block of that file,`,
       '           then run: secretless-ai protect-mcp',
     ].join('\n'),
   );
+}
+
+/**
+ * C0 controls, DEL, C1 controls and the Unicode line and paragraph separators.
+ * U+009B is a one-character CSI on a terminal that honours 8-bit controls.
+ */
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+/**
+ * A name read from a config file, such as an MCP env key, quoted for a
+ * message with every character in UNPRINTABLE written as an escape (\n, \t
+ * and the like, otherwise \u followed by four hex digits).
+ * JSON.stringify escapes C0 controls but leaves DEL, C1 controls and U+2028/9
+ * raw, so those are escaped after it.
+ */
+export function quotedName(name: string): string {
+  return JSON.stringify(name).replace(
+    /[\u007f-\u009f\u2028\u2029]/g,
+    (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/**
+ * A name read from a config file, for a list: as it is when it can only be
+ * read one way, so GITHUB_TOKEN prints as GITHUB_TOKEN, otherwise quotedName.
+ * A quote or backslash is quoted too, so a name cannot pass for the escaped
+ * form of another.
+ */
+export function listedName(name: string): string {
+  return UNPRINTABLE.test(name) || /["\\]/.test(name) ? quotedName(name) : name;
 }
 
 function describeProblem(problem: SecretValueProblem): string {
