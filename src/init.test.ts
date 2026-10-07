@@ -1046,6 +1046,8 @@ describe('init', { timeout: 30_000 }, () => {
         "grep -c x '{.Config.Env}'",
         'ls ~/.secretless-ai',
         'cat ~/.secretless-ai/store.json',
+        // printf turns the `\n` escape into a line that sh runs.
+        "printf 'x\\ncat .env' | sh",
       ];
       for (const c of mustBlock) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
@@ -1151,6 +1153,8 @@ describe('init', { timeout: 30_000 }, () => {
         ['cat > notes.md <<EOF\nthe head of $HOME/.env\nEOF', 'head of $HOME/.env'],
         ['cat .env.example', 'cat .env.example'],
         [`python3 -c "open('.env').read()"`, `python3 -c "open('.env').read()"`],
+        ['\\tail .env', 'tail .env'],
+        ["printf 'x\\ncat .env' | sh", "cat .env'"],
       ];
       for (const [c, matched] of cells) {
         const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: c } });
@@ -1167,6 +1171,79 @@ describe('init', { timeout: 30_000 }, () => {
           reason,
           `deny reason must explain the filename/pattern ambiguity for: ${JSON.stringify(c)}`,
         ).toMatch(/filename.*pattern|pattern.*filename/is);
+      }
+    });
+
+    // Without python3 the hook takes the command from the raw JSON payload, so a
+    // line break reaches its rules as the two characters `\n` and a tab as `\t`.
+    // The whole-word reader verb then saw `ncat .env` on the second line of a
+    // heredoc fed to bash and refused none of the reads below. The hook runs
+    // here with a PATH holding the programs it calls and no python3. The
+    // admission of an inert write is a python3-only step, so without python3 a
+    // write of text that names a secret file is refused, as before it existed.
+    it('without python3 the hook sees a reader verb at the start of every line', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const bin = path.join(dir, 'bin-without-python3');
+      fs.mkdirSync(bin);
+      for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
+        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
+      }
+      const bash = path.join(bin, 'bash');
+      const env = { ...process.env, PATH: bin };
+      expect(
+        () => execSync('command -v python3', { env, shell: bash, stdio: 'ignore' }),
+        'python3 must not be reachable on the test PATH',
+      ).toThrow();
+      function decide(command: string): { decision: string; reason: string } {
+        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+        const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
+        if (!out.trim()) return { decision: 'allow', reason: '' };
+        const hso = JSON.parse(out).hookSpecificOutput;
+        return { decision: hso.permissionDecision, reason: hso.permissionDecisionReason };
+      }
+
+      const mustBlock = [
+        'cat .env',
+        'sudo cat .env',
+        "bash <<'EOF'\ncat .env\nEOF",
+        "command bash <<'EOF'\ncat .env\nEOF",
+        "zsh <<'EOF'\ncat .env\nEOF",
+        "frobnicate <<'EOF'\ncat .env\nEOF",
+        "source /dev/stdin > out.txt <<'EOF'\ncat .env\nEOF",
+        "printf 'x' > notes.md\ncat .env",
+        "bash <<'EOF'\nls ~/.secretless-ai\nEOF",
+        'sudo\tcat .env',
+        // Admitted with python3 as inert writes; without it, scanned whole.
+        "cat > notes.md <<'EOF'\nthe head of process.env.PATH is all the child sees\nEOF",
+        "printf '%s\\n' 'the head of process.env.PATH' >> notes.md",
+        "echo 'cat .env is refused' > notes.md",
+      ];
+      for (const c of mustBlock) {
+        expect(decide(c).decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+      }
+
+      const mustAllow = [
+        'npm test',
+        'echo hello\nnpm test',
+        'git commit -m "the hook refused a heredoc that named server.key"',
+        "git commit -m 'Child environment keeps PATH from process.env and drops NODE_OPTIONS'",
+        "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
+      ];
+      for (const c of mustAllow) {
+        expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
+      }
+
+      // The reason quotes the text from the verb on: an escape before the verb
+      // is left out, and a backslash that is part of the command is kept.
+      const reasons: Array<[string, string]> = [
+        ["bash <<'EOF'\ncat .env\nEOF", 'cat .env\\nEOF'],
+        ['sudo\tcat .env', 'cat .env'],
+        ['\\tail .env', 'tail .env'],
+      ];
+      for (const [c, matched] of reasons) {
+        expect(decide(c).reason, `deny reason without python3 must quote the matched text for: ${JSON.stringify(c)}`)
+          .toContain('Matched `' + matched + '`');
       }
     });
 
