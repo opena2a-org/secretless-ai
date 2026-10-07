@@ -1069,6 +1069,13 @@ const SECRET_VAR_REF = '\\$\\{?[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
 // Same, for commands that take a bare variable NAME with no `$` (printenv FOO).
 const SECRET_VAR_NAME = '[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
 
+// The deny for a python or node one-liner that reads a secret variable, as a
+// printf format whose one %s is the matched text. Two rules give it: the
+// secret-file one-liner rule, which `process.env` trips, and the rule for the
+// variable itself. It goes inside single quotes in the hook, so it holds none.
+const SECRET_ENV_SCRIPT_DENY =
+  '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret environment variables. Matched `%s`: a python or node one-liner that reads os.environ or process.env and names a secret variable. What the one-liner prints reaches this conversation. Safe path: pass the variable by name to the command that needs it, without printing it."}}\\n';
+
 // The span between `echo` and the variable must stay inside ONE command. With a
 // bare `.*` the match ran to the end of the whole line, so any compound command
 // that happened to contain an `echo` anywhere was judged by a `$SECRET` far away
@@ -1878,13 +1885,30 @@ SECRETLESS_ANALYZER
   # ambiguity and the route out.
   if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}' \\
     && echo "$FILE_READ_SCAN" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}'; then
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. Matched \`%s\`: a python or node one-liner that names a secret file. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}\\n' \\
-      "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+    # Node names the environment process.env, which ends in \`.env\`, so a
+    # one-liner reading a variable was refused here as a secret-file read, and
+    # \`node -e\` reading GITHUB_TOKEN was told it named a secret file. The
+    # decision stands, since process.env holds every variable; the reason names
+    # what matched. With each process.env set aside, a secret-file name still
+    # left is a file; otherwise the one-liner reads the environment. If sed is
+    # missing, nothing matches and an environment reason is given: still a deny.
+    if echo "$FILE_READ_SCAN" | sed -E 's/process(\\??)\\.env/process\\1_env/g' \\
+      | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}'; then
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. Matched \`%s\`: a python or node one-liner that names a secret file. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}\\n' \\
+        "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+    elif echo "$FILE_READ_SCAN" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
+      printf '${SECRET_ENV_SCRIPT_DENY}' \\
+        "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})' "$FILE_READ_SCAN")"
+    else
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads environment variables. Matched \`%s\`: a python or node one-liner that names process.env, the Node environment, which holds every variable, credentials included. This guard matches command text and cannot tell which variable a one-liner reads or whether it prints them all, so a variable that holds no secret is blocked too. Safe path: print a variable that holds no secret with printenv NAME."}}\\n' \\
+        "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*process\\??\\.env' "$FILE_READ_SCAN")"
+    fi
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
   if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret environment variables"}}'
+    printf '${SECRET_ENV_SCRIPT_DENY}' \\
+      "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})' "$SCAN_TEXT")"
     exit 0
   fi
   # Block eval-based env var extraction

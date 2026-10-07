@@ -1428,6 +1428,68 @@ describe('init', { timeout: 30_000 }, () => {
       expect(decide('sudo cat "/srv/app/.env"').reason).toContain('Matched `cat \\"/srv/app/.env\\"`');
     });
 
+    // Node names the environment `process.env`, which ends in `.env`, so the rule
+    // for a python or node one-liner that names a secret file refused a one-liner
+    // reading a variable as a secret-file read: `node -e` printing GITHUB_TOKEN
+    // was told it named a secret file, where the same read in python was told it
+    // read a secret variable. Every command below was refused and still is; the
+    // reason now names what it matched, with python3 and without it.
+    it('a one-liner reading process.env is refused for reading the environment, not a secret file', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const bin = path.join(dir, 'bin-without-python3');
+      fs.mkdirSync(bin);
+      for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
+        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
+      }
+      const bash = path.join(bin, 'bash');
+      const withoutPython3 = { ...process.env, PATH: bin };
+      expect(
+        () => execSync('command -v python3', { env: withoutPython3, shell: bash, stdio: 'ignore' }),
+        'python3 must not be reachable on the test PATH',
+      ).toThrow();
+      const hosts: Array<[string, NodeJS.ProcessEnv]> = [['without python3', withoutPython3]];
+      if (hasPython3) hosts.push(['with python3', process.env]);
+
+      const secretVariable = 'reads secret environment variables';
+      const environment = 'reads environment variables';
+      const secretFile = 'reads secret files';
+      // [command, the class its reason names]. The commands hold no double quote,
+      // so the matched text reads the same with python3 and without it.
+      const cells: Array<[string, string]> = [
+        ["node -e 'console.log(process.env.GITHUB_TOKEN)'", secretVariable],
+        ["node -e 'console.log(process.env[process.argv[1]])' API_KEY", secretVariable],
+        ["python3 -c 'import os,sys; print(os.environ[sys.argv[1]])' GITHUB_TOKEN", secretVariable],
+        ["node -e 'console.log(process.env.HOME)'", environment],
+        ["node -e 'console.log(process.env)'", environment],
+        ["node -e 'console.log(JSON.stringify(process.env))'", environment],
+        ["node -e 'for (const k in process.env) console.log(k, process.env[k])'", environment],
+        ["node -e 'console.log(process?.env.HOME)'", environment],
+        // A secret-file name left once process.env is set aside is still a file.
+        ["node -e 'require(`fs`).readFileSync(`.env`)'", secretFile],
+        ["node -e 'console.log(process.env.HOME); require(`fs`).readFileSync(`server.key`)'", secretFile],
+        ["node -e 'require(`fs`).readFileSync(`.env`); console.log(process.env.GITHUB_TOKEN)'", secretFile],
+        ["node -e 'require(`fs`).readFileSync(process.env.HOME + `/.env`)'", secretFile],
+        ["python3 -c 'print(open(`.env`).read())'", secretFile],
+      ];
+      for (const [host, env] of hosts) {
+        for (const [c, reasonClass] of cells) {
+          const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: c } });
+          const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
+          expect(out.trim(), `expected hook ${host} to BLOCK: ${JSON.stringify(c)}`).not.toBe('');
+          const hso = JSON.parse(out).hookSpecificOutput;
+          expect(hso.permissionDecision, `expected hook ${host} to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+          const reason: string = hso.permissionDecisionReason;
+          expect(reason, `deny reason ${host} for: ${JSON.stringify(c)}`).toContain(reasonClass);
+          if (reasonClass === secretFile) continue;
+          expect(reason, `deny reason ${host} must not name a secret file for: ${JSON.stringify(c)}`)
+            .not.toMatch(/secret file/);
+          expect(reason, `deny reason ${host} must quote the matched text for: ${JSON.stringify(c)}`)
+            .toContain('Matched `' + c + '`');
+        }
+      }
+    });
+
     it('deny rules cover the same prefixed variables as the hook', () => {
       init(dir);
       const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
