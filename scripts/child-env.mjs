@@ -4,10 +4,11 @@
  *
  * The review job's environment carries GH_TOKEN for one reader: the advisory
  * fetch. A child started with `{ ...process.env }` receives it anyway, along
- * with every other variable the job holds. Each child instead gets what npm,
- * tar, node and the scanner need to run here — PATH, HOME, the temp
- * directory, the locale, npm's configuration, the proxy and CA variables, and
- * the scanner's telemetry opt-outs — and only the advisory fetch adds GH_TOKEN.
+ * with every other variable the job holds. Each child instead gets what tar,
+ * node and the scanner need to run here — PATH, HOME, the temp directory, the
+ * locale, the configuration directory, the proxy and CA variables, and the
+ * scanner's telemetry opt-outs. Only npm's own children add npm's
+ * configuration, and only the advisory fetch adds GH_TOKEN.
  */
 
 const ALLOWED_NAMES = new Set([
@@ -17,32 +18,50 @@ const ALLOWED_NAMES = new Set([
   'TMP',
   'TEMP',
   // Outside a UTF-8 locale tar lists a non-ASCII entry name with octal
-  // escapes, and the credential scan then finds no file of that name to copy.
+  // escapes.
   'LANG',
   'LC_ALL',
   'LC_CTYPE',
+  // The scanner's telemetry reads its saved opt-out from
+  // $XDG_CONFIG_HOME/opena2a/telemetry.json when this is set.
+  'XDG_CONFIG_HOME',
   'NODE_EXTRA_CA_CERTS',
   'NODE_USE_ENV_PROXY',
   'OPENA2A_TELEMETRY',
   'OPENA2A_TELEMETRY_OPTOUT',
 ]);
 
-// npm reads npm_config_* in any case, and proxies are honoured in upper and
-// lower case alike.
-const ALLOWED_PATTERN = /^(npm_config_.+|https?_proxy|no_proxy)$/i;
+// Proxies are honoured in upper and lower case alike.
+const PROXY_PATTERN = /^(https?_proxy|no_proxy)$/i;
 
-/** True when a variable of this name may reach a child. */
+// npm reads npm_config_* in any case. These can carry a registry token, so
+// they reach npm and no other child.
+const NPM_CONFIG_PATTERN = /^npm_config_.+$/i;
+
+/** True when a variable of this name may reach any child. */
 export function isAllowedChildVariable(name) {
-  return ALLOWED_NAMES.has(name) || ALLOWED_PATTERN.test(name);
+  return ALLOWED_NAMES.has(name) || PROXY_PATTERN.test(name);
+}
+
+function pick(env, allowed) {
+  const out = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && allowed(name)) out[name] = value;
+  }
+  return out;
 }
 
 /** The allowlisted part of `env`, with `extra` added or overriding. */
 export function childEnv(extra = {}, env = process.env) {
-  const out = {};
-  for (const [name, value] of Object.entries(env)) {
-    if (value !== undefined && isAllowedChildVariable(name)) out[name] = value;
-  }
-  return { ...out, ...extra };
+  return { ...pick(env, isAllowedChildVariable), ...extra };
+}
+
+/** An npm child's environment: the allowlist plus npm's configuration. */
+export function npmChildEnv(extra = {}, env = process.env) {
+  return {
+    ...pick(env, (name) => isAllowedChildVariable(name) || NPM_CONFIG_PATTERN.test(name)),
+    ...extra,
+  };
 }
 
 /**
@@ -58,4 +77,23 @@ export function fetchChildEnv(url, env = process.env) {
     },
     env,
   );
+}
+
+// GET REVIEW_GET_URL, sending GH_TOKEN as a bearer token when it is set, and
+// print `{ status, text }`.
+const FETCH_PROGRAM = [
+  'const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "release-artifact-review" };',
+  'if (process.env.GH_TOKEN) headers.authorization = `Bearer ${process.env.GH_TOKEN}`;',
+  'const res = await fetch(process.env.REVIEW_GET_URL, { headers });',
+  'const text = await res.text();',
+  'console.log(JSON.stringify({ status: res.status, text }));',
+].join('\n');
+
+/** The advisory fetch child for `url`: the program to run and its environment. */
+export function fetchChild(url, env = process.env) {
+  return {
+    command: process.execPath,
+    args: ['--input-type=module', '-e', FETCH_PROGRAM],
+    env: fetchChildEnv(url, env),
+  };
 }

@@ -67,7 +67,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { childEnv, fetchChildEnv } from './child-env.mjs';
+import { childEnv, fetchChild, npmChildEnv } from './child-env.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLANTED_NAME = '00-planted-credential-control.js';
@@ -136,6 +136,11 @@ function run(command, args, options = {}) {
     ...options,
     env: options.env ?? childEnv(),
   });
+}
+
+/** An npm child: the allowlist plus npm's configuration, which no other child gets. */
+function npm(args, { home, ...options } = {}) {
+  return run('npm', args, { ...options, env: npmChildEnv(home === undefined ? {} : { HOME: home }) });
 }
 
 /** Records check outcomes and prints each one as it lands. */
@@ -338,7 +343,7 @@ function review(tarball, work, advisoryStates, results) {
   let registryReachable = null;
   const registryOk = () => {
     if (registryReachable === null) {
-      const ping = run('npm', ['ping'], { timeout: 30_000 });
+      const ping = npm(['ping'], { timeout: 30_000 });
       registryReachable = ping.status === 0;
     }
     return registryReachable;
@@ -353,10 +358,9 @@ function review(tarball, work, advisoryStates, results) {
     const home = path.join(work, 'closure-home');
     fs.mkdirSync(home);
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'closure-scratch', version: '0.0.0' }));
-    const install = run(
-      'npm',
+    const install = npm(
       ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', tarball],
-      { cwd: dir, env: childEnv({ HOME: home }), timeout: 300_000 },
+      { cwd: dir, home, timeout: 300_000 },
     );
     closureDir = { dir, ok: install.status === 0, detail: install.status === 0 ? '' : tailOf(install) };
     return closureDir;
@@ -378,7 +382,7 @@ function review(tarball, work, advisoryStates, results) {
     if (!closure.ok) {
       results.precondition('npm-audit', `could not resolve a lockfile from the packed tarball: ${closure.detail}`);
     } else {
-      const audit = run('npm', ['audit', '--omit=dev', '--audit-level=high'], {
+      const audit = npm(['audit', '--omit=dev', '--audit-level=high'], {
         cwd: closure.dir,
         timeout: 300_000,
       });
@@ -404,10 +408,9 @@ function review(tarball, work, advisoryStates, results) {
     const installHome = path.join(work, 'install-home');
     fs.mkdirSync(prefix);
     fs.mkdirSync(installHome);
-    const install = run(
-      'npm',
+    const install = npm(
       ['install', '-g', tarball, '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', prefix],
-      { env: childEnv({ HOME: installHome }), timeout: 600_000 },
+      { home: installHome, timeout: 600_000 },
     );
     if (install.status !== 0) {
       results.fail('global-install-smoke', `npm install -g --ignore-scripts failed: ${tailOf(install)}`);
@@ -469,86 +472,7 @@ function review(tarball, work, advisoryStates, results) {
   } else if (!distPresent) {
     results.precondition('credential-scan', 'dist/ absent from the tarball; there is nothing to scan');
   } else {
-    const scanner = resolveHackmyagent();
-    if (scanner === null) {
-      results.precondition(
-        'credential-scan',
-        'hackmyagent not resolvable (node_modules/.bin first, then PATH); run `npm ci --ignore-scripts`',
-      );
-    } else {
-      const version = scannerVersion(scanner);
-      // The dist/ entries are laid out FLAT — each at its path relative to
-      // package/dist/, with no `dist` path component anywhere — because the
-      // scanner's AST credential walk skips any directory named `dist`
-      // (scanner-bridge.js SKIP_DIRS): scanning the tree as packed would scan
-      // nothing at all.
-      const scratch = path.join(work, 'scan-scratch');
-      fs.mkdirSync(scratch);
-      for (const entry of fileEntries) {
-        if (!entry.startsWith('package/dist/')) continue;
-        const rel = entry.slice('package/dist/'.length);
-        const target = path.resolve(scratch, rel);
-        if (target !== scratch && !target.startsWith(scratch + path.sep)) {
-          // The bound at the first escaping write (the ruling's op 4): never mkdir outside scratch,
-          // whatever the extractor let through.
-          results.fail('dist-containment', `entry resolves outside the scan scratch: ${entry}`);
-          continue;
-        }
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.copyFileSync(path.join(packageDir, 'dist', rel), target);
-      }
-      // The planted control, written beside the shipped files: one
-      // credential-named const whose value is assembled at runtime from parts,
-      // so no credential-shaped literal exists in this repository. A scan that
-      // cannot find this file proves nothing by finding nothing.
-      const controlDir = path.join(work, 'control-scratch');
-      fs.mkdirSync(controlDir);
-      fs.writeFileSync(
-        path.join(controlDir, PLANTED_NAME),
-        [
-          '// planted control written by release-artifact-review.mjs into a scratch copy only;',
-          '// the value is assembled here at runtime and written as a literal so the scanner sees a credential-shaped string',
-          `const OPENAI_API_KEY = ${JSON.stringify(['sk-', 'proj-'].join('') + 'A'.repeat(48))};`,
-          'module.exports = { OPENAI_API_KEY };',
-          '',
-        ].join('\n'),
-      );
-      // Two scans, not one: the scanner reports a single location per check id, so a
-      // planted control scanned alongside the shipped files would mask a shipped credential
-      // carrying the same check id. The shipped files are scanned alone; the control alone.
-      const scan = run(scanner, ['secure', '--format', 'json'], { cwd: scratch, timeout: 300_000 });
-      const controlScan = run(scanner, ['secure', '--format', 'json'], { cwd: controlDir, timeout: 300_000 });
-      const shippedFindings = parseFindings(scan.stdout ?? '');
-      const controlFindings = parseFindings(controlScan.stdout ?? '');
-      const findings = shippedFindings === null || controlFindings === null ? null : [...shippedFindings, ...controlFindings];
-      if (findings === null) {
-        results.precondition(
-          'credential-scan',
-          `hackmyagent@${version} produced unparseable output (exit ${scan.status}): ${tailOf(scan)}`,
-        );
-      } else {
-        const credential = findings.filter(
-          (f) => /CRED/.test(String(f.checkId ?? '')) || String(f.checkId ?? '') === 'CONFIG-004',
-        );
-        const planted = credential.filter((f) => String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
-        const shipped = credential.filter((f) => !String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
-        if (planted.length === 0) {
-          results.precondition('credential-scan', `control not flagged by hackmyagent@${version}`);
-        } else if (shipped.length > 0) {
-          // checkId and file:line only — never the matched text, which would
-          // print the very value the check exists to keep out of logs.
-          const rows = shipped.map(
-            (f) => `${String(f.checkId ?? '<unknown>')} at ${String(f.file ?? f.path ?? '<unknown>')}:${String(f.line ?? '?')}`,
-          );
-          results.fail('credential-scan', `credential findings on shipped files: ${[...new Set(rows)].join(', ')}`);
-        } else {
-          results.pass(
-            'credential-scan',
-            `hackmyagent@${version}: planted control found (${planted.map((f) => String(f.checkId)).join('/')}), zero credential-class findings on shipped files`,
-          );
-        }
-      }
-    }
+    credentialScan(distDir, work, results);
   }
 
   // -------------------------------------------------------------------------
@@ -563,6 +487,116 @@ function review(tarball, work, advisoryStates, results) {
   } else {
     consumerClosure(tarball, advisoryStates, resolveClosure, results);
   }
+}
+
+/**
+ * The credential-scan check: hackmyagent over a copy of the tarball's dist/
+ * files, then over a planted control it must flag.
+ */
+function credentialScan(distDir, work, results) {
+  const scanner = resolveHackmyagent();
+  if (scanner === null) {
+    results.precondition(
+      'credential-scan',
+      'hackmyagent not resolvable (node_modules/.bin first, then PATH); run `npm ci --ignore-scripts`',
+    );
+    return;
+  }
+  const version = scannerVersion(scanner);
+  // The dist/ entries are laid out FLAT — each at its path relative to
+  // package/dist/, with no `dist` path component anywhere — because the
+  // scanner's AST credential walk skips any directory named `dist`
+  // (scanner-bridge.js SKIP_DIRS): scanning the tree as packed would scan
+  // nothing at all.
+  //
+  // The names come from the extracted tree, not from tar's listing: outside
+  // a UTF-8 locale tar lists café.js as caf\303\251.js, and no file of that
+  // name exists to copy.
+  const scratch = path.join(work, 'scan-scratch');
+  fs.mkdirSync(scratch);
+  const uncopied = [];
+  for (const rel of filesUnder(distDir)) {
+    const entry = `package/dist/${rel}`;
+    const target = path.resolve(scratch, rel);
+    if (target !== scratch && !target.startsWith(scratch + path.sep)) {
+      // The bound at the first escaping write (the ruling's op 4): never mkdir outside scratch,
+      // whatever the extractor let through.
+      results.fail('dist-containment', `entry resolves outside the scan scratch: ${entry}`);
+      continue;
+    }
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(distDir, rel), target);
+    } catch (error) {
+      uncopied.push(`${entry} (${error.code ?? error.message})`);
+    }
+  }
+  if (uncopied.length > 0) {
+    results.precondition('credential-scan', `not copied into the scan scratch, so not scanned: ${uncopied.join(', ')}`);
+    return;
+  }
+  // The planted control, written beside the shipped files: one
+  // credential-named const whose value is assembled at runtime from parts,
+  // so no credential-shaped literal exists in this repository. A scan that
+  // cannot find this file proves nothing by finding nothing.
+  const controlDir = path.join(work, 'control-scratch');
+  fs.mkdirSync(controlDir);
+  fs.writeFileSync(
+    path.join(controlDir, PLANTED_NAME),
+    [
+      '// planted control written by release-artifact-review.mjs into a scratch copy only;',
+      '// the value is assembled here at runtime and written as a literal so the scanner sees a credential-shaped string',
+      `const OPENAI_API_KEY = ${JSON.stringify(['sk-', 'proj-'].join('') + 'A'.repeat(48))};`,
+      'module.exports = { OPENAI_API_KEY };',
+      '',
+    ].join('\n'),
+  );
+  // Two scans, not one: the scanner reports a single location per check id, so a
+  // planted control scanned alongside the shipped files would mask a shipped credential
+  // carrying the same check id. The shipped files are scanned alone; the control alone.
+  const scan = run(scanner, ['secure', '--format', 'json'], { cwd: scratch, timeout: 300_000 });
+  const controlScan = run(scanner, ['secure', '--format', 'json'], { cwd: controlDir, timeout: 300_000 });
+  const shippedFindings = parseFindings(scan.stdout ?? '');
+  const controlFindings = parseFindings(controlScan.stdout ?? '');
+  const findings = shippedFindings === null || controlFindings === null ? null : [...shippedFindings, ...controlFindings];
+  if (findings === null) {
+    results.precondition(
+      'credential-scan',
+      `hackmyagent@${version} produced unparseable output (exit ${scan.status}): ${tailOf(scan)}`,
+    );
+  } else {
+    const credential = findings.filter(
+      (f) => /CRED/.test(String(f.checkId ?? '')) || String(f.checkId ?? '') === 'CONFIG-004',
+    );
+    const planted = credential.filter((f) => String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
+    const shipped = credential.filter((f) => !String(f.file ?? f.path ?? '').includes(PLANTED_NAME));
+    if (planted.length === 0) {
+      results.precondition('credential-scan', `control not flagged by hackmyagent@${version}`);
+    } else if (shipped.length > 0) {
+      // checkId and file:line only — never the matched text, which would
+      // print the very value the check exists to keep out of logs.
+      const rows = shipped.map(
+        (f) => `${String(f.checkId ?? '<unknown>')} at ${String(f.file ?? f.path ?? '<unknown>')}:${String(f.line ?? '?')}`,
+      );
+      results.fail('credential-scan', `credential findings on shipped files: ${[...new Set(rows)].join(', ')}`);
+    } else {
+      results.pass(
+        'credential-scan',
+        `hackmyagent@${version}: planted control found (${planted.map((f) => String(f.checkId)).join('/')}), zero credential-class findings on shipped files`,
+      );
+    }
+  }
+}
+
+/** Every file under `dir` that is not a directory, as a path relative to `dir`, sorted. */
+function filesUnder(dir, rel = '') {
+  const out = [];
+  for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+    const child = rel === '' ? entry.name : path.join(rel, entry.name);
+    if (entry.isDirectory()) out.push(...filesUnder(dir, child));
+    else out.push(child);
+  }
+  return out.sort();
 }
 
 /**
@@ -629,7 +663,7 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
   const repoOf = new Map(); // package name -> "owner/repo"
   for (const { name } of ownCopies.values()) {
     if (repoOf.has(name)) continue;
-    const view = run('npm', ['view', name, 'versions', 'repository.url', '--json'], { timeout: 60_000 });
+    const view = npm(['view', name, 'versions', 'repository.url', '--json'], { timeout: 60_000 });
     let packument = null;
     try {
       packument = JSON.parse(view.stdout ?? '');
@@ -733,7 +767,7 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
 
 /** `npm view name@version deprecated` → { message, error }. */
 function npmViewDeprecated(name, version) {
-  const view = run('npm', ['view', `${name}@${version}`, 'deprecated'], { timeout: 60_000 });
+  const view = npm(['view', `${name}@${version}`, 'deprecated'], { timeout: 60_000 });
   if (view.status !== 0) return { message: '', error: tailOf(view) };
   return { message: (view.stdout ?? '').trim(), error: null };
 }
@@ -745,17 +779,8 @@ function npmViewDeprecated(name, version) {
  * the job token in, and this is the one child it is passed to.
  */
 function httpGetJson(url) {
-  const program = [
-    'const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "release-artifact-review" };',
-    'if (process.env.GH_TOKEN) headers.authorization = `Bearer ${process.env.GH_TOKEN}`;',
-    'const res = await fetch(process.env.REVIEW_GET_URL, { headers });',
-    'const text = await res.text();',
-    'console.log(JSON.stringify({ status: res.status, text }));',
-  ].join('\n');
-  const child = run(process.execPath, ['--input-type=module', '-e', program], {
-    env: fetchChildEnv(url),
-    timeout: 60_000,
-  });
+  const { command, args, env } = fetchChild(url);
+  const child = run(command, args, { env, timeout: 60_000 });
   if (child.status !== 0) return { body: null, error: `fetch failed: ${tailOf(child)}` };
   try {
     const { status, text } = JSON.parse(child.stdout);
@@ -810,7 +835,7 @@ function requireSemver() {
     /* fall through to npm's bundled copy */
   }
   try {
-    const globalRoot = (run('npm', ['root', '-g'], { timeout: 30_000 }).stdout ?? '').trim();
+    const globalRoot = (npm(['root', '-g'], { timeout: 30_000 }).stdout ?? '').trim();
     const bundled = path.join(globalRoot, 'npm', 'node_modules', 'semver');
     return createRequire(path.join(bundled, 'package.json'))(bundled);
   } catch {

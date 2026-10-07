@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -287,7 +288,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
     // recorder outside the bound (positive control, and the slow first start
     // paid there), so the bounded child can write its pid inside 0.5s.
     async function expectHungChildGone(): Promise<void> {
-      const pid = recorder.hangPid();
+      const pid = recorder.takeHangPid();
       expect(pid, 'the hanging security wrote no pid before the bound ended it').not.toBeNull();
       expect(await waitForProcessGone(pid!), `pid ${pid} is still running`).toBe(true);
     }
@@ -333,12 +334,22 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       await expectHungChildGone();
     });
 
+    it('a pid already checked is not read again for the next bounded call', async () => {
+      // delete and healthCheck run one after the other: a healthCheck child
+      // ended before it wrote its pid must read as no pid, not as the pid the
+      // delete child wrote, which is gone and would pass the check.
+      const exited = spawnSync(process.execPath, ['-e', '']).pid;
+      fs.writeFileSync(path.join(recorder.dir, 'hang.pid'), String(exited));
+      await expectHungChildGone();
+      expect(recorder.takeHangPid()).toBeNull();
+    });
+
     it('a pid that was never written is refused, never read as a child still running', () => {
-      // A hanging child ended before it writes its pid leaves hangPid() null,
+      // A hanging child ended before it writes its pid leaves takeHangPid() null,
       // or 0 for an empty file. process.kill refuses null and signals this
       // process group for 0, so either used to read as "still running".
-      expect(recorder.hangPid()).toBeNull();
-      expect(() => processIsGone(recorder.hangPid()!)).toThrow(/not a recorded pid/);
+      expect(recorder.takeHangPid()).toBeNull();
+      expect(() => processIsGone(recorder.takeHangPid()!)).toThrow(/not a recorded pid/);
       expect(() => processIsGone(0)).toThrow(/not a recorded pid/);
       expect(processIsGone(process.pid)).toBe(false);
     });

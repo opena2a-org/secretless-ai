@@ -209,20 +209,20 @@ describe('filePatternToDenyRules', () => {
   // project root, so a project-scope `Read(/srv/app/creds/*.json)` matched
   // `<project>/srv/app/creds/*.json` and never the absolute path the operator
   // wrote: the deny was inert. `//` is the harness's filesystem-root prefix.
-  it('QGF-307.AC1 emits an absolute file pattern as a double-slash Read deny', () => {
+  it('emits an absolute file pattern as a double-slash Read deny', () => {
     const rules = filePatternToDenyRules('/srv/app/creds/*.json');
     expect(rules).toContain('Read(//srv/app/creds/*.json)');
     expect(rules).not.toContain('Read(/srv/app/creds/*.json)');
   });
 
-  it('QGF-307.AC2 keeps a relative pattern as written and never adds a third slash', () => {
+  it('keeps a relative pattern as written and never adds a third slash', () => {
     expect(filePatternToDenyRules('*.acme-credentials')).toContain('Read(*.acme-credentials)');
     const already = filePatternToDenyRules('//srv/app/creds/*.json');
     expect(already).toContain('Read(//srv/app/creds/*.json)');
     expect(already.some(r => r.startsWith('Read(///'))).toBe(false);
   });
 
-  it('QGF-307.AC3 keeps the six Bash rules for an absolute pattern single-slash', () => {
+  it('keeps the six Bash rules for an absolute pattern single-slash', () => {
     const rules = filePatternToDenyRules('/srv/app/creds/*.json');
     const bash = rules.filter(r => r.startsWith('Bash('));
     expect(bash).toEqual([
