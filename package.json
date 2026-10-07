@@ -17,6 +17,7 @@
     "build": "tsc",
     "pretest": "npm run build",
     "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.test.json",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build && npm test"

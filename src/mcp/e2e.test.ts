@@ -159,7 +159,7 @@ describe('MCP Protection E2E', () => {
     expect(rewritten.mcpServers.jira.env).not.toHaveProperty('JIRA_API_TOKEN');
 
     // Unprotect (restore)
-    const { restoreConfig } = await import('./rewrite');
+    const { restoreConfig } = await import('./rewrite.js');
     const backupDir = path.join(dataDir, 'mcp-backups');
     const restored = restoreConfig(configPath, backupDir);
     expect(restored).toBe(true);

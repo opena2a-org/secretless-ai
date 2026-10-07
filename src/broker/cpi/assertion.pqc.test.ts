@@ -11,7 +11,6 @@
 
 import { createHash, createPublicKey, createPrivateKey, verify as cryptoVerify } from 'crypto';
 import { describe, expect, it } from 'vitest';
-import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import {
   type BrokerSigningKey,
@@ -22,6 +21,13 @@ import {
   mintHybridBrokerAssertion,
 } from './assertion';
 import type { ResourceBinding } from './types';
+
+// @noble/post-quantum is ESM-only and this file compiles as CommonJS, so it
+// loads through require(esm), as ./assertion.ts does.
+const { ml_dsa65 } = require('@noble/post-quantum/ml-dsa.js') as typeof import(
+  '@noble/post-quantum/ml-dsa.js',
+  { with: { 'resolution-mode': 'import' } }
+);
 
 // --- the spec repo's published fixture inputs (TEST values, never production) ----
 

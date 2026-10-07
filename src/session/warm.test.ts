@@ -55,6 +55,7 @@ describe('warm', () => {
     // Default: session is not warm
     vi.mocked(getSessionStatus).mockReturnValue({
       warm: false,
+      tampered: false,
       remainingSeconds: 0,
       expiresAt: '',
       authenticatedAt: '',
@@ -182,6 +183,7 @@ describe('warm', () => {
     it('returns early if session is already warm', async () => {
       vi.mocked(getSessionStatus).mockReturnValue({
         warm: true,
+        tampered: false,
         remainingSeconds: 250,
         expiresAt: new Date(Date.now() + 250000).toISOString(),
         authenticatedAt: new Date().toISOString(),

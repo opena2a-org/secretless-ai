@@ -350,6 +350,7 @@ describe('near-miss hint is bounded (self-review, not from an issue)', () => {
         resolve: async () => ({ [`secret/${long}`]: 'v' }),
         store: async () => {},
         delete: async () => false,
+        healthCheck: async () => ({ healthy: true, latencyMs: 0, message: '' }),
       },
     });
     const started = Date.now();

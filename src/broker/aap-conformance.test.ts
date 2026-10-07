@@ -21,13 +21,7 @@ import * as path from 'path';
 
 import { BrokerServer } from './server';
 import { GrantResolver } from './grant-resolver';
-import {
-  LocalAtxVerifier,
-  canonicalPayload,
-  canonicalPayloadV11,
-  type Atx,
-  type AtxTrustAnchors,
-} from '@opena2a/atx-verify';
+import type { Atx, AtxTrustAnchors } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import { GrantPolicy, type GrantBinding } from './grant-policy';
 import { MapProviderRegistry } from './cpi/registry';
 import { createOktaExchangeProvider } from './cpi/okta-adapter';
@@ -36,6 +30,14 @@ import { EphemeralWorker, type DownstreamCaller, type AgentOperation, type Opera
 import { AuditLogger } from './audit';
 import type { ScopedCredential } from './cpi/types';
 import type { TokenExchangeRequest, TokenExchangeResponse, TokenExchangeTransport } from './cpi/exchange';
+
+// @opena2a/atx-verify is ESM-only and this file compiles as CommonJS, so its
+// values load through require(esm), the way src/broker/cpi/assertion.ts loads
+// @noble/post-quantum.
+const { LocalAtxVerifier, canonicalPayload, canonicalPayloadV11 } = require('@opena2a/atx-verify') as typeof import(
+  '@opena2a/atx-verify',
+  { with: { 'resolution-mode': 'import' } }
+);
 
 // AAP test fixtures. Previously shared from broker/atx.test.ts; that file was
 // deleted when the verifier moved to @opena2a/atx-verify (which carries its own

@@ -105,7 +105,7 @@ describe('lengthTier', () => {
   });
 
   it('is monotone non-decreasing across length tiers', () => {
-    const tiers = [11, 12, 19, 20, 27, 28, 39, 40, 63, 64].map(lengthTier);
+    const tiers = [11, 12, 19, 20, 27, 28, 39, 40, 63, 64].map((n) => lengthTier('x'.repeat(n)));
     for (let i = 1; i < tiers.length; i++) {
       expect(tiers[i]).toBeGreaterThanOrEqual(tiers[i - 1]);
     }

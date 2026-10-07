@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { isKnownExample, findRealMatch, scan, fixFor, isEnvFile } from './scan';
+import { isKnownExample, findRealMatch, scan, fixFor, isEnvFile, type ScanStats } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { buildMatcher, loadSecretlessIgnore } from './secretlessignore';
 
@@ -204,7 +204,7 @@ describe('scan() — confidence + fixture flag (Wave 2)', () => {
   it('counts placeholder-suppressed matches via the stats out-param', () => {
     const FAKE = ['sk-ant-api03-', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE12'].join('');
     const dir = tmpProjectWith({ 'config.js': `const k = "${FAKE}";\n` });
-    const stats = { placeholdersSuppressed: 0 };
+    const stats: ScanStats = { placeholdersSuppressed: 0, truncated: false };
     const findings = scan(dir, { scanGlobal: false }, stats);
     expect(findings.length).toBe(0);                    // suppressed from the result
     expect(stats.placeholdersSuppressed).toBeGreaterThan(0); // but counted for the hint

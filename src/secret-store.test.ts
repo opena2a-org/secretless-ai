@@ -125,6 +125,7 @@ describe('SecretStore', () => {
           resolve: async () => ({}),
           store: async () => {},
           delete: async () => false,
+          healthCheck: async () => ({ healthy: true, latencyMs: 0, message: '' }),
         },
       });
       expect(cached.backendName).toBe('keychain-macos');
@@ -146,6 +147,7 @@ describe('loadSecrets — a requested name that resolves to nothing (issue #110)
         resolve: async () => ({ ...entries }),
         store: async () => {},
         delete: async () => false,
+        healthCheck: async () => ({ healthy: true, latencyMs: 0, message: '' }),
       },
     });
   }
@@ -272,6 +274,7 @@ describe('near-miss hint work is bounded (CI review finding, measured)', () => {
         resolve: async () => entries,
         store: async () => {},
         delete: async () => false,
+        healthCheck: async () => ({ healthy: true, latencyMs: 0, message: '' }),
       },
     });
   }

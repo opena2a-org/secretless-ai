@@ -30,7 +30,7 @@ import {
 } from './patterns';
 import { findRealMatch as localFindRealMatch, isKnownExample as localIsKnownExample } from './scan';
 
-type PkgModule = typeof import('@opena2a/credential-patterns');
+type PkgModule = typeof import('@opena2a/credential-patterns', { with: { 'resolution-mode': 'import' } });
 
 let pkgPromise: Promise<PkgModule> | null = null;
 function loadPkg(): Promise<PkgModule> {
@@ -182,7 +182,7 @@ describe('lockstep: isKnownExample / findRealMatch parity on oracle inputs', () 
   it('PR 1 contract: findRealMatch on AWS-example + real-PAT line returns the PAT, not null (issue #51)', async () => {
     const pkg = await loadPkg();
     const line = 'const old = "AKIAIOSFODNN7EXAMPLE"; const new_ = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";';
-    const ghPattern = pkg.CREDENTIAL_PATTERNS.find((p: import('@opena2a/credential-patterns').CredentialPattern) => p.id === 'github-pat')!;
+    const ghPattern = pkg.CREDENTIAL_PATTERNS.find((p: import('@opena2a/credential-patterns', { with: { 'resolution-mode': 'import' } }).CredentialPattern) => p.id === 'github-pat')!;
     const m = pkg.findRealMatch(line, ghPattern);
     expect(m).not.toBeNull();
     expect(m![0]).toBe('ghp_abcdefghijklmnopqrstuvwxyz1234567890');

@@ -24,41 +24,41 @@ const VAULT_ID = 'vault-abc-123';
 function mockVaultExists(): void {
   mockExecFileSync.mockImplementation((cmd, args) => {
     if (cmd === 'op' && Array.isArray(args) && args[0] === 'vault' && args[1] === 'get') {
-      return JSON.stringify({ id: VAULT_ID }) as unknown as Buffer;
+      return JSON.stringify({ id: VAULT_ID });
     }
-    return '' as unknown as Buffer;
+    return '';
   });
 }
 
 /** Build a full mock that handles vault get, item list, item get, and CRUD. */
 function mockOpCli(items: Array<{ id: string; title: string; password: string }>): void {
   mockExecFileSync.mockImplementation((cmd, args) => {
-    if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+    if (cmd !== 'op' || !Array.isArray(args)) return '';
 
     const sub = `${args[0]} ${args[1]}`;
 
     if (sub === 'vault get') {
-      return JSON.stringify({ id: VAULT_ID }) as unknown as Buffer;
+      return JSON.stringify({ id: VAULT_ID });
     }
 
     if (sub === 'vault create') {
-      return JSON.stringify({ id: VAULT_ID }) as unknown as Buffer;
+      return JSON.stringify({ id: VAULT_ID });
     }
 
     if (sub === 'item list') {
       const listed = items.map(i => ({ id: i.id, title: i.title }));
-      return JSON.stringify(listed) as unknown as Buffer;
+      return JSON.stringify(listed);
     }
 
     if (sub === 'item get') {
       const itemId = args[2];
       const found = items.find(i => i.id === itemId);
       if (!found) throw new Error('item not found');
-      return JSON.stringify({ value: found.password }) as unknown as Buffer;
+      return JSON.stringify({ value: found.password });
     }
 
     if (sub === 'item create') {
-      return '' as unknown as Buffer;
+      return '';
     }
 
     if (sub === 'item delete') {
@@ -66,14 +66,14 @@ function mockOpCli(items: Array<{ id: string; title: string; password: string }>
       const ref = args[2];
       const found = items.find(i => i.id === ref || i.title === ref);
       if (!found) throw new Error('item not found');
-      return '' as unknown as Buffer;
+      return '';
     }
 
     if (sub === 'account get') {
-      return JSON.stringify({ id: 'acct-1' }) as unknown as Buffer;
+      return JSON.stringify({ id: 'acct-1' });
     }
 
-    return '' as unknown as Buffer;
+    return '';
   });
 }
 
@@ -193,7 +193,7 @@ describe('OnePasswordBackend', () => {
 
     it('creates vault when it does not exist', async () => {
       mockExecFileSync.mockImplementation((cmd, args) => {
-        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
 
         const sub = `${args[0]} ${args[1]}`;
 
@@ -201,12 +201,12 @@ describe('OnePasswordBackend', () => {
           throw new Error('vault not found');
         }
         if (sub === 'vault create') {
-          return JSON.stringify({ id: 'new-vault-id' }) as unknown as Buffer;
+          return JSON.stringify({ id: 'new-vault-id' });
         }
         if (sub === 'item delete') {
           throw new Error('not found');
         }
-        return '' as unknown as Buffer;
+        return '';
       });
 
       const backend = new OnePasswordBackend();
@@ -221,16 +221,16 @@ describe('OnePasswordBackend', () => {
 
     it('uses custom vault name from config', async () => {
       mockExecFileSync.mockImplementation((cmd, args) => {
-        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
 
         if (args[0] === 'vault' && args[1] === 'get') {
           expect(args[2]).toBe('MyVault');
-          return JSON.stringify({ id: 'custom-id' }) as unknown as Buffer;
+          return JSON.stringify({ id: 'custom-id' });
         }
         if (args[0] === 'item' && args[1] === 'delete') {
           throw new Error('not found');
         }
-        return '' as unknown as Buffer;
+        return '';
       });
 
       const backend = new OnePasswordBackend({ vault: 'MyVault' });
@@ -291,27 +291,27 @@ describe('OnePasswordBackend', () => {
 
     it('skips items whose password cannot be read', async () => {
       mockExecFileSync.mockImplementation((cmd, args) => {
-        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
 
         const sub = `${args[0]} ${args[1]}`;
 
         if (sub === 'vault get') {
-          return JSON.stringify({ id: VAULT_ID }) as unknown as Buffer;
+          return JSON.stringify({ id: VAULT_ID });
         }
         if (sub === 'item list') {
           return JSON.stringify([
             { id: 'item-1', title: 'mcp/KEY1' },
             { id: 'item-2', title: 'mcp/KEY2' },
-          ]) as unknown as Buffer;
+          ]);
         }
         if (sub === 'item get') {
           const itemId = args[2];
           if (itemId === 'item-1') {
-            return JSON.stringify({ value: 'val1' }) as unknown as Buffer;
+            return JSON.stringify({ value: 'val1' });
           }
           throw new Error('access denied');
         }
-        return '' as unknown as Buffer;
+        return '';
       });
 
       const backend = new OnePasswordBackend();
@@ -352,9 +352,9 @@ describe('OnePasswordBackend', () => {
 
     it('returns false when item does not exist', async () => {
       mockExecFileSync.mockImplementation((cmd, args) => {
-        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
         if (args[0] === 'vault' && args[1] === 'get') {
-          return JSON.stringify({ id: VAULT_ID }) as unknown as Buffer;
+          return JSON.stringify({ id: VAULT_ID });
         }
         throw new Error('item not found');
       });
@@ -380,7 +380,7 @@ describe('OnePasswordBackend', () => {
   describe('healthCheck()', () => {
     it('returns healthy when op account get succeeds', async () => {
       mockExecFileSync.mockReturnValue(
-        JSON.stringify({ id: 'account-1' }) as unknown as Buffer,
+        JSON.stringify({ id: 'account-1' }),
       );
 
       const backend = new OnePasswordBackend();
@@ -438,7 +438,7 @@ describe('OnePasswordBackend', () => {
   describe('duplicate vault handling', () => {
     it('falls back to vault list when vault get fails due to ambiguous name', async () => {
       mockExecFileSync.mockImplementation((cmd, args) => {
-        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
 
         const sub = `${args[0]} ${args[1]}`;
 
@@ -450,12 +450,12 @@ describe('OnePasswordBackend', () => {
             { id: 'vault-dup-1', name: 'Secretless' },
             { id: 'vault-dup-2', name: 'Secretless' },
             { id: 'vault-other', name: 'Personal' },
-          ]) as unknown as Buffer;
+          ]);
         }
         if (sub === 'item list') {
-          return JSON.stringify([]) as unknown as Buffer;
+          return JSON.stringify([]);
         }
-        return '' as unknown as Buffer;
+        return '';
       });
 
       const backend = new OnePasswordBackend();
@@ -472,7 +472,7 @@ describe('OnePasswordBackend', () => {
 
     it('does not create a new vault when duplicates exist', async () => {
       mockExecFileSync.mockImplementation((cmd, args) => {
-        if (cmd !== 'op' || !Array.isArray(args)) return '' as unknown as Buffer;
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
 
         const sub = `${args[0]} ${args[1]}`;
 
@@ -482,15 +482,15 @@ describe('OnePasswordBackend', () => {
         if (sub === 'vault list') {
           return JSON.stringify([
             { id: 'vault-dup-1', name: 'Secretless' },
-          ]) as unknown as Buffer;
+          ]);
         }
         if (sub === 'item delete') {
           throw new Error('not found');
         }
         if (sub === 'item create') {
-          return '' as unknown as Buffer;
+          return '';
         }
-        return '' as unknown as Buffer;
+        return '';
       });
 
       const backend = new OnePasswordBackend();
@@ -558,7 +558,7 @@ describe('op error handling', () => {
     });
 
     const backend = new OnePasswordBackend();
-    const err = await backend.store('secret/K', 'v').catch((e: Error) => e);
+    const err = await backend.store('secret/K', 'v').catch((e: Error) => e) as Error;
     expect(err.message).toContain('vault "abc" not found');
     expect(err.message).not.toMatch(/Command failed:/);
     expect(err.message).toMatch(/Verify: op account get/);

@@ -141,7 +141,7 @@ describe('POST /resolve withholds when the duplicate-member scanner will not loa
     vi.doMock('@opena2a/atx-verify', () => {
       throw new Error("Cannot find module '@opena2a/atx-verify'");
     });
-    const { BrokerServer: FreshServer } = await import('./server');
+    const { BrokerServer: FreshServer } = await import('./server.js');
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resolve-noscan-'));
     const socketPath = path.join(tmpDir, 'broker.sock');

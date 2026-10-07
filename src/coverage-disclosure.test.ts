@@ -170,7 +170,7 @@ describe('coverage-warning paths are printed so they run where they are pasted (
   // A file over the size cap is the warning that prints a path, a `Verify:`
   // and a `Fix:`; a tiny cap produces it without writing megabytes.
   async function humanOutput(dir: string, cwd: string): Promise<string> {
-    const core = await import('./commands/core');
+    const core = await import('./commands/core.js');
     const lines: string[] = [];
     vi.spyOn(process, 'cwd').mockReturnValue(cwd);
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
