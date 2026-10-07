@@ -548,6 +548,23 @@ the switch's value is exactly `off`, in lowercase. The release artifact
 review's install smoke passes `SECRETLESS_OS_KEYCHAIN` through to the CLI
 starts it makes, so the switch holds for any command added to that list.
 
+**The guard hook no longer refuses prose or a template field as a secret
+read.** The Bash rule that refuses reading a secret file matched a reader verb
+anywhere in a line, even as the end of a longer word, so `sed` was found in
+`used ` and `refused `: a heredoc writing notes to a Markdown file, or a commit
+message, that went on to name `.env` or `server.key` was refused. It also took
+the Go template field `{{.Config.Env}}` for a `.env` file whenever a reader
+verb came earlier on the line, as in
+`docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'`.
+A reader verb now has to be a whole word, and a secret extension has to end a
+path component, which a closing `}}` never does. Real reads are still refused
+wherever the shell runs the verb from: `cat .env`, `sudo cat .env`,
+`ssh host cat .env`, `if [ -f .env ]; then cat .env; fi`, `/bin/cat .env`, a
+`cat .env` line in a heredoc fed to bash, and the `zcat`, `egrep`, `gawk` and
+`gsed` flavours. The `python3 -c`/`node -e` rule takes the same path-component
+ending. Re-running `npx secretless-ai init` refreshes the hook in an
+existing project.
+
 **The guard hook judges a symlinked path by the file it reaches.** The hook's
 file rules read only the name a tool was given, so a link named like a
 template (`config.env.example -> .env`) was allowed as a template while the
