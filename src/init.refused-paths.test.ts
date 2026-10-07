@@ -21,6 +21,9 @@
 // 5. A directory on the way replaced by a link to a place `init` cannot write
 //    is named as refused, whether or not a file opens read-only there. The
 //    read-only checks found the link, but `init` failed with EACCES.
+// 6. A rule file with more than one hard link is refused like a symbolic link.
+//    Its other names can be outside the project, and `init` appended the block
+//    to a `.windsurfrules` hard-linked to a file outside it.
 //
 // HOME and TMPDIR point at scratch directories, so `init` never touches the
 // real home of whoever runs the suite.
@@ -171,6 +174,7 @@ type RaceCell = {
   build: (dir: string, outside: string) => void;
   /** Replace `.windsurfrules` with a link once the path checks have passed. */
   swap: (dir: string, outside: string) => void;
+  reason: string;
 };
 
 const RACE_CELLS: RaceCell[] = [
@@ -184,6 +188,7 @@ const RACE_CELLS: RaceCell[] = [
       fs.unlinkSync(path.join(dir, '.windsurfrules'));
       fs.symlinkSync(path.join(outside, 'victim.md'), path.join(dir, '.windsurfrules'));
     },
+    reason: 'is a symbolic link',
   },
   {
     name: 'an absent .windsurfrules replaced by a dangling link to an outside path',
@@ -193,11 +198,24 @@ const RACE_CELLS: RaceCell[] = [
     swap: (dir, outside) => {
       fs.symlinkSync(path.join(outside, 'missing.md'), path.join(dir, '.windsurfrules'));
     },
+    reason: 'is a symbolic link',
+  },
+  {
+    name: 'a regular .windsurfrules replaced by a hard link to an outside file',
+    build: (dir, outside) => {
+      fs.writeFileSync(path.join(dir, '.windsurfrules'), '# rules\n');
+      fs.writeFileSync(path.join(outside, 'victim.md'), 'victim\n');
+    },
+    swap: (dir, outside) => {
+      fs.unlinkSync(path.join(dir, '.windsurfrules'));
+      fs.linkSync(path.join(outside, 'victim.md'), path.join(dir, '.windsurfrules'));
+    },
+    reason: 'has more than one hard link',
   },
 ];
 
 describe('init does not follow a link put in place after its path checks', () => {
-  it.each(RACE_CELLS)('[$name]: the outside target is untouched and Windsurf is refused', ({ build, swap }) => {
+  it.each(RACE_CELLS)('[$name]: the outside target is untouched and Windsurf is refused', ({ build, swap, reason }) => {
     const dir = project();
     const outside = outsideDir();
     build(dir, outside);
@@ -212,7 +230,7 @@ describe('init does not follow a link put in place after its path checks', () =>
     expect(outsideAfter).toEqual(outsideBefore);
     expect(result.toolsDetected).toEqual(['windsurf']);
     expect(result.toolsConfigured).not.toContain('windsurf');
-    expect(result.pathsRefused).toContainEqual({ tool: 'windsurf', path: '.windsurfrules', reason: 'is a symbolic link' });
+    expect(result.pathsRefused).toContainEqual({ tool: 'windsurf', path: '.windsurfrules', reason });
   });
 
   it('control: without a swap the same writer creates .windsurfrules and appends once', () => {
@@ -232,6 +250,100 @@ describe('init does not follow a link put in place after its path checks', () =>
 
     init(dir);
     expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toBe(appended);
+  });
+});
+
+type HardLinkCell = {
+  name: string;
+  tool: 'cursor' | 'cline' | 'windsurf';
+  /** The project-relative rule file that is a second name for `victim.md`. */
+  rel: string;
+  /** Directories the project needs for the tool to be detected and `rel` used. */
+  dirs: string[];
+};
+
+const HARD_LINK_CELLS: HardLinkCell[] = [
+  { name: '.windsurfrules', tool: 'windsurf', rel: '.windsurfrules', dirs: [] },
+  { name: '.cursorrules', tool: 'cursor', rel: '.cursorrules', dirs: [] },
+  { name: 'owned .cursor/rules/secretless.mdc', tool: 'cursor', rel: '.cursor/rules/secretless.mdc', dirs: ['.cursor/rules'] },
+  { name: '.clinerules as a file', tool: 'cline', rel: '.clinerules', dirs: [] },
+  { name: 'owned .clinerules/secretless.md', tool: 'cline', rel: '.clinerules/secretless.md', dirs: ['.clinerules'] },
+  { name: 'owned .cline/rules/secretless.md', tool: 'cline', rel: '.cline/rules/secretless.md', dirs: ['.cline/rules'] },
+];
+
+describe('init and a rule file with more than one hard link', () => {
+  it.each(HARD_LINK_CELLS)('[$name] hard-linked to a file outside the project: the outside file is untouched and the tool is refused', ({ tool, rel, dirs }) => {
+    const dir = project();
+    const outside = outsideDir();
+    const victim = path.join(outside, 'victim.md');
+    fs.writeFileSync(victim, 'victim\n');
+    for (const d of dirs) fs.mkdirSync(path.join(dir, d), { recursive: true });
+    fs.linkSync(victim, path.join(dir, rel));
+
+    const result = init(dir);
+
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('victim\n');
+    expect(result.toolsDetected).toContain(tool);
+    expect(result.toolsConfigured).not.toContain(tool);
+    expect(result.pathsRefused).toContainEqual({ tool, path: rel, reason: 'has more than one hard link' });
+  });
+
+  it('a .cursorrules hard-linked to AGENTS.md inside the project is refused like a symbolic link to it', () => {
+    const dir = project();
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# rules\n');
+    fs.linkSync(path.join(dir, 'AGENTS.md'), path.join(dir, '.cursorrules'));
+
+    const result = init(dir);
+
+    expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe('# rules\n');
+    expect(result.toolsConfigured).not.toContain('cursor');
+    expect(result.pathsRefused).toContainEqual({ tool: 'cursor', path: '.cursorrules', reason: 'has more than one hard link' });
+  });
+
+  it('runInit names the path, Verify shows the link count, and the printed Fix makes the next run configure Windsurf without touching the outside file', () => {
+    const dir = project();
+    const outside = outsideDir();
+    const victim = path.join(outside, 'victim.md');
+    fs.writeFileSync(victim, 'victim\n');
+    fs.linkSync(victim, path.join(dir, '.windsurfrules'));
+    fs.mkdirSync(path.join(dir, '.clinerules'));
+
+    const first = capture(() => runInit(dir));
+    const shown = shownPath(dir, '.windsurfrules');
+
+    expect(first.out).toMatch(/^\s*Not configured: Windsurf$/m);
+    expect(first.out).toContain(`    ${shown} has more than one hard link (Windsurf)`);
+    expect(first.out).toMatch(/^\s*Configured: Cline \(1 of 2 detected\)$/m);
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('victim\n');
+
+    const verify = spawnSync('bash', ['-c', printedLine(first.out, 'Verify')], { encoding: 'utf-8' });
+    expect(verify.status).toBe(0);
+    expect(verify.stdout.trim().split(/\s+/)[1]).toBe('2');
+
+    const fix = printedLine(first.out, 'Fix');
+    expect(fix).toContain('then re-run: secretless-ai init');
+    const copy = fix.match(/\((cp -p .+)\)/);
+    expect(copy, 'the Fix line carries no copy command').not.toBeNull();
+    const ran = spawnSync('bash', ['-c', copy![1]], { encoding: 'utf-8' });
+    expect(ran.status, ran.stderr).toBe(0);
+    expect(fs.statSync(path.join(dir, '.windsurfrules')).nlink).toBe(1);
+
+    const second = capture(() => runInit(dir));
+    expect(second.out).not.toContain('Not configured');
+    expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toContain(MARKER);
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('victim\n');
+  });
+
+  it('control: a rule file with one link gets the block appended', () => {
+    const dir = project();
+    fs.writeFileSync(path.join(dir, '.windsurfrules'), '# rules\n');
+    expect(fs.statSync(path.join(dir, '.windsurfrules')).nlink).toBe(1);
+
+    const result = init(dir);
+
+    expect(result.toolsConfigured).toEqual(['windsurf']);
+    expect(result.pathsRefused).toEqual([]);
+    expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toMatch(new RegExp(`^# rules\\n[\\s\\S]*${MARKER}`));
   });
 });
 

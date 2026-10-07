@@ -108,7 +108,8 @@ interface InitResult {
    * Project-relative paths `init` refused to write through, with the tool
    * each was for. A path is refused when it, or a directory on the way to
    * it, is a symbolic link, is not the kind of entry the layout needs, or
-   * resolves outside the project. The tool is then absent from
+   * resolves outside the project, and when it is a file with more than one
+   * hard link. The tool is then absent from
    * `toolsConfigured` and nothing was written for it: following a link out
    * of the project would create or append to a file the user never pointed
    * `init` at.
@@ -799,10 +800,25 @@ function linkAwareKind(p: string): 'file' | 'dir' | 'symlink' | 'other' | 'absen
 }
 
 /**
+ * Why a rule file with more than one link is refused. A hard link is another
+ * name for the same file, and that name can be anywhere on the file system,
+ * outside the project too; resolving the path cannot tell where the others
+ * are, so appending through one would write to a file the user never pointed
+ * `init` at, the same as following a symbolic link.
+ */
+const HARD_LINK_REASON = 'has more than one hard link';
+
+/** True when the regular file `st` describes has a name other than this one. */
+function hasOtherHardLinks(st: fs.Stats | undefined): boolean {
+  return st !== undefined && st.isFile() && st.nlink > 1;
+}
+
+/**
  * Why a project-relative path must not be created or appended to, or null
  * when it may be. Every existing component on the way is checked with
  * `lstat`, so a symbolic link anywhere in the path is refused rather than
- * followed. The deepest existing component is then resolved, and must lie
+ * followed, and an existing file at the end with more than one hard link is
+ * refused too. The deepest existing component is then resolved, and must lie
  * inside the project's real path: a link `init` follows out of the project
  * would create or append to a file the user never pointed it at (the M2 cells
  * of the security entry on this change).
@@ -832,6 +848,7 @@ function unsafePathReason(
       if (mode === 'links') break;
       return { path: relSoFar, reason: last ? 'is not a regular file' : 'is not a directory' };
     }
+    if (last && hasOtherHardLinks(fs.lstatSync(abs, { throwIfNoEntry: false }))) return { path: relSoFar, reason: HARD_LINK_REASON };
     deepestExisting = abs;
   }
 
@@ -977,10 +994,13 @@ function readOnlyRuleFile(
  */
 function openedFileUnsafe(projectDir: string, rel: string, fd: number): { path: string; reason: string } | null {
   const opened = fs.fstatSync(fd);
-  return !opened.isFile()
-    ? { path: rel, reason: 'is not a regular file' }
-    : unsafePathReason(projectDir, rel, 'write')
-      ?? (sameEntry(path.join(projectDir, rel), opened) ? null : { path: rel, reason: 'was replaced while init was writing it' });
+  if (!opened.isFile()) return { path: rel, reason: 'is not a regular file' };
+  // The open file itself, not only the path checked before the open: a hard
+  // link put in place of the rule file after that check is a regular file and
+  // passes O_NOFOLLOW.
+  if (hasOtherHardLinks(opened)) return { path: rel, reason: HARD_LINK_REASON };
+  return unsafePathReason(projectDir, rel, 'write')
+    ?? (sameEntry(path.join(projectDir, rel), opened) ? null : { path: rel, reason: 'was replaced while init was writing it' });
 }
 
 /** True when `p`, not followed, is the same file system entry as `opened`. */

@@ -53,6 +53,25 @@ refused, and the Secretless block is never written through either. When such a
 link leads somewhere `init` cannot write, the path is refused the same way;
 `init` used to fail there with `EACCES` without naming it.
 
+**`init` refuses a rule file with more than one hard link, as it refuses a
+symbolic link.** A hard link is another name for the same file, and that name
+can be outside the project: when `.windsurfrules` was a hard link to
+`../outside.md`, `init` appended the Secretless block to `../outside.md`. When
+a rule file `init` would append to has a link count above 1, nothing is written
+for that tool, and the `Not configured:` block names the path with the reason
+`has more than one hard link` and a Fix line that replaces the file with a copy
+of itself. `ls -ld`, the Verify line, shows the link count in its second
+column. The count is checked on the path before the write and again on the
+opened file, so a hard link put in place of the rule file between the two is
+refused too. Which links are covered: symbolic links are refused on the rule
+files `init` writes for Cursor (`.cursor/rules/secretless.mdc`,
+`.cursorrules`), Cline (`.clinerules`, `.clinerules/secretless.md`,
+`.cline/rules/secretless.md`) and Windsurf (`.windsurfrules`) and on every
+directory on the way to them, and hard links on those rule files. The other
+files `init` writes, `CLAUDE.md`, `.github/copilot-instructions.md`,
+`.aiderignore` and `.claude/settings.json`, are not checked for either kind of
+link and are still written through one.
+
 **Output longer than 8192 bytes reaches a Node 20 caller on macOS whole.** The
 CLI called `process.exit()` while the end of a long write could still be
 queued. On macOS, a Node 20 program that ran `secretless-ai` through

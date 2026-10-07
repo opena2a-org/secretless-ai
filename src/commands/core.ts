@@ -236,7 +236,8 @@ function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; pa
     console.log(`    ${r.shown} ${r.reason} (${toolDisplayName(r.tool)})`);
   }
   console.log('    Nothing was written for these tools: init does not write through a');
-  console.log('    symbolic link, into an entry of the wrong kind, or outside the project.');
+  console.log('    symbolic or hard link, into an entry of the wrong kind, or outside the');
+  console.log('    project.');
   console.log();
   console.log(`  ${c.cyan('Verify:')} ls -ld ${shown.map(r => shellQuote(r.shown)).join(' ')}`);
   const fixes = shown.map(r => refusedPathFix(shellQuote(r.shown), r.reason));
@@ -248,6 +249,9 @@ function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; pa
 function refusedPathFix(quoted: string, reason: string): string {
   if (reason === 'is a symbolic link') {
     return `replace the link ${quoted} with a copy of what it points to, or remove the link`;
+  }
+  if (reason === 'has more than one hard link') {
+    return `replace ${quoted} with a copy of itself (cp -p ${quoted} ${quoted}.tmp && mv ${quoted}.tmp ${quoted}), or remove it`;
   }
   if (reason === 'is not a regular file') return `move ${quoted} aside, or replace it with a regular file`;
   if (reason === 'is not a directory') return `move ${quoted} aside, or replace it with a directory`;
