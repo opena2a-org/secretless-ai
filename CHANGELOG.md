@@ -600,6 +600,25 @@ secret-file-read rule now quotes the text it matched, as in
 quote, a backslash or `$(`. Re-running `npx secretless-ai init` refreshes the
 hook in an existing project.
 
+**The guard hook refuses printing a secret variable however the command is
+spaced.** The rule for `echo` or `printenv` of a secret variable judged only
+the text up to the first backslash or letter `n` after the verb, so
+`echo -n $GITHUB_TOKEN` and `echo "token: $GITHUB_TOKEN"` were admitted on
+every host; it now reads to the end of the command, which still ends at `;`,
+`&` or `|`. The rules for `echo` or `printenv` of a secret variable, `eval
+echo`, `python3 -c` or `node -e` reading a secret variable, and the
+`secretless-ai secret get --force`, `run -- env`, `vault exec -- env` and
+`env` commands took only whitespace between their words. Without `python3`
+the hook reads the command from the raw JSON payload, where a tab arrives as
+`\t`, so `echo<TAB>$GITHUB_TOKEN`, `printenv<TAB>GITHUB_TOKEN` and
+`secretless-ai<TAB>env` were admitted there, and `printf 'echo\t$GITHUB_TOKEN'
+| sh` was admitted on every host. A `\t` escape now counts as that space. Bare
+`printenv` is refused when another command follows it after `;` or `&`, as in
+`printenv; echo done`, and without `python3` when it starts or ends a line of
+a longer command. `printenv | wc -l`, `echo<TAB>$HOME` and
+`secretless-ai run -- envsubst` are still admitted. Re-running
+`npx secretless-ai init` refreshes the hook in an existing project.
+
 **The guard hook judges a symlinked path by the file it reaches.** The hook's
 file rules read only the name a tool was given, so a link named like a
 template (`config.env.example -> .env`) was allowed as a template while the
