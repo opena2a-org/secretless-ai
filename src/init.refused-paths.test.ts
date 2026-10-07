@@ -6,6 +6,9 @@
 // 2. The writer does not follow a symbolic link put in place between its path
 //    checks and its write. The swap is made from inside `fs.mkdirSync`, which
 //    the writer calls after its last path check and right before it writes.
+// 3. A rule file that cannot be opened for writing and already carries the
+//    block is left as it is, and the tools after it are still configured. An
+//    open for writing alone made such a file fail `init` with EACCES.
 //
 // HOME and TMPDIR point at scratch directories, so `init` never touches the
 // real home of whoever runs the suite.
@@ -217,5 +220,54 @@ describe('init does not follow a link put in place after its path checks', () =>
 
     init(dir);
     expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toBe(appended);
+  });
+});
+
+// Root opens a read-only file for writing anyway, so these cells would not
+// reach the code they test.
+const canDenyWrites = (() => {
+  if (process.platform === 'win32') return false;
+  try {
+    return typeof process.getuid === 'function' && process.getuid() !== 0;
+  } catch {
+    return false;
+  }
+})();
+
+describe('init and a rule file it cannot write', () => {
+  it.skipIf(!canDenyWrites)('a read-only .cursorrules that already carries the block: init exits 0, leaves it as it is, and still configures Cline and Aider', () => {
+    const dir = project();
+    const rules = path.join(dir, '.cursorrules');
+    fs.writeFileSync(rules, `# rules\n${MARKER}\n`);
+    fs.chmodSync(rules, 0o444);
+    fs.mkdirSync(path.join(dir, '.clinerules'));
+    fs.writeFileSync(path.join(dir, '.aiderignore'), 'node_modules\n');
+
+    const { code, out } = capture(() => runInit(dir));
+
+    expect(code).toBe(0);
+    expect(out).toMatch(/^\s*Configured: Cursor, Cline, Aider \(3 of 3 detected\)$/m);
+    expect(out).not.toContain('Not configured');
+    expect(fs.readFileSync(rules, 'utf-8')).toBe(`# rules\n${MARKER}\n`);
+    expect(fs.readFileSync(path.join(dir, '.clinerules', 'secretless.md'), 'utf-8')).toContain(MARKER);
+    expect(fs.readFileSync(path.join(dir, '.aiderignore'), 'utf-8')).toContain('# Secretless');
+  });
+
+  it.skipIf(!canDenyWrites)('control: a read-only .windsurfrules without the block is not reported configured and is left as it is', () => {
+    const dir = project();
+    const rules = path.join(dir, '.windsurfrules');
+    fs.writeFileSync(rules, '# rules\n');
+    fs.chmodSync(rules, 0o444);
+
+    // Failing the run because the file cannot be written is not a claim that
+    // Windsurf is configured either.
+    let configured: string[] = [];
+    try {
+      configured = init(dir).toolsConfigured;
+    } catch (err) {
+      expect((err as NodeJS.ErrnoException).code).toBe('EACCES');
+    }
+    expect(configured).not.toContain('windsurf');
+    expect(fs.readFileSync(rules, 'utf-8')).toBe('# rules\n');
   });
 });
