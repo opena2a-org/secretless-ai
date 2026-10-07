@@ -39,15 +39,17 @@ after it are still configured. `init` still writes Windsurf's instructions to
 line.** A tool whose rule file path `init` refused just dropped off the
 `Configured:` line: in a project whose only rule file was a `.cursorrules`
 link to `AGENTS.md`, `init` printed `Configured: none` and
-`Already up to date. No files changed.` and nothing else. It now prints a
-`Not configured:` block with one line per refused path and its reason (for
-example `.cursorrules is a symbolic link (Cursor)`), then
+`Already up to date. No files changed.` and said nothing about the link. It
+now prints a `Not configured:` block with one line per refused path and its
+reason (for example `.cursorrules is a symbolic link (Cursor)`), then
 `Verify: ls -ld <paths>` and a Fix line for each path, and no longer says the
 project is up to date. The exit code is unchanged. The rule file writer now
 opens the file without following a symbolic link and checks again, after
 opening, that it is the regular file the path names inside the project. A link
-put in place between `init`'s path checks and its write is refused instead of
-followed, and the Secretless block is never written through it.
+put in place of the rule file itself between `init`'s path checks and its write
+is refused instead of followed. A link put in place of a directory on the way
+can still leave an empty file or directory where it leads; the path is then
+refused, and the Secretless block is never written through either.
 
 **Output longer than 8192 bytes reaches a Node 20 caller on macOS whole.** The
 CLI called `process.exit()` while the end of a long write could still be
