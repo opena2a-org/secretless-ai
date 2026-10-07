@@ -1115,7 +1115,15 @@ const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
 // heredoc fed to bash, because every line is matched on its own. The
 // compressed and alternative flavours of the same readers (zcat, egrep, gawk,
 // gsed) were caught only because the verb was unanchored, so they are named.
-const READER_VERB_START = '(^|[^A-Za-z0-9_.-])';
+//
+// A `\n` or `\t` escape also starts a word. Without python3 the hook takes the
+// command from the raw JSON payload, where a line break is the two characters
+// `\n`, so the second line of `bash <<'EOF'\ncat .env\nEOF` reaches the rule as
+// `ncat .env`; with only a single boundary character, the whole-word verb hid
+// every reader at the start of a heredoc line or of a later command line, and
+// `sudo\tcat .env` the same way. With python3 the escape is literal text, and
+// `printf 'x\ncat .env' | sh` runs that read too.
+const READER_VERB_START = '(^|[^A-Za-z0-9_.-]|\\\\[nt])';
 const FILE_READERS =
   '(z|bz|xz|lz|zstd)?(cat|less|more|[efr]?grep)|head|tail|[gmn]?awk|g?sed|strings|xxd';
 
@@ -1723,13 +1731,19 @@ except Exception:
     FILE_READ_SCAN="$COMMAND"
   fi
   # The text a command rule matched, for its deny reason, so the reason names
-  # what tripped it: the first span of $2 that pattern $1 matches, run on to the
-  # end of its word, without the boundary character before the verb and cut to
-  # 160 characters. Every character JSON cannot carry raw becomes ?, and quotes
-  # and backslashes are escaped, so the reason stays one JSON document whatever
-  # the command holds.
+  # what tripped it: the first span of $3 that the boundary $1 followed by the
+  # rule $2 matches, run on to the end of its word, cut to 160 characters, and
+  # starting where $2 starts. The boundary is up to two characters (a \`\\n\`
+  # escape), and the fewest are dropped, so \`\\tail .env\` keeps its verb. Every
+  # character JSON cannot carry raw becomes ?, and quotes and backslashes are
+  # escaped, so the reason stays one JSON document whatever the command holds.
   matched_text() {
-    printf '%s\\n' "$2" | grep -oiE "$1[^[:space:]]*" | head -1 | sed -E 's/^[^A-Za-z]//' \\
+    local m c
+    m=$(printf '%s\\n' "$3" | grep -oiE "$1$2[^[:space:]]*" | head -1 || true)
+    for c in "$m" "\${m:1}" "\${m:2}"; do
+      if printf '%s\\n' "$c" | grep -qiE "^$2"; then m=$c; break; fi
+    done
+    printf '%s\\n' "$m" \\
       | tr -c '[:print:]\\n' '?' | cut -c1-160 | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' || true
   }
   # NOTE ON TEMPLATE FILES. The command guard refuses \`cat <name>.env.example\`
@@ -1829,7 +1843,7 @@ SECRETLESS_ANALYZER
     && echo "$SCAN_TEXT" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' \\
     && echo "$FILE_READ_SCAN" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}'; then
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. Matched \`%s\`: a reader verb, then a secret-file name. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash. To write a note that names a secret file, use cat > FILE with a single-quoted heredoc delimiter, or printf or echo of single-quoted text into a file."}}\\n' \\
-      "$(matched_text '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+      "$(matched_text '${READER_VERB_START}' '(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
     exit 0
   fi
   # Block python/node one-liners that read secret files. Same dead-end as the arm
@@ -1841,7 +1855,7 @@ SECRETLESS_ANALYZER
   if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}' \\
     && echo "$FILE_READ_SCAN" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. Matched \`%s\`: a python or node one-liner that names a secret file. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}\\n' \\
-      "$(matched_text '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+      "$(matched_text '' '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets

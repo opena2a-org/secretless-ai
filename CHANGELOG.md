@@ -564,9 +564,13 @@ path component, which a closing `}}` never does. Real reads are still refused
 wherever the shell runs the verb from: `cat .env`, `sudo cat .env`,
 `ssh host cat .env`, `if [ -f .env ]; then cat .env; fi`, `/bin/cat .env`, a
 `cat .env` line in a heredoc fed to bash, and the `zcat`, `egrep`, `gawk` and
-`gsed` flavours. The `python3 -c`/`node -e` rule takes the same path-component
-ending. Re-running `npx secretless-ai init` refreshes the hook in an
-existing project.
+`gsed` flavours. A `\n` or `\t` escape also starts a word: on a host without
+`python3` the hook reads the command from the raw JSON payload, where a line
+break arrives as `\n`, so a reader verb at the start of a heredoc line or of a
+later command line is still refused there, and `printf 'x\ncat .env' | sh` is
+refused too. The `python3 -c`/`node -e` rule takes the same path-component
+ending. Re-running `npx secretless-ai init` refreshes the hook in an existing
+project.
 
 **The guard hook admits a write of text that names a secret file, and its
 refusal quotes what it matched.** A whole-word reader verb followed by a
