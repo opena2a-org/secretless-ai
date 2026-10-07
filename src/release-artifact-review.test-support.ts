@@ -73,7 +73,7 @@ export function fixturePackageJson(overrides: Record<string, unknown> = {}): str
       // Not an own-package name: the clean fixture's consumer closure must
       // hold zero own copies, so its consumer-closure check passes vacuously
       // with no advisory feed to read.
-      name: "sls06-review-fixture",
+      name: "release-review-fixture",
       version: "0.0.0-fixture",
       license: "Apache-2.0",
       bin: {
@@ -138,7 +138,12 @@ function parseCensus(stdout: string): Record<string, string> {
 
 export function runReview(
   args: string[],
-  options: { script?: string; env?: Record<string, string>; unset?: string[] } = {},
+  options: {
+    script?: string;
+    env?: Record<string, string>;
+    unset?: string[];
+    timeout?: number;
+  } = {},
 ): Run {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -149,7 +154,7 @@ export function runReview(
   const run = spawnSync(process.execPath, [options.script ?? SCRIPT, ...args], {
     encoding: "utf-8",
     maxBuffer: 64 * 1024 * 1024,
-    timeout: 600_000,
+    timeout: options.timeout ?? 600_000,
     env,
   });
   return {
@@ -228,17 +233,28 @@ export const BLIND_SCANNER = [
   "",
 ].join("\n");
 
-function ustarHeader(name: string | Buffer, size: number): Buffer {
+/**
+ * How a ustar member is written: its type flag ("0" a regular file, "2" a
+ * symbolic link, "6" a FIFO), its permission bits and, for a link, its target.
+ */
+export interface UstarMember {
+  type?: string;
+  mode?: number;
+  linkname?: string;
+}
+
+function ustarHeader(name: string | Buffer, size: number, member: UstarMember = {}): Buffer {
   const header = Buffer.alloc(512, 0);
   if (typeof name === "string") header.write(name, 0, 100, "utf-8");
   else name.copy(header, 0, 0, 100);
-  header.write("0000755\0", 100, 8, "ascii");
+  header.write((member.mode ?? 0o755).toString(8).padStart(7, "0") + "\0", 100, 8, "ascii");
   header.write("0000000\0", 108, 8, "ascii");
   header.write("0000000\0", 116, 8, "ascii");
   header.write(size.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
   header.write("00000000000\0", 136, 12, "ascii");
   header.write("        ", 148, 8, "ascii"); // checksum field counted as spaces
-  header.write("0", 156, 1, "ascii");
+  header.write(member.type ?? "0", 156, 1, "ascii");
+  if (member.linkname !== undefined) header.write(member.linkname, 157, 100, "utf-8");
   header.write("ustar\0", 257, 6, "ascii");
   header.write("00", 263, 2, "ascii");
   let sum = 0;
@@ -252,12 +268,18 @@ export function buildUstarTgz(name: string, files: Record<string, string>): stri
   return buildUstarTgzEntries(name, Object.entries(files));
 }
 
-/** buildUstarTgz with each member name given as text or as raw bytes, so a name need not be valid UTF-8. */
-export function buildUstarTgzEntries(name: string, members: [string | Buffer, string][]): string {
+/**
+ * buildUstarTgz with each member name given as text or as raw bytes, so a name
+ * need not be valid UTF-8, and optionally how the member is written.
+ */
+export function buildUstarTgzEntries(
+  name: string,
+  members: [string | Buffer, string, UstarMember?][],
+): string {
   const blocks: Buffer[] = [];
-  for (const [entry, content] of members) {
+  for (const [entry, content, member] of members) {
     const body = Buffer.from(content, "utf-8");
-    blocks.push(ustarHeader(entry, body.length), body);
+    blocks.push(ustarHeader(entry, body.length, member), body);
     const pad = (512 - (body.length % 512)) % 512;
     if (pad) blocks.push(Buffer.alloc(pad, 0));
   }

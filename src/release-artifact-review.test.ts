@@ -84,11 +84,11 @@ const healthyRun = () =>
   );
 
 // ---------------------------------------------------------------------------
-// SLS-06.AC2 — what the script refuses, and how it reports
+// What the script refuses, and how it reports
 // ---------------------------------------------------------------------------
 
 describe("release-artifact-review.mjs reviews the packed bytes and reports every check", () => {
-  it("SLS-06.AC2 the script refuses to run without a --tarball path", () => {
+  it("the script refuses to run without a --tarball path", () => {
     const bare = runReview([]);
     expect(bare.status).toBe(2);
     expect(bare.stderr).toContain("usage:");
@@ -102,7 +102,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
   });
 
   it(
-    "SLS-06.AC2 --advisory-states takes published or all and the states read are printed",
+    "--advisory-states takes published or all and the states read are printed",
     { timeout: 300_000 },
     () => {
       const bad = runReview([
@@ -132,7 +132,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
   );
 
   it(
-    "SLS-06.AC2 every check appears in the census whether it passed, failed or hit a precondition",
+    "every check appears in the census whether it passed, failed or hit a precondition",
     { timeout: 300_000 },
     () => {
       const healthy = healthyRun();
@@ -166,7 +166,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
   );
 
   it(
-    "SLS-06.AC2 an entry outside dist/, README, LICENSE and package.json fails the entry allowlist",
+    "an entry outside dist/, README, LICENSE and package.json fails the entry allowlist",
     { timeout: 300_000 },
     () => {
       const run = reviewOf("stray-entry", () =>
@@ -184,7 +184,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
   );
 
   it(
-    "SLS-06.AC2 both bins are exercised: version, help, init help and the mcp wrapper",
+    "both bins are exercised: version, help, init help and the mcp wrapper",
     { timeout: 300_000 },
     () => {
       const healthy = healthyRun();
@@ -195,7 +195,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
     },
   );
 
-  it("SLS-06.AC2 the exact-pinned hackmyagent resolves from node_modules/.bin under npm ci --ignore-scripts", () => {
+  it("the exact-pinned hackmyagent resolves from node_modules/.bin under npm ci --ignore-scripts", () => {
     // The pin is what makes the release review job's scanner resolution
     // deterministic: `npm ci --ignore-scripts` reifies node_modules/.bin.
     const manifest = JSON.parse(
@@ -212,7 +212,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
   });
 
   it(
-    "SLS-06.AC2 the scanner row prints the scanner version and PATH is the fallback, never the first choice",
+    "the scanner row prints the scanner version and PATH is the fallback, never the first choice",
     { timeout: 300_000 },
     () => {
       const healthy = healthyRun();
@@ -241,7 +241,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
   );
 
   it(
-    "SLS-06.AC2 an unresolvable hackmyagent is a precondition and a non-zero exit, never a pass",
+    "an unresolvable hackmyagent is a precondition and a non-zero exit, never a pass",
     { timeout: 300_000 },
     () => {
       const { script, env } = relocatedScript();
@@ -261,7 +261,7 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
   );
 
   it(
-    "SLS-06.AC2 a scanner that misses the planted control is a precondition naming the scanner version",
+    "a scanner that misses the planted control is a precondition naming the scanner version",
     { timeout: 300_000 },
     () => {
       const { script, env } = relocatedScript({ source: BLIND_SCANNER });
@@ -279,12 +279,12 @@ describe("release-artifact-review.mjs reviews the packed bytes and reports every
 });
 
 // ---------------------------------------------------------------------------
-// SLS-06.AC3 — red first, per blocking class; then green
+// Each blocking class caught by name; then the clean and delivered tarballs passing
 // ---------------------------------------------------------------------------
 
 describe("each blocking class is caught by name, and the delivered tree passes", () => {
   it(
-    "SLS-06.AC3 a dotfile entry is caught by no-dotfiles",
+    "a dotfile entry is caught by no-dotfiles",
     { timeout: 300_000 },
     () => {
       const run = reviewOf("poison-dotfile", () =>
@@ -302,7 +302,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a fixtures/ entry is caught by no-test-material",
+    "a fixtures/ entry is caught by no-test-material",
     { timeout: 300_000 },
     () => {
       const run = reviewOf("poison-fixtures", () =>
@@ -320,7 +320,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a postinstall script is caught by no-install-scripts",
+    "a postinstall script is caught by no-install-scripts",
     { timeout: 300_000 },
     () => {
       const files = {
@@ -338,7 +338,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a caret range on an @opena2a/ dependency is caught by pinned-first-party-deps",
+    "a caret range on an @opena2a/ dependency is caught by pinned-first-party-deps",
     { timeout: 300_000 },
     () => {
       const files = {
@@ -356,7 +356,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a dist/cli.js that exits 1 on --version is caught by global-install-smoke",
+    "a dist/cli.js that exits 1 on --version is caught by global-install-smoke",
     { timeout: 300_000 },
     () => {
       const files = { ...healthyFiles(), "package/dist/cli.js": BROKEN_CLI };
@@ -369,7 +369,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a dist/ file carrying a value of the control class is caught by credential-scan, without echoing the value",
+    "a dist/ file carrying a value of the control class is caught by credential-scan, without echoing the value",
     { timeout: 300_000 },
     () => {
       const files = {
@@ -389,7 +389,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a dependency on a deprecated hackmyagent version is caught by consumer-closure",
+    "a dependency on a deprecated hackmyagent version is caught by consumer-closure",
     { timeout: 600_000 },
     () => {
       // Named at test time from the registry's own answer: the version the script
@@ -413,7 +413,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
         `hackmyagent@${version} does not read as deprecated on the registry`,
       ).toBeGreaterThan(0);
       console.log(
-        `SLS-06.AC3 deprecated hackmyagent version used by this test: ${version}`,
+        `deprecated hackmyagent version used by this test: ${version}`,
       );
 
       const files = {
@@ -433,7 +433,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a statically bad tarball is not installed: its dynamic checks are preconditions, not passes",
+    "a statically bad tarball is not installed: its dynamic checks are preconditions, not passes",
     { timeout: 300_000 },
     () => {
       const poisoned = reviewOf("poison-dotfile", () =>
@@ -453,7 +453,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a clean fixture tarball exits 0 with every check pass",
+    "a clean fixture tarball exits 0 with every check pass",
     { timeout: 300_000 },
     () => {
       const healthy = healthyRun();
@@ -469,7 +469,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 the tarball packed from the delivered tree passes every no-network check, with no precondition anywhere",
+    "the tarball packed from the delivered tree passes every no-network check, with no precondition anywhere",
     { timeout: 600_000 },
     () => {
       const packDir = fs.mkdtempSync(path.join(tmpRoot, "pack-"));
@@ -511,9 +511,9 @@ describe("each blocking class is caught by name, and the delivered tree passes",
         );
       }
 
-      // consumer-closure may pass or fail — a fail names a nested own copy the
-      // roadmap has to deal with, blocks the release job, and is quoted in the
-      // delivery report; it is not a defect of this script.
+      // consumer-closure may pass or fail — a fail names a nested own copy that
+      // blocks the release job until it is replaced; it is not a defect of this
+      // script.
       expect(
         ["pass", "fail"],
         `consumer-closure is ${run.census["consumer-closure"]}`,
@@ -527,7 +527,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
         run.census["npm-audit"] === "fail"
       ) {
         console.log(
-          "SLS-06.AC3 delivered-tarball verbatim (for the delivery report):",
+          "delivered-tarball verbatim:",
         );
         for (const line of run.stdout.split("\n")) {
           if (/^(check (npm-audit|consumer-closure)|census|result)/.test(line))
@@ -542,7 +542,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "SLS-06.AC3 a tarball with no dist/ exits non-zero with precondition in its output",
+    "a tarball with no dist/ exits non-zero with precondition in its output",
     { timeout: 300_000 },
     () => {
       const files = {
@@ -562,11 +562,9 @@ describe("each blocking class is caught by name, and the delivered tree passes",
 });
 
 // ---------------------------------------------------------------------------
-// Unit 9299 / the containment bound the CISO ruling headed 2026-09-12T16:10:59Z
-// ordered on #173 (op 4): a tarball entry under package/dist/ whose path
-// carries a `..` segment must fail a check BY NAME. `tar` cannot create such a
-// member (it strips `..` on create), so the fixture is a hand-built ustar
-// archive — the chief's own reproduction shape. The check has to fire from
+// A tarball entry under package/dist/ whose path carries a `..` segment must
+// fail a check BY NAME. `tar` cannot create such a member (it strips `..` on
+// create), so the fixture is a hand-built ustar archive. The check has to fire from
 // the LISTING, before extraction: bsdtar and GNU tar both refuse the member at
 // extraction, which today turns every check into a precondition and reports
 // nothing about the traversal itself. Asserting `status != 0` alone would pass
@@ -575,7 +573,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
 
 const TRAVERSAL_ENTRY = "package/dist/../../../evil-marker.js";
 
-describe("9299: an entry under package/dist/ that escapes it fails dist-containment by name", () => {
+describe("an entry under package/dist/ that escapes it fails dist-containment by name", () => {
   it("names the traversal entry from the listing, whether or not tar agrees to extract it", () => {
     const run = reviewOf("traversal", () =>
       runReview([
