@@ -24,7 +24,7 @@
  *                            package/README.md, package/LICENSE or
  *                            package/package.json — the closure of
  *                            package.json's `files: ["dist"]` plus what npm
- *                            always adds
+ *                            always adds — and no entry name is listed twice
  *   no-dotfiles              no dotfile or dot-directory entry (.npmrc, .env,
  *                            .git, …)
  *   no-test-material         no entry path containing __tests__, fixtures or
@@ -96,12 +96,10 @@ const OWN_SCOPE_PREFIX = '@opena2a/';
  * the real deprecation rows so an empty answer can be told apart from a probe
  * that silently stopped working.
  *
- * UNSET (SLS-06, 2026-09-03): the delivery rotation's sandbox 403-filters
- * every registry read, so no deprecated own version could be named. Until a
- * rotation with registry egress pins one — discover it with
- * `npm view 'hackmyagent@*' deprecated --json` (any own package works) and
- * put its name@version here — the consumer-closure check reports a visible
- * `precondition` naming this sentinel, never a pass.
+ * If the registry ever answers empty for it, the consumer-closure check
+ * reports a visible `precondition` naming this sentinel, never a pass; name
+ * another with `npm view 'hackmyagent@*' deprecated --json` (any own package
+ * works) and put its name@version here.
  */
 const KNOWN_DEPRECATED = { name: 'hackmyagent', version: '0.25.0' };
 
@@ -150,7 +148,9 @@ class Results {
   }
   record(name, status, detail) {
     this.byName.set(name, status);
-    console.log(`check ${name}: ${status}${detail ? `: ${detail}` : ''}`);
+    // Whatever a detail carries (a path, tar's or npm's stderr, a scanner's output), a control
+    // character in it is printed as an escape, so no detail can start a line of its own.
+    console.log(`check ${name}: ${status}${detail ? `: ${escapedControls(detail)}` : ''}`);
   }
   pass(name, detail) {
     this.record(name, 'pass', detail);
@@ -160,7 +160,7 @@ class Results {
   }
   precondition(name, missing) {
     // A precondition never masks a finding already made: a check that failed on the listing
-    // stays failed when the extractor later refuses the same bytes (unit 9299).
+    // stays failed when the extractor later refuses the same bytes.
     if (this.byName.get(name) === 'fail') return;
     this.record(name, 'precondition', missing);
   }
@@ -174,7 +174,7 @@ function main() {
   const tarballIndex = argv.indexOf('--tarball');
   if (tarballIndex === -1 || tarballIndex + 1 >= argv.length) usage('missing required --tarball <path>');
   const tarball = path.resolve(argv[tarballIndex + 1]);
-  if (!fs.existsSync(tarball)) usage(`no such tarball: ${tarball}`);
+  if (!fs.existsSync(tarball)) usage(`no such tarball: ${printablePath(tarball)}`);
 
   let advisoryStates = 'all';
   const statesIndex = argv.indexOf('--advisory-states');
@@ -185,7 +185,7 @@ function main() {
     }
   }
 
-  console.log(`release-artifact-review: reviewing ${tarball} (advisory states: ${advisoryStates})`);
+  console.log(`release-artifact-review: reviewing ${printablePath(tarball)} (advisory states: ${advisoryStates})`);
 
   const results = new Results();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'release-artifact-review-'));
@@ -224,11 +224,13 @@ function review(tarball, work, advisoryStates, results) {
   }
   const entries = listing.stdout.split('\n').filter((line) => line.length > 0);
 
-  // dist-containment (unit 9299; the CISO ruling headed 2026-09-12T16:10:59Z, op 4). An entry whose
-  // path escapes the package tree — a `..` segment or an absolute name — is refused BY NAME from the
-  // listing, before any extractor is asked. bsdtar and GNU tar both refuse such a member at
-  // extraction, but that is a control this script does not own; this check is the one it does, and
-  // it does not wait on extract.status.
+  // The listing is tar's text: both bsdtar and GNU tar write a control character or a backslash in a
+  // member name as an escape, and Results.record escapes any control character a tar leaves raw.
+
+  // dist-containment. An entry whose path escapes the package tree — a `..` segment or an absolute
+  // name — is refused BY NAME from the listing, before any extractor is asked. bsdtar and GNU tar
+  // both refuse such a member at extraction, but that is a control this script does not own; this
+  // check is the one it does, and it does not wait on extract.status.
   const escaping = entries.filter(
     (entry) => path.posix.isAbsolute(entry) || entry.split('/').includes('..'),
   );
@@ -264,8 +266,21 @@ function review(tarball, work, advisoryStates, results) {
   const disallowed = fileEntries.filter(
     (entry) => !/^package\/(dist\/.+|README\.md|LICENSE|package\.json)$/.test(entry),
   );
-  if (disallowed.length > 0) {
-    results.fail('entry-allowlist', `entries outside the allowlist: ${disallowed.join(', ')}`);
+  // A name listed twice is extracted twice, the later member over the earlier, so the scan reads
+  // one copy while an extractor that keeps the other installs bytes never scanned. Names are
+  // compared with the empty and `.` segments and a trailing slash dropped, as an extractor does.
+  const seen = new Set();
+  const repeated = [];
+  for (const entry of entries) {
+    const key = path.posix.normalize(entry).replace(/\/+$/, '');
+    if (seen.has(key)) repeated.push(entry);
+    else seen.add(key);
+  }
+  if (disallowed.length > 0 || repeated.length > 0) {
+    const problems = [];
+    if (disallowed.length > 0) problems.push(`entries outside the allowlist: ${disallowed.join(', ')}`);
+    if (repeated.length > 0) problems.push(`entries listed more than once: ${[...new Set(repeated)].join(', ')}`);
+    results.fail('entry-allowlist', problems.join('; '));
   } else {
     results.pass(
       'entry-allowlist',
@@ -513,16 +528,19 @@ function credentialScan(distDir, work, results) {
   // a UTF-8 locale tar lists café.js as caf\303\251.js, and no file of that
   // name exists to copy. A name that is not valid UTF-8 is not copied: as a
   // string it decodes to U+FFFD, which opens another file or none, so it is
-  // reported by its bytes instead.
+  // reported by its bytes instead. Only regular files are copied: a copy
+  // follows a symbolic link out of the tree, waits on a FIFO for a writer
+  // that never comes, and reads a device without end, so each of those is
+  // reported by name instead.
   const scratch = path.join(work, 'scan-scratch');
   fs.mkdirSync(scratch);
-  const { files, notUtf8 } = filesUnder(distDir);
-  const uncopied = notUtf8.map((rel) => `package/dist/${rel} (name is not valid UTF-8)`);
-  for (const rel of files) {
-    const entry = `package/dist/${rel}`;
+  const { files, refused } = filesUnder(distDir);
+  const uncopied = refused.map(({ shown, reason }) => `package/dist/${shown} (${reason})`);
+  for (const { rel, shown } of files) {
+    const entry = `package/dist/${shown}`;
     const target = path.resolve(scratch, rel);
     if (target !== scratch && !target.startsWith(scratch + path.sep)) {
-      // The bound at the first escaping write (the ruling's op 4): never mkdir outside scratch,
+      // The bound at the first escaping write: never mkdir outside scratch,
       // whatever the extractor let through.
       results.fail('dist-containment', `entry resolves outside the scan scratch: ${entry}`);
       continue;
@@ -579,7 +597,7 @@ function credentialScan(distDir, work, results) {
       // checkId and file:line only — never the matched text, which would
       // print the very value the check exists to keep out of logs.
       const rows = shipped.map(
-        (f) => `${String(f.checkId ?? '<unknown>')} at ${String(f.file ?? f.path ?? '<unknown>')}:${String(f.line ?? '?')}`,
+        (f) => `${String(f.checkId ?? '<unknown>')} at ${printablePath(String(f.file ?? f.path ?? '<unknown>'))}:${String(f.line ?? '?')}`,
       );
       results.fail('credential-scan', `credential findings on shipped files: ${[...new Set(rows)].join(', ')}`);
     } else {
@@ -592,41 +610,90 @@ function credentialScan(distDir, work, results) {
 }
 
 /**
- * The entries under `dir`, as paths relative to `dir`, each list sorted:
- * `files`, every entry that is not a directory and whose name is valid UTF-8,
- * and `notUtf8`, every entry whose name is not, its last name's bytes escaped.
- * No string path opens a `notUtf8` entry, so none is listed in `files` or
- * descended into.
+ * The entries under `dir`. `files` lists every regular file, as `rel`, its
+ * path relative to `dir`, and `shown`, that path as printable text; it is
+ * sorted by `rel`. `refused` lists every other entry that is not a directory,
+ * as `shown` and the `reason` it is not copied, sorted by `shown`: a name
+ * that is not valid UTF-8, its bytes escaped, and a symbolic link, FIFO,
+ * socket or device. No string path opens an entry whose name is not valid
+ * UTF-8, so none is descended into, and neither is a symbolic link.
  */
 function filesUnder(dir) {
   const files = [];
-  const notUtf8 = [];
-  const walk = (rel) => {
+  const refused = [];
+  const walk = (rel, shownRel) => {
     for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true, encoding: 'buffer' })) {
       const name = entry.name.toString('utf-8');
-      if (!Buffer.from(name, 'utf-8').equals(entry.name)) {
-        const escaped = escapedBytes(entry.name);
-        notUtf8.push(rel === '' ? escaped : path.join(rel, escaped));
+      const validName = Buffer.from(name, 'utf-8').equals(entry.name);
+      const shownName = validName ? printablePath(name) : escapedBytes(entry.name);
+      const shown = shownRel === '' ? shownName : `${shownRel}/${shownName}`;
+      if (!validName) {
+        refused.push({ shown, reason: 'name is not valid UTF-8' });
         continue;
       }
       const child = rel === '' ? name : path.join(rel, name);
-      if (entry.isDirectory()) walk(child);
-      else files.push(child);
+      if (entry.isDirectory()) walk(child, shown);
+      else if (entry.isFile()) files.push({ rel: child, shown });
+      else refused.push({ shown, reason: `${kindOf(entry)}, not a regular file` });
     }
   };
-  walk('');
-  return { files: files.sort(), notUtf8: notUtf8.sort() };
+  walk('', '');
+  const byKey = (key) => (a, b) => (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0);
+  return { files: files.sort(byKey('rel')), refused: refused.sort(byKey('shown')) };
 }
 
-/** A name's bytes as printable ASCII: a backslash doubled, any other byte outside 0x20-0x7e as a three-digit octal escape. */
+/** What a directory entry that is neither a regular file nor a directory is. */
+function kindOf(entry) {
+  if (entry.isSymbolicLink()) return 'a symbolic link';
+  if (entry.isFIFO()) return 'a FIFO';
+  if (entry.isSocket()) return 'a socket';
+  if (entry.isCharacterDevice() || entry.isBlockDevice()) return 'a device';
+  return 'an entry of unknown type';
+}
+
+/** The C escapes tar's listing writes for these bytes; every other unprintable byte is written in octal. */
+const LETTER_ESCAPES = new Map([
+  [0x07, '\\a'],
+  [0x08, '\\b'],
+  [0x09, '\\t'],
+  [0x0a, '\\n'],
+  [0x0b, '\\v'],
+  [0x0c, '\\f'],
+  [0x0d, '\\r'],
+]);
+
+/**
+ * A name's bytes as printable ASCII, the way tar's listing writes a name: a
+ * backslash doubled, a bell, backspace, tab, newline, vertical tab, form feed
+ * or carriage return as its C escape, and any other byte outside 0x20-0x7e as
+ * a three-digit octal escape.
+ */
 function escapedBytes(bytes) {
   let out = '';
   for (const byte of bytes) {
     if (byte === 0x5c) out += '\\\\';
     else if (byte >= 0x20 && byte <= 0x7e) out += String.fromCharCode(byte);
-    else out += `\\${byte.toString(8).padStart(3, '0')}`;
+    else out += LETTER_ESCAPES.get(byte) ?? `\\${byte.toString(8).padStart(3, '0')}`;
   }
   return out;
+}
+
+/**
+ * `text` with every character that can end or rewrite a printed line, a
+ * control character or a Unicode line or paragraph separator, written as the
+ * escapes of its UTF-8 bytes. Any other character, a non-ASCII letter
+ * included, is kept.
+ */
+function escapedControls(text) {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (char) => escapedBytes(Buffer.from(char, 'utf-8')));
+}
+
+/**
+ * A path as printable text: escapedControls, with each backslash doubled
+ * first so an escape in the output cannot be mistaken for one in the name.
+ */
+function printablePath(text) {
+  return escapedControls(text.replaceAll('\\', '\\\\'));
 }
 
 /**

@@ -63,7 +63,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
   });
 
   describe('C1: the value is on no child argument list and in no child environment', () => {
-    it('SLS-10.AC1 store(V1) and store(V2) start children with identical argv and identical env, and both values reach stdin as hex', async () => {
+    it('store(V1) and store(V2) start children with identical argv and identical env, and both values reach stdin as hex', async () => {
       const v1 = randomValue(24);
       const v2 = randomValue(41);
 
@@ -95,7 +95,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(interactiveCalls(second)[0].stdin).toContain(hex(v2));
     });
 
-    it('SLS-10.AC1 no child argv and no child env carries the value or its hex', async () => {
+    it('no child argv and no child env carries the value or its hex', async () => {
       const value = randomValue(32);
       await backend.store('secret/API_KEY', value);
 
@@ -113,12 +113,12 @@ describe('MacOSKeychainBackend against a security recorder', () => {
   });
 
   describe('C2: program custody', () => {
-    it('SLS-10.AC2 the program is /usr/bin/security by absolute path', () => {
+    it('the program is /usr/bin/security by absolute path', () => {
       expect(SECURITY_PROGRAM).toBe('/usr/bin/security');
       expect(path.isAbsolute(SECURITY_PROGRAM)).toBe(true);
     });
 
-    it('SLS-10.AC2 a security planted first on PATH never runs: not with the recorder seam, not with the default program', async () => {
+    it('a security planted first on PATH never runs: not with the recorder seam, not with the default program', async () => {
       const planted = makeMarkerProgram('security');
       try {
         // Positive control: the planted program does run when started, so
@@ -147,7 +147,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       }
     });
 
-    it('SLS-10.AC2 the recorder seam is a constructor parameter only: a config key or environment variable of the same name is ignored', async () => {
+    it('the recorder seam is a constructor parameter only: a config key or environment variable of the same name is ignored', async () => {
       const keys = ['securityProgram', 'security', 'securityPath', 'program'];
       const configured = new MacOSKeychainBackend(
         { storeDir: dir, ...Object.fromEntries(keys.map(k => [k, recorder.program])) },
@@ -169,7 +169,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       }
     });
 
-    it('SLS-10.AC2 keychain-macos.ts, factory.ts and bounded-child.ts read nothing from the environment that could name a program or a bound', () => {
+    it('keychain-macos.ts, factory.ts and bounded-child.ts read nothing from the environment that could name a program or a bound', () => {
       const read = (file: string) => fs.readFileSync(path.join(__dirname, file), 'utf-8');
       const envReads = (source: string) => [...source.matchAll(/process\.env\.(\w+)/g)].map(m => m[1]);
 
@@ -194,7 +194,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
   });
 
   describe('C3: no operand is parsed as command text', () => {
-    it('SLS-10.AC3 one store writes exactly one line, the value travels as -X hex, and every other operand is double-quoted with M1 quoting', async () => {
+    it('one store writes exactly one line, the value travels as -X hex, and every other operand is double-quoted with M1 quoting', async () => {
       const key = 'secret/na"me\\with:odd chars';
       const value = 'value with spaces "quotes" and \\ backslashes: ok';
       await backend.store(key, value);
@@ -217,7 +217,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(await backend.resolve(key)).toEqual({ [key]: value });
     });
 
-    it('SLS-10.AC3 a value holding a newline and a second command reaches the recorder as one line, and that command never runs', async () => {
+    it('a value holding a newline and a second command reaches the recorder as one line, and that command never runs', async () => {
       const value = 'first-line\nadd-generic-password -s "x" -a "planted-by-value" -U -X 41\n';
       await backend.store('secret/MULTI', value);
 
@@ -235,7 +235,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(await backend.resolve('secret/MULTI')).toEqual({ 'secret/MULTI': value });
     });
 
-    it('SLS-10.AC3 a key holding a newline and a second command is refused by name and no child starts', async () => {
+    it('a key holding a newline and a second command is refused by name and no child starts', async () => {
       const key = 'secret/K\nadd-generic-password -s "x" -a "planted-by-key" -U -X 41';
       const err = await backend.store(key, 'value').catch((e: Error) => e);
       expect(err).toBeInstanceOf(KeychainLineError);
@@ -246,7 +246,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(recorder.calls()).toEqual([]);
     });
 
-    it('SLS-10.AC3 a value that does not fit on one line is refused by name and no child starts', async () => {
+    it('a value that does not fit on one line is refused by name and no child starts', async () => {
       // leaksAny reports any 4-character run the message shares with the value
       // or its hex, so a value drawn from the full alphabet shares one with the
       // fixed refusal text now and then, and the test failed at random. The
@@ -274,7 +274,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(recorder.calls()).toEqual([]);
     });
 
-    it('SLS-10.AC3 buildAddGenericPasswordLine refuses a line break in any operand and an empty value', () => {
+    it('buildAddGenericPasswordLine refuses a line break in any operand and an empty value', () => {
       expect(() => buildAddGenericPasswordLine('Secretless: K\n', 'k', 'l', 'v')).toThrow(KeychainLineError);
       expect(() => buildAddGenericPasswordLine('s', 'k\r', 'l', 'v')).toThrow(KeychainLineError);
       expect(() => buildAddGenericPasswordLine('s', 'k', 'l\nquit', 'v')).toThrow(KeychainLineError);
@@ -293,7 +293,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(await waitForProcessGone(pid!), `pid ${pid} is still running`).toBe(true);
     }
 
-    it('SLS-10.AC4 a security that never exits: store throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
+    it('a security that never exits: store throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
       expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
       const bounded = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program, childTimeoutMs: 500 });
@@ -304,7 +304,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       await expectHungChildGone();
     });
 
-    it('SLS-10.AC4 a security that never exits: resolve throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
+    it('a security that never exits: resolve throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
       fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['secret/K']));
       expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
@@ -316,7 +316,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       await expectHungChildGone();
     });
 
-    it('SLS-10.AC4 a security that never exits: delete and healthCheck return within the bound and the child is gone', { timeout: 10_000 }, async () => {
+    it('a security that never exits: delete and healthCheck return within the bound and the child is gone', { timeout: 10_000 }, async () => {
       expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
       const bounded = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program, childTimeoutMs: 500 });
@@ -374,7 +374,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(err.message).toMatch(/Fix:\s+\S/);
     }
 
-    it('SLS-10.AC5 a non-zero exit: the error carries neither the value nor its hex, keeps the planted stderr marker, and says what happened', async () => {
+    it('a non-zero exit: the error carries neither the value nor its hex, keeps the planted stderr marker, and says what happened', async () => {
       recorder.setMode({
         kind: 'fail',
         status: 1,
@@ -389,7 +389,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       assertClean(err);
     });
 
-    it('SLS-10.AC5 a non-zero exit that echoes the value and its hex on stderr: neither reaches the error', async () => {
+    it('a non-zero exit that echoes the value and its hex on stderr: neither reaches the error', async () => {
       recorder.setMode({
         kind: 'fail',
         status: 1,
@@ -401,7 +401,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       assertClean(err);
     });
 
-    it('SLS-10.AC5 a timeout: the error carries neither the value nor its hex and says what happened', { timeout: 10_000 }, async () => {
+    it('a timeout: the error carries neither the value nor its hex and says what happened', { timeout: 10_000 }, async () => {
       recorder.setMode({ kind: 'hang' });
       const bounded = new MacOSKeychainBackend({ storeDir: dir }, { securityProgram: recorder.program, childTimeoutMs: 300 });
       const err = await bounded.store('secret/K', VALUE).catch((e: Error) => e) as Error;
@@ -413,7 +413,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
   });
 
   describe('C6: a store that did not commit is a thrown failure', () => {
-    it('SLS-10.AC6 a write that exits 0 without landing is a thrown failure and the key is not indexed', async () => {
+    it('a write that exits 0 without landing is a thrown failure and the key is not indexed', async () => {
       recorder.setMode({ kind: 'drop' });
       const err = await backend.store('secret/K', 'value-one').catch((e: Error) => e) as Error;
       expect(err.message).toMatch(/Could not confirm "secret\/K" was stored/);
@@ -424,7 +424,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(fs.existsSync(path.join(dir, 'keychain-index.json'))).toBe(false);
     });
 
-    it('SLS-10.AC6 a write that exits 0 but landed a different value is a thrown failure', async () => {
+    it('a write that exits 0 but landed a different value is a thrown failure', async () => {
       recorder.setMode({ kind: 'wrong' });
       const err = await backend.store('secret/K', 'value-one').catch((e: Error) => e) as Error;
       expect(err.message).toMatch(/Could not confirm "secret\/K" was stored/);
@@ -433,7 +433,7 @@ describe('MacOSKeychainBackend against a security recorder', () => {
       expect(err.message).not.toContain('a-different-value');
     });
 
-    it('SLS-10.AC6 every store is followed by a read-back of the same entry', async () => {
+    it('every store is followed by a read-back of the same entry', async () => {
       await backend.store('mcp/client/server/KEY', 'v');
       const argvs = recorder.calls().map(c => c.argv);
       const add = argvs.findIndex(a => a[0] === '-i');
