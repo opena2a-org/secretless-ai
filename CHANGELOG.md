@@ -137,6 +137,15 @@ first line of a refusal already quoted the key and now escapes DEL, C1
 controls, U+2028 and U+2029 as well. An ordinary key such as `GITHUB_TOKEN`
 prints as before.
 
+**`secret set`, `import` and `protect-mcp` refuse a value holding a C1
+control character (U+0080 to U+009F) (#230).** The stored-value check refused
+the escape character 0x1B but accepted U+009B, the one-character form of the
+same `ESC [` sequence, so a value ending in an 8-bit `CSI 2 J` was stored. C1
+characters are now refused like the other control characters, with the
+refusal naming the character (for example `a C1 control character (U+009B)`)
+and its position, never the value. U+00A0 and above, including accented and
+non-Latin letters, are still accepted.
+
 **`protect-mcp` refuses an MCP server value that holds terminal escapes or
 U+FFFD, the same rule `secret set` applies (#104).** A value in a server's
 `env` block containing an escape or other control character, a null byte, or

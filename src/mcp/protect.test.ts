@@ -189,4 +189,30 @@ describe('protectMcp', () => {
     // capture; the plaintext config is the one copy of what the user wrote.
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
   });
+
+  it('refuses an 8-bit CSI in a server value and leaves the config untouched (#230)', async () => {
+    const configDir = path.join(homeDir, '.cursor');
+    fs.mkdirSync(configDir, { recursive: true });
+    const configPath = path.join(configDir, 'mcp.json');
+    // U+009B is ESC [ as one character; the 7-bit form is refused above.
+    const original = JSON.stringify({
+      mcpServers: {
+        github: {
+          command: 'npx',
+          args: ['@github/mcp-server'],
+          env: { GITHUB_TOKEN: 'ghp_FAKE23def456ghi789jkl012mno345pqr678\u009b[2J' },
+        },
+      },
+    });
+    fs.writeFileSync(configPath, original);
+
+    await expect(protectMcp({
+      homeDir,
+      dataDir,
+      wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
+    })).rejects.toThrow(/"GITHUB_TOKEN" for MCP server cursor\/github was not stored: the value contains a C1 control character \(U\+009B\)/);
+
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+  });
 });
