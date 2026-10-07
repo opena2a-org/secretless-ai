@@ -2,8 +2,8 @@
  * Recorder programs that stand in for `security`, `secret-tool`, `which` and
  * `op` in tests. Each is a real executable, so the backend's real child
  * process path runs: the recorder writes its argv, its environment and its
- * stdin to a file the test reads back. No lane and no CI job has a macOS
- * Keychain, so this is how the store's argv and stdin are observed on Linux.
+ * stdin to a file the test reads back. No CI job has a macOS Keychain, so
+ * this is how the store's argv and stdin are observed on Linux.
  *
  * Excluded from the build (tsconfig: `*.test-support.ts`) and from the test
  * glob (`*.test.ts`), so it ships in neither.
@@ -43,8 +43,12 @@ export interface Recorder {
   program: string;
   calls(): RecordedCall[];
   setMode(mode: RecorderMode): void;
-  /** Pid written by a hanging invocation, or null if none hung. */
-  hangPid(): number | null;
+  /**
+   * Pid written by the latest hanging invocation, or null if none hung since
+   * the last call. Each call clears it, so a bounded call whose child ended
+   * before writing its pid reads null, never an earlier child's pid.
+   */
+  takeHangPid(): number | null;
   /**
    * Positive control: run the program directly once, confirm it recorded the
    * call, and clear the record. Call it before `setMode({ kind: 'hang' })`.
@@ -59,9 +63,9 @@ export interface Recorder {
 
 /**
  * Programs live under the repository's own cache, not under os.tmpdir(): a
- * temp directory mounted `noexec` (this lane's is) makes every spawn fail with
- * EACCES, and a test that then reads "the planted program never ran" would
- * pass for the wrong reason. `node_modules/.cache` is where the package's
+ * temp directory mounted `noexec`, as some sandboxes mount theirs, makes every
+ * spawn fail with EACCES, and a test that then reads "the planted program
+ * never ran" would pass for the wrong reason. `node_modules/.cache` is where the package's
  * other test harnesses already put scratch files, and vitest itself runs from
  * `node_modules`, so execution there is known to be allowed.
  */
@@ -129,9 +133,12 @@ function makeRecorder(prefix: string, name: string, body: string): Recorder {
     setMode(mode) {
       fs.writeFileSync(path.join(dir, 'control.json'), JSON.stringify(mode));
     },
-    hangPid() {
+    takeHangPid() {
       const p = path.join(dir, 'hang.pid');
-      return fs.existsSync(p) ? Number(fs.readFileSync(p, 'utf-8')) : null;
+      if (!fs.existsSync(p)) return null;
+      const pid = Number(fs.readFileSync(p, 'utf-8'));
+      fs.rmSync(p, { force: true });
+      return pid;
     },
     controlRun() {
       const res = spawnSync(program, ['control'], { input: '', stdio: 'pipe', timeout: 10_000, killSignal: 'SIGKILL' });

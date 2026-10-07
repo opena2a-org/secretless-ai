@@ -81,7 +81,7 @@ describe('LinuxKeychainBackend', () => {
     // recorder outside the bound (positive control, and the slow first start
     // paid there), so the bounded child can write its pid inside 0.5s.
     async function expectHungChildGone(): Promise<void> {
-      const pid = recorder.hangPid();
+      const pid = recorder.takeHangPid();
       expect(pid, 'the hanging secret-tool wrote no pid before the bound ended it').not.toBeNull();
       expect(await waitForProcessGone(pid!), `pid ${pid} is still running`).toBe(true);
     }

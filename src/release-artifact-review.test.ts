@@ -1,8 +1,23 @@
-import { afterAll, describe, it, expect } from "vitest";
+import { describe, it, expect } from "vitest";
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { pathToFileURL } from "url";
+import {
+  BLIND_SCANNER,
+  CHECKS,
+  POISONED_DIST_FILE,
+  REPO_ROOT,
+  SCRIPT,
+  buildTarball,
+  buildUstarTgz,
+  expectSingleFailure,
+  fixturePackageJson,
+  healthyFiles,
+  relocatedScript,
+  runReview,
+  tmpRoot,
+  type Run,
+} from "./release-artifact-review.test-support";
 
 /**
  * scripts/release-artifact-review.mjs, exercised as the release `review` job
@@ -27,23 +42,6 @@ import { pathToFileURL } from "url";
  * precondition on the own-tarball run is a test failure in every environment.
  */
 
-const REPO_ROOT = path.resolve(__dirname, "..");
-const SCRIPT = path.join(REPO_ROOT, "scripts", "release-artifact-review.mjs");
-const CHILD_ENV_MODULE = path.join(REPO_ROOT, "scripts", "child-env.mjs");
-
-const CHECKS = [
-  "entry-allowlist",
-  "no-dotfiles",
-  "no-test-material",
-  "dist-containment",
-  "no-install-scripts",
-  "pinned-first-party-deps",
-  "npm-audit",
-  "global-install-smoke",
-  "credential-scan",
-  "consumer-closure",
-];
-
 /** The checks whose verdict needs no network reading. */
 const NO_NETWORK_CHECKS = [
   "entry-allowlist",
@@ -66,135 +64,12 @@ const PRECONDITION_REMEDY: Record<string, string> = {
     "registry and GitHub API access (set GH_TOKEN for authenticated advisory reads)",
 };
 
-// ---------------------------------------------------------------------------
-// Fixtures: tarballs built file-by-file
-// ---------------------------------------------------------------------------
-
-// Everything below executes files it just wrote — installed bins, stub
-// scanners — so the scratch space must live on an exec-mounted filesystem.
-// /tmp is noexec in some sandboxes; node_modules/.cache (gitignored,
-// guaranteed present once vitest itself is installed) is not. The script's
-// own work dir follows via TMPDIR.
-const scratchBase = path.join(
-  REPO_ROOT,
-  "node_modules",
-  ".cache",
-  "release-review-tests",
-);
-fs.mkdirSync(scratchBase, { recursive: true });
-const tmpRoot = fs.mkdtempSync(path.join(scratchBase, "run-"));
-afterAll(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
-
-const FIXTURE_CLI = [
-  "#!/usr/bin/env node",
-  "if (process.argv[2] === '--version') { console.log('0.0.0-fixture'); process.exit(0); }",
-  "console.log('usage: fixture'); process.exit(0);",
-  "",
-].join("\n");
-
 const BROKEN_CLI = [
   "#!/usr/bin/env node",
   "if (process.argv[2] === '--version') { process.exit(1); }",
   "console.log('usage: fixture'); process.exit(0);",
   "",
 ].join("\n");
-
-// A shipped file carrying a value of the planted control's class: a
-// credential-named const assembled at runtime from parts, same shape the
-// script plants (sk- + proj- + 48 repeated characters), so no
-// credential-shaped literal exists in this repository either.
-const POISONED_DIST_FILE = [
-  `const OPENAI_API_KEY = ${JSON.stringify("sk-" + "proj-" + "B".repeat(48))};`,
-  "module.exports = { OPENAI_API_KEY };",
-  "",
-].join("\n");
-
-function fixturePackageJson(overrides: Record<string, unknown> = {}): string {
-  return JSON.stringify(
-    {
-      // Not an own-package name: the clean fixture's consumer closure must
-      // hold zero own copies, so its consumer-closure check passes vacuously
-      // with no advisory feed to read.
-      name: "sls06-review-fixture",
-      version: "0.0.0-fixture",
-      license: "Apache-2.0",
-      bin: {
-        "secretless-ai": "dist/cli.js",
-        "secretless-mcp": "dist/mcp-wrapper.js",
-      },
-      files: ["dist"],
-      ...overrides,
-    },
-    null,
-    2,
-  );
-}
-
-function healthyFiles(): Record<string, string> {
-  return {
-    "package/package.json": fixturePackageJson(),
-    "package/README.md": "# fixture\n",
-    "package/LICENSE": "Apache-2.0\n",
-    "package/dist/cli.js": FIXTURE_CLI,
-    "package/dist/mcp-wrapper.js": FIXTURE_CLI,
-  };
-}
-
-/** A gzipped tarball with exactly these file entries, no directory entries. */
-function buildTarball(name: string, files: Record<string, string>): string {
-  const stage = fs.mkdtempSync(path.join(tmpRoot, "stage-"));
-  for (const [entry, content] of Object.entries(files)) {
-    const target = path.join(stage, entry);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, content);
-    fs.chmodSync(target, 0o755);
-  }
-  const tarball = path.join(tmpRoot, name);
-  const tar = spawnSync(
-    "tar",
-    ["-czf", tarball, "-C", stage, ...Object.keys(files)],
-    { encoding: "utf-8" },
-  );
-  expect(tar.status, tar.stderr).toBe(0);
-  return tarball;
-}
-
-interface Run {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-  census: Record<string, string>;
-}
-
-function parseCensus(stdout: string): Record<string, string> {
-  const censusLine = /^census: (.+)$/m.exec(stdout);
-  const census: Record<string, string> = {};
-  if (censusLine) {
-    for (const pair of censusLine[1].split(" ")) {
-      const [check, status] = pair.split("=");
-      census[check] = status;
-    }
-  }
-  return census;
-}
-
-function runReview(
-  args: string[],
-  options: { script?: string; env?: Record<string, string> } = {},
-): Run {
-  const run = spawnSync(process.execPath, [options.script ?? SCRIPT, ...args], {
-    encoding: "utf-8",
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: 600_000,
-    env: { ...process.env, TMPDIR: tmpRoot, ...(options.env ?? {}) },
-  });
-  return {
-    status: run.status,
-    stdout: run.stdout ?? "",
-    stderr: run.stderr ?? "",
-    census: parseCensus(run.stdout ?? ""),
-  };
-}
 
 /** One review per scenario, shared across assertions. */
 const memo = new Map<string, Run>();
@@ -207,74 +82,6 @@ const healthyRun = () =>
   reviewOf("healthy", () =>
     runReview(["--tarball", buildTarball("healthy.tgz", healthyFiles())]),
   );
-
-function expectSingleFailure(run: Run, check: string) {
-  expect(run.status).not.toBe(0);
-  const failing = CHECKS.filter((name) => run.census[name] === "fail");
-  expect(failing).toEqual([check]);
-  expect(run.stdout).toContain(`failing: ${check}`);
-}
-
-/**
- * A copy of the script rooted in a scratch directory, so its
- * node_modules/.bin scanner resolution is under the test's control. `env`
- * strips every node_modules/.bin entry off PATH (npm run puts this repo's on
- * PATH, which would hand the copy the real scanner as a fallback) while
- * keeping the system directories tar and npm live in.
- */
-function relocatedScript(binStub?: { source: string }): {
-  script: string;
-  env: Record<string, string>;
-} {
-  const root = fs.mkdtempSync(path.join(tmpRoot, "relocated-"));
-  fs.mkdirSync(path.join(root, "scripts"));
-  fs.copyFileSync(
-    SCRIPT,
-    path.join(root, "scripts", "release-artifact-review.mjs"),
-  );
-  fs.copyFileSync(CHILD_ENV_MODULE, path.join(root, "scripts", "child-env.mjs"));
-  if (binStub) {
-    const binDir = path.join(root, "node_modules", ".bin");
-    fs.mkdirSync(binDir, { recursive: true });
-    const stub = path.join(binDir, "hackmyagent");
-    fs.writeFileSync(stub, binStub.source);
-    fs.chmodSync(stub, 0o755);
-  }
-  // Also drop any directory that holds a scanner executable (a global install on a
-  // developer machine): the relocated copy must see NO scanner unless the test plants one.
-  // node and npm stay reachable through a private bin dir placed first: the
-  // directory that holds a global scanner is often the one that holds node.
-  const toolBin = path.join(root, "tool-bin");
-  fs.mkdirSync(toolBin);
-  fs.symlinkSync(process.execPath, path.join(toolBin, "node"));
-  const npmPath = spawnSync("which", ["npm"], {
-    encoding: "utf-8",
-  }).stdout?.trim();
-  if (npmPath) fs.symlinkSync(npmPath, path.join(toolBin, "npm"));
-  const systemPath = [
-    toolBin,
-    ...(process.env.PATH ?? "")
-      .split(path.delimiter)
-      .filter(
-        (dir) =>
-          !dir.includes("node_modules") &&
-          !fs.existsSync(path.join(dir, "hackmyagent")),
-      ),
-  ].join(path.delimiter);
-  return {
-    script: path.join(root, "scripts", "release-artifact-review.mjs"),
-    env: { PATH: systemPath },
-  };
-}
-
-/** A stub scanner that honours `secure --format json` but reports nothing. */
-const BLIND_SCANNER = [
-  "#!/usr/bin/env node",
-  "if (process.argv.includes('--version')) { console.log('9.9.9'); process.exit(0); }",
-  "console.log(JSON.stringify({ findings: [] }));",
-  "process.exit(0);",
-  "",
-].join("\n");
 
 // ---------------------------------------------------------------------------
 // SLS-06.AC2 — what the script refuses, and how it reports
@@ -765,40 +572,6 @@ describe("each blocking class is caught by name, and the delivered tree passes",
 // nothing about the traversal itself. Asserting `status != 0` alone would pass
 // on tar's refusal — the assertion that let a reverted fix look green.
 // ---------------------------------------------------------------------------
-import * as zlib from "zlib";
-
-function ustarHeader(name: string, size: number): Buffer {
-  const header = Buffer.alloc(512, 0);
-  header.write(name, 0, 100, "utf-8");
-  header.write("0000755\0", 100, 8, "ascii");
-  header.write("0000000\0", 108, 8, "ascii");
-  header.write("0000000\0", 116, 8, "ascii");
-  header.write(size.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
-  header.write("00000000000\0", 136, 12, "ascii");
-  header.write("        ", 148, 8, "ascii"); // checksum field counted as spaces
-  header.write("0", 156, 1, "ascii");
-  header.write("ustar\0", 257, 6, "ascii");
-  header.write("00", 263, 2, "ascii");
-  let sum = 0;
-  for (const byte of header) sum += byte;
-  header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8, "ascii");
-  return header;
-}
-
-/** A ustar .tgz whose member names are written verbatim — `..` included. */
-function buildUstarTgz(name: string, files: Record<string, string>): string {
-  const blocks: Buffer[] = [];
-  for (const [entry, content] of Object.entries(files)) {
-    const body = Buffer.from(content, "utf-8");
-    blocks.push(ustarHeader(entry, body.length), body);
-    const pad = (512 - (body.length % 512)) % 512;
-    if (pad) blocks.push(Buffer.alloc(pad, 0));
-  }
-  blocks.push(Buffer.alloc(1024, 0));
-  const tarball = path.join(tmpRoot, name);
-  fs.writeFileSync(tarball, zlib.gzipSync(Buffer.concat(blocks)));
-  return tarball;
-}
 
 const TRAVERSAL_ENTRY = "package/dist/../../../evil-marker.js";
 
@@ -825,203 +598,4 @@ describe("9299: an entry under package/dist/ that escapes it fails dist-containm
     );
     expect(run.census["dist-containment"]).toBe("pass");
   }, 600_000);
-});
-
-// ---------------------------------------------------------------------------
-// The environment each child starts with
-// ---------------------------------------------------------------------------
-
-interface ChildEnvModule {
-  childEnv(
-    extra?: Record<string, string>,
-    env?: Record<string, string | undefined>,
-  ): Record<string, string>;
-  fetchChildEnv(
-    url: string,
-    env?: Record<string, string | undefined>,
-  ): Record<string, string>;
-}
-
-function loadChildEnv(): Promise<ChildEnvModule> {
-  return import(pathToFileURL(CHILD_ENV_MODULE).href);
-}
-
-/**
- * An npm that records each call's argv, its environment's variable names and
- * the few values the assertions need (never a whole environment), and answers
- * just enough for the review to start its ping, closure, audit and global
- * install children.
- */
-function recordingNpm(dir: string, log: string): void {
-  const source = [
-    `#!${process.execPath}`,
-    "const fs = require('fs');",
-    "const argv = process.argv.slice(2);",
-    "const env = process.env;",
-    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv, names: Object.keys(env), home: env.HOME, npmConfig: env.npm_config_review_probe, noProxy: env.no_proxy }) + '\\n');`,
-    "if (argv[0] === 'install' && argv.includes('--package-lock-only')) {",
-    "  fs.writeFileSync('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'closure-scratch' } } }));",
-    "}",
-    "process.exit(0);",
-    "",
-  ].join("\n");
-  fs.writeFileSync(path.join(dir, "npm"), source);
-  fs.chmodSync(path.join(dir, "npm"), 0o755);
-}
-
-interface NpmCall {
-  argv: string[];
-  names: string[];
-  home?: string;
-  npmConfig?: string;
-  noProxy?: string;
-}
-
-describe("each child of the review starts from an allowlist, and only the advisory fetch gets GH_TOKEN", () => {
-  it("childEnv keeps PATH, HOME, temp, npm configuration and proxy variables; fetchChildEnv alone adds GH_TOKEN", async () => {
-    const { childEnv, fetchChildEnv } = await loadChildEnv();
-    const kept = {
-      PATH: "/usr/bin:/bin",
-      HOME: "/home/runner",
-      TMPDIR: "/tmp/runner",
-      npm_config_registry: "https://registry.example",
-      NPM_CONFIG_USERCONFIG: "/home/runner/.npmrc",
-      HTTPS_PROXY: "http://proxy.example:3128",
-      http_proxy: "http://proxy.example:3128",
-      NO_PROXY: "localhost",
-      NODE_EXTRA_CA_CERTS: "/etc/ssl/proxy-ca.pem",
-    };
-    const env = {
-      ...kept,
-      GH_TOKEN: "gh-token-probe",
-      GITHUB_TOKEN: "github-token-probe",
-      NODE_AUTH_TOKEN: "node-auth-probe",
-      NODE_OPTIONS: "--require /tmp/hook.js",
-      TARBALL: "tarball/secretless-ai.tgz",
-      REVIEW_UNLISTED_PROBE: "unlisted",
-    };
-
-    expect(childEnv({}, env)).toEqual(kept);
-    expect(childEnv({ HOME: "/scratch/home" }, env)).toEqual({
-      ...kept,
-      HOME: "/scratch/home",
-    });
-    expect(fetchChildEnv("https://api.example/advisories", env)).toEqual({
-      ...kept,
-      GH_TOKEN: "gh-token-probe",
-      NODE_USE_ENV_PROXY: "1",
-      REVIEW_GET_URL: "https://api.example/advisories",
-    });
-    const { GH_TOKEN: _token, ...withoutToken } = env;
-    expect(
-      fetchChildEnv("https://api.example/advisories", withoutToken),
-    ).not.toHaveProperty("GH_TOKEN");
-  });
-
-  it("childEnv keeps the locale: LANG, LC_ALL and LC_CTYPE", async () => {
-    const { childEnv } = await loadChildEnv();
-    const locale = {
-      LANG: "C.UTF-8",
-      LC_ALL: "en_US.UTF-8",
-      LC_CTYPE: "en_US.UTF-8",
-    };
-    expect(childEnv({}, { ...locale, GH_TOKEN: "gh-token-probe" })).toEqual(locale);
-  });
-
-  it(
-    "under a UTF-8 locale, a credential in a dist/ file with a non-ASCII name is caught by credential-scan",
-    { timeout: 300_000 },
-    () => {
-      // Outside a UTF-8 locale tar lists café.js with octal escapes, and the
-      // scan's copy of that entry finds no file of that name.
-      const locale = (spawnSync("locale", ["-a"], { encoding: "utf-8" }).stdout ?? "")
-        .split("\n")
-        .map((name) => name.trim())
-        .find((name) => /^(C|en_US)\.utf-?8$/i.test(name));
-      expect(locale, "no C.UTF-8 or en_US.UTF-8 in `locale -a`").toBeTruthy();
-      const run = runReview(
-        [
-          "--tarball",
-          buildUstarTgz("non-ascii-name.tgz", {
-            ...healthyFiles(),
-            "package/dist/café.js": POISONED_DIST_FILE,
-          }),
-        ],
-        { env: { LANG: locale as string, LC_ALL: "", LC_CTYPE: "" } },
-      );
-      expectSingleFailure(run, "credential-scan");
-      expect(run.stdout.normalize("NFC")).toMatch(
-        /check credential-scan: fail: .*café\.js:\d+/,
-      );
-      expect(run.stdout).not.toContain("sk-" + "proj-" + "B".repeat(48));
-    },
-  );
-
-  it("every child starts through run(), and none is handed the whole environment", () => {
-    // run() applies the allowlist to any call that names no environment, so a
-    // second spawn site, or a spread of process.env, would bypass it.
-    const source = fs.readFileSync(SCRIPT, "utf-8");
-    expect(source.match(/\bspawnSync\(/g)).toHaveLength(1);
-    expect(source).not.toMatch(/\.\.\.process\.env\b/);
-  });
-
-  it(
-    "the npm children of a review see no GH_TOKEN and no unlisted variable, and keep PATH, HOME, npm configuration and proxies",
-    { timeout: 300_000 },
-    () => {
-      const stubDir = fs.mkdtempSync(path.join(tmpRoot, "npm-recorder-"));
-      const log = path.join(stubDir, "calls.jsonl");
-      recordingNpm(stubDir, log);
-      const { script, env } = relocatedScript({ source: BLIND_SCANNER });
-      const files = {
-        ...healthyFiles(),
-        "package/package.json": fixturePackageJson({
-          dependencies: { "left-pad": "1.3.0" },
-        }),
-      };
-      const review = runReview(["--tarball", buildTarball("child-env.tgz", files)], {
-        script,
-        env: {
-          PATH: `${stubDir}${path.delimiter}${env.PATH}`,
-          GH_TOKEN: "gh-token-probe",
-          REVIEW_UNLISTED_PROBE: "unlisted",
-          npm_config_review_probe: "kept",
-          no_proxy: "review-probe.invalid",
-        },
-      });
-
-      const calls: NpmCall[] = fs.existsSync(log)
-        ? fs
-            .readFileSync(log, "utf-8")
-            .split("\n")
-            .filter((line) => line.length > 0)
-            .map((line) => JSON.parse(line))
-        : [];
-      const has = (verb: string, flag?: string) =>
-        calls.some(
-          (c) => c.argv[0] === verb && (flag === undefined || c.argv.includes(flag)),
-        );
-      // Reachability: the review started each kind of npm child.
-      const seen = `npm calls seen: ${calls.map((c) => c.argv.join(" ")).join("; ")}\n${review.stdout}`;
-      expect(has("ping"), seen).toBe(true);
-      expect(has("install", "--package-lock-only"), seen).toBe(true);
-      expect(has("audit"), seen).toBe(true);
-      expect(has("install", "-g"), seen).toBe(true);
-
-      for (const call of calls) {
-        const label = call.argv.join(" ");
-        expect(call.names, label).not.toContain("GH_TOKEN");
-        expect(call.names, label).not.toContain("REVIEW_UNLISTED_PROBE");
-        expect(call.names, label).toContain("PATH");
-        expect(call.home, label).toBeTruthy();
-        expect(call.npmConfig, label).toBe("kept");
-        expect(call.noProxy, label).toBe("review-probe.invalid");
-      }
-      // The two installs keep their scratch HOME.
-      const homeOf = (flag: string) =>
-        calls.find((c) => c.argv[0] === "install" && c.argv.includes(flag))?.home;
-      expect(path.basename(homeOf("--package-lock-only") ?? "")).toBe("closure-home");
-      expect(path.basename(homeOf("-g") ?? "")).toBe("install-home");
-    },
-  );
 });
