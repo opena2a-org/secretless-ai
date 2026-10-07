@@ -138,9 +138,8 @@ describe('guard keys on the file a command opens, not on text it only carries', 
   });
 
   // Without python3 nothing is reduced, so the guard falls back to matching the
-  // whole command and refuses the pattern-only shapes as it always did. (That
-  // fallback extracts the command with a grep that stops at the first embedded
-  // double quote, so the shell-hook shape is spelled here without one.)
+  // whole command and refuses the pattern-only shapes as it always did. The PATH
+  // holds no sed, so the fallback extraction must not need it.
   it('without python3 the pattern-only shapes are refused, not let through', () => {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-guard-nopy-'));
     try {

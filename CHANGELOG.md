@@ -619,6 +619,23 @@ a longer command. `printenv | wc -l`, `echo<TAB>$HOME` and
 `secretless-ai run -- envsubst` are still admitted. Re-running
 `npx secretless-ai init` refreshes the hook in an existing project.
 
+**The guard hook reads the whole command without `python3`.** Without
+`python3` the hook takes the command from the raw JSON payload, and it stopped
+at the first double quote there, which is the escaped quote inside the
+command. `echo "$GITHUB_TOKEN"`, `python3 -c "import os;
+print(os.environ['GITHUB_TOKEN'])"`, `x=""; cat .env` and
+`eval "$(secretless-ai env)"` reached its rules as `echo \`, `python3 -c \`,
+`x=\` and `eval \`, and were admitted. It now reads the string to its closing
+quote, so these commands are refused as they are with `python3`; a refusal
+that quotes the matched text shows a double quote as the payload carries it,
+`\"`. On every host, bare `printenv` is also refused when a quote follows it
+directly, because `printf 'x\nprintenv' | sh` and `sh -c 'cd /tmp;printenv'`
+run it, and a quoted name, `printenv "GITHUB_TOKEN"`, is refused like the
+unquoted one. A quote after a space opens an argument, so `printenv "PATH"` is
+still admitted, and so is a search such as `grep -n 'printenv' src`. Every
+decision this changes goes from allow to refuse. Re-running
+`npx secretless-ai init` refreshes the hook in an existing project.
+
 **The guard hook judges a symlinked path by the file it reaches.** The hook's
 file rules read only the name a tool was given, so a link named like a
 template (`config.env.example -> .env`) was allowed as a template while the
