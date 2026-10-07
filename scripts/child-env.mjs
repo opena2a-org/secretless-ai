@@ -6,8 +6,8 @@
  * fetch. A child started with `{ ...process.env }` receives it anyway, along
  * with every other variable the job holds. Each child instead gets what npm,
  * tar, node and the scanner need to run here — PATH, HOME, the temp
- * directory, npm's configuration, the proxy and CA variables, and the
- * scanner's telemetry opt-outs — and only the advisory fetch adds GH_TOKEN.
+ * directory, the locale, npm's configuration, the proxy and CA variables, and
+ * the scanner's telemetry opt-outs — and only the advisory fetch adds GH_TOKEN.
  */
 
 const ALLOWED_NAMES = new Set([
@@ -16,6 +16,11 @@ const ALLOWED_NAMES = new Set([
   'TMPDIR',
   'TMP',
   'TEMP',
+  // Outside a UTF-8 locale tar lists a non-ASCII entry name with octal
+  // escapes, and the credential scan then finds no file of that name to copy.
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
   'NODE_EXTRA_CA_CERTS',
   'NODE_USE_ENV_PROXY',
   'OPENA2A_TELEMETRY',
