@@ -1048,6 +1048,12 @@ describe('init', { timeout: 30_000 }, () => {
         'cat ~/.secretless-ai/store.json',
         // printf turns the `\n` escape into a line that sh runs.
         "printf 'x\\ncat .env' | sh",
+        // A tab, or a `\t` escape that printf or echo -e turns into one, is the
+        // gap between the verb and what it reads.
+        'cat\t.env',
+        'ls\t~/.secretless-ai',
+        "printf 'cat\\t.env' | sh",
+        "echo -e 'head\\t.env' | bash",
       ];
       for (const c of mustBlock) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
@@ -1080,6 +1086,7 @@ describe('init', { timeout: 30_000 }, () => {
         "echo -n 'cat .env is refused' > ~/notes/guard.md",
         // Admitted before the change too, and must stay admitted.
         "git commit -m 'Child environment keeps PATH from process.env and drops NODE_OPTIONS'",
+        "printf 'cat\\t.env\\n' > notes.md",
         // Two heredocs on one cat: the shell runs neither body, and the command
         // analyzer drops both bodies before the rules match.
         "cat > notes.md <<'EOF' <<'END'\ncat .env\nEOF\nEND",
@@ -1155,6 +1162,7 @@ describe('init', { timeout: 30_000 }, () => {
         [`python3 -c "open('.env').read()"`, `python3 -c "open('.env').read()"`],
         ['\\tail .env', 'tail .env'],
         ["printf 'x\\ncat .env' | sh", "cat .env'"],
+        ["printf 'cat\\t.env' | sh", "cat\\t.env'"],
       ];
       for (const [c, matched] of cells) {
         const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: c } });
@@ -1214,6 +1222,14 @@ describe('init', { timeout: 30_000 }, () => {
         "printf 'x' > notes.md\ncat .env",
         "bash <<'EOF'\nls ~/.secretless-ai\nEOF",
         'sudo\tcat .env',
+        // A tab after the verb arrives as `\t`, and a `\t` the command writes
+        // for printf to expand arrives as `\\t`.
+        'cat\t.env',
+        'sudo cat\t.env',
+        'head\t-n1\t.env',
+        'ls\t~/.secretless-ai',
+        "node\t-e 'console.log(require(`fs`).readFileSync(`.env`, `utf8`))'",
+        "printf 'cat\\t.env' | sh",
         // Admitted with python3 as inert writes; without it, scanned whole.
         "cat > notes.md <<'EOF'\nthe head of process.env.PATH is all the child sees\nEOF",
         "printf '%s\\n' 'the head of process.env.PATH' >> notes.md",
@@ -1229,6 +1245,8 @@ describe('init', { timeout: 30_000 }, () => {
         'git commit -m "the hook refused a heredoc that named server.key"',
         "git commit -m 'Child environment keeps PATH from process.env and drops NODE_OPTIONS'",
         "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
+        "printf 'a\\tb\\n' | cut -f2",
+        "awk -F'\\t' '{print $1}' data.tsv",
       ];
       for (const c of mustAllow) {
         expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
@@ -1240,6 +1258,7 @@ describe('init', { timeout: 30_000 }, () => {
         ["bash <<'EOF'\ncat .env\nEOF", 'cat .env\\nEOF'],
         ['sudo\tcat .env', 'cat .env'],
         ['\\tail .env', 'tail .env'],
+        ['cat\t.env', 'cat\\t.env'],
       ];
       for (const [c, matched] of reasons) {
         expect(decide(c).reason, `deny reason without python3 must quote the matched text for: ${JSON.stringify(c)}`)
