@@ -903,18 +903,21 @@ function writeInstructionFile(
   try {
     fd = fs.openSync(filePath, fs.constants.O_RDWR | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ELOOP') {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP') {
       recordRefusal(result, tool, { path: rel, reason: 'is a symbolic link' });
+      return;
+    }
+    // A rule file that cannot be opened for writing (read-only, immutable, or
+    // on a read-only mount) and already carries the block needs no write, so
+    // it is left as it is instead of failing the run and every tool after it.
+    if ((code === 'EACCES' || code === 'EPERM' || code === 'EROFS') && alreadyCarriesBlock(projectDir, rel)) {
       return;
     }
     throw err;
   }
   try {
-    const opened = fs.fstatSync(fd);
-    const unsafeNow = !opened.isFile()
-      ? { path: rel, reason: 'is not a regular file' }
-      : unsafePathReason(projectDir, rel, 'write')
-        ?? (sameEntry(filePath, opened) ? null : { path: rel, reason: 'was replaced while init was writing it' });
+    const unsafeNow = openedFileUnsafe(projectDir, rel, fd);
     if (unsafeNow) {
       recordRefusal(result, tool, unsafeNow);
       return;
@@ -928,6 +931,42 @@ function writeInstructionFile(
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/**
+ * True when `rel`, opened read-only without following a link at its last
+ * component, passes the same checks as a rule file opened for writing and
+ * already carries the Secretless block. O_NONBLOCK keeps a FIFO put there
+ * from blocking the open; it then fails the regular-file check.
+ */
+function alreadyCarriesBlock(projectDir: string, rel: string): boolean {
+  let fd: number;
+  try {
+    fd = fs.openSync(
+      path.join(projectDir, rel),
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    return false;
+  }
+  try {
+    return openedFileUnsafe(projectDir, rel, fd) === null
+      && fs.readFileSync(fd, 'utf-8').includes(SECRETLESS_MARKER);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Why the file open on `fd` must not be read or written for `rel`, or null
+ * when it is the regular file the path names inside the project.
+ */
+function openedFileUnsafe(projectDir: string, rel: string, fd: number): { path: string; reason: string } | null {
+  const opened = fs.fstatSync(fd);
+  return !opened.isFile()
+    ? { path: rel, reason: 'is not a regular file' }
+    : unsafePathReason(projectDir, rel, 'write')
+      ?? (sameEntry(path.join(projectDir, rel), opened) ? null : { path: rel, reason: 'was replaced while init was writing it' });
 }
 
 /** True when `p`, not followed, is the same file system entry as `opened`. */
