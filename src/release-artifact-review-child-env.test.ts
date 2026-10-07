@@ -11,6 +11,7 @@ import {
   SCRIPT,
   buildTarball,
   buildUstarTgz,
+  buildUstarTgzEntries,
   expectSingleFailure,
   fixturePackageJson,
   healthyFiles,
@@ -248,6 +249,29 @@ describe("each child of the review starts from an allowlist; npm configuration r
         { env: { LANG: UTF8_LOCALE as string, LC_ALL: "", LC_CTYPE: "" } },
       );
       expectNonAsciiCredentialCaught(run);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "a dist/ file whose name is not valid UTF-8 is a credential-scan precondition naming its bytes, never a pass",
+    { timeout: 300_000 },
+    () => {
+      // A Linux file name is bytes. As a string, 0xff decodes to U+FFFD, the
+      // name of the clean file beside it, so a copy by that name would scan
+      // the clean file twice and never the one holding the credential. macOS
+      // refuses such a name (EILSEQ), so this runs on Linux only.
+      const tarball = buildUstarTgzEntries("non-utf8-name.tgz", [
+        ...Object.entries(healthyFiles()),
+        [Buffer.from("package/dist/\xff.js", "latin1"), POISONED_DIST_FILE],
+        [Buffer.from("package/dist/�.js", "utf-8"), "module.exports = {};\n"],
+      ]);
+      const run = runReview(["--tarball", tarball]);
+      expect(run.status).not.toBe(0);
+      expect(run.census["credential-scan"]).toBe("precondition");
+      expect(run.stdout).toContain(
+        "check credential-scan: precondition: not copied into the scan scratch, so not scanned: package/dist/\\377.js (name is not valid UTF-8)",
+      );
+      expect(run.stdout).not.toContain("sk-" + "proj-" + "B".repeat(48));
     },
   );
 
