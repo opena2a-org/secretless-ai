@@ -854,6 +854,10 @@ describe('init', { timeout: 30_000 }, () => {
         // word into a pattern and a file.
         'grep "process.env" -e x',
         'grep {process.env,process.env} src',
+        // A command substitution inside the pattern runs before grep does, so
+        // the accessor it names is a file the shell opens, not a pattern.
+        'grep "$(cat process.env)" src',
+        'grep "`cat process.env`" src',
       ];
       for (const c of mustBlock) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
