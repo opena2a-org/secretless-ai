@@ -373,8 +373,34 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
   }
 }
 
+/**
+ * End the process with `code` once stdout and stderr have written everything
+ * queued on them.
+ *
+ * `process.exit()` does not wait for a write that is still in progress. On
+ * macOS a Node 20 parent gives this process a stdout that takes 8192 bytes at
+ * once, so a longer output, `--help` among them, reached a caller reading it
+ * through `child_process` cut off mid-line. When nothing is queued this exits
+ * at once, as before. An empty write's callback runs after every write queued
+ * before it.
+ */
+function exitWhenWritten(code: number): void {
+  const queued = [process.stdout, process.stderr].filter((stream) => stream.writableLength > 0);
+  let left = queued.length;
+  if (left === 0) process.exit(code);
+  for (const stream of queued) {
+    // A reader that has gone away fails the queued write. Exit with `code`
+    // anyway, as before, rather than turn that into an uncaught error.
+    stream.once('error', () => {});
+    stream.write('', () => {
+      left -= 1;
+      if (left === 0) process.exit(code);
+    });
+  }
+}
+
 main().then(
-  (code) => process.exit(code),
+  (code) => exitWhenWritten(code),
   (err) => {
     // Print what the user can act on, not the call stack. These messages
     // already carry Verify/Fix lines; a stack trace on top of them reads as a
@@ -385,6 +411,6 @@ main().then(
     } else {
       console.error(formatCommandError(err));
     }
-    process.exit(1);
+    exitWhenWritten(1);
   },
 );

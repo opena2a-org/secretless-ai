@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**Output longer than 8192 bytes reaches a Node 20 caller on macOS whole.** The
+CLI called `process.exit()` while the end of a long write could still be
+queued. On macOS, a Node 20 program that ran `secretless-ai` through
+`child_process` then received only the first 8192 bytes: `secretless-ai --help`,
+now longer than that, stopped mid-line in its Options section, without the
+Supports line or the docs link. The CLI now exits once stdout and stderr have
+written everything queued on them; a run with nothing left to write exits at
+once, as before. The exit code is unchanged, also when the reader closes the
+pipe early.
+
 **`vault scan` and the `vault` help no longer tell you to put a credential on
 the command line.** For every finding, `vault scan` printed
 `Migrate:  secretless-ai vault register <namespace> --value <value>`, and the
