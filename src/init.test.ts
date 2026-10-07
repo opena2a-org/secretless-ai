@@ -817,8 +817,8 @@ describe('init', { timeout: 30_000 }, () => {
     // The old grep `"command":"[^"]*"` truncated at the first embedded quote, so a
     // command with a quote before the dangerous part evaded every guard. With a
     // real JSON parser the full command is inspected. Gated on python3 (the robust
-    // path); on a host without it the hook falls back to the truncating grep and
-    // the native deny rules remain the enforcing layer.
+    // path); on a host without it the hook falls back to a grep that reads the
+    // JSON string to its closing quote, tested on its own below.
     (hasPython3 ? it : it.skip)('a quote before a secret-read no longer evades the hook', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
@@ -899,6 +899,14 @@ describe('init', { timeout: 30_000 }, () => {
         'echo\t$GITHUB_TOKEN',
         'printenv\tGITHUB_TOKEN',
         "printf 'echo\\t$GITHUB_TOKEN' | sh",
+        // A quote right after printenv ends it: the shell runs the line printf
+        // writes, or the script sh -c is given.
+        "printf 'x\\nprintenv' | sh",
+        'printf "x\\nprintenv" | sh',
+        "sh -c 'cd /tmp;printenv'",
+        // The name printenv is given may be quoted.
+        'printenv "GITHUB_TOKEN"',
+        "printenv -0 'GITHUB_TOKEN'",
       ];
       for (const c of mustBlock) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
@@ -924,6 +932,10 @@ describe('init', { timeout: 30_000 }, () => {
         'echo -n "$HOME"',
         'echo\t$PATH',
         "printf 'a\\tb\\n' | cut -f2",
+        // A quote after a space opens an argument; a search names the word.
+        'printenv "PATH"',
+        "grep -n 'printenv' src",
+        'grep -rn "printenv" src',
       ];
       for (const c of mustAllow) {
         expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
@@ -1345,6 +1357,75 @@ describe('init', { timeout: 30_000 }, () => {
       for (const c of mustAllow) {
         expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
       }
+    });
+
+    // Without python3 the hook took the command up to the first double quote of
+    // the raw JSON payload, which is the escaped quote `\"` inside the command,
+    // so every rule saw `echo \` for `echo "$GITHUB_TOKEN"` and each command
+    // below was admitted. The grep now reads the string to its closing quote.
+    it('without python3 a double quote does not end the command the hook reads', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const bin = path.join(dir, 'bin-without-python3');
+      fs.mkdirSync(bin);
+      for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
+        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
+      }
+      const bash = path.join(bin, 'bash');
+      const env = { ...process.env, PATH: bin };
+      expect(
+        () => execSync('command -v python3', { env, shell: bash, stdio: 'ignore' }),
+        'python3 must not be reachable on the test PATH',
+      ).toThrow();
+      function decide(command: string): { decision: string; reason: string } {
+        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+        const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
+        if (!out.trim()) return { decision: 'allow', reason: '' };
+        const hso = JSON.parse(out).hookSpecificOutput;
+        return { decision: hso.permissionDecision, reason: hso.permissionDecisionReason };
+      }
+
+      const mustBlock: Array<[string, string]> = [
+        ['echo "$GITHUB_TOKEN"', 'exposes secret environment variables'],
+        ['echo "token: $GITHUB_TOKEN"', 'exposes secret environment variables'],
+        ['echo "${GITHUB_TOKEN}"', 'exposes secret environment variables'],
+        ['printenv "GITHUB_TOKEN"', 'exposes secret environment variables'],
+        [`python3 -c "import os; print(os.environ['GITHUB_TOKEN'])"`, 'reads secret environment variables'],
+        ['node -e "console.log(process.env.GITHUB_TOKEN)"', 'script command that reads secret'],
+        ['x=""; cat .env', 'reads secret files'],
+        ['cat "$HOME/project/.env"', 'reads secret files'],
+        ['echo "starting"; cat config.pem', 'reads secret files'],
+        [`node -e "require('fs').readFileSync('.env')"`, 'script command that reads secret files'],
+        ['eval "$(secretless-ai env)"', 'secretless-ai env'],
+        ['echo ""; secretless-ai secret get X --force', 'forced secret extraction'],
+        ['printf "x\\nprintenv" | sh', 'full environment dump'],
+        ["printf 'x\\nprintenv' | sh", 'full environment dump'],
+      ];
+      for (const [c, reason] of mustBlock) {
+        const d = decide(c);
+        expect(d.decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+        expect(d.reason, `deny reason without python3 for: ${JSON.stringify(c)}`).toContain(reason);
+      }
+
+      // An escaped quote or a trailing backslash inside the string does not end
+      // it early or run it past its end.
+      const mustAllow = [
+        'echo "hello world"',
+        'echo "$HOME"',
+        'echo \\',
+        'git commit -m "Parse \\"quoted\\" arguments"',
+        'git commit -m "the hook refused a heredoc that named server.key"',
+        'curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user',
+        'python3 -c "import json; print(json.dumps({\\"a\\": 1}))"',
+        'printenv "PATH"',
+        'grep -rn "printenv" src',
+      ];
+      for (const c of mustAllow) {
+        expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
+      }
+
+      // The reason quotes the text as the payload carries it, a quote as `\"`.
+      expect(decide('sudo cat "/srv/app/.env"').reason).toContain('Matched `cat \\"/srv/app/.env\\"`');
     });
 
     it('deny rules cover the same prefixed variables as the hook', () => {

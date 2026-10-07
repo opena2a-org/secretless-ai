@@ -1739,10 +1739,17 @@ except Exception:
   # Fail CLOSED: if python is absent OR its extraction produced nothing (parse
   # error, odd input), fall back to the grep extraction rather than leaving
   # COMMAND empty — an empty COMMAND would skip every guard below. The grep
-  # truncates at an embedded quote, but a truncated match is still better than no
-  # match, and the native permissions.deny rules remain in front.
+  # reads the JSON string up to its closing quote, stepping over each escape, so
+  # an escaped quote inside the command does not end it. It used to stop at the
+  # first \`\\"\`, and \`echo "$GITHUB_TOKEN"\` or \`x=""; cat .env\` reached the
+  # rules below as \`echo \\\` and \`x=\\\`. The escapes stay as the payload writes
+  # them: a quote is \`\\"\`, a line break \`\\n\`, a tab \`\\t\`, a backslash \`\\\\\`.
+  # The key and the closing quote are cut off by parameter expansion, so this
+  # needs no program beyond grep and head.
   if [ -z "$COMMAND" ]; then
-    COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    COMMAND=$(echo "$INPUT" | grep -oE '"command":"([^"\\\\]|\\\\.)*"' | head -1 || true)
+    COMMAND=\${COMMAND#'"command":"'}
+    COMMAND=\${COMMAND%'"'}
   fi
   if [ -z "$FILE_READ_SCAN" ]; then
     FILE_READ_SCAN="$COMMAND"
@@ -1891,8 +1898,10 @@ SECRETLESS_ANALYZER
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
     exit 0
   fi
-  # printenv takes a bare NAME with no \`$\`, so the arm above never sees it.
-  if echo "$SCAN_TEXT" | grep -qiE 'printenv${VERB_GAP}(-[A-Za-z0]+${VERB_GAP})*${SECRET_VAR_NAME}'; then
+  # printenv takes a bare NAME with no \`$\`, so the arm above never sees it. The
+  # name may be quoted, \`printenv "GITHUB_TOKEN"\`, and without python3 a double
+  # quote reaches this rule as \`\\"\`.
+  if echo "$SCAN_TEXT" | grep -qiE 'printenv${VERB_GAP}(-[A-Za-z0]+${VERB_GAP})*(\\\\*["'"'"'])?${SECRET_VAR_NAME}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
     exit 0
   fi
@@ -1904,8 +1913,12 @@ SECRETLESS_ANALYZER
   # reaches this rule as \`\\n\`, and a command after printenv does not change
   # what it prints, so \`printenv; echo done\` dumps the environment too. A pipe
   # after it is not matched: what \`printenv | wc -l\` shows is the output of
-  # the next program.
-  if echo "$SCAN_TEXT" | grep -qiE '(^|[;&|]|\\\\+n)${OPTIONAL_GAP}printenv${OPTIONAL_GAP}(-0${OPTIONAL_GAP})?($|[;&]|\\\\+n)'; then
+  # the next program. A quote right after the word also ends it, after any
+  # backslashes: in \`printf 'x\\nprintenv' | sh\` the shell runs the line printf
+  # writes, and without python3 a double quote reaches this rule as \`\\"\`. A
+  # quote after a space opens an argument (\`printenv "PATH"\`), so it does not
+  # count, and only the end takes a quote, so \`grep -n 'printenv' src\` passes.
+  if echo "$SCAN_TEXT" | grep -qiE '(^|[;&|]|\\\\+n)${OPTIONAL_GAP}printenv(${OPTIONAL_GAP}(-0${OPTIONAL_GAP})?($|[;&]|\\\\+n)|\\\\*["'"'"'])'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via printenv"}}'
     exit 0
   fi
