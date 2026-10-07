@@ -4,7 +4,7 @@ import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips } from '../scan';
 import { status } from '../status';
 import { verify } from '../verify';
-import { toolDisplayName } from '../detect';
+import { toolDisplayName, type AITool } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles } from '../doctor';
 import { readBackendConfig, resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
@@ -78,9 +78,16 @@ export function runInit(projectDir: string): number {
     }
   }
 
+  // A refused path leaves its tool unconfigured. Without this block the tool
+  // just dropped off the Configured line and the run read as a clean no-op.
+  if (result.pathsRefused.length > 0) {
+    printRefusedPaths(projectDir, result.pathsRefused);
+  }
+
   // No-op case: nothing created, nothing modified — already up to date.
-  // Not reachable when settings.json was refused: that is a failure, not a no-op.
-  if (!result.settingsUnusable
+  // Not reachable when settings.json or an instruction path was refused: that
+  // is work not done, not a no-op.
+  if (!result.settingsUnusable && result.pathsRefused.length === 0
       && result.filesCreated.length === 0 && !settingsModified && otherModified.length === 0) {
     console.log();
     console.log('  Already up to date. No files changed.');
@@ -209,6 +216,42 @@ export function runInit(projectDir: string): number {
   }
 
   return 0;
+}
+
+/**
+ * One line per path `init` refused to write through, with its reason, then a
+ * Verify and a Fix line. Paths are shown relative to the working directory so
+ * the printed commands run as pasted, including under `init <dir>`.
+ */
+function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; path: string; reason: string }>): void {
+  const shown = refused.map(r => ({
+    ...r,
+    shown: path.relative(process.cwd(), path.join(projectDir, r.path)) || '.',
+  }));
+  const tools = [...new Set(refused.map(r => r.tool))].map(toolDisplayName);
+
+  console.log();
+  console.log(`  ${c.yellow('Not configured:')} ${tools.join(', ')}`);
+  for (const r of shown) {
+    console.log(`    ${r.shown} ${r.reason} (${toolDisplayName(r.tool)})`);
+  }
+  console.log('    Nothing was written for these tools: init does not write through a');
+  console.log('    symbolic link, into an entry of the wrong kind, or outside the project.');
+  console.log();
+  console.log(`  ${c.cyan('Verify:')} ls -ld ${shown.map(r => shellQuote(r.shown)).join(' ')}`);
+  const fixes = shown.map(r => refusedPathFix(shellQuote(r.shown), r.reason));
+  fixes[fixes.length - 1] += ', then re-run: secretless-ai init';
+  fixes.forEach((f, i) => console.log(i === 0 ? `  ${c.cyan('Fix:')}    ${f}` : `          ${f}`));
+}
+
+/** What the user changes so `init` accepts a path it refused for `reason`. */
+function refusedPathFix(quoted: string, reason: string): string {
+  if (reason === 'is a symbolic link') {
+    return `replace the link ${quoted} with a copy of what it points to, or remove the link`;
+  }
+  if (reason === 'is not a regular file') return `move ${quoted} aside, or replace it with a regular file`;
+  if (reason === 'is not a directory') return `move ${quoted} aside, or replace it with a directory`;
+  return `make ${quoted} a regular file or directory inside the project`;
 }
 
 /**

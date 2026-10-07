@@ -892,7 +892,52 @@ function writeInstructionFile(
   }
   const filePath = path.join(projectDir, rel);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  addSecretlessInstructions(filePath, tool, result, preamble);
+
+  // The check above ran on paths, and a path-based write follows whatever link
+  // is put there after it. So the file is opened without following a link at
+  // its last component, and the open file is then confirmed to be the regular
+  // file the path names inside the project before it is read or written. A
+  // directory on the way swapped for a link before the open can still leave an
+  // empty file where that link leads; the block is never written to it.
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDWR | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ELOOP') {
+      recordRefusal(result, tool, { path: rel, reason: 'is a symbolic link' });
+      return;
+    }
+    throw err;
+  }
+  try {
+    const opened = fs.fstatSync(fd);
+    const unsafeNow = !opened.isFile()
+      ? { path: rel, reason: 'is not a regular file' }
+      : unsafePathReason(projectDir, rel, 'write')
+        ?? (sameEntry(filePath, opened) ? null : { path: rel, reason: 'was replaced while init was writing it' });
+    if (unsafeNow) {
+      recordRefusal(result, tool, unsafeNow);
+      return;
+    }
+    // Reading through the descriptor leaves its position at the end, so the
+    // write below appends; on an empty file it starts at the beginning.
+    const existing = fs.readFileSync(fd, 'utf-8');
+    if (existing.includes(SECRETLESS_MARKER)) return;
+    fs.writeFileSync(fd, (existing ? '' : preamble) + buildSecretlessInstructions(tool, false));
+    (existing ? result.filesModified : result.filesCreated).push(path.relative(process.cwd(), filePath));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** True when `p`, not followed, is the same file system entry as `opened`. */
+function sameEntry(p: string, opened: fs.Stats): boolean {
+  try {
+    const now = fs.lstatSync(p);
+    return now.dev === opened.dev && now.ino === opened.ino;
+  } catch {
+    return false;
+  }
 }
 
 /**

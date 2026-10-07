@@ -72,9 +72,12 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const PLANTED_NAME = '00-planted-credential-control.js';
 
 /**
- * The own-package roster: the FLOOR of todo/scripts/own-package-census.mjs
- * plus the @opena2a/ scope. A lockfile package matches on its alias-resolved
- * name, and the packed package itself is in scope.
+ * The own-package roster: the unscoped npm packages the OpenA2A project
+ * publishes, listed below, plus every package in the @opena2a/ scope. The
+ * consumer-closure check holds each copy of these in the install closure to
+ * the deprecation and advisory checks. A lockfile package matches on its
+ * alias-resolved name, and the packed package itself is in scope. A package
+ * the project starts publishing under another unscoped name is added here.
  */
 const OWN_PACKAGE_NAMES = new Set([
   'hackmyagent',

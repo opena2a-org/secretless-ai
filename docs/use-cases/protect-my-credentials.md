@@ -24,7 +24,7 @@ Expected output:
   Done.      Secrets are now invisible to AI tools.
 ```
 
-This creates tool-specific configuration files (`.cursorrules`, `.claude/settings.json` hooks, etc.) that instruct each AI tool to avoid reading credential files and environment variables.
+This creates tool-specific configuration files (`.claude/settings.json` hooks, `.cursor/rules/secretless.mdc`, `.clinerules/secretless.md`, etc.) that instruct each AI tool to avoid reading credential files and environment variables. In a project that already has a `.cursorrules` file or a single-file `.clinerules`, the instructions are appended to that file; `init` never creates either one.
 
 ## Step 2: Verify protection
 
