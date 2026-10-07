@@ -162,6 +162,18 @@ describe('cli --help handling', () => {
     expect(out).not.toMatch(/opena2a\.org\/secretless-ai/);
     expect(out).toMatch(/https:\/\/opena2a\.org\/secretless\s*$/m);
   });
+
+  itIfBuilt('help longer than 8192 bytes reaches a reader on a pipe whole, ending with the docs URL', () => {
+    // The CLI used to exit while the end of a long write was still queued. On
+    // macOS a Node 20 parent gives its child a stdout that takes 8192 bytes at
+    // once, so this read stopped mid-line, without the docs URL. A long
+    // embedding prefix keeps the help well past 8192 bytes whatever its text.
+    const env = { ...process.env, SECRETLESS_CLI_PREFIX: 'host'.repeat(50) };
+    const out = runCli(['--help'], { env });
+    expect(Buffer.byteLength(out)).toBeGreaterThan(8192);
+    const lines = out.trimEnd().split('\n');
+    expect(lines[lines.length - 1].trim()).toBe('https://opena2a.org/secretless');
+  });
 });
 
 describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', () => {
