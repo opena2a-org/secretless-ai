@@ -316,8 +316,10 @@ source by its own key, so a source token that can read entries but not list
 them still syncs. A local value that differs is left as it is and reported as
 a conflict unless `--force` is given; a name in neither store, a conflict and
 a read or write failure each exit 1 and are named. `--dry-run` reports what
-would be created, updated or left alone and writes nothing; it exits with the
-code the real run would. The source is checked for health before any entry is
+would be created, updated or left alone and writes nothing; like the real run,
+it exits 1 for a name in neither store, a conflict or a read failure, but a
+write that would fail is found only by the real run. The source is checked for
+health before any entry is
 read, an unreachable source is reported as the source rather than as the
 configured backend, values are never printed, and the source is read without
 the cache layer,

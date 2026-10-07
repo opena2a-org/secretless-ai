@@ -539,7 +539,8 @@ export interface SecretSyncDeps {
  *
  * Exit 0 when every selected name ends up stored here with nothing left over,
  * 1 when a name conflicts, is in neither store, or fails, 2 on a usage error.
- * A dry run exits with the code the real run would.
+ * A dry run exits as the real run would, except for a write that would fail:
+ * it never writes, so only the real run finds that.
  */
 export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): Promise<number> {
   let from: string | undefined;
