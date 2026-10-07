@@ -69,9 +69,15 @@ files `init` writes for Cursor (`.cursor/rules/secretless.mdc`,
 `.cursorrules`), Cline (`.clinerules`, `.clinerules/secretless.md`,
 `.cline/rules/secretless.md`) and Windsurf (`.windsurfrules`) and on every
 directory on the way to them, and hard links on those rule files. The other
-files `init` writes, `CLAUDE.md`, `.github/copilot-instructions.md`,
-`.aiderignore` and `.claude/settings.json`, are not checked for either kind of
-link and are still written through one.
+files `init` writes in the project, `CLAUDE.md`,
+`.github/copilot-instructions.md`, `.aiderignore`, `.claude/settings.json` and
+the hook scripts `.claude/hooks/secretless-guard.sh` and
+`.claude/hooks/secretless-output-check.cjs`, are not checked for either kind of
+link and are still written through one. The hook scripts are rewritten whole,
+not appended to: through a link, the file it leads to ends up holding only the
+script. The shell profile in the home directory that `init` copies `export`
+lines to, when its output has a `Shell profile fix:` line, is not checked for
+links either.
 
 **Output longer than 8192 bytes reaches a Node 20 caller on macOS whole.** The
 CLI called `process.exit()` while the end of a long write could still be
