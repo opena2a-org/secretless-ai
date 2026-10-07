@@ -13,12 +13,17 @@
 // 3. A rule file that cannot be opened for writing and already carries the
 //    block is left as it is, and the tools after it are still configured. An
 //    open for writing alone made such a file fail `init` with EACCES.
+// 4. That read-only fallback opens the file without blocking and runs the
+//    same checks as the open for writing. A read-only FIFO swapped in for the
+//    rule file does not hang `init`, and a read-only file that carries the
+//    block, reached through a directory swapped for a link, does not make
+//    `init` report the tool configured.
 //
 // HOME and TMPDIR point at scratch directories, so `init` never touches the
 // real home of whoever runs the suite.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -299,5 +304,78 @@ describe('init and a rule file it cannot write', () => {
     }
     expect(configured).not.toContain('windsurf');
     expect(fs.readFileSync(rules, 'utf-8')).toBe('# rules\n');
+  });
+});
+
+/** Whatever `init` returns as configured, or nothing when it fails with EACCES. */
+function configuredUnlessDenied(dir: string): string[] {
+  try {
+    return init(dir).toolsConfigured;
+  } catch (err) {
+    expect((err as NodeJS.ErrnoException).code).toBe('EACCES');
+    return [];
+  }
+}
+
+// How long a FIFO open may block before the watchdog opens it for writing. A
+// blocking open never returns on its own, and it blocks the worker's event
+// loop, so the test's own timeout cannot end it.
+const FIFO_WATCHDOG_SECONDS = 5;
+
+describe('init and a read-only path put in place after its path checks', () => {
+  it.skipIf(!canDenyWrites)('a read-only FIFO swapped in for .windsurfrules: init does not block on it, Windsurf is not configured, and the FIFO is left as it is', () => {
+    const dir = project();
+    fs.mkdirSync(path.join(dir, '.windsurf'));
+    const rules = path.join(dir, '.windsurfrules');
+    const fired = path.join(dir, '.watchdog-fired');
+
+    race.dir = dir;
+    race.swap = () => {
+      const r = spawnSync('mkfifo', ['-m', '444', rules], { encoding: 'utf-8' });
+      expect(r.status, `mkfifo failed: ${r.stderr}`).toBe(0);
+    };
+    // A read-only open of a FIFO blocks until a writer opens it. The watchdog
+    // is that writer, late, so a regression fails here instead of hanging the
+    // suite.
+    const watchdog = spawn('sh', ['-c',
+      `sleep ${FIFO_WATCHDOG_SECONDS}; [ -p "$F" ] || exit 0; : > "$M"; chmod 644 "$F"; : > "$F"`,
+    ], { env: { PATH: process.env.PATH, F: rules, M: fired }, stdio: 'ignore' });
+    let configured: string[];
+    try {
+      configured = configuredUnlessDenied(dir);
+    } finally {
+      watchdog.kill('SIGKILL');
+    }
+
+    expect(race.swap, 'the swap never ran, so this cell tested nothing').toBeUndefined();
+    expect(fs.existsSync(fired), 'init blocked on the FIFO until the watchdog opened it').toBe(false);
+    expect(configured).not.toContain('windsurf');
+    const after = fs.lstatSync(rules);
+    expect(after.isFIFO()).toBe(true);
+    expect(after.mode & 0o777).toBe(0o444);
+  }, (FIFO_WATCHDOG_SECONDS + 15) * 1000);
+
+  it.skipIf(!canDenyWrites)('.cursor/rules replaced by a link to an outside directory holding a read-only secretless.mdc with the block: Cursor is not reported configured and the file is left as it is', () => {
+    const dir = project();
+    const outside = outsideDir();
+    const reached = path.join(outside, 'secretless.mdc');
+    const content = `---\nalwaysApply: true\n---\n${MARKER}\n`;
+    fs.writeFileSync(reached, content);
+    fs.chmodSync(reached, 0o444);
+    const rulesDir = path.join(dir, '.cursor', 'rules');
+    fs.mkdirSync(rulesDir, { recursive: true });
+
+    race.dir = rulesDir;
+    race.swap = () => {
+      fs.rmdirSync(rulesDir);
+      fs.symlinkSync(outside, rulesDir);
+    };
+    const configured = configuredUnlessDenied(dir);
+
+    expect(race.swap, 'the swap never ran, so this cell tested nothing').toBeUndefined();
+    // The block in the outside file is not the project's: carrying it there
+    // is no claim that Cursor is configured for this project.
+    expect(configured).not.toContain('cursor');
+    expect(fs.readFileSync(reached, 'utf-8')).toBe(content);
   });
 });
