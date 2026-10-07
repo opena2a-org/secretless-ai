@@ -55,14 +55,29 @@ describe('test files are type-checked', () => {
   });
 
   it('reads tsconfig.test.json with comments and a trailing comma, as tsc does', () => {
+    // A fixed text, not an edit of the repository's file: an edit keyed on that
+    // file's exact spelling changes nothing once the spelling differs, and
+    // breaks a file tsc accepts (a second comma after `true,`).
+    const withComments = [
+      '// note',
+      '{',
+      '  "extends": "./tsconfig.json",',
+      '  "compilerOptions": {',
+      '    /* no output */ "noEmit": true,',
+      '  },',
+      '  "include": ["src/**/*"],',
+      '}',
+      '',
+    ].join('\n');
+    expect(withComments).toContain('// note');
+    expect(withComments).toContain('/* no output */');
+    expect(withComments).toMatch(/,\s*\}/);
+    expect(() => JSON.parse(withComments)).toThrow(SyntaxError);
+
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsconfig-test-'));
     try {
       const file = path.join(dir, 'tsconfig.test.json');
-      const original = fs.readFileSync(path.join(ROOT, 'tsconfig.test.json'), 'utf8');
-      fs.writeFileSync(
-        file,
-        '// note\n' + original.replace('"noEmit": true', '/* no output */ "noEmit": true,'),
-      );
+      fs.writeFileSync(file, withComments);
       expectBuildOptionsWithoutEmit(file);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
