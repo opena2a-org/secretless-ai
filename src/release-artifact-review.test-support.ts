@@ -228,9 +228,10 @@ export const BLIND_SCANNER = [
   "",
 ].join("\n");
 
-function ustarHeader(name: string, size: number): Buffer {
+function ustarHeader(name: string | Buffer, size: number): Buffer {
   const header = Buffer.alloc(512, 0);
-  header.write(name, 0, 100, "utf-8");
+  if (typeof name === "string") header.write(name, 0, 100, "utf-8");
+  else name.copy(header, 0, 0, 100);
   header.write("0000755\0", 100, 8, "ascii");
   header.write("0000000\0", 108, 8, "ascii");
   header.write("0000000\0", 116, 8, "ascii");
@@ -248,8 +249,13 @@ function ustarHeader(name: string, size: number): Buffer {
 
 /** A ustar .tgz whose member names are written verbatim — `..` included. */
 export function buildUstarTgz(name: string, files: Record<string, string>): string {
+  return buildUstarTgzEntries(name, Object.entries(files));
+}
+
+/** buildUstarTgz with each member name given as text or as raw bytes, so a name need not be valid UTF-8. */
+export function buildUstarTgzEntries(name: string, members: [string | Buffer, string][]): string {
   const blocks: Buffer[] = [];
-  for (const [entry, content] of Object.entries(files)) {
+  for (const [entry, content] of members) {
     const body = Buffer.from(content, "utf-8");
     blocks.push(ustarHeader(entry, body.length), body);
     const pad = (512 - (body.length % 512)) % 512;

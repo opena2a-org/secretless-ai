@@ -511,11 +511,14 @@ function credentialScan(distDir, work, results) {
   //
   // The names come from the extracted tree, not from tar's listing: outside
   // a UTF-8 locale tar lists café.js as caf\303\251.js, and no file of that
-  // name exists to copy.
+  // name exists to copy. A name that is not valid UTF-8 is not copied: as a
+  // string it decodes to U+FFFD, which opens another file or none, so it is
+  // reported by its bytes instead.
   const scratch = path.join(work, 'scan-scratch');
   fs.mkdirSync(scratch);
-  const uncopied = [];
-  for (const rel of filesUnder(distDir)) {
+  const { files, notUtf8 } = filesUnder(distDir);
+  const uncopied = notUtf8.map((rel) => `package/dist/${rel} (name is not valid UTF-8)`);
+  for (const rel of files) {
     const entry = `package/dist/${rel}`;
     const target = path.resolve(scratch, rel);
     if (target !== scratch && !target.startsWith(scratch + path.sep)) {
@@ -588,15 +591,42 @@ function credentialScan(distDir, work, results) {
   }
 }
 
-/** Every file under `dir` that is not a directory, as a path relative to `dir`, sorted. */
-function filesUnder(dir, rel = '') {
-  const out = [];
-  for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
-    const child = rel === '' ? entry.name : path.join(rel, entry.name);
-    if (entry.isDirectory()) out.push(...filesUnder(dir, child));
-    else out.push(child);
+/**
+ * The entries under `dir`, as paths relative to `dir`, each list sorted:
+ * `files`, every entry that is not a directory and whose name is valid UTF-8,
+ * and `notUtf8`, every entry whose name is not, its last name's bytes escaped.
+ * No string path opens a `notUtf8` entry, so none is listed in `files` or
+ * descended into.
+ */
+function filesUnder(dir) {
+  const files = [];
+  const notUtf8 = [];
+  const walk = (rel) => {
+    for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true, encoding: 'buffer' })) {
+      const name = entry.name.toString('utf-8');
+      if (!Buffer.from(name, 'utf-8').equals(entry.name)) {
+        const escaped = escapedBytes(entry.name);
+        notUtf8.push(rel === '' ? escaped : path.join(rel, escaped));
+        continue;
+      }
+      const child = rel === '' ? name : path.join(rel, name);
+      if (entry.isDirectory()) walk(child);
+      else files.push(child);
+    }
+  };
+  walk('');
+  return { files: files.sort(), notUtf8: notUtf8.sort() };
+}
+
+/** A name's bytes as printable ASCII: a backslash doubled, any other byte outside 0x20-0x7e as a three-digit octal escape. */
+function escapedBytes(bytes) {
+  let out = '';
+  for (const byte of bytes) {
+    if (byte === 0x5c) out += '\\\\';
+    else if (byte >= 0x20 && byte <= 0x7e) out += String.fromCharCode(byte);
+    else out += `\\${byte.toString(8).padStart(3, '0')}`;
   }
-  return out.sort();
+  return out;
 }
 
 /**
