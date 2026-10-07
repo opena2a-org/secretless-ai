@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { findSecretValueProblem, describeSecretShape } from './secret-value';
+import { findSecretValueProblem, describeSecretShape, unstorableMcpSecretError } from './secret-value';
 import { SecretStore } from './secret-store';
 import { LocalBackend } from './backends/local';
 
@@ -113,5 +113,25 @@ describe('SecretStore.setSecret rejects an unstorable value (#104)', () => {
   it('CONTROL: an ordinary value is still stored', async () => {
     await store.setSecret('API_KEY', 'sk-live-QQ7ZX9WKPV4RJT2MHB6NDY8FGC3L');
     expect(await store.listSecrets()).toEqual(['API_KEY']);
+  });
+});
+
+describe('unstorableMcpSecretError escapes the env key it names (#229)', () => {
+  const RAW_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+
+  it('writes C0, DEL and C1 controls in the key as escapes on every line', () => {
+    for (const key of [`X${ESC}[2J_TOKEN`, 'X\u007f_TOKEN', 'X\u009b2J_TOKEN']) {
+      const message = unstorableMcpSecretError('claude-code', 'demo', key, findSecretValueProblem(ESC)!).message;
+      expect(message).not.toMatch(RAW_CONTROL);
+    }
+    const message = unstorableMcpSecretError('claude-code', 'demo', 'X\u009b2J_TOKEN', findSecretValueProblem(ESC)!).message;
+    expect(message).toContain('"X\\u009b2J_TOKEN" for MCP server claude-code/demo was not stored');
+    expect(message).toContain('  Fix:     correct "X\\u009b2J_TOKEN" in the "demo" env block of that file,');
+  });
+
+  it('CONTROL: an ordinary key is quoted in the first line and listed as it is in the Fix line', () => {
+    const message = unstorableMcpSecretError('cursor', 'github', 'GITHUB_TOKEN', findSecretValueProblem(ESC)!).message;
+    expect(message).toContain('"GITHUB_TOKEN" for MCP server cursor/github was not stored');
+    expect(message).toContain('  Fix:     correct GITHUB_TOKEN in the "github" env block of that file,');
   });
 });

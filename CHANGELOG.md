@@ -125,6 +125,18 @@ naming the role or command, and nothing is written to another store.
 `--dry-run` reports, per name, "would create" or "would add a version" from
 metadata alone and writes nothing.
 
+**`protect-mcp` prints a control character in an MCP env key name as an
+escape (#229).** An env key name comes from the client's config file, and
+`protect-mcp` wrote it to the terminal as it was in three places: the `Fix:`
+line of a refused value, the list of encrypted keys, and a prompt injection
+warning. A key such as `X<ESC>[2J_TOKEN` cleared the screen instead of
+being shown. A key holding a control character, DEL, a C1 control, U+2028 or
+U+2029, a quote or a backslash is now printed quoted, with each such character
+written as a `\u` escape, for example `"X\u001b[2J_TOKEN" (encrypted)`. The
+first line of a refusal already quoted the key and now escapes DEL, C1
+controls, U+2028 and U+2029 as well. An ordinary key such as `GITHUB_TOKEN`
+prints as before.
+
 **`protect-mcp` refuses an MCP server value that holds terminal escapes or
 U+FFFD, the same rule `secret set` applies (#104).** A value in a server's
 `env` block containing an escape or other control character, a null byte, or
