@@ -18,6 +18,9 @@
 //    rule file does not hang `init`, and a read-only file that carries the
 //    block, reached through a directory swapped for a link, does not make
 //    `init` report the tool configured.
+// 5. A directory on the way replaced by a link to a place `init` cannot write
+//    is named as refused, whether or not a file opens read-only there. The
+//    read-only checks found the link, but `init` failed with EACCES.
 //
 // HOME and TMPDIR point at scratch directories, so `init` never touches the
 // real home of whoever runs the suite.
@@ -377,5 +380,62 @@ describe('init and a read-only path put in place after its path checks', () => {
     // is no claim that Cursor is configured for this project.
     expect(configured).not.toContain('cursor');
     expect(fs.readFileSync(reached, 'utf-8')).toBe(content);
+  });
+});
+
+type ReadOnlyLinkCell = {
+  name: string;
+  /** Fill the outside directory `.cursor/rules` is swapped to a link to. */
+  build: (outside: string) => void;
+};
+
+const READ_ONLY_LINK_CELLS: ReadOnlyLinkCell[] = [
+  {
+    name: 'a read-only secretless.mdc that carries the block',
+    build: outside => {
+      fs.writeFileSync(path.join(outside, 'secretless.mdc'), `# outside\n${MARKER}\n`);
+      fs.chmodSync(path.join(outside, 'secretless.mdc'), 0o444);
+    },
+  },
+  {
+    name: 'a read-only secretless.mdc without the block',
+    build: outside => {
+      fs.writeFileSync(path.join(outside, 'secretless.mdc'), '# outside\n');
+      fs.chmodSync(path.join(outside, 'secretless.mdc'), 0o444);
+    },
+  },
+  {
+    name: 'no secretless.mdc, in a directory init cannot create it in',
+    build: outside => {
+      fs.chmodSync(outside, 0o555);
+    },
+  },
+];
+
+describe('init and a directory on the way replaced by a link to a place it cannot write', () => {
+  // The open for writing fails with EACCES there, and the read-only re-open
+  // (or the path check when nothing opens) finds the link. Init used to throw
+  // the EACCES without naming the path.
+  it.skipIf(!canDenyWrites).each(READ_ONLY_LINK_CELLS)('[$name]: init names .cursor/rules as a symbolic link instead of failing with EACCES', ({ build }) => {
+    const dir = project();
+    const outside = outsideDir();
+    const rulesDir = path.join(dir, '.cursor', 'rules');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    build(outside);
+    const outsideBefore = fs.readdirSync(outside).map(n => [n, fs.readFileSync(path.join(outside, n), 'utf-8')]);
+
+    race.dir = rulesDir;
+    race.swap = () => {
+      fs.rmdirSync(rulesDir);
+      fs.symlinkSync(outside, rulesDir);
+    };
+    const result = init(dir);
+
+    expect(race.swap, 'the swap never ran, so this cell tested nothing').toBeUndefined();
+    const outsideAfter = fs.readdirSync(outside).map(n => [n, fs.readFileSync(path.join(outside, n), 'utf-8')]);
+    expect(outsideAfter).toEqual(outsideBefore);
+    expect(result.toolsDetected).toEqual(['cursor']);
+    expect(result.toolsConfigured).not.toContain('cursor');
+    expect(result.pathsRefused).toContainEqual({ tool: 'cursor', path: '.cursor/rules', reason: 'is a symbolic link' });
   });
 });

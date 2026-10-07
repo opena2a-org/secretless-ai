@@ -911,8 +911,14 @@ function writeInstructionFile(
     // A rule file that cannot be opened for writing (read-only, immutable, or
     // on a read-only mount) and already carries the block needs no write, so
     // it is left as it is instead of failing the run and every tool after it.
-    if ((code === 'EACCES' || code === 'EPERM' || code === 'EROFS') && alreadyCarriesBlock(projectDir, rel)) {
-      return;
+    // A path the read-only checks refuse is named like any other refusal.
+    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+      const readOnly = readOnlyRuleFile(projectDir, rel);
+      if ('unsafe' in readOnly) {
+        recordRefusal(result, tool, readOnly.unsafe);
+        return;
+      }
+      if (readOnly.carriesBlock) return;
     }
     throw err;
   }
@@ -934,24 +940,32 @@ function writeInstructionFile(
 }
 
 /**
- * True when `rel`, opened read-only without following a link at its last
- * component, passes the same checks as a rule file opened for writing and
- * already carries the Secretless block. O_NONBLOCK keeps a FIFO put there
- * from blocking the open; it then fails the regular-file check.
+ * Open `rel` read-only without following a link at its last component and
+ * run the same checks as on a rule file opened for writing. Returns why the
+ * path is refused, or whether the file already carries the Secretless block.
+ * When nothing opens, the path checks alone decide whether it is refused.
+ * O_NONBLOCK keeps a FIFO put there from blocking the open; it then fails the
+ * regular-file check.
  */
-function alreadyCarriesBlock(projectDir: string, rel: string): boolean {
+function readOnlyRuleFile(
+  projectDir: string,
+  rel: string,
+): { unsafe: { path: string; reason: string } } | { carriesBlock: boolean } {
   let fd: number;
   try {
     fd = fs.openSync(
       path.join(projectDir, rel),
       fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
     );
-  } catch {
-    return false;
+  } catch (err) {
+    const unsafe = (err as NodeJS.ErrnoException).code === 'ELOOP'
+      ? { path: rel, reason: 'is a symbolic link' }
+      : unsafePathReason(projectDir, rel, 'write');
+    return unsafe ? { unsafe } : { carriesBlock: false };
   }
   try {
-    return openedFileUnsafe(projectDir, rel, fd) === null
-      && fs.readFileSync(fd, 'utf-8').includes(SECRETLESS_MARKER);
+    const unsafe = openedFileUnsafe(projectDir, rel, fd);
+    return unsafe ? { unsafe } : { carriesBlock: fs.readFileSync(fd, 'utf-8').includes(SECRETLESS_MARKER) };
   } finally {
     fs.closeSync(fd);
   }

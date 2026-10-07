@@ -49,7 +49,9 @@ opening, that it is the regular file the path names inside the project. A link
 put in place of the rule file itself between `init`'s path checks and its write
 is refused instead of followed. A link put in place of a directory on the way
 can still leave an empty file or directory where it leads; the path is then
-refused, and the Secretless block is never written through either.
+refused, and the Secretless block is never written through either. When such a
+link leads somewhere `init` cannot write, the path is refused the same way;
+`init` used to fail there with `EACCES` without naming it.
 
 **Output longer than 8192 bytes reaches a Node 20 caller on macOS whole.** The
 CLI called `process.exit()` while the end of a long write could still be
