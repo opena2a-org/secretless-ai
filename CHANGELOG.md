@@ -636,6 +636,24 @@ still admitted, and so is a search such as `grep -n 'printenv' src`. Every
 decision this changes goes from allow to refuse. Re-running
 `npx secretless-ai init` refreshes the hook in an existing project.
 
+**The guard hook refuses a `node -e` read of `process.env` for reading the
+environment, not a secret file.** Node names the environment `process.env`,
+which ends in `.env`, so the rule for a python or node one-liner that names a
+secret file refused `node -e` reading a variable and said it named a secret
+file: `node -e 'console.log(process.env.GITHUB_TOKEN)'` was told "reads secret
+files", where the same read written in python was told "reads secret
+environment variables". With each `process.env` set aside, a one-liner that
+still names a `.env`, `.key`, `.pem`, `.p12` or `.pfx` file keeps the
+secret-file reason, and one that names a secret variable gets the
+secret-variable reason. Any other, such as
+`node -e 'console.log(process.env.HOME)'` or one that prints all of
+`process.env`, is refused for reading environment variables, and the reason
+names `printenv NAME` for a variable that holds no secret. Both
+environment-variable reasons now quote the text they matched, as the
+secret-file reasons do. No decision changes: each of these commands was
+refused before and is refused now. Re-running `npx secretless-ai init`
+refreshes the hook in an existing project.
+
 **The guard hook judges a symlinked path by the file it reaches.** The hook's
 file rules read only the name a tool was given, so a link named like a
 template (`config.env.example -> .env`) was allowed as a template while the
