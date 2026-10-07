@@ -1094,7 +1094,30 @@ const CMD_POSITION =
 // reading a private key. grep -E has no lookahead, so the boundary consumes one
 // character or end-of-string. `.env.local` still matches, because the character
 // after `.env` is a dot, not an identifier character.
-const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9]|$)';
+//
+// It must also end a path component, and a `}}` never ends one. `{{.Config.Env}}`
+// is a Go template field (docker inspect --format, Helm), not a file, and it was
+// refused whenever a reader verb appeared earlier on the line:
+// `docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'`.
+// A single `}` still counts, because the shell can close a path there:
+// `cat {a,.env}` and `cat "${ENV_FILE:-.env}"` both read the file. Written `[}]`
+// because a backslash before `}` is undefined in a POSIX extended regex.
+const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
+
+// A reader verb must be a whole word: at the start of a line, or after a
+// character that cannot sit inside a command name (whitespace, a shell
+// operator, a quote, a path slash, a backslash). Unanchored, `sed` matched the
+// tail of `used ` and `refused `, so a line of prose that went on to name a
+// secret file, such as a heredoc writing notes to a Markdown file, was refused
+// as a secret read. Requiring the verb to be the first word of a command would
+// have let `sudo cat .env`, `ssh host cat .env` and `then cat .env` through;
+// a whole word still catches each of those, and `cat .env` on a line of a
+// heredoc fed to bash, because every line is matched on its own. The
+// compressed and alternative flavours of the same readers (zcat, egrep, gawk,
+// gsed) were caught only because the verb was unanchored, so they are named.
+const READER_VERB_START = '(^|[^A-Za-z0-9_.-])';
+const FILE_READERS =
+  '(z|bz|xz|lz|zstd)?(cat|less|more|[efr]?grep)|head|tail|[gmn]?awk|g?sed|strings|xxd';
 
 // The Bash arms below match command TEXT, so they refused commands that only
 // CARRY a secret-file token without opening anything: a count-only grep whose
@@ -1705,8 +1728,8 @@ SECRETLESS_ANALYZER
   # A match is refused only when it survives both exemptions above: the accessor
   # rewrite and the analyzer's reduction each remove only text that names no file
   # the command opens, so a match either one removes was never a file read.
-  if echo "$FILE_READ_COMMAND" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}' \\
-    && echo "$SCAN_TEXT" | grep -qiE '(cat|head|tail|less|more|type|grep|awk|sed|strings|xxd)\\s+.*${SECRET_FILE_EXT}'; then
+  if echo "$FILE_READ_COMMAND" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' \\
+    && echo "$SCAN_TEXT" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}'
     exit 0
   fi

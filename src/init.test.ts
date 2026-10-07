@@ -999,6 +999,59 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
+    // The secret-file arm matched a reader verb anywhere, even as the tail of a
+    // longer word (`sed` in `used ` and `refused `), and took any `.env`-shaped
+    // text after it as a file. Prose naming `.env` in a heredoc written to a
+    // notes file, and a Go template field on a line with an earlier pipeline
+    // stage, were both refused as secret reads.
+    it('a reader verb is a whole word and a secret extension ends a path component', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Each of these was refused before the change and reads no secret file.
+      const mustAllow = [
+        "cat > notes.md <<'EOF'\nThe guard refused the ledger line because it named .env in prose.\nEOF",
+        'git commit -m "the hook refused a heredoc that named server.key"',
+        "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
+        'grep -c "{{.Config.Env}}" templates/deploy.yaml',
+        // Admitted before the change too, and must stay admitted.
+        "docker inspect x --format '{{.Config.Env}}' | grep -c A",
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${JSON.stringify(c)}`).toBe(false);
+      }
+
+      // A real read stays refused wherever the shell runs the verb from: at the
+      // start of a line, after a wrapper or keyword, through a path, and on a
+      // line of a heredoc fed to an interpreter. The prefixed flavours of the
+      // readers were covered only because the verb was unanchored, and a single
+      // `}` can still close a path the shell expands.
+      const mustBlock = [
+        'cat .env',
+        'sed -n 1p x/.env',
+        "bash <<'EOF'\ncat .env\nEOF",
+        'sudo cat .env',
+        'ssh host cat .env',
+        'docker exec app cat /srv/app/.env',
+        'if [ -f .env ]; then cat .env; fi',
+        '/bin/cat .env',
+        '\\cat .env',
+        'echo x | cat - .env',
+        'zcat -f .env',
+        'egrep KEY .env',
+        'gawk 1 server.key',
+        'gsed -n 1p client.pem',
+        'cat {a,.env}',
+        'cat "${ENV_FILE:-.env}"',
+        "grep -c x '{.Config.Env}'",
+        'ls ~/.secretless-ai',
+        'cat ~/.secretless-ai/store.json',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
+      }
+    });
+
     it('deny rules cover the same prefixed variables as the hook', () => {
       init(dir);
       const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
