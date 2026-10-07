@@ -2,6 +2,7 @@ import { afterAll, describe, it, expect } from "vitest";
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 
 /**
  * scripts/release-artifact-review.mjs, exercised as the release `review` job
@@ -28,6 +29,7 @@ import * as path from "path";
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "release-artifact-review.mjs");
+const CHILD_ENV_MODULE = path.join(REPO_ROOT, "scripts", "child-env.mjs");
 
 const CHECKS = [
   "entry-allowlist",
@@ -230,6 +232,7 @@ function relocatedScript(binStub?: { source: string }): {
     SCRIPT,
     path.join(root, "scripts", "release-artifact-review.mjs"),
   );
+  fs.copyFileSync(CHILD_ENV_MODULE, path.join(root, "scripts", "child-env.mjs"));
   if (binStub) {
     const binDir = path.join(root, "node_modules", ".bin");
     fs.mkdirSync(binDir, { recursive: true });
@@ -822,4 +825,164 @@ describe("9299: an entry under package/dist/ that escapes it fails dist-containm
     );
     expect(run.census["dist-containment"]).toBe("pass");
   }, 600_000);
+});
+
+// ---------------------------------------------------------------------------
+// The environment each child starts with
+// ---------------------------------------------------------------------------
+
+interface ChildEnvModule {
+  childEnv(
+    extra?: Record<string, string>,
+    env?: Record<string, string | undefined>,
+  ): Record<string, string>;
+  fetchChildEnv(
+    url: string,
+    env?: Record<string, string | undefined>,
+  ): Record<string, string>;
+}
+
+function loadChildEnv(): Promise<ChildEnvModule> {
+  return import(pathToFileURL(CHILD_ENV_MODULE).href);
+}
+
+/**
+ * An npm that records each call's argv, its environment's variable names and
+ * the few values the assertions need (never a whole environment), and answers
+ * just enough for the review to start its ping, closure, audit and global
+ * install children.
+ */
+function recordingNpm(dir: string, log: string): void {
+  const source = [
+    `#!${process.execPath}`,
+    "const fs = require('fs');",
+    "const argv = process.argv.slice(2);",
+    "const env = process.env;",
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv, names: Object.keys(env), home: env.HOME, npmConfig: env.npm_config_review_probe, noProxy: env.no_proxy }) + '\\n');`,
+    "if (argv[0] === 'install' && argv.includes('--package-lock-only')) {",
+    "  fs.writeFileSync('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'closure-scratch' } } }));",
+    "}",
+    "process.exit(0);",
+    "",
+  ].join("\n");
+  fs.writeFileSync(path.join(dir, "npm"), source);
+  fs.chmodSync(path.join(dir, "npm"), 0o755);
+}
+
+interface NpmCall {
+  argv: string[];
+  names: string[];
+  home?: string;
+  npmConfig?: string;
+  noProxy?: string;
+}
+
+describe("each child of the review starts from an allowlist, and only the advisory fetch gets GH_TOKEN", () => {
+  it("childEnv keeps PATH, HOME, temp, npm configuration and proxy variables; fetchChildEnv alone adds GH_TOKEN", async () => {
+    const { childEnv, fetchChildEnv } = await loadChildEnv();
+    const kept = {
+      PATH: "/usr/bin:/bin",
+      HOME: "/home/runner",
+      TMPDIR: "/tmp/runner",
+      npm_config_registry: "https://registry.example",
+      NPM_CONFIG_USERCONFIG: "/home/runner/.npmrc",
+      HTTPS_PROXY: "http://proxy.example:3128",
+      http_proxy: "http://proxy.example:3128",
+      NO_PROXY: "localhost",
+      NODE_EXTRA_CA_CERTS: "/etc/ssl/proxy-ca.pem",
+    };
+    const env = {
+      ...kept,
+      GH_TOKEN: "gh-token-probe",
+      GITHUB_TOKEN: "github-token-probe",
+      NODE_AUTH_TOKEN: "node-auth-probe",
+      NODE_OPTIONS: "--require /tmp/hook.js",
+      TARBALL: "tarball/secretless-ai.tgz",
+      REVIEW_UNLISTED_PROBE: "unlisted",
+    };
+
+    expect(childEnv({}, env)).toEqual(kept);
+    expect(childEnv({ HOME: "/scratch/home" }, env)).toEqual({
+      ...kept,
+      HOME: "/scratch/home",
+    });
+    expect(fetchChildEnv("https://api.example/advisories", env)).toEqual({
+      ...kept,
+      GH_TOKEN: "gh-token-probe",
+      NODE_USE_ENV_PROXY: "1",
+      REVIEW_GET_URL: "https://api.example/advisories",
+    });
+    const { GH_TOKEN: _token, ...withoutToken } = env;
+    expect(
+      fetchChildEnv("https://api.example/advisories", withoutToken),
+    ).not.toHaveProperty("GH_TOKEN");
+  });
+
+  it("every child starts through run(), and none is handed the whole environment", () => {
+    // run() applies the allowlist to any call that names no environment, so a
+    // second spawn site, or a spread of process.env, would bypass it.
+    const source = fs.readFileSync(SCRIPT, "utf-8");
+    expect(source.match(/\bspawnSync\(/g)).toHaveLength(1);
+    expect(source).not.toMatch(/\.\.\.process\.env\b/);
+  });
+
+  it(
+    "the npm children of a review see no GH_TOKEN and no unlisted variable, and keep PATH, HOME, npm configuration and proxies",
+    { timeout: 300_000 },
+    () => {
+      const stubDir = fs.mkdtempSync(path.join(tmpRoot, "npm-recorder-"));
+      const log = path.join(stubDir, "calls.jsonl");
+      recordingNpm(stubDir, log);
+      const { script, env } = relocatedScript({ source: BLIND_SCANNER });
+      const files = {
+        ...healthyFiles(),
+        "package/package.json": fixturePackageJson({
+          dependencies: { "left-pad": "1.3.0" },
+        }),
+      };
+      const review = runReview(["--tarball", buildTarball("child-env.tgz", files)], {
+        script,
+        env: {
+          PATH: `${stubDir}${path.delimiter}${env.PATH}`,
+          GH_TOKEN: "gh-token-probe",
+          REVIEW_UNLISTED_PROBE: "unlisted",
+          npm_config_review_probe: "kept",
+          no_proxy: "review-probe.invalid",
+        },
+      });
+
+      const calls: NpmCall[] = fs.existsSync(log)
+        ? fs
+            .readFileSync(log, "utf-8")
+            .split("\n")
+            .filter((line) => line.length > 0)
+            .map((line) => JSON.parse(line))
+        : [];
+      const has = (verb: string, flag?: string) =>
+        calls.some(
+          (c) => c.argv[0] === verb && (flag === undefined || c.argv.includes(flag)),
+        );
+      // Reachability: the review started each kind of npm child.
+      const seen = `npm calls seen: ${calls.map((c) => c.argv.join(" ")).join("; ")}\n${review.stdout}`;
+      expect(has("ping"), seen).toBe(true);
+      expect(has("install", "--package-lock-only"), seen).toBe(true);
+      expect(has("audit"), seen).toBe(true);
+      expect(has("install", "-g"), seen).toBe(true);
+
+      for (const call of calls) {
+        const label = call.argv.join(" ");
+        expect(call.names, label).not.toContain("GH_TOKEN");
+        expect(call.names, label).not.toContain("REVIEW_UNLISTED_PROBE");
+        expect(call.names, label).toContain("PATH");
+        expect(call.home, label).toBeTruthy();
+        expect(call.npmConfig, label).toBe("kept");
+        expect(call.noProxy, label).toBe("review-probe.invalid");
+      }
+      // The two installs keep their scratch HOME.
+      const homeOf = (flag: string) =>
+        calls.find((c) => c.argv[0] === "install" && c.argv.includes(flag))?.home;
+      expect(path.basename(homeOf("--package-lock-only") ?? "")).toBe("closure-home");
+      expect(path.basename(homeOf("-g") ?? "")).toBe("install-home");
+    },
+  );
 });

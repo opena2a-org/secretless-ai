@@ -67,6 +67,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { childEnv, fetchChildEnv } from './child-env.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLANTED_NAME = '00-planted-credential-control.js';
@@ -125,12 +126,15 @@ function usage(message) {
   process.exit(2);
 }
 
+// Every child starts from the allowlist in child-env.mjs unless its call
+// passes an environment of its own; none starts with this job's whole one.
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
     encoding: 'utf-8',
     maxBuffer: 64 * 1024 * 1024,
     timeout: options.timeout ?? 120_000,
     ...options,
+    env: options.env ?? childEnv(),
   });
 }
 
@@ -352,7 +356,7 @@ function review(tarball, work, advisoryStates, results) {
     const install = run(
       'npm',
       ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', tarball],
-      { cwd: dir, env: { ...process.env, HOME: home }, timeout: 300_000 },
+      { cwd: dir, env: childEnv({ HOME: home }), timeout: 300_000 },
     );
     closureDir = { dir, ok: install.status === 0, detail: install.status === 0 ? '' : tailOf(install) };
     return closureDir;
@@ -403,7 +407,7 @@ function review(tarball, work, advisoryStates, results) {
     const install = run(
       'npm',
       ['install', '-g', tarball, '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', prefix],
-      { env: { ...process.env, HOME: installHome }, timeout: 600_000 },
+      { env: childEnv({ HOME: installHome }), timeout: 600_000 },
     );
     if (install.status !== 0) {
       results.fail('global-install-smoke', `npm install -g --ignore-scripts failed: ${tailOf(install)}`);
@@ -738,7 +742,7 @@ function npmViewDeprecated(name, version) {
  * GET a JSON URL. Runs in a child node with NODE_USE_ENV_PROXY=1 so the read
  * honours HTTPS_PROXY where one is configured (fetch ignores it by default);
  * GH_TOKEN, when present, authenticates the read — the release workflow hands
- * the job token in.
+ * the job token in, and this is the one child it is passed to.
  */
 function httpGetJson(url) {
   const program = [
@@ -749,7 +753,7 @@ function httpGetJson(url) {
     'console.log(JSON.stringify({ status: res.status, text }));',
   ].join('\n');
   const child = run(process.execPath, ['--input-type=module', '-e', program], {
-    env: { ...process.env, NODE_USE_ENV_PROXY: '1', REVIEW_GET_URL: url },
+    env: fetchChildEnv(url),
     timeout: 60_000,
   });
   if (child.status !== 0) return { body: null, error: `fetch failed: ${tailOf(child)}` };

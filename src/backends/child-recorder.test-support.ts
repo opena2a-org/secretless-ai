@@ -45,6 +45,15 @@ export interface Recorder {
   setMode(mode: RecorderMode): void;
   /** Pid written by a hanging invocation, or null if none hung. */
   hangPid(): number | null;
+  /**
+   * Positive control: run the program directly once, confirm it recorded the
+   * call, and clear the record. Call it before `setMode({ kind: 'hang' })`.
+   * The first start of a newly written executable is the slow one (on a
+   * loaded machine it can outlast a 0.5s bound), and a hanging child ended
+   * before it writes its pid leaves no pid to check; running this first pays
+   * that start outside the bound.
+   */
+  controlRun(): boolean;
   cleanup(): void;
 }
 
@@ -123,6 +132,12 @@ function makeRecorder(prefix: string, name: string, body: string): Recorder {
     hangPid() {
       const p = path.join(dir, 'hang.pid');
       return fs.existsSync(p) ? Number(fs.readFileSync(p, 'utf-8')) : null;
+    },
+    controlRun() {
+      const res = spawnSync(program, ['control'], { input: '', stdio: 'pipe', timeout: 10_000, killSignal: 'SIGKILL' });
+      const ok = res.error === undefined && res.signal === null && fs.existsSync(callsPath);
+      fs.rmSync(callsPath, { force: true });
+      return ok;
     },
     cleanup() {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -349,14 +364,34 @@ process.exit(0);
   };
 }
 
-/** True when no process with this pid exists any more. */
+/**
+ * True when no process with this pid exists any more. Throws for anything but
+ * a positive integer: a hanging child ended before it wrote its pid leaves
+ * null (or 0 for an empty file), and `process.kill` refuses null and signals
+ * this process group for 0, so either would read as a child still running.
+ */
 export function processIsGone(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`not a recorded pid: ${pid}`);
   try {
     process.kill(pid, 0);
     return false;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'ESRCH';
   }
+}
+
+/**
+ * Poll `processIsGone` for up to `timeoutMs`. A bounded call settles once its
+ * child is reaped, but a loaded machine can lag the check that follows; a
+ * short wait keeps the assertion about the child, not about scheduling.
+ */
+export async function waitForProcessGone(pid: number, timeoutMs = 2_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!processIsGone(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return true;
 }
 
 /** Run `fn` with `dir` first on PATH, restoring PATH after. */

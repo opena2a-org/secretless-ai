@@ -5,7 +5,7 @@ import * as os from 'os';
 import { LinuxKeychainBackend } from './keychain-linux';
 import {
   makeSecretToolRecorder,
-  processIsGone,
+  waitForProcessGone,
   type Recorder,
 } from './child-recorder.test-support';
 
@@ -77,38 +77,47 @@ describe('LinuxKeychainBackend', () => {
   });
 
   describe('C4: every child call is bounded', () => {
+    // The hanging child's pid is the one it wrote. Each cell first runs the
+    // recorder outside the bound (positive control, and the slow first start
+    // paid there), so the bounded child can write its pid inside 0.5s.
+    async function expectHungChildGone(): Promise<void> {
+      const pid = recorder.hangPid();
+      expect(pid, 'the hanging secret-tool wrote no pid before the bound ended it').not.toBeNull();
+      expect(await waitForProcessGone(pid!), `pid ${pid} is still running`).toBe(true);
+    }
+
     it('SLS-10.AC4 a secret-tool that never exits: store throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
+      expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
       const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
 
       const start = Date.now();
       await expect(bounded.store('secret/K', 'value')).rejects.toThrow(/did not respond within 0\.5s/);
       expect(Date.now() - start).toBeLessThan(5_000);
-
-      const pid = recorder.hangPid();
-      expect(pid).not.toBeNull();
-      expect(processIsGone(pid!)).toBe(true);
+      await expectHungChildGone();
     });
 
     it('SLS-10.AC4 a secret-tool that never exits: resolve throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
       fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['secret/K']));
+      expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
       const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
 
       const start = Date.now();
       await expect(bounded.resolve('secret/K')).rejects.toThrow(/did not respond within 0\.5s/);
       expect(Date.now() - start).toBeLessThan(5_000);
-      expect(processIsGone(recorder.hangPid()!)).toBe(true);
+      await expectHungChildGone();
     });
 
     it('SLS-10.AC4 a secret-tool that never exits: delete returns within the bound and the child is gone', { timeout: 10_000 }, async () => {
+      expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
       const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
 
       const start = Date.now();
       expect(await bounded.delete('secret/K')).toBe(false);
       expect(Date.now() - start).toBeLessThan(5_000);
-      expect(processIsGone(recorder.hangPid()!)).toBe(true);
+      await expectHungChildGone();
     });
   });
 
