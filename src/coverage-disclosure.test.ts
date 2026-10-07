@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -150,15 +150,31 @@ describe('the summary discloses what was not looked at', () => {
 });
 
 describe('coverage-warning paths are printed so they run where they are pasted (#120)', () => {
-  afterEach(() => vi.restoreAllMocks());
+  // The scan also reads the global configs under HOME (`~/.claude/CLAUDE.md`,
+  // `~/.claude.json`, ...) before the tree, and the 8-byte cap below skips
+  // every one that exists. On a machine that has them, `Verify:` named the
+  // first of those instead of the fixture. The list is built from HOME when
+  // the scanner loads, so each test loads it again under an empty HOME.
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'coverage-home-'));
+    vi.stubEnv('HOME', home);
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
 
   // A file over the size cap is the warning that prints a path, a `Verify:`
   // and a `Fix:`; a tiny cap produces it without writing megabytes.
   async function humanOutput(dir: string, cwd: string): Promise<string> {
+    const core = await import('./commands/core');
     const lines: string[] = [];
     vi.spyOn(process, 'cwd').mockReturnValue(cwd);
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
-    await runScan(dir, { maxFileSizeBytes: 8 });
+    await core.runScan(dir, { maxFileSizeBytes: 8 });
     return lines.join('\n');
   }
 
