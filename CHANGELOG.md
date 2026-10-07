@@ -568,9 +568,13 @@ wherever the shell runs the verb from: `cat .env`, `sudo cat .env`,
 `python3` the hook reads the command from the raw JSON payload, where a line
 break arrives as `\n`, so a reader verb at the start of a heredoc line or of a
 later command line is still refused there, and `printf 'x\ncat .env' | sh` is
-refused too. The `python3 -c`/`node -e` rule takes the same path-component
-ending. Re-running `npx secretless-ai init` refreshes the hook in an existing
-project.
+refused too. In the rules for a secret file and `python3 -c`/`node -e`, a `\t`
+escape also counts as the space after the verb: without `python3` a tab arrives
+as `\t`, so `cat<TAB>.env` and `node<TAB>-e` reading `.env` are refused there,
+and `printf 'cat\t.env' | sh` is refused on every host. A tab-separated
+`printf` or `awk -F'\t'` that names no secret file is still admitted. The
+`python3 -c`/`node -e` rule takes the same path-component ending. Re-running
+`npx secretless-ai init` refreshes the hook in an existing project.
 
 **The guard hook admits a write of text that names a secret file, and its
 refusal quotes what it matched.** A whole-word reader verb followed by a

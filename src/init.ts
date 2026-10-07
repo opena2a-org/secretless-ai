@@ -1127,6 +1127,16 @@ const READER_VERB_START = '(^|[^A-Za-z0-9_.-]|\\\\[nt])';
 const FILE_READERS =
   '(z|bz|xz|lz|zstd)?(cat|less|more|[efr]?grep)|head|tail|[gmn]?awk|g?sed|strings|xxd';
 
+// What separates a verb from its operands in the two rules that name a secret
+// file: whitespace, or a `\t` escape. Without python3 a tab reaches the rules as
+// the two characters `\t`, so `cat<TAB>.env` and `node<TAB>-e` reading `.env`
+// showed no gap after the verb and were admitted. With python3 the escape is literal text, and
+// `printf 'cat\t.env' | sh` runs that read too; without python3 that command's
+// backslash is doubled in the payload, so any run of backslashes counts. The
+// escape is only ever added as an alternative, so a command these rules refused
+// before is still refused.
+const VERB_GAP = '(\\s|\\\\+t)+';
+
 // The Bash arms below match command TEXT, so they refused commands that only
 // CARRY a secret-file token without opening anything: a count-only grep whose
 // pattern names `.env` inside a JavaScript regex, a grep for the shell-hook line
@@ -1839,11 +1849,11 @@ SECRETLESS_ANALYZER
   # remove only text that names no file the command opens, so a match any one
   # of them removes was never a file read. The reason quotes the match in the
   # command as written, not in the analyzer's reduced text.
-  if echo "$FILE_READ_COMMAND" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' \\
-    && echo "$SCAN_TEXT" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' \\
-    && echo "$FILE_READ_SCAN" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}'; then
+  if echo "$FILE_READ_COMMAND" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' \\
+    && echo "$SCAN_TEXT" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' \\
+    && echo "$FILE_READ_SCAN" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}'; then
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. Matched \`%s\`: a reader verb, then a secret-file name. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash. To write a note that names a secret file, use cat > FILE with a single-quoted heredoc delimiter, or printf or echo of single-quoted text into a file."}}\\n' \\
-      "$(matched_text '${READER_VERB_START}' '(${FILE_READERS}|type)\\s+.*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+      "$(matched_text '${READER_VERB_START}' '(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
     exit 0
   fi
   # Block python/node one-liners that read secret files. Same dead-end as the arm
@@ -1852,10 +1862,10 @@ SECRETLESS_ANALYZER
   # refused all the same, because this is a denylist over command TEXT. The
   # decision has to stand — see NOTE ON TEMPLATE FILES — so the reason carries the
   # ambiguity and the route out.
-  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}' \\
-    && echo "$FILE_READ_SCAN" | grep -qiE '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}' \\
+    && echo "$FILE_READ_SCAN" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}'; then
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. Matched \`%s\`: a python or node one-liner that names a secret file. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}\\n' \\
-      "$(matched_text '' '(python3?|node)\\s+-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+      "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
