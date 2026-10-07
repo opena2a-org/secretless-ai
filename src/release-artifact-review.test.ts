@@ -918,6 +918,45 @@ describe("each child of the review starts from an allowlist, and only the adviso
     ).not.toHaveProperty("GH_TOKEN");
   });
 
+  it("childEnv keeps the locale: LANG, LC_ALL and LC_CTYPE", async () => {
+    const { childEnv } = await loadChildEnv();
+    const locale = {
+      LANG: "C.UTF-8",
+      LC_ALL: "en_US.UTF-8",
+      LC_CTYPE: "en_US.UTF-8",
+    };
+    expect(childEnv({}, { ...locale, GH_TOKEN: "gh-token-probe" })).toEqual(locale);
+  });
+
+  it(
+    "under a UTF-8 locale, a credential in a dist/ file with a non-ASCII name is caught by credential-scan",
+    { timeout: 300_000 },
+    () => {
+      // Outside a UTF-8 locale tar lists café.js with octal escapes, and the
+      // scan's copy of that entry finds no file of that name.
+      const locale = (spawnSync("locale", ["-a"], { encoding: "utf-8" }).stdout ?? "")
+        .split("\n")
+        .map((name) => name.trim())
+        .find((name) => /^(C|en_US)\.utf-?8$/i.test(name));
+      expect(locale, "no C.UTF-8 or en_US.UTF-8 in `locale -a`").toBeTruthy();
+      const run = runReview(
+        [
+          "--tarball",
+          buildUstarTgz("non-ascii-name.tgz", {
+            ...healthyFiles(),
+            "package/dist/café.js": POISONED_DIST_FILE,
+          }),
+        ],
+        { env: { LANG: locale as string, LC_ALL: "", LC_CTYPE: "" } },
+      );
+      expectSingleFailure(run, "credential-scan");
+      expect(run.stdout.normalize("NFC")).toMatch(
+        /check credential-scan: fail: .*café\.js:\d+/,
+      );
+      expect(run.stdout).not.toContain("sk-" + "proj-" + "B".repeat(48));
+    },
+  );
+
   it("every child starts through run(), and none is handed the whole environment", () => {
     // run() applies the allowlist to any call that names no environment, so a
     // second spawn site, or a spread of process.env, would bypass it.
