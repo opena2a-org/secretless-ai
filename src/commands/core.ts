@@ -239,7 +239,8 @@ function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; pa
   console.log('    symbolic or hard link, into an entry of the wrong kind, or outside the');
   console.log('    project.');
   console.log();
-  console.log(`  ${c.cyan('Verify:')} ls -ld ${shown.map(r => shellQuote(r.shown)).join(' ')}`);
+  // `--` because a path relative to the working directory can start with `-`.
+  console.log(`  ${c.cyan('Verify:')} ls -ld -- ${shown.map(r => shellQuote(r.shown)).join(' ')}`);
   const fixes = shown.map(r => refusedPathFix(shellQuote(r.shown), r.reason));
   fixes[fixes.length - 1] += ', then re-run: secretless-ai init';
   fixes.forEach((f, i) => console.log(i === 0 ? `  ${c.cyan('Fix:')}    ${f}` : `          ${f}`));
@@ -253,7 +254,10 @@ function refusedPathFix(quoted: string, reason: string): string {
   if (reason === 'has more than one hard link') {
     // The copy goes to a new file mktemp creates, never to a fixed name such
     // as `.tmp`: `cp` writes through a link the project already has there.
-    return `replace ${quoted} with a copy of itself (t=$(mktemp -- ${quoted}.XXXXXX) && cp -p -- ${quoted} "$t" && mv -- "$t" ${quoted}), or remove it`;
+    // `init` refuses on the link count without reading the file, so this is
+    // printed for an unreadable file too; a failed `cp` or `mv` removes the
+    // file mktemp created and still exits non-zero.
+    return `replace ${quoted} with a copy of itself (t=$(mktemp -- ${quoted}.XXXXXX) && { cp -p -- ${quoted} "$t" && mv -- "$t" ${quoted} || { rm -f -- "$t"; false; }; }), or remove it`;
   }
   if (reason === 'is not a regular file') return `move ${quoted} aside, or replace it with a regular file`;
   if (reason === 'is not a directory') return `move ${quoted} aside, or replace it with a directory`;

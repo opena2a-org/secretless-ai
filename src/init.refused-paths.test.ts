@@ -25,7 +25,9 @@
 //    Its other names can be outside the project, and `init` appended the block
 //    to a `.windsurfrules` hard-linked to a file outside it. The copy command
 //    in its Fix line writes to a new file from `mktemp`, never through a link
-//    the project has at a name such as `.windsurfrules.tmp`.
+//    the project has at a name such as `.windsurfrules.tmp`, and removes that
+//    file when the copy fails. The Verify and copy commands run as printed for
+//    a path that starts with `-` and needs quoting.
 //
 // HOME and TMPDIR point at scratch directories, so `init` never touches the
 // real home of whoever runs the suite.
@@ -369,6 +371,95 @@ describe('init and a rule file with more than one hard link', () => {
     expect(second.out).not.toContain('Not configured');
     expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toMatch(new RegExp(`^# rules\\n[\\s\\S]*${MARKER}`));
     expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe('# rules\n');
+  });
+
+  // The other project paths here never need quoting and never start with `-`.
+  // These run the printed commands, from the project's parent, for a path that
+  // does both: the project is `-j it's` there, shown as `'-j it'\''s/...'`.
+  describe('the printed commands for a path that starts with - and needs quoting', () => {
+    let prevCwd: string;
+    let dir: string;
+    let shown: string;
+
+    beforeEach(() => {
+      prevCwd = process.cwd();
+      const parent = fs.realpathSync(project());
+      process.chdir(parent);
+      dir = path.join(parent, "-j it's");
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# rules\n');
+      fs.chmodSync(path.join(dir, 'AGENTS.md'), 0o644);
+      fs.utimesSync(path.join(dir, 'AGENTS.md'), new Date('2020-01-02T03:04:05Z'), new Date('2020-01-02T03:04:05Z'));
+      fs.linkSync(path.join(dir, 'AGENTS.md'), path.join(dir, '.windsurfrules'));
+      shown = shownPath(dir, '.windsurfrules');
+      expect(shown).toBe("-j it's/.windsurfrules");
+    });
+
+    afterEach(() => {
+      process.chdir(prevCwd);
+    });
+
+    function copyCommand(out: string): string {
+      const copy = printedLine(out, 'Fix').match(/copy of itself \((.+)\), or remove it/);
+      expect(copy, 'the Fix line carries no copy command').not.toBeNull();
+      return copy![1];
+    }
+
+    function leftover(): string[] {
+      return fs.readdirSync(dir).filter(n => n.startsWith('.windsurfrules.'));
+    }
+
+    it('Verify runs as printed, and the copy is made beside the rule file and keeps its mode and time', () => {
+      const first = capture(() => runInit(dir));
+      expect(first.out).toContain(`    ${shown} has more than one hard link (Windsurf)`);
+
+      const verify = spawnSync('bash', ['-c', printedLine(first.out, 'Verify')], { encoding: 'utf-8' });
+      expect(verify.status, verify.stderr).toBe(0);
+      expect(verify.stdout.trim().split(/\s+/)[1]).toBe('2');
+
+      // An `mv` first on PATH logs its arguments: the copy has to be made
+      // beside the rule file, so that `mv` renames it in that directory. A
+      // bare `mktemp` makes it in TMPDIR, and macOS falls back to its own
+      // temporary directory when TMPDIR does not exist.
+      const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'refused-bin-'));
+      const log = path.join(bin, 'mv.log');
+      const realMv = spawnSync('sh', ['-c', 'command -v mv'], { encoding: 'utf-8' }).stdout.trim();
+      fs.writeFileSync(path.join(bin, 'mv'), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$MV_LOG"\nexec "$REAL_MV" "$@"\n', { mode: 0o755 });
+      const ran = spawnSync('bash', ['-c', copyCommand(first.out)], {
+        encoding: 'utf-8',
+        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, MV_LOG: log, REAL_MV: realMv },
+      });
+      expect(ran.status, ran.stderr).toBe(0);
+      const moved = fs.readFileSync(log, 'utf-8').split('\n').filter(a => a !== '' && a !== '--');
+      expect(moved).toHaveLength(2);
+      expect(moved[1]).toBe(shown);
+      expect(path.dirname(moved[0])).toBe(path.dirname(shown));
+      const copied = fs.lstatSync(path.join(dir, '.windsurfrules'));
+      expect(copied.isFile()).toBe(true);
+      expect(copied.nlink).toBe(1);
+      expect(copied.mode & 0o777).toBe(0o644);
+      expect(Math.floor(copied.mtimeMs / 1000)).toBe(Date.parse('2020-01-02T03:04:05Z') / 1000);
+      expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toBe('# rules\n');
+      expect(leftover()).toEqual([]);
+
+      const second = capture(() => runInit(dir));
+      expect(second.out).not.toContain('Not configured');
+      expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe('# rules\n');
+    });
+
+    // `init` refuses on the link count without reading the file, so the copy
+    // command is printed for a file `cp` cannot read. It used to exit 1 and
+    // leave the empty file mktemp created beside the rule file.
+    it.skipIf(process.getuid?.() === 0)('a copy that fails exits non-zero and leaves no file beside the rule file', () => {
+      fs.chmodSync(path.join(dir, 'AGENTS.md'), 0o000);
+      const first = capture(() => runInit(dir));
+
+      const ran = spawnSync('bash', ['-c', copyCommand(first.out)], { encoding: 'utf-8' });
+      expect(ran.status).not.toBe(0);
+      expect(ran.stderr).toContain('Permission denied');
+      expect(leftover()).toEqual([]);
+      expect(fs.statSync(path.join(dir, '.windsurfrules')).nlink).toBe(2);
+    });
   });
 
   it('control: a rule file with one link gets the block appended', () => {

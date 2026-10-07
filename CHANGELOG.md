@@ -42,7 +42,7 @@ link to `AGENTS.md`, `init` printed `Configured: none` and
 `Already up to date. No files changed.` and said nothing about the link. It
 now prints a `Not configured:` block with one line per refused path and its
 reason (for example `.cursorrules is a symbolic link (Cursor)`), then
-`Verify: ls -ld <paths>` and a Fix line for each path, and no longer says the
+`Verify: ls -ld -- <paths>` and a Fix line for each path, and no longer says the
 project is up to date. The exit code is unchanged. The rule file writer now
 opens the file without following a symbolic link and checks again, after
 opening, that it is the regular file the path names inside the project. A link
@@ -60,11 +60,14 @@ can be outside the project: when `.windsurfrules` was a hard link to
 a rule file `init` would append to has a link count above 1, nothing is written
 for that tool, and the `Not configured:` block names the path with the reason
 `has more than one hard link` and a Fix line that replaces the file with a copy
-of itself. The copy goes to a new file that `mktemp` creates, never to an
-existing name. `ls -ld`, the Verify line, shows the link count in its second
-column. The count is checked on the path before the write and again on the
-opened file, so a hard link put in place of the rule file between the two is
-refused too. Which links are covered: symbolic links are refused on the rule
+of itself. The copy goes to a new file that `mktemp` creates beside the rule
+file, never to an existing name, and that file is removed again when the copy
+fails, as it does for a file the user cannot read. The Verify and Fix commands
+put `--` before their paths, so they run as printed for a path that starts with
+`-`. `ls -ld`, the Verify line, shows the link count in its second column.
+The count is checked on the path before the write and again on the opened
+file, so a hard link put in place of the rule file between the two is refused
+too. Which links are covered: symbolic links are refused on the rule
 files `init` writes for Cursor (`.cursor/rules/secretless.mdc`,
 `.cursorrules`), Cline (`.clinerules`, `.clinerules/secretless.md`,
 `.cline/rules/secretless.md`) and Windsurf (`.windsurfrules`) and on every
