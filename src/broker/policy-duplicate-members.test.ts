@@ -210,7 +210,7 @@ describe('the duplicate-member check cannot be bypassed by failing to load', () 
     vi.doMock('@opena2a/atx-verify', () => {
       throw new Error("Cannot find module '@opena2a/atx-verify'");
     });
-    const { PolicyEngine: FreshEngine } = await import('./policy');
+    const { PolicyEngine: FreshEngine } = await import('./policy.js');
 
     // An HONEST file: there is nothing wrong with it. The refusal must come
     // from the check being unavailable, not from the file's content — which is
@@ -228,7 +228,7 @@ describe('the duplicate-member check cannot be bypassed by failing to load', () 
     vi.doMock('@opena2a/atx-verify', () => {
       throw new Error("Cannot find module '@opena2a/atx-verify'");
     });
-    const { PolicyEngine: FreshEngine } = await import('./policy');
+    const { PolicyEngine: FreshEngine } = await import('./policy.js');
     const engine = new FreshEngine({ policyFile: policyFile(`{"rules":[{${RULE},"effect":"deny"}]}`) });
 
     let message = '';

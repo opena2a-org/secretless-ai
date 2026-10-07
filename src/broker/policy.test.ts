@@ -365,7 +365,7 @@ describe('PolicyEngine', () => {
       engine.loadRules([
         { id: 'r1', agentSelector: '*', credentialSelector: '*', effect: 'allow', constraints: { minTrustScore: 999 } },
       ]);
-      const agent: AgentIdentity = { agentId: 'a1', trustScore: 10, capabilities: [] };
+      const agent: AgentIdentity = { agentId: 'a1', trustScore: 10, capabilities: [], verified: true };
       expect(engine.evaluate('a1', 'K', agent).allowed).toBe(false);
 
       const handed = engine.getRules();

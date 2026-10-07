@@ -10,7 +10,7 @@ import {
 } from './exchange';
 import { createOktaExchangeProvider } from './okta-adapter';
 import { generateBrokerSigningKey, mintBrokerAssertion, brokerPublicJwk } from './assertion';
-import type { ResolutionContext } from '@opena2a/atx-verify';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { ResourceBinding } from './types';
 
 const CTX: ResolutionContext = {
@@ -22,6 +22,7 @@ const CTX: ResolutionContext = {
   trustScore: 0.95,
   capabilities: ['orders:read'],
   oasbLevel: 'L2',
+  signedCapabilities: true,
 };
 
 const BINDING: ResourceBinding = {

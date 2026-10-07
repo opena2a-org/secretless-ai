@@ -80,8 +80,7 @@ describe('session-state', () => {
       writeSessionState(120);
       const state = readSessionState();
       expect(state).not.toBeNull();
-      expect(state!.ttlSeconds).toBe(120);
-      expect(state!.version).toBe(1);
+      expect(state).toMatchObject({ ttlSeconds: 120, version: 1 });
     });
 
     it('returns null for corrupted session file', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { GrantPolicy, type GrantBinding } from './grant-policy';
-import type { ResolutionContext } from '@opena2a/atx-verify';
+import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 
 const CTX: ResolutionContext = {
   agentId: 'aim_orders_reader',
@@ -571,9 +571,7 @@ describe('GrantPolicy: a credential that does not sign what we match on is denie
   it('treats an absent signedCapabilities as unsigned, not as signed', () => {
     // `AtxVerifier` is a published interface. A third-party implementation that predates the
     // field, or omits it, must not read as "these fields are covered".
-    const { signedCapabilities: _drop, ...noFlag } = CTX as Record<string, unknown> & {
-      signedCapabilities: boolean;
-    };
+    const { signedCapabilities: _drop, ...noFlag } = CTX;
     const r = p().evaluate('orders-db', noFlag as unknown as ResolutionContext);
     expect(r.allowed).toBe(false);
     expect(r.reason).toMatch(/signature/);
@@ -700,7 +698,7 @@ describe('GrantPolicy: a binding is what it was when it was validated', () => {
 
     const handle = denied.binding as GrantBinding;
     expect(() => {
-      delete (handle.match as Record<string, unknown>).minTrustLevel;
+      delete (handle.match as unknown as Record<string, unknown>).minTrustLevel;
     }).toThrow(TypeError); // frozen: strict mode, and test files are modules
     expect(p.evaluate('orders-db', { ...CTX, trustLevel: 1 }).allowed).toBe(false);
   });
@@ -818,7 +816,7 @@ describe('GrantPolicy: evaluate() denies rather than throwing', () => {
   // Reading by index is redirected by neither.
   for (const [label, make] of [
     ['a subclass overriding Symbol.iterator', () => {
-      class C extends Array { *[Symbol.iterator]() { yield 'orders:read'; } }
+      class C extends Array { *[Symbol.iterator](): Generator<string, undefined> { yield 'orders:read'; } }
       const c = new C(); c.push('nothing:useful'); return c;
     }],
     ['a subclass overriding includes', () => {

@@ -210,7 +210,7 @@ describe('vault help keeps the credential value off the command line', () => {
   });
 
   const printed = (spy: ReturnType<typeof vi.spyOn>): string[] =>
-    spy.mock.calls.map((call) => call.join(' ')).join('\n').split('\n');
+    spy.mock.calls.map((call: unknown[]) => call.join(' ')).join('\n').split('\n');
 
   it('the examples register a credential from the prompt, a pipe or --env', async () => {
     await runVault(['--help']);
@@ -228,7 +228,7 @@ describe('vault help keeps the credential value off the command line', () => {
   });
 
   it('vault --help names no --value command line in its usage', async () => {
-    const { printCommandHelp } = await import('../command-help');
+    const { printCommandHelp } = await import('../command-help.js');
     printCommandHelp('vault');
     const lines = printed(consoleSpy);
     expect(lines.filter((l) => VALUE_ON_COMMAND_LINE.test(l))).toEqual([]);

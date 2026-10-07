@@ -46,7 +46,7 @@ describeWithAimCore('vault-core', () => {
 
   it('loadAimCoreVault succeeds when aim-core is installed', async () => {
     // Reset cache by re-importing
-    const { loadAimCoreVault } = await import('./vault-core');
+    const { loadAimCoreVault } = await import('./vault-core.js');
     const vault = await loadAimCoreVault();
     expect(vault).toBeDefined();
     expect(vault.VaultStore).toBeDefined();
@@ -55,7 +55,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('loadAimCoreIdentity succeeds when aim-core is installed', async () => {
-    const { loadAimCoreIdentity } = await import('./vault-core');
+    const { loadAimCoreIdentity } = await import('./vault-core.js');
     const identity = await loadAimCoreIdentity();
     expect(identity).toBeDefined();
     expect(identity.loadIdentity).toBeDefined();
@@ -63,7 +63,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('getOrCreateAgent creates new identity when none exists', async () => {
-    const { getOrCreateAgent } = await import('./vault-core');
+    const { getOrCreateAgent } = await import('./vault-core.js');
     const agent = await getOrCreateAgent('test-agent');
     expect(agent.agentId).toBeTruthy();
     expect(agent.agentId).toMatch(/^aim_/);
@@ -73,7 +73,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('getOrCreateAgent returns existing identity on second call', async () => {
-    const { getOrCreateAgent } = await import('./vault-core');
+    const { getOrCreateAgent } = await import('./vault-core.js');
     const agent1 = await getOrCreateAgent('test-agent');
     const agent2 = await getOrCreateAgent('test-agent');
     expect(agent1.agentId).toBe(agent2.agentId);
@@ -81,7 +81,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultInit creates vault directory and files', async () => {
-    const { vaultInit } = await import('./vault-core');
+    const { vaultInit } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -93,7 +93,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('init next steps and the empty-list hint register without --value', async () => {
-    const { vaultInit, vaultList } = await import('./vault-core');
+    const { vaultInit, vaultList } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -108,7 +108,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultInit is idempotent — second call reports already initialized', async () => {
-    const { vaultInit } = await import('./vault-core');
+    const { vaultInit } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -124,7 +124,7 @@ describeWithAimCore('vault-core', () => {
   it('full lifecycle: init -> register -> list -> rotate -> revoke', async () => {
     const {
       vaultInit, vaultRegister, vaultList, vaultRotate, vaultRevoke,
-    } = await import('./vault-core');
+    } = await import('./vault-core.js');
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -170,7 +170,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultExec spawns child with credential as env var', async () => {
-    const { vaultInit, vaultRegister, vaultExec } = await import('./vault-core');
+    const { vaultInit, vaultRegister, vaultExec } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -194,7 +194,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultExec does not leak credential to stdout', async () => {
-    const { vaultInit, vaultRegister, vaultExec } = await import('./vault-core');
+    const { vaultInit, vaultRegister, vaultExec } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -229,7 +229,7 @@ describeWithAimCore('vault-core', () => {
     const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
     expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
 
-    const { vaultInit, vaultRegister } = await import('./vault-core');
+    const { vaultInit, vaultRegister } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await vaultInit('test-agent');
     await vaultRegister('printed-cred', {
@@ -256,7 +256,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultExec with custom env name', async () => {
-    const { vaultInit, vaultRegister, vaultExec } = await import('./vault-core');
+    const { vaultInit, vaultRegister, vaultExec } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -274,7 +274,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultExec fails for revoked namespace', async () => {
-    const { vaultInit, vaultRegister, vaultRevoke, vaultExec } = await import('./vault-core');
+    const { vaultInit, vaultRegister, vaultRevoke, vaultExec } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -291,7 +291,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultAudit shows events', async () => {
-    const { vaultInit, vaultRegister, vaultAudit } = await import('./vault-core');
+    const { vaultInit, vaultRegister, vaultAudit } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -310,7 +310,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultTest reports all checks', async () => {
-    const { vaultInit, vaultTest } = await import('./vault-core');
+    const { vaultInit, vaultTest } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await vaultInit('test-agent');
@@ -326,7 +326,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('getVaultStore throws when vault not initialized', async () => {
-    const { getOrCreateAgent, getVaultStore } = await import('./vault-core');
+    const { getOrCreateAgent, getVaultStore } = await import('./vault-core.js');
 
     // Ensure identity exists but vault does not
     await getOrCreateAgent('test-agent');
@@ -335,7 +335,7 @@ describeWithAimCore('vault-core', () => {
   });
 
   it('vaultRegister with --env reads from environment', async () => {
-    const { vaultInit, vaultRegister } = await import('./vault-core');
+    const { vaultInit, vaultRegister } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     vi.stubEnv('MY_TEST_TOKEN', 'env_token_value');
@@ -349,7 +349,7 @@ describeWithAimCore('vault-core', () => {
     consoleSpy.mockRestore();
 
     // Verify it was stored by checking we can exec with it
-    const { vaultExec } = await import('./vault-core');
+    const { vaultExec } = await import('./vault-core.js');
     const code = await vaultExec('env-test', ['node', '-e', `
       if (process.env.ENV_TEST !== 'env_token_value') process.exit(1);
     `]);
@@ -385,7 +385,7 @@ describe('vaultScan migration line', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const { vaultScan } = await import('./vault-core');
+      const { vaultScan } = await import('./vault-core.js');
       await vaultScan(dir);
 
       const output = consoleSpy.mock.calls.map((call) => call.join(' ')).join('\n');

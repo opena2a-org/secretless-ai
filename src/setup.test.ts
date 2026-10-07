@@ -104,7 +104,7 @@ describe('runSetupCommand --check without a manifest', () => {
   });
 
   it('prints one FAIL line, no satisfied/missing tally, exits 1', async () => {
-    const { runSetupCommand } = await import('./commands/env-run');
+    const { runSetupCommand } = await import('./commands/env-run.js');
     const lines: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
       lines.push(a.map(String).join(' '));

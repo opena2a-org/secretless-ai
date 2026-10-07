@@ -675,7 +675,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
       expect(pack.status, pack.stderr).toBe(0);
       const tarball = path.join(
         packDir,
-        pack.stdout.trim().split("\n").at(-1)!,
+        pack.stdout.trim().split("\n").pop()!,
       );
 
       const run = runReview(["--tarball", tarball]);

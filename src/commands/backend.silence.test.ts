@@ -89,14 +89,14 @@ describe('read-only commands stay silent (no biometric / 1P prompts)', () => {
   }
 
   it('runBackend with no subcommand does not invoke `security` or `op`', async () => {
-    const { runBackend } = await import('./backend');
+    const { runBackend } = await import('./backend.js');
     const exitCode = await runBackend([]);
     expect(exitCode).toBe(0);
     expect(offending()).toEqual([]);
   });
 
   it('runStatus does not invoke `security` or `op`', async () => {
-    const { runStatus } = await import('./core');
+    const { runStatus } = await import('./core.js');
     const exitCode = await runStatus(fakeHome);
     expect(exitCode).toBe(0);
     expect(offending()).toEqual([]);
@@ -106,7 +106,7 @@ describe('read-only commands stay silent (no biometric / 1P prompts)', () => {
     // No `key` in config — exercises the local→keychain upgrade branch in
     // factory.ts, which is the path that used to fire `security default-keychain`
     // and could trigger Touch ID on macOS.
-    const { createBackend } = await import('../backends/factory');
+    const { createBackend } = await import('../backends/factory.js');
     createBackend('local', { storeDir: fakeHome });
     expect(offending()).toEqual([]);
   });
@@ -117,9 +117,9 @@ describe('read-only commands stay silent (no biometric / 1P prompts)', () => {
 // prompts)" while secrets were going to the Keychain, which does prompt.
 describe('cache reports the effective backend', () => {
   it('names the same backend `backend` and SecretStore report', async () => {
-    const { runCache } = await import('./backend');
-    const { resolveBackendType } = await import('../backends/config');
-    const { SecretStore } = await import('../secret-store');
+    const { runCache } = await import('./backend.js');
+    const { resolveBackendType } = await import('../backends/config.js');
+    const { SecretStore } = await import('../secret-store.js');
 
     const out: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.join(' ')); });

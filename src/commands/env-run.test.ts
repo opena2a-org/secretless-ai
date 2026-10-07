@@ -72,8 +72,8 @@ describe('runRun surfaces a multi-line precondition error intact', () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   it('returns 1 and indents EVERY line of the message', async () => {
-    const { runRun } = await import('./env-run');
-    const { runWithSecrets } = await import('../run');
+    const { runRun } = await import('./env-run.js');
+    const { runWithSecrets } = await import('../run.js');
 
     vi.mocked(runWithSecrets).mockRejectedValue(new Error(
       'Requested secret not found in the store: ABSENT_NAME\n' +
@@ -109,8 +109,8 @@ describe('runRun --only with an empty value fails closed', () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   it("treats --only '' the same as --only ,,", async () => {
-    const { runRun } = await import('./env-run');
-    const { runWithSecrets } = await import('../run');
+    const { runRun } = await import('./env-run.js');
+    const { runWithSecrets } = await import('../run.js');
     vi.mocked(runWithSecrets).mockClear();
     vi.mocked(runWithSecrets).mockResolvedValue(0);
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -123,8 +123,8 @@ describe('runRun --only with an empty value fails closed', () => {
   });
 
   it('CONTROL: a real --only value still parses to that list', async () => {
-    const { runRun } = await import('./env-run');
-    const { runWithSecrets } = await import('../run');
+    const { runRun } = await import('./env-run.js');
+    const { runWithSecrets } = await import('../run.js');
     vi.mocked(runWithSecrets).mockClear();
     vi.mocked(runWithSecrets).mockResolvedValue(0);
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -134,8 +134,8 @@ describe('runRun --only with an empty value fails closed', () => {
   });
 
   it('CONTROL: no --only at all still means no filter', async () => {
-    const { runRun } = await import('./env-run');
-    const { runWithSecrets } = await import('../run');
+    const { runRun } = await import('./env-run.js');
+    const { runWithSecrets } = await import('../run.js');
     vi.mocked(runWithSecrets).mockClear();
     vi.mocked(runWithSecrets).mockResolvedValue(0);
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -152,8 +152,8 @@ describe('runRun --allow-argv', () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   it('passes allowArgv when the flag comes before `--`', async () => {
-    const { runRun } = await import('./env-run');
-    const { runWithSecrets } = await import('../run');
+    const { runRun } = await import('./env-run.js');
+    const { runWithSecrets } = await import('../run.js');
     vi.mocked(runWithSecrets).mockClear();
     vi.mocked(runWithSecrets).mockResolvedValue(0);
 
@@ -162,8 +162,8 @@ describe('runRun --allow-argv', () => {
   });
 
   it('does not pass allowArgv when the token is the child\'s', async () => {
-    const { runRun } = await import('./env-run');
-    const { runWithSecrets } = await import('../run');
+    const { runRun } = await import('./env-run.js');
+    const { runWithSecrets } = await import('../run.js');
     vi.mocked(runWithSecrets).mockClear();
     vi.mocked(runWithSecrets).mockResolvedValue(0);
 
