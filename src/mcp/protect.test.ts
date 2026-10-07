@@ -172,7 +172,7 @@ describe('protectMcp', () => {
         github: {
           command: 'npx',
           args: ['@github/mcp-server'],
-          env: { GITHUB_TOKEN: '\x1b[200~ghp_abc123def456ghi789jkl012mno345pqr678\x1b[201~' },
+          env: { GITHUB_TOKEN: '\x1b[200~ghp_FAKE23def456ghi789jkl012mno345pqr678\x1b[201~' },
         },
       },
     });
