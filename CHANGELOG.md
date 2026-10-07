@@ -60,7 +60,8 @@ can be outside the project: when `.windsurfrules` was a hard link to
 a rule file `init` would append to has a link count above 1, nothing is written
 for that tool, and the `Not configured:` block names the path with the reason
 `has more than one hard link` and a Fix line that replaces the file with a copy
-of itself. `ls -ld`, the Verify line, shows the link count in its second
+of itself. The copy goes to a new file that `mktemp` creates, never to an
+existing name. `ls -ld`, the Verify line, shows the link count in its second
 column. The count is checked on the path before the write and again on the
 opened file, so a hard link put in place of the rule file between the two is
 refused too. Which links are covered: symbolic links are refused on the rule

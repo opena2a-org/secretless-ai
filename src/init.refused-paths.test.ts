@@ -23,7 +23,9 @@
 //    read-only checks found the link, but `init` failed with EACCES.
 // 6. A rule file with more than one hard link is refused like a symbolic link.
 //    Its other names can be outside the project, and `init` appended the block
-//    to a `.windsurfrules` hard-linked to a file outside it.
+//    to a `.windsurfrules` hard-linked to a file outside it. The copy command
+//    in its Fix line writes to a new file from `mktemp`, never through a link
+//    the project has at a name such as `.windsurfrules.tmp`.
 //
 // HOME and TMPDIR point at scratch directories, so `init` never touches the
 // real home of whoever runs the suite.
@@ -322,7 +324,7 @@ describe('init and a rule file with more than one hard link', () => {
 
     const fix = printedLine(first.out, 'Fix');
     expect(fix).toContain('then re-run: secretless-ai init');
-    const copy = fix.match(/\((cp -p .+)\)/);
+    const copy = fix.match(/copy of itself \((.+)\), or remove it/);
     expect(copy, 'the Fix line carries no copy command').not.toBeNull();
     const ran = spawnSync('bash', ['-c', copy![1]], { encoding: 'utf-8' });
     expect(ran.status, ran.stderr).toBe(0);
@@ -332,6 +334,41 @@ describe('init and a rule file with more than one hard link', () => {
     expect(second.out).not.toContain('Not configured');
     expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toContain(MARKER);
     expect(fs.readFileSync(victim, 'utf-8')).toBe('victim\n');
+  });
+
+  // A copy to the fixed name `.windsurfrules.tmp` was written through a link
+  // the project had there: into the outside file it leads to, or into a new
+  // file where a dangling one leads, and the link was then moved into place.
+  it.each([
+    { name: 'a link to a file outside the project', target: 'victim.md', present: true },
+    { name: 'a dangling link to a path outside the project', target: 'missing.md', present: false },
+  ])('the printed copy command does not write through a .windsurfrules.tmp that is [$name]', ({ target, present }) => {
+    const dir = project();
+    const outside = outsideDir();
+    const leadsTo = path.join(outside, target);
+    if (present) fs.writeFileSync(leadsTo, 'victim\n');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# rules\n');
+    fs.linkSync(path.join(dir, 'AGENTS.md'), path.join(dir, '.windsurfrules'));
+    fs.symlinkSync(leadsTo, path.join(dir, '.windsurfrules.tmp'));
+
+    const first = capture(() => runInit(dir));
+    const copy = printedLine(first.out, 'Fix').match(/copy of itself \((.+)\), or remove it/);
+    expect(copy, 'the Fix line carries no copy command').not.toBeNull();
+    const ran = spawnSync('bash', ['-c', copy![1]], { encoding: 'utf-8' });
+    expect(ran.status, ran.stderr).toBe(0);
+
+    if (present) expect(fs.readFileSync(leadsTo, 'utf-8')).toBe('victim\n');
+    else expect(fs.existsSync(leadsTo)).toBe(false);
+    expect(fs.readlinkSync(path.join(dir, '.windsurfrules.tmp'))).toBe(leadsTo);
+    const copied = fs.lstatSync(path.join(dir, '.windsurfrules'));
+    expect(copied.isFile()).toBe(true);
+    expect(copied.nlink).toBe(1);
+    expect(fs.readdirSync(dir).filter(n => n.startsWith('.windsurfrules')).sort()).toEqual(['.windsurfrules', '.windsurfrules.tmp']);
+
+    const second = capture(() => runInit(dir));
+    expect(second.out).not.toContain('Not configured');
+    expect(fs.readFileSync(path.join(dir, '.windsurfrules'), 'utf-8')).toMatch(new RegExp(`^# rules\\n[\\s\\S]*${MARKER}`));
+    expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe('# rules\n');
   });
 
   it('control: a rule file with one link gets the block appended', () => {

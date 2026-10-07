@@ -251,7 +251,9 @@ function refusedPathFix(quoted: string, reason: string): string {
     return `replace the link ${quoted} with a copy of what it points to, or remove the link`;
   }
   if (reason === 'has more than one hard link') {
-    return `replace ${quoted} with a copy of itself (cp -p ${quoted} ${quoted}.tmp && mv ${quoted}.tmp ${quoted}), or remove it`;
+    // The copy goes to a new file mktemp creates, never to a fixed name such
+    // as `.tmp`: `cp` writes through a link the project already has there.
+    return `replace ${quoted} with a copy of itself (t=$(mktemp -- ${quoted}.XXXXXX) && cp -p -- ${quoted} "$t" && mv -- "$t" ${quoted}), or remove it`;
   }
   if (reason === 'is not a regular file') return `move ${quoted} aside, or replace it with a regular file`;
   if (reason === 'is not a directory') return `move ${quoted} aside, or replace it with a directory`;
