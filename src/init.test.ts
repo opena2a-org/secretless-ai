@@ -1052,6 +1052,124 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
+    // A command that only WRITES text naming a secret file was refused as a read
+    // of one: a heredoc writing code that uses `process.env` to a scratch file,
+    // or printf of a note saying "the head of process.env.PATH", tripped the
+    // reader-verb rule on its words. The text is left out of the two
+    // secret-file-read rules only when it is consumed by a write the shell can
+    // neither expand nor run: `cat > FILE` with a single-quoted heredoc
+    // delimiter, or printf or echo of single-quoted text into a file. Every
+    // other consumer, including one the hook does not know, is scanned as before.
+    (hasPython3 ? it : it.skip)('a write of quoted text to a file is not refused for what the text names', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Each of these was refused before the change and reads no secret file.
+      // The pasted grep rule names one extension: an `(env|` group reads as a
+      // bare `env` to the environment-dump rule, which, like the hook's other
+      // rules, still reads the whole command.
+      const mustAllow = [
+        "cat > /tmp/scratch/child-env.ts <<'EOF'\n// Only the allowlisted keys reach the child; NODE_OPTIONS is dropped.\nconst ALLOW = ['PATH', 'HOME', 'LANG'] as const;\ntype ChildEnv = Pick<typeof process.env, (typeof ALLOW)[number]>;\nconst childEnv: ChildEnv = {};\nfor (const k of ALLOW) if (process.env[k] !== undefined) childEnv[k] = process.env[k];\nEOF",
+        "cat >> /tmp/scratch/evidence.md <<'EOF'\n- `git show HEAD:src/run.ts | head -5` prints: const childEnv = { ...process.env, NODE_OPTIONS: undefined };\n- `sed -n 1121p src/init.ts` is the rule: grep -qiE '(cat|head|tail)\\s+.*\\.env'\n- `cat .env` stays refused; `cat > notes.md <<'EOF'` is a write.\nEOF",
+        "cat <<'EOF' > notes.md\nthe head of process.env.PATH is all the child sees\nEOF\n",
+        "printf '%s\\n' '- the guard refused a note that named process.env and credentials; the head of process.env.PATH is all the child sees' >> /tmp/scratch/session.md",
+        "printf '%s\\n' 'line one' 'tail of process.env.HOME' > /tmp/scratch/out.txt",
+        "echo 'no more than process.env.PATH and process.env.HOME reach the child' >> notes.md",
+        "echo -n 'cat .env is refused' > ~/notes/guard.md",
+        // Admitted before the change too, and must stay admitted.
+        "git commit -m 'Child environment keeps PATH from process.env and drops NODE_OPTIONS'",
+        // Two heredocs on one cat: the shell runs neither body, and the command
+        // analyzer drops both bodies before the rules match.
+        "cat > notes.md <<'EOF' <<'END'\ncat .env\nEOF\nEND",
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${JSON.stringify(c)}`).toBe(false);
+      }
+
+      // Refused before the change and still refused: a consumer that runs or
+      // reads the text, a consumer the hook does not know, a second command on
+      // the first line or after the terminator, a later line equal to the
+      // delimiter (the heredoc ends at the first), an unquoted delimiter or a
+      // double-quoted argument the shell expands, a pipe, a `cat` operand, and a
+      // target that is itself a secret file.
+      const mustBlock = [
+        "frobnicate <<'EOF'\ncat .env\nEOF",
+        "command bash <<'EOF'\ncat .env\nEOF",
+        "zsh <<'EOF'\ncat .env\nEOF",
+        "bash <<'EOF'\ncat .env\nEOF",
+        "bash > out.txt <<'EOF'\ncat .env\nEOF",
+        "frobnicate > out.txt <<'EOF'\ncat .env\nEOF",
+        "source /dev/stdin > out.txt <<'EOF'\ncat .env\nEOF",
+        "cat > notes.md <<'EOF'\nhello\nEOF\ncat .env",
+        "cat > notes.md <<'EOF'\nhello\nEOF\n\ncat .env",
+        "cat > notes.md <<'EOF'\nhello\nEOF\ncat .env\nEOF",
+        "cat > notes.md <<'EOF' && cat .env\nhello\nEOF",
+        "cat > notes.md <<'EOF'; cat .env\nhello\nEOF",
+        "cat <<'EOF' | bash\ncat .env\nEOF",
+        "cat <<'EOF' | sh > out.txt\ncat .env\nEOF",
+        'cat > notes.md <<EOF\n$(cat .env)\nEOF',
+        'cat .env > notes.md',
+        "cat .env - > notes.md <<'EOF'\nx\nEOF",
+        "cat 'prod.env' > notes.md",
+        "cat > notes.env <<'EOF'\ncat .env\nEOF",
+        'echo "$(cat .env)" > notes.md',
+        `printf '%s' "$(cat .env)" > notes.md`,
+        "echo 'x' $(cat .env) > notes.md",
+        "echo 'x' `cat .env` > notes.md",
+        "echo 'x' > notes.md; cat .env",
+        "echo 'x' > notes.md && cat .env",
+        "printf 'x' > notes.md\ncat .env",
+        "echo 'x' > notes.md | cat .env",
+        "echo 'cat .env' | bash > out.txt",
+        "eval 'cat .env' > out.txt",
+        "sh -c 'cat .env' > out.txt",
+        "echo $'cat .env' > out.txt",
+        "echo 'cat .env' > notes.key",
+        `python3 -c 'print(open(".env").read())' > out.txt`,
+        `printf '%s' 'x' > notes.md\nnode -e 'require("fs").readFileSync(".env")'`,
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
+      }
+    });
+
+    // The deny named a class, "reads secret files", and not the text that
+    // tripped it, so a command refused for a word in a note could not be told
+    // from a real read. The reason now quotes the matched text, and stays one
+    // JSON document when that text carries a quote, a backslash, `$(` or a tab.
+    (hasPython3 ? it : it.skip)('a secret-file-read deny names the text it matched', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const cells: Array<[string, string]> = [
+        ['cat .env', 'cat .env'],
+        ['sudo cat "/srv/app/.env"', 'cat "/srv/app/.env"'],
+        ['cat "$(echo .env)"', 'cat "$(echo .env)"'],
+        ['cat a\\b.env', 'cat a\\b.env'],
+        ['cat\t.env', 'cat?.env'],
+        // An unquoted delimiter whose body the shell expands keeps the body in
+        // the text the rules match.
+        ['cat > notes.md <<EOF\nthe head of $HOME/.env\nEOF', 'head of $HOME/.env'],
+        ['cat .env.example', 'cat .env.example'],
+        [`python3 -c "open('.env').read()"`, `python3 -c "open('.env').read()"`],
+      ];
+      for (const [c, matched] of cells) {
+        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: c } });
+        const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+        const hso = JSON.parse(out).hookSpecificOutput;
+        expect(hso.permissionDecision, `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+        const reason: string = hso.permissionDecisionReason;
+        expect(reason, `deny reason must quote the matched text for: ${JSON.stringify(c)}`)
+          .toContain('Matched `' + matched + '`');
+        expect(reason, `deny reason must name the Read tool for: ${JSON.stringify(c)}`).toMatch(/Read tool/);
+        expect(reason, `deny reason must name the Grep tool for: ${JSON.stringify(c)}`).toMatch(/Grep tool/);
+        expect(reason, `deny reason must mention committed templates for: ${JSON.stringify(c)}`).toMatch(/template/i);
+        expect(
+          reason,
+          `deny reason must explain the filename/pattern ambiguity for: ${JSON.stringify(c)}`,
+        ).toMatch(/filename.*pattern|pattern.*filename/is);
+      }
+    });
+
     it('deny rules cover the same prefixed variables as the hook', () => {
       init(dir);
       const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
