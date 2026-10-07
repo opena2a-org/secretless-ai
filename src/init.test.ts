@@ -887,6 +887,18 @@ describe('init', { timeout: 30_000 }, () => {
         'echo $API_KEY',
         'echo $SECRET',
         'echo $TOKEN',
+        // The span between echo and the variable stopped at every letter n, so
+        // each of these was admitted.
+        'echo -n $GITHUB_TOKEN',
+        'echo "token: $GITHUB_TOKEN"',
+        'echo "Using ${GITHUB_TOKEN:0:4}"',
+        // Bare printenv followed by another command still dumps the environment.
+        'printenv; echo done',
+        'printenv && echo done',
+        // A tab, or a `\t` escape that printf turns into one, after the verb.
+        'echo\t$GITHUB_TOKEN',
+        'printenv\tGITHUB_TOKEN',
+        "printf 'echo\\t$GITHUB_TOKEN' | sh",
       ];
       for (const c of mustBlock) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
@@ -907,6 +919,11 @@ describe('init', { timeout: 30_000 }, () => {
         // bare-printenv arm.
         'env -u GITHUB_TOKEN git push',
         'npm run build',
+        // A pipe hands printenv's output to the next program.
+        'printenv | wc -l',
+        'echo -n "$HOME"',
+        'echo\t$PATH',
+        "printf 'a\\tb\\n' | cut -f2",
       ];
       for (const c of mustAllow) {
         expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
@@ -1263,6 +1280,70 @@ describe('init', { timeout: 30_000 }, () => {
       for (const [c, matched] of reasons) {
         expect(decide(c).reason, `deny reason without python3 must quote the matched text for: ${JSON.stringify(c)}`)
           .toContain('Matched `' + matched + '`');
+      }
+    });
+
+    // The rules that refuse printing a secret value took only whitespace after
+    // their verb, so without python3, where a tab arrives as `\t` and a line
+    // break as `\n`, each command below was admitted.
+    it('without python3 a tab or line-break escape does not hide a secret value print', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const bin = path.join(dir, 'bin-without-python3');
+      fs.mkdirSync(bin);
+      for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
+        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
+      }
+      const bash = path.join(bin, 'bash');
+      const env = { ...process.env, PATH: bin };
+      expect(
+        () => execSync('command -v python3', { env, shell: bash, stdio: 'ignore' }),
+        'python3 must not be reachable on the test PATH',
+      ).toThrow();
+      function decide(command: string): { decision: string; reason: string } {
+        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+        const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
+        if (!out.trim()) return { decision: 'allow', reason: '' };
+        const hso = JSON.parse(out).hookSpecificOutput;
+        return { decision: hso.permissionDecision, reason: hso.permissionDecisionReason };
+      }
+
+      const mustBlock: Array<[string, string]> = [
+        ['echo\t$GITHUB_TOKEN', 'exposes secret environment variables'],
+        ['echo -n $GITHUB_TOKEN', 'exposes secret environment variables'],
+        ['printenv\tGITHUB_TOKEN', 'exposes secret environment variables'],
+        ['printenv -0\tGITHUB_TOKEN', 'exposes secret environment variables'],
+        ['printenv\t', 'full environment dump'],
+        ['echo hi;\tprintenv', 'full environment dump'],
+        ['echo hi\nprintenv', 'full environment dump'],
+        ['printenv\necho done', 'full environment dump'],
+        ['eval\techo $GITHUB_TOKEN', 'eval-based secret extraction'],
+        ["python3\t-c 'import os,sys; print(os.environ[sys.argv[1]])' GITHUB_TOKEN", 'reads secret environment variables'],
+        ['secretless-ai\tsecret get X --force', 'forced secret extraction'],
+        ['secretless-ai secret\tget X --force', 'forced secret extraction'],
+        ['secretless-ai\trun -- env', 'secretless-ai run'],
+        ['secretless-ai run --\tprintenv', 'secretless-ai run'],
+        ['secretless-ai\tvault exec ns -- env', 'secretless-ai vault exec'],
+        ['secretless-ai vault\texec ns -- env', 'secretless-ai vault exec'],
+        ['secretless-ai vault exec ns --\tenv', 'secretless-ai vault exec'],
+        ['secretless-ai\tenv', 'secretless-ai env'],
+      ];
+      for (const [c, reason] of mustBlock) {
+        const d = decide(c);
+        expect(d.decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+        expect(d.reason, `deny reason without python3 for: ${JSON.stringify(c)}`).toContain(reason);
+      }
+
+      const mustAllow = [
+        'echo\t$HOME',
+        'printenv\tPATH',
+        'printenv | wc -l',
+        'secretless-ai\tenvironment',
+        'secretless-ai run --\tenvsubst tpl.conf',
+        "printf 'a\\tb\\n' | cut -f2",
+      ];
+      for (const c of mustAllow) {
+        expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
       }
     });
 

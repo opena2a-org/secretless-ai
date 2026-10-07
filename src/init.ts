@@ -1078,7 +1078,12 @@ const SECRET_VAR_NAME = '[A-Za-z0-9_]*(' + SECRET_VAR_WORDS + ')';
 // switched off. Stopping at a command separator keeps `echo $API_KEY` and
 // `echo "value:" $API_KEY` blocked while letting the next command through, and
 // a separate `echo $SECRET` later on still matches on its own.
-const SAME_COMMAND = '[^;&|\\n]*';
+//
+// A line break needs no entry: grep matches each line on its own. The span used
+// to exclude `\n` too, but inside a bracket expression a backslash is literal,
+// so it stopped at every backslash and every letter n, and `echo -n $API_KEY`
+// and `echo "token: $GITHUB_TOKEN"` were admitted on every host.
+const SAME_COMMAND = '[^;&|]*';
 
 // Command position: line start, or after a separator, `(` or a backtick,
 // optionally behind a wrapper (sudo, xargs, watch, ...) and a directory
@@ -1127,15 +1132,17 @@ const READER_VERB_START = '(^|[^A-Za-z0-9_.-]|\\\\[nt])';
 const FILE_READERS =
   '(z|bz|xz|lz|zstd)?(cat|less|more|[efr]?grep)|head|tail|[gmn]?awk|g?sed|strings|xxd';
 
-// What separates a verb from its operands in the two rules that name a secret
-// file: whitespace, or a `\t` escape. Without python3 a tab reaches the rules as
-// the two characters `\t`, so `cat<TAB>.env` and `node<TAB>-e` reading `.env`
-// showed no gap after the verb and were admitted. With python3 the escape is literal text, and
-// `printf 'cat\t.env' | sh` runs that read too; without python3 that command's
-// backslash is doubled in the payload, so any run of backslashes counts. The
-// escape is only ever added as an alternative, so a command these rules refused
-// before is still refused.
+// What separates a verb from its operands in the command rules: whitespace, or
+// a `\t` escape. Without python3 a tab reaches the rules as the two characters
+// `\t`, so `cat<TAB>.env`, `echo<TAB>$GITHUB_TOKEN` and `secretless-ai<TAB>env`
+// showed no gap after the verb and were admitted.
+// With python3 the escape is literal text, and `printf 'cat\t.env' | sh` runs
+// that read too; without python3 that command's backslash is doubled in the
+// payload, so any run of backslashes counts. The escape is only ever added as
+// an alternative, so a command these rules refused before is still refused.
+// OPTIONAL_GAP is the same where the rules took `\s*`.
 const VERB_GAP = '(\\s|\\\\+t)+';
+const OPTIONAL_GAP = '(\\s|\\\\+t)*';
 
 // The Bash arms below match command TEXT, so they refused commands that only
 // CARRY a secret-file token without opening anything: a count-only grep whose
@@ -1869,31 +1876,36 @@ SECRETLESS_ANALYZER
     exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
-  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)\\s+-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret environment variables"}}'
     exit 0
   fi
   # Block eval-based env var extraction
-  if echo "$SCAN_TEXT" | grep -qiE '(eval\\s+echo|\\$\\{!).*${SECRET_VAR_REF}'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(eval${VERB_GAP}echo|\\$\\{!).*${SECRET_VAR_REF}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked eval-based secret extraction"}}'
     exit 0
   fi
   # Block commands that echo secret env vars. The variable name may carry any
   # prefix: $ANTHROPIC_API_KEY and \${GITHUB_TOKEN} count, not just $API_KEY.
-  if echo "$SCAN_TEXT" | grep -qiE '(echo|printenv)\\s+${SAME_COMMAND}${SECRET_VAR_REF}'; then
+  if echo "$SCAN_TEXT" | grep -qiE '(echo|printenv)${VERB_GAP}${SAME_COMMAND}${SECRET_VAR_REF}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
     exit 0
   fi
   # printenv takes a bare NAME with no \`$\`, so the arm above never sees it.
-  if echo "$SCAN_TEXT" | grep -qiE 'printenv\\s+(-[A-Za-z0]+\\s+)*${SECRET_VAR_NAME}'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'printenv${VERB_GAP}(-[A-Za-z0]+${VERB_GAP})*${SECRET_VAR_NAME}'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that exposes secret environment variables"}}'
     exit 0
   fi
   # Bare \`printenv\` prints the whole environment, which is the same disclosure as
   # naming every secret variable at once. \`env\` is NOT matched here: it is
   # overwhelmingly used as a prefix (\`env -u VAR cmd\`), so its dump form has its
-  # own arm below that tells the two apart.
-  if echo "$SCAN_TEXT" | grep -qiE '(^|[;&|]\\s*)printenv\\s*(-0\\s*)?$'; then
+  # own arm below that tells the two apart. printenv may also start after a \`\\n\`
+  # escape and end at \`;\`, \`&\` or a \`\\n\` escape: without python3 a line break
+  # reaches this rule as \`\\n\`, and a command after printenv does not change
+  # what it prints, so \`printenv; echo done\` dumps the environment too. A pipe
+  # after it is not matched: what \`printenv | wc -l\` shows is the output of
+  # the next program.
+  if echo "$SCAN_TEXT" | grep -qiE '(^|[;&|]|\\\\+n)${OPTIONAL_GAP}printenv${OPTIONAL_GAP}(-0${OPTIONAL_GAP})?($|[;&]|\\\\+n)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via printenv"}}'
     exit 0
   fi
@@ -1942,7 +1954,7 @@ SECRETLESS_ANALYZER
     exit 0
   fi
   # Block secretless-ai secret extraction with --force
-  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+secret\\s+get.*--force'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai${VERB_GAP}secret${VERB_GAP}get.*--force'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked forced secret extraction"}}'
     exit 0
   fi
@@ -1959,13 +1971,13 @@ SECRETLESS_ANALYZER
   # Block secretless-ai run with env/printenv to dump injected secrets. The
   # trailing boundary keeps env/printenv a whole word so "-- envsubst" (a legit
   # templating program) is not caught.
-  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+run.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai${VERB_GAP}run.*--${OPTIONAL_GAP}(env|printenv)([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai run"}}'
     exit 0
   fi
   # Block secretless-ai vault exec with env/printenv (same shape as run -- env,
   # for the identity vault's injected namespace credential).
-  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+vault\\s+exec.*--\\s*(env|printenv)([^a-zA-Z0-9_]|$)'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai${VERB_GAP}vault${VERB_GAP}exec.*--${OPTIONAL_GAP}(env|printenv)([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked secret dump via secretless-ai vault exec"}}'
     exit 0
   fi
@@ -1975,7 +1987,7 @@ SECRETLESS_ANALYZER
   # \`env\` as a whole subcommand: followed by any non-identifier char (space,
   # \`)\` in \`$(secretless-ai env)\`, \`;\`, \`|\`, a quote) or end of string — but
   # NOT a word char, so \`environment\` does not match.
-  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai\\s+env([^a-zA-Z0-9_]|$)'; then
+  if echo "$SCAN_TEXT" | grep -qiE 'secretless-ai${VERB_GAP}env([^a-zA-Z0-9_]|$)'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full secret-store dump via secretless-ai env"}}'
     exit 0
   fi
