@@ -1123,7 +1123,7 @@ function realpathOrNull(p: string): string | null {
  * Node documents no order for `readdir`. It returns byte order on macOS and
  * Linux only because its I/O layer sorts; APFS and ext4 themselves return hash
  * order. Byte order keeps those two platforms' output as it was. Not `<`, which
- * compares UTF-16 units and puts an emoji before `Ａ` (U+FF21), and not
+ * compares UTF-16 units and puts an emoji before U+FF21 (fullwidth A), and not
  * `localeCompare`, whose result moves with the locale.
  */
 function compareCodePoints(a: string, b: string): number {

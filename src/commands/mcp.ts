@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { protectMcp } from '../mcp/protect';
-import { discoverMcpConfigs, discoverMcpConfigsDetailed } from '../mcp/discover';
+import { discoverMcpConfigsDetailed } from '../mcp/discover';
+import type { UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
 import { resolveBackendType } from '../backends/config';
@@ -10,6 +11,25 @@ import { listedName } from '../secret-value';
 
 function getWrapperPath(): string {
   return path.resolve(__dirname, '..', 'mcp-wrapper.js');
+}
+
+/**
+ * List each MCP config that exists but could not be read or parsed. A command
+ * that passes over one names it: the servers in it, and any plaintext secrets
+ * there, were not acted on, so leaving it out reads as clean or absent.
+ */
+function printUnparsedConfigs(unparsed: UnparsedMcpConfig[], marker: string): void {
+  for (const config of unparsed) {
+    console.log(`  ${config.client} (${config.filePath})`);
+    console.log(`    ? ${marker}: ${config.reason}`);
+    console.log();
+  }
+}
+
+/** The count of configs printUnparsedConfigs listed, what was not done to them, and the command to run once they are fixed. */
+function printUnparsedFix(count: number, consequence: string, command: string): void {
+  console.log(`  ${count} config(s) could not be parsed, so ${consequence}.`);
+  console.log(`  Fix the file(s) above, then run \`npx secretless-ai ${command}\` again.\n`);
 }
 
 export async function runProtectMcp(args: string[]): Promise<number> {
@@ -32,7 +52,18 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 
   try {
     const result = await protectMcp({ wrapperPath, backendType });
+    const { unparsed } = result;
+    const notChecked = () => {
+      if (unparsed.length === 0) return;
+      printUnparsedConfigs(unparsed, 'not checked');
+      printUnparsedFix(unparsed.length, 'the servers in them were not checked', 'protect-mcp');
+    };
+
     if (result.clientsScanned === 0) {
+      if (unparsed.length > 0) {
+        notChecked();
+        return 0;
+      }
       console.log('  No MCP configurations found.\n');
       console.log('  Looked for configs from: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf');
       console.log('  Supported clients: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf\n');
@@ -42,6 +73,11 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     console.log(`  Scanned ${result.clientsScanned} client(s)\n`);
 
     if (result.secretsFound === 0) {
+      if (unparsed.length > 0) {
+        console.log('  No plaintext secrets found in the MCP configs that were read.\n');
+        notChecked();
+        return 0;
+      }
       console.log('  No plaintext secrets found in MCP configs. Already clean.\n');
       return 0;
     }
@@ -59,6 +95,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
       console.log(`  ${result.alreadyProtected} server(s) already protected.`);
     }
     console.log();
+    notChecked();
     // Show injection warnings from NanoMind guard (if available)
     if (result.injectionWarnings.length > 0) {
       console.log(`  WARNING: ${result.injectionWarnings.length} potential prompt injection(s) detected:\n`);
@@ -119,11 +156,7 @@ export function runMcpStatus(): number {
 
   // A config that could not be parsed is never reported as clean or absent:
   // its servers, and any plaintext secrets in them, were not checked.
-  for (const config of unparsed) {
-    console.log(`  ${config.client} (${config.filePath})`);
-    console.log(`    ? not checked: ${config.reason}`);
-    console.log();
-  }
+  printUnparsedConfigs(unparsed, 'not checked');
 
   if (exposedCount > 0) {
     console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
@@ -131,8 +164,7 @@ export function runMcpStatus(): number {
     console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
   }
   if (unparsed.length > 0) {
-    console.log(`  ${unparsed.length} config(s) could not be parsed, so the servers in them were not checked.`);
-    console.log('  Fix the file(s) above, then run `npx secretless-ai mcp-status` again.\n');
+    printUnparsedFix(unparsed.length, 'the servers in them were not checked', 'mcp-status');
   }
   return 0;
 }
@@ -144,7 +176,7 @@ export function runMcpUnprotect(): number {
   const home = os.homedir();
   const backupDir = path.join(home, '.secretless-ai', 'mcp-backups');
 
-  const configs = discoverMcpConfigs();
+  const { configs, unparsed } = discoverMcpConfigsDetailed();
   let restored = 0;
 
   for (const config of configs) {
@@ -154,10 +186,18 @@ export function runMcpUnprotect(): number {
     }
   }
 
-  if (restored === 0) {
-    console.log('  No backups found to restore.\n');
-  } else {
+  // A config that could not be parsed was not looked at, so "no backups"
+  // covers only the configs that were read.
+  if (restored > 0) {
     console.log(`\n  Restored ${restored} config(s) to original state.\n`);
+  } else if (unparsed.length === 0) {
+    console.log('  No backups found to restore.\n');
+  } else if (configs.length > 0) {
+    console.log('  No backups found to restore for the configs that were read.\n');
+  }
+  if (unparsed.length > 0) {
+    printUnparsedConfigs(unparsed, 'not restored');
+    printUnparsedFix(unparsed.length, 'no backup of them was restored', 'mcp-unprotect');
   }
   return 0;
 }
