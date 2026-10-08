@@ -608,8 +608,9 @@ of an unsupported type printed "No hardcoded credentials found." with nothing
 beside it: an AWS access key id in `notes.txt` was never read, and the report
 did not say so. Files not opened now have their own block, listed with the
 reason each was not opened, followed by a `Scan one:` command that names a
-file, because naming a file scans it whatever its type. A control character in
-a listed file or directory name is shown as `\xNN`, and such a name is never
+file, because naming a file scans it whatever its type. In the "files not
+opened" and "directories not entered" blocks, and only there, a control
+character in a listed name is shown as `\xNN`, and such a name is never
 offered as the command. What the scan detects, the exit code and the `--json`
 output are unchanged. `--help` lists scanning a single file under Scan
 Coverage.
