@@ -65,8 +65,8 @@ export function hostShapeProblem(host: string): string | null {
 
 /**
  * Why a `--host` value cannot be used, or null when it can. A port outside
- * 1-65535 is refused: git never matches a URL with that port, so the entry
- * would be written and never asked.
+ * 1-65535 is refused: no HTTPS request can reach that port, so the entry
+ * would be written and the helper never asked.
  */
 export function hostProblem(host: string): string | null {
   const shape = hostShapeProblem(host);
@@ -114,17 +114,32 @@ export function parseCredentialRequest(input: string): Map<string, string> {
     attrs.set(key, line.slice(eq + 1));
   }
   const url = attrs.get('url');
-  if (url !== undefined) {
-    try {
-      const parsed = new URL(url);
-      attrs.set('protocol', parsed.protocol.replace(/:$/, ''));
-      attrs.set('host', parsed.host);
-      if (parsed.username) attrs.set('username', decodeURIComponent(parsed.username));
-    } catch {
-      // An unparseable url names no host, so the request is not ours to answer.
-    }
+  const parts = url === undefined ? null : expandUrl(url);
+  if (parts) {
+    attrs.set('protocol', parts.protocol);
+    attrs.set('host', parts.host);
+    if (parts.username) attrs.set('username', parts.username);
   }
   return attrs;
+}
+
+/**
+ * The parts a `url=` value names, or null when it cannot be read in full: the
+ * URL does not parse, or its username holds a percent-escape that does not
+ * decode. Nothing is taken from a url= read in part, since a request with its
+ * host but not its user would skip the username check.
+ */
+function expandUrl(url: string): { protocol: string; host: string; username: string } | null {
+  try {
+    const parsed = new URL(url);
+    return {
+      protocol: parsed.protocol.replace(/:$/, ''),
+      host: parsed.host,
+      username: parsed.username ? decodeURIComponent(parsed.username) : '',
+    };
+  } catch {
+    return null;
+  }
 }
 
 export type RequestMatch =
@@ -140,9 +155,15 @@ export type RequestMatch =
  * the request and `--username` name a user and they differ, git moves on to the
  * next helper or its own prompt. A requested username that the answer could not
  * carry as one line (one decoded from `url=` can hold `%0A`) is not answered,
- * so the reply never gains an attribute the request wrote.
+ * so the reply never gains an attribute the request wrote. Nor is a request
+ * whose `url=` cannot be read in full, even beside `protocol=` and `host=`:
+ * the user it names is unknown, so it cannot be checked.
  */
 export function matchRequest(request: Map<string, string>, mapping: HelperMapping): RequestMatch {
+  const url = request.get('url');
+  if (url !== undefined && expandUrl(url) === null) {
+    return { ours: false, reason: 'the request\'s url= cannot be read in full (it does not parse, or its username does not decode), so the user it names cannot be checked' };
+  }
   const protocol = request.get('protocol');
   if (protocol !== 'https') {
     return { ours: false, reason: `the request is for ${protocol ? `protocol ${protocol}` : 'no protocol'}, and this helper answers https only` };

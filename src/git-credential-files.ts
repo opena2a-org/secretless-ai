@@ -27,7 +27,11 @@ export interface PlaintextCredentialFile {
   format: CredentialFileFormat;
   /** 1-based numbers of the lines holding a credential. */
   lines: number[];
-  /** Hosts those lines are for, lowercased and sorted. Never a user or a value. */
+  /**
+   * Hosts those lines are for, lowercased and sorted. Never a user or a value.
+   * A netrc `default` entry is the fallback for any machine, not a host, so it
+   * is not listed; its password line is in `lines`.
+   */
   hosts: string[];
 }
 
@@ -265,7 +269,8 @@ export function findGitCredentialExposure(options: GitCredentialCheckOptions = {
       continue;
     }
     const found = format === 'netrc' ? scanNetrc(text) : scanGitCredentials(text);
-    if (found.lines.length > 0) files.push({ path: file, display, format, ...found });
+    const hosts = format === 'netrc' ? found.hosts.filter((h) => h !== 'default') : found.hosts;
+    if (found.lines.length > 0) files.push({ path: file, display, format, lines: found.lines, hosts });
   }
 
   return { files, unreadable, storeHelpers, configChecked: settings !== null, checked };

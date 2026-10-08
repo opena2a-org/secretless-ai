@@ -122,6 +122,22 @@ describe('the git credential protocol', () => {
     expect(matchRequest(nul, { host: 'github.com', name: 'T' }).ours).toBe(false);
   });
 
+  it('does not answer a request whose url= cannot be read in full, so no user check is skipped', () => {
+    const mapping = { host: 'github.com', name: 'T' };
+    const undecodable = parseCredentialRequest('url=https://%E0%A4%A@github.com/\n');
+    expect(undecodable.has('username')).toBe(false);
+    expect(matchRequest(undecodable, mapping))
+      .toEqual({ ours: false, reason: expect.stringMatching(/url= .*cannot be read/) });
+    // protocol= and host= beside the url= do not make it answerable.
+    const beside = parseCredentialRequest('protocol=https\nhost=github.com\nurl=https://%E0%A4%A@github.com/\n');
+    expect(matchRequest(beside, mapping).ours).toBe(false);
+    expect(matchRequest(parseCredentialRequest('protocol=https\nhost=github.com\nurl=not a url\n'), mapping).ours).toBe(false);
+    // A username that decodes is still checked the usual way.
+    const decoded = parseCredentialRequest('url=https://oc%74o@github.com/\n');
+    expect(matchRequest(decoded, mapping)).toEqual({ ours: true, username: 'octo' });
+    expect(matchRequest(decoded, { ...mapping, username: 'someone-else' }).ours).toBe(false);
+  });
+
   it('recognises its own entry for a host under any command prefix, and nothing else', () => {
     const ours = helperCommand('npx secretless-ai', { host: 'github.com', name: 'GITHUB_TOKEN', username: 'octo' });
     expect(ours).toBe('!npx secretless-ai git-credential --host github.com --name GITHUB_TOKEN --username octo');
@@ -263,6 +279,18 @@ describe('git-credential command', () => {
   it('get answers nothing, without opening the store, for a url= username holding a line break', async () => {
     const input = 'protocol=https\nhost=github.com\nurl=https://a%0Apassword=x@github.com/\n\n';
     expect(await runGitCredential(GET, deps(input, { GITHUB_TOKEN: TOKEN }))).toBe(0);
+    expect(answers).toEqual([]);
+    expect(storeOpened).toBe(0);
+  });
+
+  it('get answers nothing, without opening the store, for a url= username that does not decode', async () => {
+    for (const input of [
+      'url=https://%E0%A4%A@github.com/\n\n',
+      'protocol=https\nhost=github.com\nurl=https://%E0%A4%A@github.com/\n\n',
+      'protocol=https\nhost=github.com\nurl=not a url\n\n',
+    ]) {
+      expect(await runGitCredential(GET, deps(input, { GITHUB_TOKEN: TOKEN }))).toBe(0);
+    }
     expect(answers).toEqual([]);
     expect(storeOpened).toBe(0);
   });

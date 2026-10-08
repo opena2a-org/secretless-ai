@@ -189,13 +189,15 @@ install --host <host> --name <NAME> [--username <user>]` adds two entries to
 `credential.https://<host>.helper` in the global git config: an empty entry,
 which stops git asking any helper configured before it (such as `store`) for
 that host or handing it the token, and a helper that answers from the secret
-store. A port outside 1-65535 is refused, since git never matches it. No value
+store. A port outside 1-65535 is refused: no HTTPS request can reach that
+port, so the helper is never asked. No value
 is written to any config file, and `git-credential uninstall --host <host>`
 removes those two entries, for any host `install` could have written, and
 leaves any other helper for the host as it was. Git runs the helper as `git-credential get`, which answers
 only HTTPS requests for its host, never for a different user than
 `--username` or for a requested username holding a line break or NUL (which a
-`url=` username can after decoding), refuses when stdin or stdout is a terminal
+`url=` username can after decoding), never for a request whose `url=` does not
+parse or holds a username whose percent-escapes do not decode (#254), refuses when stdin or stdout is a terminal
 without opening the store, and refuses a stored value holding a line break rather than trimming
 it; `store` and `erase` write nothing. These protocol calls are not counted by
 telemetry. `doctor` now has a Git credentials block, and `status` a row per
@@ -206,7 +208,8 @@ named as a host or provider), and a `credential.helper` set to
 `store`, each with Verify and Fix lines. `doctor`'s verdict and exit code
 still reflect the shell profile check alone, and `--fix` does not touch these
 files. `status --json` carries them as `gitCredentials`, with the Verify and
-Fix lines in `gitCredentials.findings`. The guard hook and
+Fix lines in `gitCredentials.findings`; its `files[].hosts` leaves out a
+`.netrc` `default` entry as well, whose password line is still in `lines` (#254). The guard hook and
 the deny rules `init` writes now refuse `git-credential get` and `git
 credential fill`, which print the token, so `init` adds three deny patterns.
 
@@ -600,6 +603,16 @@ covers only the profiles that were read, and a `Not checked:` line names each
 file with a Fix line. The `doctor` health value is unchanged, and so are the
 exit codes of these commands outside that `null` case; a profile in the library
 `doctor()` result carries `readError` when it could not be read.
+
+**`scan` no longer calls a directory it reported a finding from "not entered"
+(#254).** The block listing directories the scan did not descend into named
+`.github` as "not entered" beside a finding from
+`.github/workflows/config.yml`. That block lists where source files were not
+read, and the key and config walks still enter a hidden directory, so it is
+now headed "directories not entered for source files" and a hidden directory's
+reason reads "hidden directory; key files and config files recognized by name
+are still scanned", in `notEnteredDirs` under `--json` too. Which files are
+read is unchanged.
 
 **`scan` names every file it did not open, even when no directory was
 skipped.** The count of files not opened was printed only inside the

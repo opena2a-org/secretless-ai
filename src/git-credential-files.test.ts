@@ -171,6 +171,22 @@ describe('findGitCredentialExposure on a fixture home', () => {
     expectNoPartOf(printed, NETRC_PW);
     expect(printed).not.toContain(USER);
   });
+
+  itIfGit('lists a netrc default entry in neither the hosts status --json carries nor the finding', () => {
+    fs.writeFileSync(path.join(home, '.netrc'), [
+      `machine gitlab.com login ${USER} password ${NETRC_PW}`,
+      `default login ${USER} password ${NETRC_PW}`,
+    ].join('\n') + '\n');
+    const exposure = findGitCredentialExposure({ homeDir: home });
+    expect(exposure.files.map((f) => [f.display, f.lines, f.hosts])).toEqual([['~/.netrc', [1, 2], ['gitlab.com']]]);
+    const [finding] = describeExposure(exposure, 'npx secretless-ai');
+    expect(finding.message).toBe('~/.netrc holds 2 plaintext passwords (lines 1, 2) for gitlab.com');
+
+    fs.writeFileSync(path.join(home, '.netrc'), `default login ${USER} password ${NETRC_PW}\n`);
+    const alone = findGitCredentialExposure({ homeDir: home });
+    expect(alone.files.map((f) => [f.display, f.lines, f.hosts])).toEqual([['~/.netrc', [1], []]]);
+    expect(JSON.stringify(alone)).not.toMatch(/\bdefault\b/);
+  });
 });
 
 /**
