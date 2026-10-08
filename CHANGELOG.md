@@ -735,6 +735,48 @@ the field, because a note that reads like a restriction would look applied
 while restricting nothing. Notes are dropped at load and do not appear in
 `getRules()`, `/status`, `broker status` or the audit log.
 
+**The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
+denies instead of advising.** This hook is registered by hand in the Claude
+Code hooks config; `init` installs only `secretless-guard.sh`, which is
+unchanged. On an expired or tampered session the command exits 2 and prints
+the PreToolUse deny JSON
+(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",...}}`)
+on stdout with the reason on stderr, so Claude Code blocks the tool call
+instead of letting it proceed past a warning. Previously the hook exited 1
+with a message on stderr only, which the hook contract does not treat as
+blocking: the session gate could not gate. A session file whose HMAC is
+missing or does not match its content (tampered) now also denies. Before, a
+mismatch was treated as "never installed" and passed silently, and a file with
+the HMAC field removed was accepted as a valid session. On an expired session
+with the broker daemon not running, the deny reason names
+`secretless-ai broker start` before `secretless-ai warm`; a tampered session
+names `secretless-ai warm` only. When no session file exists at all the hook
+still passes with exit 0 and no output: users who never set Secretless up are
+not blocked. This hook is a gate on the assistant's tool path, not a security
+boundary.
+
+**`secretless-mcp --help` prints its usage and exits 0.** Previously `--help`
+and `-h` were treated as bad arguments and exited 1, which the new release
+artifact review's install smoke (every bin must answer `--help`) caught.
+
+**A `.secretless-rules.yaml` line the parser cannot read is now reported, and
+`rules list` and `init` exit 1 over it.** Previously a top-level key the parser
+did not recognise — `file:` instead of `files:`, `Files:`, `envs:` — silently
+discarded every pattern under it, flow syntax (`env: [ACME_*]`) and zero-indent
+list items vanished the same way, and the loader still reported the file as
+loaded (or empty) with no diagnostic. The deny rules were generated without
+those patterns and `init` exited 0: a restriction you wrote, reported as
+loaded, that did not restrict. Unknown keys now get a nearest-match hint
+("did you mean \"files\"?") but are never auto-corrected, every dropped pattern
+is named with its line number, and the sections that were read still load. Two
+adjacent holes closed with it: a section line the parser cannot read — inline
+content, stray spacing like `files :`, an invisible character — no longer lets
+the items below it attach to the previous section (a file pattern misread as an
+env pattern generated deny rules you did not write), a rules file refused for
+unsafe pattern characters no longer configures nothing while `init` exits 0,
+and the problem is reported even when Claude Code is not among the configured
+tools.
+
 ### Fixed
 
 - The size `scan` prints for a file skipped for size reads as larger than the
@@ -811,13 +853,14 @@ while restricting nothing. Notes are dropped at load and do not appear in
 - The README and the `scan` line of `--help` said a scan covers config files
   and source code. A directory scan checks source files by extension, key
   files, and the config files it recognizes by name; it does not open other
-  files, such as `values.yaml`, `main.tf`, `.ipynb` notebooks, or most GitHub
-  Actions workflows and `.md` files. Both now say so. Releases 0.17.0 through
-  0.23.0 did not open these files either, so a clean result from them did not
-  cover them. From 0.21.1 on, naming a file scans it:
-  `npx secretless-ai scan deploy/values.yaml`. In 0.17.0 through 0.21.0,
-  `scan` did not read a file named on the command line, so a clean result did
-  not cover that file either (fixed in 0.21.1).
+  files, such as `values.yaml`, `main.tf`, `.ipynb` notebooks, GitHub Actions
+  workflows, or most `.md` files. Both now say so. No release through 0.23.0
+  opened these files either, so a clean result from one did not cover them.
+  `scan --include-config` reads config-format files outside dot-directories,
+  such as `values.yaml` and `main.tf`. From 0.21.1 on, naming a file scans it:
+  `npx secretless-ai scan deploy/values.yaml`. Through 0.21.0, `scan` did not
+  read a file named on the command line, so a clean result did not cover that
+  file either (fixed in 0.21.1).
 
 ### Changed
 
@@ -871,50 +914,6 @@ while restricting nothing. Notes are dropped at load and do not appear in
   with `NAME=VALUE` or piped stdin (exit 2). `secret set NAME` on a terminal
   now prompts with input hidden, drops bracketed-paste markers and handles
   Backspace, and Ctrl-C at the prompt stores nothing and exits 130 (#234).
-
-## [0.23.1] - YYYY-MM-DD
-
-**The session-check PreToolUse hook (`secretless-ai hook --check-only`) now
-denies instead of advising.** This hook is registered by hand in the Claude
-Code hooks config; `init` installs only `secretless-guard.sh`, which is
-unchanged. On an expired or tampered session the command exits 2 and prints
-the PreToolUse deny JSON
-(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",...}}`)
-on stdout with the reason on stderr, so Claude Code blocks the tool call
-instead of letting it proceed past a warning. Previously the hook exited 1
-with a message on stderr only, which the hook contract does not treat as
-blocking: the session gate could not gate. A session file whose HMAC is
-missing or does not match its content (tampered) now also denies. Before, a
-mismatch was treated as "never installed" and passed silently, and a file with
-the HMAC field removed was accepted as a valid session. On an expired session
-with the broker daemon not running, the deny reason names
-`secretless-ai broker start` before `secretless-ai warm`; a tampered session
-names `secretless-ai warm` only. When no session file exists at all the hook
-still passes with exit 0 and no output: users who never set Secretless up are
-not blocked. This hook is a gate on the assistant's tool path, not a security
-boundary.
-
-**`secretless-mcp --help` prints its usage and exits 0.** Previously `--help`
-and `-h` were treated as bad arguments and exited 1, which the new release
-artifact review's install smoke (every bin must answer `--help`) caught.
-
-**A `.secretless-rules.yaml` line the parser cannot read is now reported, and
-`rules list` and `init` exit 1 over it.** Previously a top-level key the parser
-did not recognise — `file:` instead of `files:`, `Files:`, `envs:` — silently
-discarded every pattern under it, flow syntax (`env: [ACME_*]`) and zero-indent
-list items vanished the same way, and the loader still reported the file as
-loaded (or empty) with no diagnostic. The deny rules were generated without
-those patterns and `init` exited 0: a restriction you wrote, reported as
-loaded, that did not restrict. Unknown keys now get a nearest-match hint
-("did you mean \"files\"?") but are never auto-corrected, every dropped pattern
-is named with its line number, and the sections that were read still load. Two
-adjacent holes closed with it: a section line the parser cannot read — inline
-content, stray spacing like `files :`, an invisible character — no longer lets
-the items below it attach to the previous section (a file pattern misread as an
-env pattern generated deny rules you did not write), a rules file refused for
-unsafe pattern characters no longer configures nothing while `init` exits 0,
-and the problem is reported even when Claude Code is not among the configured
-tools.
 
 ## [0.23.0] - 2026-08-19
 

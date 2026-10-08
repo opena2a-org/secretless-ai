@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { scan } from './scan';
-import { CREDENTIAL_PATTERNS } from './patterns';
+import { scan, KEY_FILE_EXTENSIONS } from './scan';
+import { CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
 
 /**
  * The README and `--help` say what a scan reads. A directory scan opens source
@@ -20,9 +20,17 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const README = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
 
 const TEXT_DRIFT =
-  'README.md How it works step 1, the README paragraph on what a directory scan checks, ' +
-  'the README dot-directory paragraph, the scan help line and the website docs sentence ' +
-  'say a directory scan does not open this file; update them in the same change that starts opening it.';
+  'README.md How it works step 1, the README paragraph beginning "A directory scan checks", ' +
+  'the README paragraph beginning "Dot-directories are among" and the scan line of --help ' +
+  '(src/commands/help.ts) say a directory scan does not open this file; update them in the ' +
+  'same change that starts opening it.';
+
+/** The README paragraph that says what a directory scan opens. */
+function directoryScanParagraph(): string {
+  const para = README.split('\n').filter(l => l.startsWith('A directory scan checks'));
+  expect(para, 'README.md must hold exactly one paragraph beginning "A directory scan checks"').toHaveLength(1);
+  return para[0];
+}
 
 // The real-looking AWS key src/scan.test.ts already plants, joined at run
 // time so that no single source line has the shape of a provider token.
@@ -68,6 +76,31 @@ describe('README claims about what a directory scan opens', () => {
         expect(files, `${rel}: ${TEXT_DRIFT}`).not.toContain(rel);
       }
       expect(files).toEqual(['control.js']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the paragraph names every key-file extension the walker opens', () => {
+    const para = directoryScanParagraph();
+    for (const ext of KEY_FILE_EXTENSIONS) {
+      expect(para, `the README directory-scan paragraph does not name \`${ext}\` (KEY_FILE_EXTENSIONS in src/scan.ts)`).toContain(`\`${ext}\``);
+    }
+  });
+
+  it('no config name is a GitHub Actions workflow, and the paragraph does not say some are opened', () => {
+    expect(CONFIG_FILES.filter(name => name.includes('.github/workflows'))).toEqual([]);
+    expect(directoryScanParagraph()).not.toMatch(/most GitHub Actions workflows/);
+  });
+
+  it('the paragraph names --include-config, which reads the config-format files it names', () => {
+    expect(directoryScanParagraph()).toContain('`scan --include-config` also reads config-format files outside dot-directories, such as `values.yaml` and `main.tf`');
+    const dir = tmpProject();
+    try {
+      const findings = scan(dir, { scanGlobal: false, includeConfig: true });
+      const root = fs.realpathSync(dir);
+      const files = [...new Set(findings.map(f => path.relative(root, fs.realpathSync(path.resolve(dir, f.file)))))].sort();
+      expect(files).toEqual(['control.js', 'deploy/values.yaml', 'infra/main.tf']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

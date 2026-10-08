@@ -865,7 +865,7 @@ function isTestFile(name: string): boolean {
  * and again at the file level (in case the user uses a file-name glob).
  */
 /** Private-key file extensions scanned in addition to source/config files. */
-const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx', BUNDLE_EXTENSION]);
+export const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx', BUNDLE_EXTENSION]);
 
 /** What a walker collected, and every reason its coverage fell short. */
 interface WalkResult {
