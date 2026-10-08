@@ -304,7 +304,7 @@ describe('the human report names a file it did not open', () => {
     expect(code).toBe(1);
     expect(text).toMatch(/1 directory not entered for source files — declared boundaries, not findings\./);
     expect(text).not.toMatch(/director(y|ies) not entered —/);
-    expect(text).toMatch(/\.github — hidden directory; key files and config files recognized by name are still scanned/);
+    expect(text).toMatch(/\.github — hidden directory$/m);
   });
 
   it('gives the ignore rule, not "still scanned", for a hidden directory an ignore rule covers', async () => {
@@ -327,5 +327,37 @@ describe('the human report names a file it did not open', () => {
     const { text, code } = await report(path.join(dir, '.golden'));
     expect(text).toContain('config.yml:1');
     expect(code).toBe(1);
+  });
+
+  it('does not say "still scanned" for a hidden directory linked outside the root', async () => {
+    // No walk follows a directory link out of the root, so the key and config
+    // walks never read the settings file behind `.claude`.
+    const outside = tree({ 'settings.json': `{"env":{"GITHUB_TOKEN":"${TOKEN}"}}\n` });
+    const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
+    fs.symlinkSync(outside, path.join(dir, '.claude'), 'dir');
+    const { text, code } = await report(dir);
+
+    expect(text).toContain('No hardcoded credentials found.');
+    expect(text).toMatch(/1 symlink points outside the scan root — not followed\./);
+    expect(code).toBe(0);
+    expect(text).toMatch(/\.claude — hidden directory$/m);
+    expect(text).not.toMatch(/still scanned/);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('does not say "still scanned" for a hidden directory that cannot be read', async () => {
+    const dir = tree({
+      'src/app.ts': 'export const x = 1;\n',
+      '.locked/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n`,
+    });
+    const locked = path.join(dir, '.locked');
+    fs.chmodSync(locked, 0o000);
+    try {
+      const { text } = await report(dir);
+      expect(text).toMatch(/1 path could not be read — not scanned, so not known to be clean\./);
+      expect(text).toMatch(/\.locked — hidden directory$/m);
+      expect(text).not.toMatch(/still scanned/);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
   });
 });

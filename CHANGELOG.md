@@ -609,12 +609,10 @@ exit codes of these commands outside that `null` case; a profile in the library
 `.github` as "not entered" beside a finding from
 `.github/workflows/config.yml`. That block lists where source files were not
 read, so it is now headed "directories not entered for source files". Of the
-directories it gave the reason "hidden directory", the key and config walks
-still enter those no ignore rule covers, whose reason now reads "hidden
-directory; key files and config files recognized by name are still scanned",
-in `notEnteredDirs` under `--json` too; one an ignore rule covers, such as
-`.golden/` on the default list, is entered by no walk, and its reason is now
-"ignore rule (--no-ignore)". Which files are read is unchanged.
+directories it gave the reason "hidden directory", one an ignore rule covers,
+such as `.golden/` on the default list, is entered by no walk, and its reason
+is now "ignore rule (--no-ignore)", in `notEnteredDirs` under `--json` too; the
+others keep the reason "hidden directory". Which files are read is unchanged.
 
 **`scan` names every file it did not open, even when no directory was
 skipped.** The count of files not opened was printed only inside the
