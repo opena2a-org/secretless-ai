@@ -75,6 +75,16 @@ describe('the summary discloses what was not looked at', () => {
     expect(doc.findings.length).toBeGreaterThan(0);
   });
 
+  it('gives the ignore rule as the reason for a hidden directory .secretlessignore covers', async () => {
+    const dir = tree({
+      '.github/workflows/config.yml': 'name: ci\n',
+      '.secretlessignore': '.github/\n',
+    });
+    const { doc } = await scanned(dir);
+    const github = doc.notEnteredDirs.find((d: { path: string }) => d.path === '.github');
+    expect(github.reason).toBe('ignore rule (--no-ignore)');
+  });
+
   it('CONTROL: a tree with nothing to skip reports zero, so the counter is not a constant', async () => {
     const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
     const { doc, code } = await scanned(dir);
@@ -295,5 +305,27 @@ describe('the human report names a file it did not open', () => {
     expect(text).toMatch(/1 directory not entered for source files — declared boundaries, not findings\./);
     expect(text).not.toMatch(/director(y|ies) not entered —/);
     expect(text).toMatch(/\.github — hidden directory; key files and config files recognized by name are still scanned/);
+  });
+
+  it('gives the ignore rule, not "still scanned", for a hidden directory an ignore rule covers', async () => {
+    // `.golden/` is on the default ignore list, which the key and config walks
+    // honor too: no walk enters it, so its config file is not read.
+    const dir = tree({
+      '.golden/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n`,
+      'src/app.ts': 'export const x = 1;\n',
+    });
+    const { text, code } = await report(dir);
+
+    expect(text).toContain('No hardcoded credentials found.');
+    expect(code).toBe(0);
+    expect(text).toMatch(/\.golden — ignore rule \(--no-ignore\)/);
+    expect(text).not.toMatch(/still scanned/);
+  });
+
+  it('CONTROL: the command it prints for that directory finds the planted key', async () => {
+    const dir = tree({ '.golden/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n` });
+    const { text, code } = await report(path.join(dir, '.golden'));
+    expect(text).toContain('config.yml:1');
+    expect(code).toBe(1);
   });
 });

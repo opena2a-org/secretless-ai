@@ -1360,11 +1360,13 @@ function walkSourceFiles(
     // names it accurately: it is in SOURCE_SKIP_DIRS, so without this arm it
     // reported as "dependency or build output", which it is not. The set that
     // skips is unchanged; only the reason differs. The key and config walks
-    // do enter a hidden directory, so its reason says what is still read there.
+    // do enter a hidden directory no ignore rule covers, so its reason says
+    // what is still read there; one an ignore rule covers, no walk enters, so
+    // it falls through to the ignore rule's reason.
     skipDir: (name, rel) =>
       (name === '.git' && 'git metadata')
       || (SOURCE_SKIP_DIRS.has(name) && 'dependency or build output')
-      || (name.startsWith('.') && 'hidden directory; key files and config files recognized by name are still scanned')
+      || (name.startsWith('.') && !(ignore && ignore.matches(rel + '/.')) && 'hidden directory; key files and config files recognized by name are still scanned')
       || (!includeTests && TEST_DIRS.has(name) && 'test directory (--include-tests)')
       || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule (--no-ignore)'),
     // The config walk reads these (it applies the ignore rule itself).
