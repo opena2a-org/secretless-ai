@@ -320,16 +320,31 @@ describe('git reads the stored token through the installed helper', () => {
 
   /** Async: the Vault stub answers on this process's event loop. */
   function run(cmd: string, args: string[], input = ''): Promise<{ status: number | null; stdout: string; stderr: string }> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const child = spawn(cmd, args, { env: env(), cwd: home, stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      child.on('error', reject);
+      // `install`, `uninstall` and `git config` exit without reading stdin; when
+      // that happens before the write lands, the pipe reports EPIPE. That says
+      // nothing about what the test asserts, and without a listener it is an
+      // unhandled error that fails the whole run.
+      child.stdin.on('error', (e: NodeJS.ErrnoException) => {
+        if (e.code !== 'EPIPE' && e.code !== 'ERR_STREAM_DESTROYED') reject(e);
+      });
       child.on('close', (status) => resolve({ status, stdout, stderr }));
       child.stdin.end(input);
     });
   }
+
+  it('run() tolerates a child that exits before reading its input', async () => {
+    // More than a pipe buffer holds, to a child that never reads it: the write
+    // fails with EPIPE, which must not surface as an unhandled error.
+    const res = await run(process.execPath, ['-e', 'process.exit(0)'], 'x'.repeat(1 << 20));
+    expect(res.status).toBe(0);
+  });
 
   itE2e('git credential fill gets the token, and approve writes no plaintext file even with store configured', async () => {
     expect((await run('git', ['config', '--global', 'credential.helper', 'store'])).status).toBe(0);
