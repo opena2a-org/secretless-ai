@@ -854,8 +854,10 @@ tools.
   and source code. A directory scan checks source files by extension, key
   files, and the config files it recognizes by name; it does not open other
   files, such as `values.yaml`, `main.tf`, `.ipynb` notebooks, GitHub Actions
-  workflows, or most `.md` files. Both now say so. No release through 0.23.0
-  opened these files either, so a clean result from one did not cover them.
+  workflows other than one whose file name is a recognized config name (such
+  as `.github/workflows/config.yml`), or most `.md` files. Both now say so. No
+  release through 0.23.0 opened these files either, so a clean result from one
+  did not cover them.
   `scan --include-config` reads config-format files outside dot-directories,
   such as `values.yaml` and `main.tf`. From 0.21.1 on, naming a file scans it:
   `npx secretless-ai scan deploy/values.yaml`. Through 0.21.0, `scan` did not
