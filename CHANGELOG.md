@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+**The README's `clean` example runs (#240).** Under "A flag never widens
+scope" the README showed `npx secretless-ai clean --dryrun --path ./transcripts`
+as a bare command to illustrate the refusal, so a reader who copied it got exit
+2 and nothing else. It now shows `clean --dry-run --path ./transcripts`, and the
+refusal a mistyped `--dryrun` produces is shown as output. `src/docs-commands.test.ts`
+now passes every `secretless-ai` invocation in the README and `docs/` to the
+CLI's argument parser and fails on any flag it would refuse or ignore.
+
 **The gcp-sm backend reads a repository's GCP project from its `.secretless`
 (#177).** A `gcp.projectId: <project-id>` line in a repository's `.secretless`
 names the GCP project that repository's names are read from and stored in, for

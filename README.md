@@ -247,11 +247,16 @@ A command line the tool cannot bind is refused with exit 2 before anything runs,
 Exit codes: `0` clean, `1` credentials found (or an incomplete scan), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
 
 ```bash
-npx secretless-ai clean --dryrun --path ./transcripts
-#   Unknown option: --dryrun (did you mean --dry-run?)
-#   `clean` was not run. Nothing was changed.
-#   Supported: --dry-run, --help, --last, --path <value>
-#   Run `secretless-ai clean --help` for usage.
+npx secretless-ai clean --dry-run --path ./transcripts   # reports findings without redacting
+```
+
+Mistype that flag as `--dryrun` and `clean` does not run. It exits 2 and prints:
+
+```
+  Unknown option: --dryrun (did you mean --dry-run?)
+  `clean` was not run. Nothing was changed.
+  Supported: --dry-run, --help, --last, --path <value>
+  Run `secretless-ai clean --help` for usage.
 ```
 
 ```bash
