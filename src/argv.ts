@@ -245,8 +245,9 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   // `--meta` is read once per occurrence by `secret set` (commands/secrets.ts),
   // so it is the one repeatable flag. Each subcommand refuses the flags that
   // belong to another one; see SECRET_SUBCOMMAND_FLAGS there.
-  // `--force` is read by `get` and `sync`; `--from`, `--only`, `--manifest` and
-  // `--dry-run` by `sync` only, which refuses them on the other subcommands.
+  // `--force` is read by `get` and `sync`; `--from`, `--only` and `--manifest`
+  // by `sync` only, `--to`, `--vault` and `--as` by `push` only, and
+  // `--dry-run` by both. Each subcommand refuses the others' flags.
   secret: {
     flags: {
       '--force': false,
@@ -261,6 +262,9 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--only': true,
       '--manifest': true,
       '--dry-run': false,
+      '--to': true,
+      '--vault': true,
+      '--as': true,
     },
     unknownFlags: 'reject',
     honorsJson: true,

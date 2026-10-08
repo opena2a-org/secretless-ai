@@ -346,7 +346,7 @@ describe('secret sync usage', () => {
   it('refuses a sync-only flag on another subcommand rather than ignoring it', async () => {
     // `secret set --dry-run` would otherwise store the value it was asked to preview.
     expect(await runSecret(['set', '--dry-run', 'API_KEY=x'])).toBe(2);
-    expect(printed()).toContain('--dry-run applies to `secret sync` only');
+    expect(printed()).toContain('--dry-run applies to `secret sync` and `secret push` only');
   });
 });
 

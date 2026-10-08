@@ -298,6 +298,17 @@ npx secretless-ai secret sync --from 1password            # copy the required na
 npx secretless-ai setup --check                           # confirm nothing required is missing
 ```
 
+To put a stored secret into a deployment, `secret push` writes it to a cloud secret store. Each value goes from this machine's store into an HTTPS request body, never onto a command line, and the output carries names, identifiers and versions only. Key Vault secret names allow letters, digits and `-`, so `--as` gives the name to use there:
+
+```bash
+npx secretless-ai secret push OPENAI_API_KEY --to azure-kv --vault kv-prod --as OPENAI-API-KEY --dry-run  # would create / would add a version
+npx secretless-ai secret push OPENAI_API_KEY --to azure-kv --vault kv-prod --as OPENAI-API-KEY            # prints the secret URI and version
+az containerapp secret set -n <app> -g <rg> \
+  --secrets openai-api-key=keyvaultref:https://kv-prod.vault.azure.net/secrets/OPENAI-API-KEY,identityref:<identity-id>
+```
+
+The Key Vault token comes from the standard Azure credential chain: `AZURE_TENANT_ID` and `AZURE_CLIENT_ID` with `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`, then a managed identity, then the signed-in Azure CLI. Pushing needs the Key Vault Secrets Officer role on the vault (or `set` in its access policy); the container app's identity needs Key Vault Secrets User to read the reference. `--to vault` and `--to gcp-sm` push to HashiCorp Vault and GCP Secret Manager the same way, at the names `secret sync --from` reads. A name that is not stored on this machine stops the push before anything is written, and the first write that fails stops the rest. `--dry-run` reads metadata only, so a write the target would refuse is found by the real run.
+
 Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS Keychain and Linux Secret Service CLIs; reads and writes through those backends then fail with an error instead of prompting, and nothing is read from or written to another store. The value is exactly `off`, in lowercase: `OFF`, `0` or `false` leave the OS keychain reachable.
 
 ## NanoMind integration

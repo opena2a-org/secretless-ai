@@ -150,6 +150,15 @@ export class VaultBackend implements WritableSecretBackend {
   }
 
   async store(key: string, value: string): Promise<void> {
+    await this.storeVersion(key, value);
+  }
+
+  /**
+   * Write `value` at `key` and return the KV v2 version the write created, or
+   * 0 when the server's answer names none. The response is read for its
+   * version number only.
+   */
+  async storeVersion(key: string, value: string): Promise<number> {
     this.ensureConfigured();
 
     const url = `${this.addr}/v1/${this.mountPath}/data/${key}`;
@@ -164,6 +173,49 @@ export class VaultBackend implements WritableSecretBackend {
     if (!response.ok) {
       throw new Error(`Vault: write failed (HTTP ${response.status})`);
     }
+
+    const body = await response.json().catch(() => undefined) as
+      { data?: { version?: unknown } } | undefined;
+    const version = body?.data?.version;
+    return typeof version === 'number' ? version : 0;
+  }
+
+  /**
+   * Whether `key` holds any version, from its KV v2 metadata. Never reads a
+   * value: the metadata path answers with version numbers and timestamps.
+   */
+  async hasEntry(key: string): Promise<boolean> {
+    this.ensureConfigured();
+
+    const url = `${this.addr}/v1/${this.mountPath}/metadata/${key}`;
+    const response = await this.request('GET', url);
+
+    if (response.status === 404) return false;
+    if (response.status === 403) {
+      throw new Error(`Vault: permission denied reading the metadata of "${key}"`);
+    }
+    if (!response.ok) {
+      throw new Error(`Vault: metadata read failed (HTTP ${response.status})`);
+    }
+    return true;
+  }
+
+  /** The settings a request needs that are not set, by variable name. */
+  missingSettings(): string[] {
+    const missing: string[] = [];
+    if (!this.addr) missing.push('VAULT_ADDR');
+    if (!this.token) missing.push('VAULT_TOKEN');
+    return missing;
+  }
+
+  /** The server's origin, for output. Empty when VAULT_ADDR is not set. */
+  get origin(): string {
+    return this.addr ? vaultOrigin(this.addr) : '';
+  }
+
+  /** The KV v2 mount path. */
+  get kvMount(): string {
+    return this.mountPath;
   }
 
   async delete(key: string): Promise<boolean> {

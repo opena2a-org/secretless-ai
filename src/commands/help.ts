@@ -50,6 +50,8 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} secret get --force <NAME>  Retrieve in non-interactive contexts
     ${CLI} secret rm <NAME>           Remove a secret
     ${CLI} secret sync --from <backend>  Copy .secretless names from a shared backend
+    ${CLI} secret push NAME --to azure-kv --vault <name>
+                                      Write a stored secret to a cloud secret store
     ${CLI} import <file>              Import secrets from .env file
     ${CLI} import --detect            Auto-find and import .env files
     ${CLI} export --out <file>.secretless-bundle [--only K1,K2]

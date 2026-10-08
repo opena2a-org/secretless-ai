@@ -163,7 +163,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     flags: { '--check': 'Check for missing required secrets without prompting (CI)' },
   },
   secret: {
-    summary: 'Store, list, describe, retrieve, remove or sync secrets.',
+    summary: 'Store, list, describe, retrieve, remove, sync or push secrets.',
     usage: [
       'set <NAME[=VALUE]> [--description <text>] [--meta <key=value>]...',
       'set <NAME> --from-clipboard [--keep-clipboard] [--description <text>] [--meta <key=value>]...',
@@ -172,6 +172,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       'get [--force] <NAME>',
       'rm <NAME>',
       'sync --from <backend> [--only K1,K2 | --manifest <file>] [--dry-run] [--force]',
+      'push <NAME[,NAME2...]> --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>] [--dry-run]',
     ],
     flags: {
       '--force': 'get: retrieve in non-interactive contexts. sync: replace local values that differ',
@@ -185,7 +186,10 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--from': ['<backend>', `sync: backend to copy from (${BACKENDS})`],
       '--only': ['K1,K2', 'sync: copy only the named secrets'],
       '--manifest': ['<file>', 'sync: copy the required names of this .secretless file'],
-      '--dry-run': 'sync: report what would be created, updated or left alone; write nothing',
+      '--dry-run': 'sync, push: report what each name would get (created, updated, a new version); write nothing',
+      '--to': ['<target>', 'push: cloud store to write to (azure-kv, vault, gcp-sm)'],
+      '--vault': ['<name>', 'push: the Azure Key Vault to write to (--to azure-kv)'],
+      '--as': ['<names>', 'push: the names to use in the target, one per secret, in order'],
     },
     notes: [
       'To store a key copied from a web page, use `set NAME --from-clipboard`: the value',
@@ -200,6 +204,9 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       'sync copies by name into this machine\'s store; values are never printed.',
       'Without --only or --manifest it copies the required names of ./.secretless.',
       'A local value that differs is left as is and reported unless --force is given.',
+      'push sends each value in an HTTPS request body, never on a command line, and',
+      'prints the identifier, version and the reference to use next; never the value.',
+      'A name not stored here stops the push before anything is written.',
     ],
   },
   watch: {
