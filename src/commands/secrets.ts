@@ -16,6 +16,11 @@ import { resolveGcpProject, repositoryProjectNote } from '../backends/gcp-projec
 import { Clipboard, clipboardInstallHint } from '../clipboard';
 import { canReadHidden, readHiddenLine } from '../hidden-line';
 import type { TtyInput } from '../hidden-line';
+import { pushSecrets, PushError, MissingLocalNamesError, PUSH_TARGETS, VaultPushTarget, GcpPushTarget } from '../secret-push';
+import type { PushAction, PushResult, PushTarget, PushTargetType } from '../secret-push';
+import { AzureKeyVaultTarget, vaultNameFromArg, vaultNameProblem } from '../backends/azure-kv';
+import { VaultBackend } from '../backends/vault';
+import { GCPSecretManagerBackend } from '../backends/gcp-sm';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -183,8 +188,19 @@ function annotationJson(name: string, annotation: SecretAnnotation | undefined):
   };
 }
 
-/** Flags only `secret sync` reads. Refused on the other subcommands (below). */
-const SYNC_ONLY_FLAGS = ['--from', '--only', '--manifest', '--dry-run'];
+/**
+ * Flags only `secret sync` or `secret push` reads, and which of the two reads
+ * each. Refused on every other subcommand (below).
+ */
+const TRANSFER_FLAG_OWNERS: Readonly<Record<string, readonly string[]>> = {
+  '--from': ['sync'],
+  '--only': ['sync'],
+  '--manifest': ['sync'],
+  '--dry-run': ['sync', 'push'],
+  '--to': ['push'],
+  '--vault': ['push'],
+  '--as': ['push'],
+};
 
 export interface RunSecretOptions {
   /** `--json`, as read by the dispatcher. */
@@ -226,20 +242,25 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
   const json = options.json === true || parsed.switches.has('--json');
 
   // The `secret` verb registers one flag list for all its subcommands. A sync
-  // flag given to another subcommand would be dropped without a word, and
-  // `secret set --dry-run NAME=VALUE` would then store the value it was asked
-  // only to preview.
-  if (subcommand !== 'sync') {
-    const misplaced = args.slice(1).find((a) => SYNC_ONLY_FLAGS.includes(a));
-    if (misplaced !== undefined) {
-      console.error(`\n  ${misplaced} applies to \`secret sync\` only. \`secret ${subcommand}\` was not run. Nothing was changed.\n`);
-      return 2;
-    }
+  // or push flag given to another subcommand would be dropped without a word,
+  // and `secret set --dry-run NAME=VALUE` would then store the value it was
+  // asked only to preview.
+  const misplaced = args.slice(1).find((a) => {
+    const owners = TRANSFER_FLAG_OWNERS[a];
+    return owners !== undefined && !owners.includes(subcommand ?? '');
+  });
+  if (misplaced !== undefined) {
+    const owners = TRANSFER_FLAG_OWNERS[misplaced].map((o) => `\`secret ${o}\``).join(' and ');
+    console.error(`\n  ${misplaced} applies to ${owners} only. \`secret ${subcommand}\` was not run. Nothing was changed.\n`);
+    return 2;
   }
 
   switch (subcommand) {
     case 'sync':
       return runSecretSync(args.slice(1));
+
+    case 'push':
+      return runSecretPush(args.slice(1));
 
     case 'set': {
       const nameArg = parsed.rest[0];
@@ -552,13 +573,15 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       if (subcommand === undefined) {
         console.log(`\n  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
         console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
-        console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]\n`);
+        console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]`);
+        console.log(`         ${CLI_BARE} secret push NAME[,NAME2] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>]\n`);
         return 0;
       }
       console.error(`\n  Unknown secret command: ${subcommand}`);
       console.log(`  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
       console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
-      console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]\n`);
+      console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]`);
+      console.log(`         ${CLI_BARE} secret push NAME[,NAME2] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>]\n`);
       return 1;
   }
 }
@@ -794,6 +817,219 @@ function syncDetail(action: SyncAction, dryRun: boolean, fromName: string): stri
     case 'not-found': return `not in ${fromName}, and not stored on this machine`;
     case 'failed': return undefined;
   }
+}
+
+export interface SecretPushDeps {
+  /** This machine's store. Default: the configured backend. */
+  store?: SecretStore;
+  /** Builds the target. Default: the real client for `--to`. */
+  createTarget?: (type: PushTargetType, vaultName: string | undefined) => PushTarget;
+}
+
+const PUSH_LABEL: Record<PushAction, string> = {
+  'would-create': 'would create',
+  'would-add-version': 'would add a version',
+  pushed: 'pushed',
+  failed: 'failed',
+  skipped: 'not pushed',
+};
+
+function createPushTarget(type: PushTargetType, vaultName: string | undefined): PushTarget {
+  switch (type) {
+    case 'azure-kv': return new AzureKeyVaultTarget(vaultName ?? '');
+    case 'vault': return new VaultPushTarget(new VaultBackend());
+    case 'gcp-sm': return new GcpPushTarget(new GCPSecretManagerBackend());
+  }
+}
+
+/** A `Verify:` or `Fix:` block; a second line continues under the first. */
+function labelled(label: string, lines: readonly string[]): string[] {
+  return lines.map((line, i) => `  ${i === 0 ? `${label}:`.padEnd(9) : ' '.repeat(9)}${line}`);
+}
+
+/**
+ * `secret push NAME[,NAME2...] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>] [--dry-run]`
+ *
+ * Writes named secrets from this machine's store to a cloud secret store
+ * (#235), so a deployment can read them from there. Each value goes from the
+ * store into an HTTPS request body inside this process; it is never on a
+ * command line, and nothing prints it. The output names each entry, the
+ * identifier and version written, and the command that references it next.
+ *
+ * A name not stored here, a name the target cannot hold, and a target that
+ * cannot authenticate each stop the push before anything is written. The
+ * first write that fails stops the rest.
+ *
+ * Exit 0 when every name was pushed (on a dry run: classified), 1 when a name
+ * is not stored here, the target refuses or a write fails, 2 on a usage error.
+ */
+export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): Promise<number> {
+  const usage = `  Usage: ${CLI_BARE} secret push NAME[,NAME2...] --to <${PUSH_TARGETS.join('|')}> [--vault <name>] [--as <names>] [--dry-run]\n`;
+  const usageError = (message: string): number => {
+    console.error(`\n  ${message}`);
+    console.error('  Nothing was read or pushed.\n');
+    console.error(usage);
+    return 2;
+  };
+
+  let to: string | undefined;
+  let vaultArg: string | undefined;
+  let asArg: string | undefined;
+  let dryRun = false;
+  const given: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--to' || a === '--vault' || a === '--as') {
+      if (seen.has(a)) return usageError(`${a} was given more than once; only one value can apply, so give it once.`);
+      seen.add(a);
+      const v = args[++i];
+      if (v === undefined || v.startsWith('-')) return usageError(`${a} needs a value, but none was given.`);
+      if (a === '--to') to = v;
+      else if (a === '--vault') vaultArg = v;
+      else asArg = v;
+      continue;
+    }
+    if (a === '--dry-run') { dryRun = true; continue; }
+    if (a.startsWith('-')) return usageError(`${a} is not read by \`secret push\`, so it would have been ignored.`);
+    given.push(...a.split(',').map((n) => n.trim()).filter(Boolean));
+  }
+
+  if (given.length === 0) return usageError('Name the secrets to push.');
+  // A NAME=VALUE argument already put the value on this command line; the
+  // refusal must not print it a second time.
+  const assignment = given.find((n) => n.includes('='));
+  if (assignment !== undefined) {
+    return usageError(`"${assignment.slice(0, assignment.indexOf('='))}=..." gives a value. \`secret push\` reads each value from this machine's store; give names only.`);
+  }
+  const names = [...new Set(given)];
+  const badName = names.find((n) => !isValidSecretName(n));
+  if (badName !== undefined) {
+    return usageError(`"${badName}" is not a secret name. Names allow letters, digits, '-' and '_'.`);
+  }
+  if (to === undefined) return usageError('--to is required: name the store to push to.');
+  if (!(PUSH_TARGETS as readonly string[]).includes(to)) {
+    return usageError(`Unknown target "${to}". Valid: ${PUSH_TARGETS.join(', ')}.`);
+  }
+  const toType = to as PushTargetType;
+
+  let vaultName: string | undefined;
+  if (toType === 'azure-kv') {
+    if (vaultArg === undefined) return usageError('--to azure-kv needs --vault <name>: the Key Vault to push to.');
+    vaultName = vaultNameFromArg(vaultArg);
+    const problem = vaultNameProblem(vaultName);
+    if (problem !== undefined) return usageError(`"${vaultArg}" is not a Key Vault name: ${problem}.`);
+  } else if (vaultArg !== undefined) {
+    return usageError(`--vault names an Azure Key Vault, so it applies to --to azure-kv only.`);
+  }
+
+  let remotes: string[];
+  if (asArg !== undefined) {
+    remotes = asArg.split(',').map((n) => n.trim());
+    if (remotes.length !== names.length || remotes.some((r) => r === '')) {
+      return usageError(`--as gives ${remotes.length} name(s) for ${names.length} secret(s); give one per secret, in the same order.`);
+    }
+  } else {
+    remotes = [...names];
+  }
+
+  let target: PushTarget;
+  let store: SecretStore;
+  try {
+    target = deps.createTarget ? deps.createTarget(toType, vaultName) : createPushTarget(toType, vaultName);
+    store = deps.store ?? new SecretStore();
+  } catch (err) {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+
+  const tail = [`--to ${toType}`, ...(vaultName !== undefined ? [`--vault ${vaultName}`] : [])];
+  const problems = remotes.map((r) => target.nameProblem(r));
+  const first = problems.findIndex((p) => p !== undefined);
+  if (first !== -1) {
+    const suggested = remotes.map((r, i) => (problems[i] !== undefined ? target.suggestName(r) : r));
+    console.error(`\n  "${remotes[first]}" cannot name a secret in ${target.label}: ${problems[first]}.`);
+    console.error('  Nothing was read or pushed.\n');
+    console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${suggested.join(',')}\n`);
+    return 2;
+  }
+  const folded = remotes.map((r) => target.foldName(r));
+  const clash = folded.findIndex((f, i) => folded.indexOf(f) !== i);
+  if (clash !== -1) {
+    return usageError(`${names[folded.indexOf(folded[clash])]} and ${names[clash]} would both be pushed as "${remotes[clash]}".`);
+  }
+
+  console.log('\n  Secretless Push\n');
+  console.log(`  From:   ${store.backendName} (this machine)`);
+  console.log(`  To:     ${target.label}`);
+  console.log(`  Names:  ${names.length}`);
+  if (dryRun) console.log('  Dry run: nothing is written.');
+
+  const plan = names.map((name, i) => ({ name, remote: remotes[i] }));
+  let result: PushResult;
+  try {
+    result = await pushSecrets(store, target, plan, { dryRun });
+  } catch (err) {
+    console.log();
+    if (err instanceof MissingLocalNamesError) {
+      console.error(`  ${err.message}`);
+      console.error('  Nothing was pushed.\n');
+      console.error(`  Verify:  ${CLI} secret list`);
+      console.error(`  Fix:     ${CLI} secret set ${err.names[0]}\n`);
+      return 1;
+    }
+    const failure = err instanceof PushError ? err : new PushError(err instanceof Error ? err.message : String(err));
+    for (const line of failure.message.split('\n')) console.error(line.startsWith('  ') ? line : `  ${line}`);
+    console.error('  Nothing was pushed.\n');
+    for (const line of [...labelled('Verify', failure.verify), ...labelled('Fix', failure.fix)]) console.error(line);
+    console.error();
+    return 1;
+  }
+
+  if (result.auth !== undefined) console.log(`  Auth:   ${result.auth}`);
+  console.log();
+  printPushReport(result);
+
+  if (result.failure !== undefined) {
+    const pushed = result.entries.filter((e) => e.action === 'pushed').map((e) => e.name);
+    for (const line of result.failure.message.split('\n')) console.error(line.startsWith('  ') ? line : `  ${line}`);
+    console.error(pushed.length > 0
+      ? `  Pushed before it stopped: ${pushed.join(', ')}. Those versions stay in place.\n`
+      : `  Nothing was ${dryRun ? 'written' : 'pushed'}.\n`);
+    for (const line of [...labelled('Verify', result.failure.verify), ...labelled('Fix', result.failure.fix)]) console.error(line);
+    console.error();
+    return 1;
+  }
+
+  if (result.dryRun) {
+    const as = remotes.some((r, i) => r !== names[i]) ? [`--as ${remotes.join(',')}`] : [];
+    console.log(`  Apply:   ${CLI} secret push ${names.join(',')} ${[...tail, ...as].join(' ')}\n`);
+    return 0;
+  }
+  for (const line of target.nextSteps(result.entries)) console.log(line);
+  console.log();
+  return 0;
+}
+
+function printPushReport(result: PushResult): void {
+  const labelWidth = Math.max(...result.entries.map((e) => PUSH_LABEL[e.action].length));
+  const nameWidth = Math.max(...result.entries.map((e) => e.name.length));
+  for (const e of result.entries) {
+    const renamed = e.remote !== e.name ? `as ${e.remote}` : '';
+    let detail: string;
+    switch (e.action) {
+      case 'pushed': detail = `version ${e.version}  ${e.id}`; break;
+      case 'failed': detail = e.error ?? ''; break;
+      case 'skipped': detail = 'not attempted after the failure above'; break;
+      default: detail = renamed;
+    }
+    console.log(`    ${PUSH_LABEL[e.action].padEnd(labelWidth)}  ${e.name.padEnd(nameWidth)}  ${detail}`.trimEnd());
+  }
+
+  const counts = new Map<PushAction, number>();
+  for (const e of result.entries) counts.set(e.action, (counts.get(e.action) ?? 0) + 1);
+  const parts = [...counts].map(([action, n]) => `${n} ${PUSH_LABEL[action]}`);
+  console.log(`\n  ${result.entries.length} name(s): ${parts.join(', ')}\n`);
 }
 
 /** A path as one shell word, quoted only when it needs to be. */

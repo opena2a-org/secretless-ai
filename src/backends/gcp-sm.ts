@@ -159,6 +159,47 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     await this.addSecretVersion(projectId, secretName, value, token);
   }
 
+  /**
+   * Store `value` as a new version of the secret `secretName`, creating the
+   * secret first when it does not exist, and return the version's resource
+   * name (`projects/<n>/secrets/<name>/versions/<v>`).
+   */
+  async storeVersion(secretName: string, value: string): Promise<string> {
+    this.validateSecretName(secretName);
+    const { projectId, token } = await this.ensureAuth();
+    await this.createSecret(projectId, secretName, token);
+    return this.addSecretVersion(projectId, secretName, value, token);
+  }
+
+  /**
+   * Whether the secret `secretName` exists. Reads the secret's resource, which
+   * carries no payload, never a version's value.
+   */
+  async hasSecret(secretName: string): Promise<boolean> {
+    this.validateSecretName(secretName);
+    const { projectId, token } = await this.ensureAuth();
+
+    const url = `${SM_BASE_URL}/v1/projects/${projectId}/secrets/${secretName}`;
+    const response = await this.request('GET', url, token);
+
+    if (response.status === 404) return false;
+    if (response.status === 403) {
+      throw new Error(
+        `GCP Secret Manager: insufficient IAM permissions. Grant 'Secret Manager Viewer' role.`
+      );
+    }
+    if (!response.ok) {
+      throw new Error(`GCP Secret Manager: read failed (HTTP ${response.status})`);
+    }
+    return true;
+  }
+
+  /** Obtain a token and return the project requests go to. */
+  async authenticate(): Promise<string> {
+    const { projectId } = await this.ensureAuth();
+    return projectId;
+  }
+
   async delete(key: string): Promise<boolean> {
     const segments = key.split('/');
     const secretName = segments[segments.length - 1];
@@ -476,14 +517,14 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   }
 
   /**
-   * Add a new version to an existing secret.
+   * Add a new version to an existing secret. Returns the version's resource name.
    */
   private async addSecretVersion(
     projectId: string,
     secretName: string,
     value: string,
     token: string,
-  ): Promise<void> {
+  ): Promise<string> {
     const url = `${SM_BASE_URL}/v1/projects/${projectId}/secrets/${secretName}:addVersion`;
     const encoded = Buffer.from(value, 'utf-8').toString('base64');
 
@@ -500,6 +541,10 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     if (!response.ok) {
       throw new Error(`GCP Secret Manager: add version failed (HTTP ${response.status})`);
     }
+
+    // The new version's resource name only; the response carries no payload.
+    const body = await response.json().catch(() => undefined) as { name?: unknown } | undefined;
+    return typeof body?.name === 'string' ? body.name : `projects/${projectId}/secrets/${secretName}/versions/unknown`;
   }
 
   /**

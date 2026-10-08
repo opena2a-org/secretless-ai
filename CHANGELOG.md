@@ -101,6 +101,29 @@ parse, or that repeats a key, gets a warning and does not count, and deny rules
 in a user-level file that wires no Secretless hook do not count either.
 `status --json` adds `protectionScope`, `userSettings` and
 `transcriptProtection.stopHookScope`.
+**`secret push` writes stored secrets to a cloud secret store without the
+value on a command line (#235).** `secret push NAME[,NAME2...] --to azure-kv
+--vault <name>` writes each named secret from this machine's store to Azure
+Key Vault; `--to vault` and `--to gcp-sm` write to HashiCorp Vault and GCP
+Secret Manager at the names `secret sync --from` reads. Before this, getting a
+stored key into a deployment meant `secret get NAME` passed to a cloud CLI,
+which put the value in process listings and shell history. Each value now goes
+from the store into an HTTPS request body inside the process. The output names
+each entry with the identifier and version written, followed by the command
+that references it next (for Key Vault, `az containerapp secret set` with a
+`keyvaultref:` URI); a value, a token and the service's response text are never
+printed. The Key Vault token comes from the standard Azure credential chain:
+`AZURE_TENANT_ID` and `AZURE_CLIENT_ID` with a client secret or federated token
+file, then a managed identity, then the signed-in Azure CLI. `--as` gives the
+names to use in the target, since Key Vault names allow letters, digits and
+`-` only; a name the target cannot hold is refused with the `--as` that fixes
+it. A name that is not stored on this machine and a target that cannot
+authenticate both stop the push before anything is written, and the first
+write that fails stops the rest. A refused token, a vault that does not exist
+and a missing role or access policy each exit 1 with `Verify:` and `Fix:` lines
+naming the role or command, and nothing is written to another store.
+`--dry-run` reports, per name, "would create" or "would add a version" from
+metadata alone and writes nothing.
 
 **`protect-mcp` refuses an MCP server value that holds terminal escapes or
 U+FFFD, the same rule `secret set` applies (#104).** A value in a server's
