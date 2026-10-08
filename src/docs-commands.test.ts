@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { prepareArgv } from './argv';
 
 /**
  * Every command this project's own docs tell a user to run must actually be a
@@ -66,6 +67,31 @@ function commandReferences(line: string): string[] {
     }
   }
   return verbs;
+}
+
+/** A markdown fence line, which opens or closes a code block. */
+const FENCE = /^\s*(```|~~~)/;
+
+/**
+ * Each invocation a line documents, as the argv the CLI would receive: the verb
+ * and every token after it, up to a shell operator or a comment. Inside a fenced
+ * block the whole line is code; outside one, only backticked spans are.
+ *
+ * `commandReferences` above answers "is the verb real". This answers "would the
+ * CLI accept the rest of the line", which needs the flags as well, and a fenced
+ * line at column 0 — the shape a reader copies most — is exactly the one that
+ * check does not read as code.
+ */
+function documentedInvocations(line: string, inFence: boolean): string[][] {
+  const snippets = inFence ? [line] : [...line.matchAll(/`([^`]+)`/g)].map(m => m[1]);
+  const invocations: string[][] = [];
+  for (const snippet of snippets) {
+    if (/npm\s+\w+\s+secretless-ai/.test(snippet)) continue;
+    for (const m of snippet.matchAll(/(?:^|[$\s(])(?:npx\s+)?secretless-ai\s+([a-z][a-z-]*)((?:\s+[^\s|;&#>`)]+)*)/g)) {
+      invocations.push([m[1], ...m[2].split(/\s+/).filter(Boolean)]);
+    }
+  }
+  return invocations;
 }
 
 /**
@@ -276,6 +302,42 @@ describe('documented commands exist', () => {
         for (const verb of commandReferences(line)) {
           if (!commands.has(verb)) {
             offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: "${verb}" — ${line.trim()}`);
+          }
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('reads a documented invocation as the argv the CLI would receive', () => {
+    // Pin the extractor before trusting a green run over the real docs.
+    expect(documentedInvocations('npx secretless-ai clean --dry-run --path ./transcripts   # preview', true))
+      .toEqual([['clean', '--dry-run', '--path', './transcripts']]);
+    expect(documentedInvocations("npx secretless-ai scan --json | jq '.summary'", true)).toEqual([['scan', '--json']]);
+    expect(documentedInvocations('Run `secretless-ai scan --only=aws` first.', false)).toEqual([['scan', '--only=aws']]);
+    // Outside a fence, an unquoted mention is prose, and an npm invocation is never ours.
+    expect(documentedInvocations('secretless-ai scan --nope is prose here', false)).toEqual([]);
+    expect(documentedInvocations('npm view secretless-ai dist.attestations --json', true)).toEqual([]);
+
+    // And the check below can fire: the line #240 reported is refused.
+    const [argv] = documentedInvocations('npx secretless-ai clean --dryrun --path ./transcripts', true);
+    expect(prepareArgv(argv[0], argv).errors).not.toEqual([]);
+  });
+
+  it('only documents invocations whose flags the CLI accepts', () => {
+    // #240: the README showed `npx secretless-ai clean --dryrun --path ./transcripts`
+    // as a bare command in a bash block. It was there to illustrate the refusal,
+    // but a reader copying it got exit 2 and nothing else. A documented command
+    // a reader can copy has to be one the CLI runs; show a refusal as output.
+    const offenders: string[] = [];
+    for (const file of files) {
+      let inFence = false;
+      fs.readFileSync(file, 'utf-8').split('\n').forEach((line, i) => {
+        if (FENCE.test(line)) { inFence = !inFence; return; }
+        for (const argv of documentedInvocations(line, inFence)) {
+          const { errors, warnings } = prepareArgv(argv[0], argv);
+          for (const message of [...errors, ...warnings]) {
+            offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: ${line.trim()} — ${message}`);
           }
         }
       });
