@@ -1064,7 +1064,7 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     target = deps.createTarget ? deps.createTarget(toType, vaultName) : createPushTarget(toType, vaultName);
     store = deps.store ?? new SecretStore();
   } catch (err) {
-    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    console.error(formatCommandError(err));
     return 1;
   }
 

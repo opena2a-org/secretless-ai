@@ -465,6 +465,27 @@ describe('secret push --to gcp-sm (#235)', () => {
   });
 });
 
+// --- Error layout ------------------------------------------------------------
+
+describe('secret push prints a setup error in the layout the other secret commands use (#247)', () => {
+  it('a target that cannot be built: every line of the message indented, none at column 0', async () => {
+    const code = await runSecretPush(['API_KEY', '--to', 'vault'], {
+      store,
+      createTarget: () => {
+        throw new Error('VAULT_ADDR is not set\nSet it to the Vault server address, then run the push again.');
+      },
+    });
+    expect(code).toBe(1);
+    expect(printed()).toBe([
+      '',
+      '  Error: VAULT_ADDR is not set',
+      '  Set it to the Vault server address, then run the push again.',
+      '',
+    ].join('\n'));
+    expect(calls).toEqual([]);
+  });
+});
+
 // --- Dispatch and flag ownership ---------------------------------------------
 
 describe('secret push is a subcommand, and its flags belong to it', () => {
