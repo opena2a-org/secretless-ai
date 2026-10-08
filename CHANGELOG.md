@@ -117,6 +117,7 @@ parse, or that repeats a key, gets a warning and does not count, and deny rules
 in a user-level file that wires no Secretless hook do not count either.
 `status --json` adds `protectionScope`, `userSettings` and
 `transcriptProtection.stopHookScope`.
+
 **`secret push` writes stored secrets to a cloud secret store without the
 value on a command line (#235).** `secret push NAME[,NAME2...] --to azure-kv
 --vault <name>` writes each named secret from this machine's store to Azure
