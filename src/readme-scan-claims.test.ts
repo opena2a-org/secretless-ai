@@ -24,8 +24,9 @@ const TEXT_DRIFT =
   'the README dot-directory paragraph, the scan help line and the website docs sentence ' +
   'say a directory scan does not open this file; update them in the same change that starts opening it.';
 
-// The real-looking AWS key src/scan.test.ts already plants.
-const VALUE = 'AKIAREALKEY1234567890';
+// The real-looking AWS key src/scan.test.ts already plants, joined at run
+// time so that no single source line has the shape of a provider token.
+const VALUE = 'AKIA' + 'REALKEY1234567890';
 
 const NOT_OPENED: Record<string, string> = {
   'deploy/values.yaml': `aws:\n  accessKeyId: ${VALUE}\n`,
