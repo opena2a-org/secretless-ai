@@ -58,6 +58,14 @@ because a caller that picks the passphrase can decrypt the bundle. Importing a
 `.env` file is unchanged; `--force` is refused there, since that path already
 replaces names.
 
+**`export` refuses a bad `--out` file name before it asks for a passphrase
+(#242).** An `--out` path that does not end in `.secretless-bundle`, or one that
+already exists, was checked only after the passphrase was read: in a terminal
+the passphrase was typed twice and then refused, and with no terminal and no
+`SECRETLESS_EXPORT_PASSPHRASE` the command printed `No passphrase` instead of
+the file name error. Both refusals, with their `Fix:` lines, now come first.
+The exit code is unchanged.
+
 **`scan`, `scan-staged`, `clean` and `verify` treat a bundle as a secret
 (#175).** A bundle holds every secret it was given behind one passphrase that
 can be guessed at offline, so these commands now report one where they said

@@ -214,6 +214,29 @@ describe('the export and import commands', () => {
     expect(await runExport(['--only', 'A'], { env: {}, readPassphrase: async () => PASS })).toBe(2);
   });
 
+  it('export refuses a bad --out file name before asking for a passphrase (#242)', async () => {
+    const dir = tmpDir();
+    const existing = path.join(dir, 'old.secretless-bundle');
+    fs.writeFileSync(existing, 'keep me');
+    for (const [file, refusal] of [
+      [path.join(dir, 'a.txt'), 'must end in .secretless-bundle'],
+      [existing, 'already exists'],
+    ]) {
+      const out = capture();
+      const readPassphrase = vi.fn(async () => null);
+      const code = await runExport(['--out', file], {
+        env: {}, readPassphrase, storeOptions: { backend: memoryStore(SOURCE).backend }, kdf: FAST,
+      });
+      expect(code).toBe(1);
+      expect(readPassphrase).not.toHaveBeenCalled();
+      expect(out.join('\n')).toContain(refusal);
+      expect(out.join('\n')).not.toContain('No passphrase');
+      vi.restoreAllMocks();
+    }
+    expect(fs.readdirSync(dir)).toEqual(['old.secretless-bundle']);
+    expect(fs.readFileSync(existing, 'utf-8')).toBe('keep me');
+  });
+
   it('import dispatches a bundle to the bundle path and prints names, never values', async () => {
     const dir = tmpDir();
     const file = path.join(dir, 'cli.secretless-bundle');

@@ -36,15 +36,11 @@ export interface ExportBundleResult {
 }
 
 /**
- * Write the selected secrets to `outPath` as a bundle. Refuses, before reading
- * any value, an `outPath` without the bundle extension or one that exists;
- * the file is created owner-only and never overwritten.
+ * Refuse an `outPath` without the bundle extension or one that exists. The
+ * export command calls this before it asks for a passphrase (#242), so a bad
+ * file name is reported instead of a passphrase prompt or "No passphrase".
  */
-export async function exportBundle(
-  outPath: string,
-  passphrase: string,
-  options: ExportBundleOptions = {},
-): Promise<ExportBundleResult> {
+export function checkBundleOutPath(outPath: string): void {
   if (!outPath.toLowerCase().endsWith(BUNDLE_EXTENSION)) {
     throw new Error(
       `The bundle file name must end in ${BUNDLE_EXTENSION}: ${outPath}\n\n` +
@@ -58,6 +54,19 @@ export async function exportBundle(
       '  Fix:     choose another --out path, or delete the old bundle first',
     );
   }
+}
+
+/**
+ * Write the selected secrets to `outPath` as a bundle. Refuses, before reading
+ * any value, an `outPath` without the bundle extension or one that exists;
+ * the file is created owner-only and never overwritten.
+ */
+export async function exportBundle(
+  outPath: string,
+  passphrase: string,
+  options: ExportBundleOptions = {},
+): Promise<ExportBundleResult> {
+  checkBundleOutPath(outPath);
   if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
     throw new Error(
       `The passphrase is shorter than ${MIN_PASSPHRASE_LENGTH} characters. Nothing was exported.\n\n` +
