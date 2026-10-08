@@ -551,10 +551,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // actionable — the entry that matters on a real repo is a hidden directory
     // like `.claude/`, and it is invisible inside a single total. Each line is
     // followed by the command that scans it, so naming a gap is never a dead
-    // end.
+    // end. These are the source walk's boundaries: the key and config walks
+    // still enter a hidden directory, and a finding can come from one.
     if (stats.skips.dirCount > 0) {
       const n = stats.skips.dirCount;
-      console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered`)} — declared boundaries, not findings.`);
+      console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered for source files`)} — declared boundaries, not findings.`);
       for (const d of stats.skips.dirs.slice(0, 8)) {
         console.log(`  ${c.dim(`  ${visibleControls(runnable(d.path))} — ${d.reason}`)}`);
       }

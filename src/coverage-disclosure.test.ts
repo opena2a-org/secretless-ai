@@ -285,4 +285,15 @@ describe('the human report names a file it did not open', () => {
     const { text } = await report(dir);
     expect(text).not.toMatch(/not opened/);
   });
+
+  it('does not call a hidden directory unentered while reporting a finding from inside it', async () => {
+    const dir = tree({ '.github/workflows/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n` });
+    const { text, code } = await report(dir);
+
+    expect(text).toContain('.github/workflows/config.yml');
+    expect(code).toBe(1);
+    expect(text).toMatch(/1 directory not entered for source files — declared boundaries, not findings\./);
+    expect(text).not.toMatch(/director(y|ies) not entered —/);
+    expect(text).toMatch(/\.github — hidden directory; key files and config files recognized by name are still scanned/);
+  });
 });
