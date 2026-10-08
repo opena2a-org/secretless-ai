@@ -30,7 +30,7 @@ npx secretless-ai init
     + CLAUDE.md
 
   Modified:
-    ~ .claude/settings.json (added 96 deny patterns)
+    ~ .claude/settings.json (added 99 deny patterns)
 
   Next steps:
     Verify: secretless-ai verify
@@ -145,6 +145,18 @@ npx secretless-ai secret set OPENAI_API_KEY             # the new value from the
 ```
 
 The record is `exposedAt` and `exposedWhere` in the secret's metadata, never the value. `secret set` compares the new value with the stored one in memory: a different value closes the exposure and records `rotatedAt`; the same value leaves it open and says so. When `clean` or `watch` redacts a value equal to a stored secret, it marks that secret exposed and prints its name and the next step. `status` shows the open count.
+
+### Give git a stored token over HTTPS
+
+A hosting token in `~/.git-credentials` or `~/.netrc` sits on disk in plaintext. `doctor` and `status` report those files (count and line numbers, never values) and a `credential.helper` set to `store`, each with Verify and Fix lines. To keep the token in the store and let git read it from there:
+
+```bash
+npx secretless-ai secret set GITHUB_TOKEN
+npx secretless-ai git-credential install --host github.com --name GITHUB_TOKEN   # [--username <user>]
+npx secretless-ai git-credential uninstall --host github.com                     # removes only what install added
+```
+
+`install` adds two entries to `credential.https://github.com.helper` in the global git config: an empty one, which stops git asking any helper configured before it (such as `store`) for that host, and the helper itself. No value is written to any config file. Git runs the helper as `git-credential get`, which answers only HTTPS requests for its host and refuses when stdin or stdout is a terminal; `store` and `erase` write nothing. `init` blocks an AI tool from running `git-credential get` or `git credential fill`, which would print the token.
 
 ### Ask your AI assistant to use a secret
 

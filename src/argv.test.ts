@@ -296,6 +296,7 @@ describe('the registry is derived from the source, not from itself', () => {
       'clean', 'clean-history', 'run', 'env', 'init', 'doctor', 'import', 'export', 'setup',
       'secret', 'watch', 'hook', 'warm', 'install', 'protect-mcp', 'mcp-unprotect',
       'ignore', 'telemetry', 'rules', 'backend', 'migrate', 'cache', 'scope', 'broker', 'vault',
+      'git-credential',
     ];
     for (const verb of writers) {
       expect(VERBS[verb], `${verb} has no registry row`).toBeDefined();

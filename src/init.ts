@@ -459,6 +459,12 @@ function configureClaudeCode(
     'Bash(printenv)',
     // Block secretless-ai secret extraction (Issue #3)
     'Bash(*secretless-ai secret get*--force*)',
+    // Block reading a git token through a credential helper: the helper's
+    // `get` prints the stored value, and `git credential fill` prints what
+    // every configured helper answers (#238). Git runs the helper itself.
+    'Bash(*git-credential* get*)',
+    'Bash(*git credential fill*)',
+    'Bash(*git-credential fill*)',
     // Block secretless-ai run with env dumping (Issue #6)
     'Bash(*secretless-ai run*-- env*)',
     'Bash(*secretless-ai run*-- printenv*)',
@@ -1418,6 +1424,16 @@ SECRETLESS_SEARCH_SHAPE
   # Block secretless-ai secret extraction with --force
   if echo "$COMMAND" | grep -qiE 'secretless-ai\\s+secret\\s+get.*--force'; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked forced secret extraction"}}'
+    exit 0
+  fi
+  # Block reading a git hosting token through a credential helper. The
+  # git-credential helper's get action prints the stored token for git to read,
+  # and git credential fill asks every configured helper and prints what they
+  # answer. Git runs the helper itself when it needs the token, so no agent
+  # call of either is needed. Matched under any command prefix (npx, a host
+  # CLI's), and get only as a whole word, so --host get.example.com is not.
+  if echo "$COMMAND" | grep -qiE '(^|[^a-zA-Z0-9_-])git-credential\\s+(.*\\s)?get([^a-zA-Z0-9_.-]|$)|(^|[^a-zA-Z0-9_-])git(-|\\s+(.*\\s)?)credential\\s+fill([^a-zA-Z0-9_-]|$)'; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked reading a git credential. git-credential get and git credential fill print the stored token; git asks the helper itself when it needs one. Safe path: run the git command that needs the token (git fetch, git clone) directly."}}'
     exit 0
   fi
   # Block secretless-ai run with env/printenv to dump injected secrets. The

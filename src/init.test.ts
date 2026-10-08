@@ -249,6 +249,44 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
+    // #238: the git credential helper's `get` prints the stored token for git
+    // to read, and `git credential fill` prints whatever the configured helpers
+    // answer. Git runs the helper itself, so an agent never needs either.
+    it('generated hook blocks reading a git token through a credential helper (#238)', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
+        'secretless-ai git-credential get',
+        'npx secretless-ai git-credential --host github.com --name GITHUB_TOKEN get',
+        "printf 'protocol=https\\nhost=github.com\\n\\n' | npx secretless-ai git-credential --host github.com --name GITHUB_TOKEN get",
+        'opena2a secrets git-credential --host github.com --name GITHUB_TOKEN get </dev/null',
+        'git credential fill',
+        "printf 'url=https://github.com\\n\\n' | git credential fill",
+        'git -c credential.helper= credential fill',
+        'git-credential fill',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+
+      const mustAllow = [
+        'npx secretless-ai git-credential install --host github.com --name GITHUB_TOKEN',
+        'npx secretless-ai git-credential install --host get.example.com --name BUDGET_TOKEN',
+        'npx secretless-ai git-credential uninstall --host github.com',
+        'npx secretless-ai git-credential --help',
+        'git fetch origin',
+        'git config --global --get-all credential.https://github.com.helper',
+      ];
+      for (const c of mustAllow) {
+        expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
+      }
+
+      const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+      expect(settings.permissions.deny).toContain('Bash(*git-credential* get*)');
+      expect(settings.permissions.deny).toContain('Bash(*git credential fill*)');
+    });
+
     // The Bash branch of the hook was entirely dead before the release-test fix:
     // every Bash command died at the FILE_PATH extraction under `set -euo
     // pipefail` (grep found no file_path, returned non-zero) before reaching any
