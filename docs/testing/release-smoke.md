@@ -97,9 +97,10 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
 - `scan --json`: single JSON document on stdout — `{tool, version, findings,
   summary}`. Exit 1 when findings exist (CI gating), 0 when clean.
 - `status --json`: single JSON document — `{tool, version, isProtected,
-  hookInstalled, denyRuleCount, configuredTools, secretsFound,
-  settingsUnreadable, settingsAmbiguous,
-  transcriptProtection, gitCredentials, backend, session, broker, summary}`.
+  protectionScope, hookInstalled, denyRuleCount, configuredTools,
+  secretsFound, scanIncomplete, settingsUnreadable, settingsAmbiguous,
+  userSettings, transcriptProtection, exposuresOpen, gitCredentials, backend,
+  configuredBackend, gcpProject, session, broker, summary}`.
   Exit 0; CI consumers gate on `summary.verdict`.
 - Neither may print the human banner or any ANSI color in JSON mode.
 

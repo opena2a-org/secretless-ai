@@ -308,11 +308,10 @@ function listLines(lines: number[]): string {
 
 /** Host-by-host replacement steps: store the new token, point git at it. */
 function moveSteps(hosts: string[], cli: string): string[] {
-  const real = hosts.filter((h) => h !== 'default');
-  if (real.length === 0) {
+  if (hosts.length === 0) {
     return [`${cli} secret set <NAME>, then ${cli} git-credential install --host <host> --name <NAME>`];
   }
-  return real.flatMap((host) => {
+  return hosts.flatMap((host) => {
     const name = suggestedSecretName(host);
     return [`${cli} secret set ${name}`, `${cli} git-credential install --host ${host} --name ${name}`];
   });
@@ -326,12 +325,15 @@ export function describeExposure(exposure: GitCredentialExposure, cli: string): 
   const out: ExposureFinding[] = [];
   for (const f of exposure.files) {
     const count = f.lines.length;
-    const where = f.hosts.length > 0 ? ` for ${f.hosts.join(', ')}` : '';
+    // A netrc `default` entry is the fallback for any machine, not a host or a
+    // provider, so it is named in neither list.
+    const hosts = f.hosts.filter((h) => h !== 'default');
+    const where = hosts.length > 0 ? ` for ${hosts.join(', ')}` : '';
     const what = f.format === 'netrc'
       ? `${count} plaintext password${count === 1 ? '' : 's'}`
       : `${count} plaintext credential line${count === 1 ? '' : 's'}`;
     const file = shellArg(f.display);
-    const providers = f.hosts.length > 0 ? ` (${f.hosts.join(', ')})` : '';
+    const providers = hosts.length > 0 ? ` (${hosts.join(', ')})` : '';
     const revoke = count === 1
       ? `Revoke that token at the provider${providers} and create a new one`
       : `Revoke those tokens at the provider${providers} and create new ones`;
@@ -342,7 +344,7 @@ export function describeExposure(exposure: GitCredentialExposure, cli: string): 
       message: `${f.display} holds ${what} (${listLines(f.lines)})${where}`,
       summary: `${f.display}: ${what} (${listLines(f.lines)})`,
       verify: f.format === 'netrc' ? `grep -c password ${file}` : `grep -c @ ${file}`,
-      fix: [revoke, ...moveSteps(f.hosts, cli), remove],
+      fix: [revoke, ...moveSteps(hosts, cli), remove],
     });
   }
   for (const u of exposure.unreadable) {

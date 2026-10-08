@@ -95,10 +95,16 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     summary: 'Scan and redact credentials in AI transcripts.',
     usage: ['[--dry-run] [--last] [--path <p>]'],
     flags: {
-      '--dry-run': 'Report findings without redacting',
+      '--dry-run': 'Report findings without redacting or marking secrets exposed',
       '--last': 'Only clean the most recent session per project',
       '--path': ['<p>', 'Scan a specific file or directory'],
     },
+    notes: [
+      'A redacted value that matches a stored secret marks that secret exposed',
+      '(`secret list --needs-rotation`). To find the match, the stored values are',
+      'read whenever a credential is found, on a dry run too, so a keychain store',
+      'can ask to be unlocked.',
+    ],
   },
   'clean-history': {
     summary: 'Redact credentials in shell history.',
@@ -219,7 +225,9 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '`exposed` records exposedAt and exposedWhere in the metadata. `set` with a',
       'different value closes the exposure and records rotatedAt; the same value',
       'leaves it open. `clean` and `watch` mark a stored secret exposed when they',
-      'redact its value.',
+      'redact its value. A value written by `sync`, `import` (a .env file or a',
+      'bundle) or `setup` closes or leaves an exposure the same way, but those',
+      'commands do not print which; `list --needs-rotation` shows what is open.',
     ],
   },
   watch: {

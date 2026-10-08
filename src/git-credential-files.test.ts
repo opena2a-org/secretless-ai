@@ -16,6 +16,7 @@ import {
   findGitCredentialExposure,
   describeExposure,
   suggestedSecretName,
+  type GitCredentialExposure,
 } from './git-credential-files';
 
 const TOKEN = 'ghp_FAKE7qK2vR9xW4mZ8nB3cJ6hT1yL5pD0sGu';
@@ -89,6 +90,27 @@ describe('plaintext credential file parsers', () => {
   it('suggests a runnable secret name per host', () => {
     expect(suggestedSecretName('github.com')).toBe('GITHUB_TOKEN');
     expect(suggestedSecretName('git.example.com:8443')).toBe('GIT_EXAMPLE_COM_TOKEN');
+  });
+
+  it('never names a netrc default entry as a host or a provider', () => {
+    const netrc = (hosts: string[]): GitCredentialExposure => ({
+      files: [{ path: '/h/.netrc', display: '~/.netrc', format: 'netrc', lines: hosts.map((_, i) => i + 1), hosts }],
+      unreadable: [],
+      storeHelpers: [],
+      configChecked: true,
+      checked: ['~/.netrc'],
+    });
+    const [both] = describeExposure(netrc(['api.example.com', 'default']), 'npx secretless-ai');
+    expect(both.message).toBe('~/.netrc holds 2 plaintext passwords (lines 1, 2) for api.example.com');
+    expect(both.fix[0]).toBe('Revoke those tokens at the provider (api.example.com) and create new ones');
+    expect(both.fix.slice(1, 3)).toEqual([
+      'npx secretless-ai secret set API_EXAMPLE_COM_TOKEN',
+      'npx secretless-ai git-credential install --host api.example.com --name API_EXAMPLE_COM_TOKEN',
+    ]);
+    const [alone] = describeExposure(netrc(['default']), 'npx secretless-ai');
+    expect(alone.message).toBe('~/.netrc holds 1 plaintext password (line 1)');
+    expect(alone.fix[0]).toBe('Revoke that token at the provider and create a new one');
+    expect(JSON.stringify([both, alone])).not.toMatch(/\bdefault\b/);
   });
 });
 
