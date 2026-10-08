@@ -193,6 +193,34 @@ Fix lines in `gitCredentials.findings`. The guard hook and
 the deny rules `init` writes now refuse `git-credential get` and `git
 credential fill`, which print the token, so `init` adds three deny patterns.
 
+**`scan` names the config files it did not read, and `scan --include-config`
+reads them (#190).** `scan` picks config files by name (`config.json`,
+`docker-compose.yml`) and source files by extension, so a config-format file
+whose name is not on the built-in list, such as `secrets.json`,
+`appsettings.json`, `values.yaml`, `app.toml`, `.npmrc` or a `Dockerfile`, was
+read by neither. A tree whose only key sat in `secrets.json` scanned to
+`total: 0`, exit 0 and `No hardcoded credentials found.`, with no line about
+the file. These files are now a declared boundary: the `--json` summary
+carries `unscannedConfig` (the count) and `unscannedConfigFiles` lists a sample
+of their paths, and the text report names up to ten of them with a `Fix:` line
+that runs `scan <dir> --include-config` and a `Scan one:` line for the first.
+Like `skippedUnsupported` and `notEntered`, the count does not change the exit
+code, because `tsconfig.json` alone would otherwise fail every clean scan; a CI
+job that wants it to gate can test it with
+`jq -e '.summary.unscannedConfig == 0'`. `scan --include-config` scans these
+files with the source-file rules, so a credential in one is a finding and the
+scan exits 1. The test-file and ignore rules apply to them as to source files,
+and generated lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `Cargo.lock`
+and others) are not counted.
+
+**`summary.skippedUnsupported` no longer counts files `scan` read (#190).** A
+config file on the built-in list, such as `config.json`, was read by the config
+walk and also counted by the source walk as a file it did not open. It is now
+left out of `skippedUnsupported` and `skippedUnsupportedFiles`, so the same
+tree can report a lower count than before. A config file off the list is still
+counted there, with the reason `config file not on the built-in list
+(--include-config)`, as well as in `unscannedConfig`.
+
 **`protect-mcp` refuses an MCP server value that holds terminal escapes or
 U+FFFD, the same rule `secret set` applies (#104).** A value in a server's
 `env` block containing an escape or other control character, a null byte, or
