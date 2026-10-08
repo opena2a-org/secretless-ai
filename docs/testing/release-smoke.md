@@ -74,7 +74,7 @@ PLANT="sk-ant-api03-$(openssl rand -base64 48 | tr -d '/+=' | head -c 51)"
 echo "const k = \"$PLANT\";" > config.js
 
 $SL status .        # "Not protected" verdict; every ⚠ row ends in a → command
-$SL init .          # Configured: Claude Code; Created: hook + CLAUDE.md; Modified: settings.json (96 deny patterns)
+$SL init .          # Configured: Claude Code; Created: hook + CLAUDE.md; Modified: settings.json (99 deny patterns)
 $SL scan .          # 1 credential found: HIGH Anthropic API Key, config.js:1, value REDACTED in preview; exit 1
 $SL status .        # verdict flips to "Protected (...)"
 $SL verify .        # scope disclosure line + PASS/WARN with next steps
@@ -99,8 +99,8 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
 - `status --json`: single JSON document — `{tool, version, isProtected,
   hookInstalled, denyRuleCount, configuredTools, secretsFound,
   settingsUnreadable, settingsAmbiguous,
-  transcriptProtection, backend, session, broker, summary}`. Exit 0; CI
-  consumers gate on `summary.verdict`.
+  transcriptProtection, gitCredentials, backend, session, broker, summary}`.
+  Exit 0; CI consumers gate on `summary.verdict`.
 - Neither may print the human banner or any ANSI color in JSON mode.
 
 ### 2b. Unknown-flag rejection (issues #62 / #74 / #81 / #83 / #126 / #137)

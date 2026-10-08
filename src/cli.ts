@@ -26,6 +26,8 @@ import { runWarm, runInstall } from './commands/session';
 import { runFeedback } from './commands/feedback';
 import { runIgnore } from './commands/ignore';
 import { runDiff } from './commands/diff';
+import { runGitCredential } from './commands/git-credential';
+import { GIT_PROTOCOL_ACTIONS } from './git-credential';
 import { printHelp, OWN_HELP } from './commands/help';
 import { printCommandHelp } from './command-help';
 import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } from './argv';
@@ -68,6 +70,17 @@ const TELEMETRY_ACTIONS = ['on', 'off', 'status'];
 // the user actually using the tool, and tracking 'telemetry' itself creates
 // confusing self-referential events.
 const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '--help', '-h']);
+
+/**
+ * `git-credential get|store|erase` is run by git each time it authenticates,
+ * not by the user, so it is not tracked: it would dominate the dataset and add
+ * a network call to every authenticated git operation. `install` and
+ * `uninstall` are tracked like any other command.
+ */
+function isUntrackedCall(command: string, prepared: PreparedArgv): boolean {
+  return NON_TRACKED.has(command)
+    || (command === 'git-credential' && GIT_PROTOCOL_ACTIONS.includes(prepared.positionals[0] ?? ''));
+}
 
 
 async function main(): Promise<number> {
@@ -159,7 +172,7 @@ async function main(): Promise<number> {
     if (command) tele.error(command, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
     throw err;
   } finally {
-    if (command && !NON_TRACKED.has(command)) {
+    if (command && !isUntrackedCall(command, prepared)) {
       // Exit 1 = scanner found credentials (the tool's job); >=2 = real error.
       // npm audit / eslint convention. Matches @opena2a/telemetry.successFromExitCode.
       await tele.track(command, { success: exitCode <= 1, durationMs: Date.now() - startedAt });
@@ -365,6 +378,8 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       return runIgnore(args.slice(1));
     case 'diff':
       return runDiff(args.slice(1));
+    case 'git-credential':
+      return runGitCredential(args.slice(1));
     case '--help':
     case '-h':
     case undefined:

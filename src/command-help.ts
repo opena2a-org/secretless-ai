@@ -129,9 +129,14 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     usage: ['[dir]'],
   },
   doctor: {
-    summary: 'Diagnose shell profile issues.',
+    summary: 'Diagnose shell profile issues and plaintext git credential files.',
     usage: ['[--fix]'],
-    flags: { '--fix': 'Apply the fixes it finds' },
+    flags: { '--fix': 'Apply the shell profile fixes it finds' },
+    notes: [
+      'Also reports ~/.git-credentials, ~/.config/git/credentials and ~/.netrc lines',
+      'that hold a credential (count and line numbers, never values) and a',
+      'credential.helper set to store. --fix does not change these.',
+    ],
   },
   import: {
     summary: 'Import secrets from a .env file, or from a bundle written by `export`.',
@@ -232,6 +237,26 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     summary: 'Manage the pre-commit secret scanner.',
     usage: ['<install|uninstall|status>', '--check-only'],
     flags: { '--check-only': 'Session check (for PreToolUse hooks)' },
+  },
+  'git-credential': {
+    summary: 'Serve a stored token to git over HTTPS, instead of a plaintext credential file.',
+    usage: [
+      'install --host <host> --name <NAME> [--username <user>]',
+      'uninstall --host <host>',
+    ],
+    flags: {
+      '--host': ['<host>', 'Host name, with :port if the remote uses one (github.com)'],
+      '--name': ['<NAME>', 'Secret store name holding the token (GITHUB_TOKEN)'],
+      '--username': ['<user>', 'Username to send (default: the remote URL\'s, else x-access-token)'],
+    },
+    notes: [
+      'install adds an empty entry and this helper to credential.https://<host>.helper',
+      'in the global git config. The empty entry keeps other helpers, such as store,',
+      'from being asked for that host or handed the token. No value is written to any',
+      'config file. uninstall removes those two entries and nothing else.',
+      'get, store and erase are run by git. get answers only https requests for its',
+      'host and refuses when stdin or stdout is a terminal; store and erase write nothing.',
+    ],
   },
   warm: {
     summary: 'Warm the biometric session (Touch ID on macOS).',

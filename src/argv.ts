@@ -276,6 +276,13 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   },
   watch: { flags: {}, unknownFlags: 'reject' },
   hook: { flags: { '--check-only': false }, unknownFlags: 'reject' },
+  // `install` and `uninstall` write the global git config. `get`, `store` and
+  // `erase` are run by git with the flags `install` wrote, so a refusal there
+  // reaches the user as git's own prompt, never as a wrong credential.
+  'git-credential': {
+    flags: { '--host': true, '--name': true, '--username': true },
+    unknownFlags: 'reject',
+  },
   warm: { flags: { '--ttl': true, '--no-broker': false }, unknownFlags: 'reject' },
   install: { flags: {}, unknownFlags: 'reject' },
   'protect-mcp': { flags: { '--backend': true }, unknownFlags: 'reject' },

@@ -14,7 +14,8 @@ import { readManifestDetailed } from '../manifest';
 import { getDaemonStatus } from '../broker/daemon';
 import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
-import { VERSION, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime } from './utils';
+import { VERSION, CLI, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime } from './utils';
+import { findGitCredentialExposure, describeExposure } from '../git-credential-files';
 import { explainFinding, isEngineAvailable } from '../nanomind';
 import { c, divider } from './colors';
 
@@ -865,6 +866,15 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     });
   }
 
+  // Plaintext git credentials in the home directory. Machine-wide, like the
+  // broker rows: one row per file or setting, and `doctor` prints the Verify
+  // and Fix lines for each. Counts and line numbers only, never a value.
+  const gitCredentials = findGitCredentialExposure();
+  const gitCredentialFindings = describeExposure(gitCredentials, CLI);
+  for (const finding of gitCredentialFindings) {
+    addRow({ glyph: '⚠', label: finding.summary, action: 'secretless-ai doctor' });
+  }
+
   // Session warmth (only relevant when a backend that prompts is configured).
   if (sessionRelevant) {
     if (session.warm) {
@@ -964,6 +974,10 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       transcriptProtection: tp,
       // Null when the metadata file could not be read, never 0 (#236).
       exposuresOpen: s.exposuresOpen,
+      // Plaintext git credential files and `store` helper settings: paths,
+      // line numbers and hosts, never a user or a value. `findings` carries
+      // the Verify and Fix lines `doctor` prints for each.
+      gitCredentials: { ...gitCredentials, findings: gitCredentialFindings },
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,
       // Null unless the backend is gcp-sm. `source` says which rule applied:
@@ -1177,6 +1191,35 @@ function printGcpProjectPerName(projectDir: string): void {
   console.log(`  ${c.dim(`Verify access: gcloud secrets list --project ${project.projectId} --limit 1`)}`);
 }
 
+/**
+ * The git credentials block of `doctor`: plaintext credential files and a
+ * `store` helper, each with Verify and Fix lines (#238). Separate from the
+ * shell profile verdict and its exit code, which it does not change, and
+ * untouched by `--fix`: deleting a credential file is the user's call, after
+ * the token in it is revoked.
+ */
+function printGitCredentials(): void {
+  const exposure = findGitCredentialExposure();
+  const findings = describeExposure(exposure, CLI);
+  console.log('  Git credentials:');
+  if (findings.length === 0) {
+    console.log(`    + No plaintext credential in ${exposure.checked.join(', ')}`);
+  }
+  for (const finding of findings) {
+    console.log(`    [WARN] ${finding.message}`);
+    console.log(`           Verify: ${finding.verify}`);
+    finding.fix.forEach((step, i) => {
+      console.log(`           ${i === 0 ? 'Fix:' : '    '}    ${i + 1}. ${step}`);
+    });
+  }
+  if (!exposure.configChecked) {
+    console.log('    - credential.helper was not checked: git could not be run');
+  } else if (exposure.storeHelpers.length === 0) {
+    console.log('    + No credential.helper set to store');
+  }
+  console.log();
+}
+
 export function runDoctor(autoFix: boolean): number {
   console.log('\n  Secretless Doctor\n');
 
@@ -1230,6 +1273,8 @@ export function runDoctor(autoFix: boolean): number {
   // moved into the store by the user, so it alone does not trigger it.
   const plainText = result.findings.filter((f) => f.kind === 'plain-text');
   const accessProblem = result.findings.some((f) => f.severity !== 'info' && f.kind !== 'plain-text');
+
+  printGitCredentials();
 
   // Auto-fix if requested or if there are fixable issues
   if (autoFix && accessProblem) {

@@ -31,7 +31,7 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} scan      Scan config and source files for hardcoded secrets (--json for CI)
     ${CLI} status    Show protection status (--json for CI)
     ${CLI} verify    Verify keys are usable but hidden from AI (--all for full list)
-    ${CLI} doctor    Diagnose shell profile issues (--fix to auto-fix)
+    ${CLI} doctor    Diagnose shell profiles and plaintext git credentials (--fix: profiles)
     ${CLI} clean     Scan and redact credentials in transcripts
     ${CLI} watch     Monitor transcripts in real-time
     ${CLI} warm      Warm biometric session (Touch ID on macOS)
@@ -75,6 +75,10 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} hook install       Install pre-commit secret scanner
     ${CLI} hook uninstall     Remove pre-commit hook
     ${CLI} hook status        Check hook installation status
+    ${CLI} git-credential install --host <host> --name <NAME>
+                              Let git read an HTTPS token from the secret store
+    ${CLI} git-credential uninstall --host <host>
+                              Remove only the entries install added
 
   MCP Protection:
     ${CLI} protect-mcp [--backend TYPE]  Encrypt MCP server secrets
