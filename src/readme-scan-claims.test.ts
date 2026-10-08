@@ -88,9 +88,24 @@ describe('README claims about what a directory scan opens', () => {
     }
   });
 
-  it('no config name is a GitHub Actions workflow, and the paragraph does not say some are opened', () => {
+  it('a workflow is opened only when its file name is a recognized config name, and the paragraph says so', () => {
+    // No config name points into .github/workflows, but config names match by
+    // basename inside dot-directories, so a workflow named config.yml is opened
+    // while deploy.yml is not. The README must not state the absolute.
     expect(CONFIG_FILES.filter(name => name.includes('.github/workflows'))).toEqual([]);
-    expect(directoryScanParagraph()).not.toMatch(/most GitHub Actions workflows/);
+    expect(CONFIG_FILES).toContain('config.yml');
+    expect(directoryScanParagraph()).toContain('GitHub Actions workflows other than one whose file name is a recognized config name (such as `.github/workflows/config.yml`)');
+    const dir = tmpProject();
+    try {
+      const workflow = path.join(dir, '.github/workflows/config.yml');
+      fs.writeFileSync(workflow, NOT_OPENED['.github/workflows/deploy.yml']);
+      const findings = scan(dir, { scanGlobal: false });
+      const root = fs.realpathSync(dir);
+      const files = [...new Set(findings.map(f => path.relative(root, fs.realpathSync(path.resolve(dir, f.file)))))].sort();
+      expect(files).toEqual(['.github/workflows/config.yml', 'control.js']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('the paragraph names --include-config, which reads the config-format files it names', () => {
