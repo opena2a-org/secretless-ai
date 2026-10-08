@@ -113,10 +113,10 @@ describe('the walk visits each directory in sorted order', () => {
     const dir = tree({
       'src/app.ts': 'export const x = 1;\n',
       '\u{1F600}.txt': 'x\n',
-      'Ａ.txt': 'x\n',
+      '\uFF21.txt': 'x\n',
     });
     const doc = await json(dir, true);
     expect(doc.skippedUnsupportedFiles.map((f: { path: string }) => f.path))
-      .toEqual(['Ａ.txt', '\u{1F600}.txt']);
+      .toEqual(['\uFF21.txt', '\u{1F600}.txt']);
   });
 });
