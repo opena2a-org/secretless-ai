@@ -90,10 +90,13 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 Move keys out of files and into a storage backend, then use them by name. Values never enter AI context, transcripts, or shell history.
 
 ```bash
-npx secretless-ai secret set STRIPE_SECRET_KEY   # value read from stdin, never echoed
+npx secretless-ai secret set STRIPE_SECRET_KEY --from-clipboard   # key copied from a web page
+npx secretless-ai secret set STRIPE_SECRET_KEY   # or type or paste it at a prompt, input hidden
 npx secretless-ai import .env                    # or migrate an existing .env in one step
 npx secretless-ai secret list                    # names only, values are never printed
 ```
+
+`--from-clipboard` is the recommended way to store a key copied from a web dashboard. It reads the clipboard through `pbpaste` (macOS), `wl-paste`, `xclip` or `xsel` (Linux) or `Get-Clipboard` (Windows), so the value never appears on the command line, the screen or in shell history, and it prints only the value's length and character classes. After storing it, it clears the clipboard, unless the clipboard changed since it was read or `--keep-clipboard` is given. An empty clipboard or a missing clipboard tool stores nothing and exits 1. `secret set NAME=VALUE` puts the value in shell history, and `pbpaste | secret set NAME` leaves it in the clipboard.
 
 `secret set` also installs a shell hook (`eval "$(secretless-ai env)"` in `~/.zshenv` or `~/.bashrc`), so new terminals export stored secrets as environment variables automatically. To inject into a single command instead of the whole shell:
 

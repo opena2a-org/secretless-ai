@@ -166,6 +166,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     summary: 'Store, list, describe, retrieve, remove or sync secrets.',
     usage: [
       'set <NAME[=VALUE]> [--description <text>] [--meta <key=value>]...',
+      'set <NAME> --from-clipboard [--keep-clipboard] [--description <text>] [--meta <key=value>]...',
       'list [--long] [--json] [--app <name>]',
       'show [--json] <NAME>',
       'get [--force] <NAME>',
@@ -176,6 +177,8 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--force': 'get: retrieve in non-interactive contexts. sync: replace local values that differ',
       '--description': ['<text>', 'set: record what the secret is for'],
       '--meta': ['<key=value>', 'set: record a metadata field; repeatable; key= removes it'],
+      '--from-clipboard': 'set: read the value from the clipboard, then clear it (recommended for a key copied from a web page)',
+      '--keep-clipboard': 'set: with --from-clipboard, leave the value in the clipboard',
       '--long': 'list: show descriptions and metadata',
       '--app': ['<name>', 'list: only secrets recorded with --meta app=<name>'],
       '--json': 'list, show: machine-readable JSON output',
@@ -185,6 +188,10 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--dry-run': 'sync: report what would be created, updated or left alone; write nothing',
     },
     notes: [
+      'To store a key copied from a web page, use `set NAME --from-clipboard`: the value',
+      'never reaches the command line, the screen or shell history, and the clipboard',
+      'is cleared afterwards unless it changed since it was read. `set NAME` on a',
+      'terminal prompts with input hidden.',
       'Descriptions and metadata are not secrets: they are kept beside the store in',
       'plain text and printed by `show` and `list --long`. Values never are.',
       'Keys are free-form; app, provider, scopes, tokenTtl, redirectUri and expiresAt',

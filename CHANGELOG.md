@@ -674,6 +674,16 @@ while restricting nothing. Notes are dropped at load and do not appear in
   not prevention: the value is already in context when the hook sees it, and a
   format outside the catalog passes unflagged. Run `init` again to add it to an
   existing install (#129).
+- `secret set NAME --from-clipboard` stores a key copied from a web page
+  without it reaching the command line, the screen or shell history. The value
+  is read through `pbpaste`, `wl-paste`, `xclip`, `xsel` or `Get-Clipboard`
+  over a pipe and only its length and character classes are printed. After the
+  value is stored the clipboard is cleared, unless it changed since it was read
+  or `--keep-clipboard` is given. An empty clipboard or a missing clipboard tool
+  stores nothing and exits 1 with a `Fix:` line. The flag is refused together
+  with `NAME=VALUE` or piped stdin (exit 2). `secret set NAME` on a terminal
+  now prompts with input hidden, drops bracketed-paste markers and handles
+  Backspace, and Ctrl-C at the prompt stores nothing and exits 130 (#234).
 
 ## [0.23.1] - YYYY-MM-DD
 
