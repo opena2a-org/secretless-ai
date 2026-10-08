@@ -89,6 +89,32 @@ describe('secret set --from-clipboard', () => {
     expect(res.err).not.toContain(TOKEN);
   });
 
+  it('reports an open exposure like the typed form: the same value says Still exposed, a new value says Rotated', async () => {
+    const rotated = 'FAKEtokenZYXWVUTSRQPONMLKJIHGFEDCBA9876543';
+    expect((await run(['set', `API_KEY=${TOKEN}`])).code).toBe(0);
+    expect((await run(['exposed', 'API_KEY', '--where', 'pasted into a chat'])).code).toBe(0);
+
+    const same = await run(['set', 'API_KEY', '--from-clipboard'], { clipboard: fakeClipboard(TOKEN).clipboard });
+    expect(same.code, same.err).toBe(0);
+    expect(same.out).toContain('Stored: API_KEY (40 chars, alphanumeric, from the clipboard)');
+    expect(same.out).toMatch(/Still exposed: this is the value that was already stored/);
+    expect(same.out).toMatch(/Fix: +replace the key at its provider, then +secretless-ai secret set API_KEY/);
+    expect(store().getAnnotation('API_KEY')!.meta.exposedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const fresh = await run(['set', 'API_KEY', '--from-clipboard'], { clipboard: fakeClipboard(rotated).clipboard });
+    expect(fresh.code, fresh.err).toBe(0);
+    expect(fresh.out).toMatch(/Rotated: the exposure recorded .* is closed \(rotatedAt /);
+    const meta = store().getAnnotation('API_KEY')!.meta;
+    expect(meta.exposedAt).toBeUndefined();
+    expect(meta.rotatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(await store().getSecret('API_KEY')).toBe(rotated);
+
+    for (const res of [same, fresh]) {
+      expect(res.out + res.err).not.toContain(TOKEN);
+      expect(res.out + res.err).not.toContain(rotated);
+    }
+  });
+
   it('leaves the clipboard alone when it changed after the value was read', async () => {
     const { state, clipboard } = fakeClipboard(TOKEN, { afterFirstRead: 'a newer copy' });
     const res = await run(['set', 'API_KEY', '--from-clipboard'], { clipboard });
