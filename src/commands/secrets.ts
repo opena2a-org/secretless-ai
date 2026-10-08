@@ -21,6 +21,9 @@ import type { PushAction, PushResult, PushTarget, PushTargetType } from '../secr
 import { AzureKeyVaultTarget, vaultNameFromArg, vaultNameProblem } from '../backends/azure-kv';
 import { VaultBackend } from '../backends/vault';
 import { GCPSecretManagerBackend } from '../backends/gcp-sm';
+import { needsRotation, parseExposureTime } from '../secret-exposure';
+import type { NeedsRotation } from '../secret-exposure';
+import type { RotationOutcome } from '../secret-store';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -67,12 +70,13 @@ function ensureShellHook(): void {
 /** Flags read by one subcommand only. Another subcommand refuses them (#172). */
 const SECRET_SUBCOMMAND_FLAGS: Readonly<Record<string, readonly string[]>> = {
   set: ['--description', '--meta', '--from-clipboard', '--keep-clipboard'],
-  list: ['--long', '--json', '--app'],
+  list: ['--long', '--json', '--app', '--needs-rotation'],
   show: ['--json'],
+  exposed: ['--where', '--at'],
 };
-const SECRET_SUBCOMMANDS = new Set(['set', 'list', 'show', 'get', 'rm', 'remove', 'delete']);
-const SCOPED_FLAGS = new Set(['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--long', '--json', '--app']);
-const VALUE_FLAGS = new Set(['--description', '--meta', '--app']);
+const SECRET_SUBCOMMANDS = new Set(['set', 'list', 'show', 'get', 'rm', 'remove', 'delete', 'exposed']);
+const SCOPED_FLAGS = new Set(['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--long', '--json', '--app', '--needs-rotation', '--where', '--at']);
+const VALUE_FLAGS = new Set(['--description', '--meta', '--app', '--where', '--at']);
 
 interface ParsedSecretArgs {
   /** Every token that is not one of SCOPED_FLAGS, in order (`--force` stays here). */
@@ -185,6 +189,37 @@ function annotationJson(name: string, annotation: SecretAnnotation | undefined):
     meta: annotation?.meta ?? {},
     recordedAt: annotation?.recordedAt ?? null,
     updatedAt: annotation?.updatedAt ?? null,
+  };
+}
+
+/** What `secret set` says about an open exposure (#236). Never the value. */
+function reportRotation(name: string, rotation: RotationOutcome): void {
+  switch (rotation.kind) {
+    case 'closed':
+      console.log(`  Rotated: the exposure recorded ${printable(rotation.exposure.exposedAt)} is closed (rotatedAt ${rotation.rotatedAt}).`);
+      return;
+    case 'still-open': {
+      const where = rotation.exposure.exposedWhere ? `, ${printable(rotation.exposure.exposedWhere)}` : '';
+      console.log(`  Still exposed: this is the value that was already stored, so the exposure recorded ${printable(rotation.exposure.exposedAt)}${where} stays open.`);
+      console.log(`  Fix:     replace the key at its provider, then  ${CLI_BARE} secret set ${name}  with the new value`);
+      return;
+    }
+    case 'unknown':
+      console.log(`  Not checked: whether ${name} had an open exposure; the metadata file could not be read.`);
+      console.log(`  Verify:  ${CLI_BARE} secret list --needs-rotation`);
+      return;
+    case 'none':
+      return;
+  }
+}
+
+/** The JSON form of one open exposure, for `list --needs-rotation --json`. */
+function exposureJson(entry: NeedsRotation): Record<string, unknown> {
+  return {
+    name: entry.name,
+    exposedAt: entry.exposedAt,
+    exposedWhere: entry.exposedWhere,
+    provider: entry.provider,
   };
 }
 
@@ -348,13 +383,14 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       const projectNote = repositoryProjectNote(store.backendName);
       if (projectNote) console.log(`  ${projectNote}`);
       try {
-        await store.setSecret(name, value, annotation);
+        const { rotation } = await store.setSecret(name, value, annotation);
         // Shape, never content. A capture that lost most of the value reads
         // as "19 chars" next to a token the user knows is 40 (#104).
         console.log(`  Stored: ${name} (${describeSecretShape(value)})`);
         if (!isEmptyUpdate(annotation)) {
           console.log(`  Recorded: ${describeAnnotation(store.getAnnotation(name))}  (${CLI_BARE} secret show ${name})`);
         }
+        reportRotation(name, rotation);
         afterSet();
         return 0;
       } catch (err) {
@@ -378,7 +414,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       // for one field: an exact match on recorded metadata (#172).
       const extra = parsed.rest[0];
       if (extra !== undefined) {
-        console.error(`\n  \`secret list\` takes no arguments other than --long, --json and --app <name>, but "${extra}" was given.`);
+        console.error(`\n  \`secret list\` takes no arguments other than --long, --json, --app <name> and --needs-rotation, but "${extra}" was given.`);
         console.error('  It lists every stored name, and it was NOT filtered by that token.');
         console.log(`\n  List all:  ${CLI_BARE} secret list`);
         console.log(`  By app:    ${CLI_BARE} secret list --app <name>`);
@@ -391,6 +427,9 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         return 2;
       }
       const long = parsed.switches.has('--long');
+      if (parsed.switches.has('--needs-rotation')) {
+        return listNeedsRotation(createStore(), { app, long, json });
+      }
       const store = createStore();
       try {
         const names = await store.listSecrets();
@@ -501,6 +540,42 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       }
     }
 
+    case 'exposed': {
+      const [name, ...extra] = parsed.rest;
+      const usage = `\n  Usage: ${CLI_BARE} secret exposed <NAME> --where "<short note>" [--at <date>]\n`;
+      if (!name || name.startsWith('--') || extra.length > 0) {
+        console.error(usage);
+        return name ? 2 : 1;
+      }
+      const where = parsed.values.get('--where')?.[0];
+      if (where === undefined || where.trim() === '') {
+        console.error('\n  --where is required: a short note saying where the value was exposed (for example "pasted into a chat").');
+        console.error(usage);
+        return 2;
+      }
+      const atArg = parsed.values.get('--at')?.[0];
+      const at = atArg === undefined ? new Date() : parseExposureTime(atArg);
+      if (typeof at === 'string') {
+        console.error(`\n  ${at}\n`);
+        return 2;
+      }
+      const store = createStore();
+      try {
+        const { previous } = await store.recordExposure(name, where, at);
+        console.log(`  Recorded: ${name} exposed ${at.toISOString()} (${printable(where)})`);
+        if (previous) {
+          console.log(`  Replaces: the open exposure recorded ${printable(previous.exposedAt)}${previous.exposedWhere ? ` (${printable(previous.exposedWhere)})` : ''}`);
+        }
+        console.log('  The value stays valid until it is replaced at its provider.');
+        console.log(`  Next:     rotate it at the provider, then  ${CLI_BARE} secret set ${name}`);
+        console.log(`  Open:     ${CLI_BARE} secret list --needs-rotation\n`);
+        return 0;
+      } catch (err) {
+        console.error(formatCommandError(err));
+        return 1;
+      }
+    }
+
     case 'get': {
       const positional = parsed.rest.filter(a => !a.startsWith('--'));
       const name = positional[0];
@@ -573,6 +648,8 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       if (subcommand === undefined) {
         console.log(`\n  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
         console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
+        console.log(`         ${CLI_BARE} secret exposed <NAME> --where "<note>" [--at <date>]`);
+        console.log(`         ${CLI_BARE} secret list --needs-rotation [--json]`);
         console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]`);
         console.log(`         ${CLI_BARE} secret push NAME[,NAME2] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>]\n`);
         return 0;
@@ -580,10 +657,58 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       console.error(`\n  Unknown secret command: ${subcommand}`);
       console.log(`  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
       console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
+      console.log(`         ${CLI_BARE} secret exposed <NAME> --where "<note>" [--at <date>]`);
+      console.log(`         ${CLI_BARE} secret list --needs-rotation [--json]`);
       console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]`);
       console.log(`         ${CLI_BARE} secret push NAME[,NAME2] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>]\n`);
       return 1;
   }
+}
+
+/**
+ * `secret list --needs-rotation`: every open exposure, from the metadata file
+ * alone, so it never unlocks the store (#236). Exits 1 while any is open, so a
+ * script or CI job can gate on it.
+ */
+function listNeedsRotation(
+  store: SecretStore,
+  options: { app: string | undefined; long: boolean; json: boolean },
+): number {
+  let annotations: Map<string, SecretAnnotation>;
+  try {
+    annotations = store.listAnnotations();
+  } catch (err) {
+    console.error(formatCommandError(err));
+    return 1;
+  }
+  const open = needsRotation(annotations).filter((e) => options.app === undefined || annotations.get(e.name)?.meta.app === options.app);
+  if (options.json) {
+    console.log(JSON.stringify({
+      scope: 'global',
+      filter: { needsRotation: true, app: options.app ?? null },
+      count: open.length,
+      secrets: open.map(exposureJson),
+    }, null, 2));
+    return open.length > 0 ? 1 : 0;
+  }
+  const scope = options.app === undefined ? '' : ` with app=${printable(options.app)}`;
+  if (open.length === 0) {
+    console.log(`\n  No exposed secret${scope} is waiting for rotation.`);
+    console.log(`  Record one:  ${CLI_BARE} secret exposed NAME --where "<short note>"\n`);
+    return 0;
+  }
+  console.log(`\n  ${open.length} exposed secret(s)${scope} need rotation:\n`);
+  for (const entry of open) {
+    console.log(`    ${entry.name}`);
+    console.log(`      exposed ${printable(entry.exposedAt)}${entry.exposedWhere ? `  ${printable(entry.exposedWhere)}` : ''}`);
+    if (entry.provider) console.log(`      provider=${printable(entry.provider)}`);
+    if (!options.long) continue;
+    const annotation = annotations.get(entry.name);
+    if (annotation?.description !== undefined) console.log(`      ${printable(annotation.description)}`);
+  }
+  console.log('\n  A redacted or deleted copy does not end an exposure; a new value does.');
+  console.log(`  Fix:     replace each key at its provider, then  ${CLI_BARE} secret set NAME  with the new value\n`);
+  return 1;
 }
 
 const SYNC_SOURCES: readonly SelectableBackendType[] = ['local', 'keychain', '1password', 'vault', 'gcp-sm'];

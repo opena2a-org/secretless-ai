@@ -248,6 +248,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
   // `--force` is read by `get` and `sync`; `--from`, `--only` and `--manifest`
   // by `sync` only, `--to`, `--vault` and `--as` by `push` only, and
   // `--dry-run` by both. Each subcommand refuses the others' flags.
+  // `--where` and `--at` are read by `exposed`, `--needs-rotation` by `list`.
   secret: {
     flags: {
       '--force': false,
@@ -257,6 +258,9 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--keep-clipboard': false,
       '--long': false,
       '--app': true,
+      '--needs-rotation': false,
+      '--where': true,
+      '--at': true,
       '--json': false,
       '--from': true,
       '--only': true,

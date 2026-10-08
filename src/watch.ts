@@ -7,6 +7,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { scanTranscriptFile, atomicWrite } from './transcript';
+import { SecretStore } from './secret-store';
+import { markRedactedSecretsExposed } from './secret-exposure';
+import type { RedactedSpan } from './secret-exposure';
 
 const SECRETLESS_DIR = path.join(os.homedir(), '.secretless-ai');
 const PID_FILE = path.join(SECRETLESS_DIR, 'watch.pid');
@@ -103,7 +106,7 @@ export function startWatch(options?: { logFile?: string }): boolean {
 
     debounceTimers.set(fullPath, setTimeout(() => {
       debounceTimers.delete(fullPath);
-      processFile(fullPath, logPath);
+      void processFile(fullPath, logPath);
     }, DEBOUNCE_MS));
   });
 
@@ -123,9 +126,22 @@ export function startWatch(options?: { logFile?: string }): boolean {
   return true;
 }
 
-function processFile(filePath: string, logPath: string): void {
+/**
+ * Redact one transcript, then mark exposed any stored secret whose value was
+ * redacted (#236). Exported for tests; `createStore` is read only when
+ * something was redacted.
+ */
+export async function processFile(
+  filePath: string,
+  logPath: string,
+  createStore: () => SecretStore = () => new SecretStore(),
+): Promise<void> {
+  // Held in memory for the stored-secret comparison below, then dropped.
+  const spans: RedactedSpan[] = [];
   try {
-    const { findings, redactedLines } = scanTranscriptFile(filePath, false);
+    const { findings, redactedLines } = scanTranscriptFile(filePath, false, (span, where) => {
+      spans.push({ span, ...where });
+    });
     if (findings.length > 0 && redactedLines) {
       atomicWrite(filePath, redactedLines);
       const displayPath = filePath.replace(os.homedir(), '~');
@@ -133,9 +149,18 @@ function processFile(filePath: string, logPath: string): void {
       for (const f of findings) {
         log(logPath, `  ${f.jsonPath} → [REDACTED:${f.patternId}]`);
       }
+      const marks = await markRedactedSecretsExposed(spans, createStore, { foundBy: 'watch' });
+      if (marks.notChecked) log(logPath, `Not checked whether a redacted value is a stored secret: ${marks.notChecked}`);
+      for (const m of marks.marked) {
+        log(logPath, `Stored secret ${m.name} marked exposed. Rotate it at its provider, then: secretless-ai secret set ${m.name}`);
+      }
+      for (const m of marks.alreadyOpen) log(logPath, `Stored secret ${m.name} already marked exposed since ${m.exposedAt}`);
+      for (const m of marks.failed) log(logPath, `Stored secret ${m.name} NOT marked exposed: ${m.reason}`);
     }
   } catch (err) {
     log(logPath, `Error processing ${filePath}: ${err}`);
+  } finally {
+    spans.length = 0;
   }
 }
 
