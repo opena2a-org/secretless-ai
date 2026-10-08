@@ -1196,8 +1196,9 @@ async function storeFromClipboard(
   }
 
   const store = createStore();
+  let rotation: RotationOutcome;
   try {
-    await store.setSecret(name, value, annotation);
+    ({ rotation } = await store.setSecret(name, value, annotation));
   } catch (err) {
     console.error(formatCommandError(err));
     return 1;
@@ -1206,6 +1207,9 @@ async function storeFromClipboard(
   if (!isEmptyUpdate(annotation)) {
     console.log(`  Recorded: ${describeAnnotation(store.getAnnotation(name))}  (${CLI_BARE} secret show ${name})`);
   }
+  // The clipboard form closes or leaves an exposure exactly like the typed
+  // and piped forms, so it reports the outcome the same way (#236).
+  reportRotation(name, rotation);
 
   let code = 0;
   if (keep) {

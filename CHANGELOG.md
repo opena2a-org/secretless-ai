@@ -152,9 +152,10 @@ exposed NAME --where "<note>" [--at <date>]` records `exposedAt` and
 value. `secret list --needs-rotation` lists every open exposure with its date,
 note and recorded provider, and exits 1 while any is open; `--json` gives
 `name`, `exposedAt`, `exposedWhere` and `provider` for each. `secret set` with a
-value that differs from the stored one closes the exposure and records
-`rotatedAt`; the same value leaves it open and says so. The two values are
-compared in memory, and no hash of either is kept. When `clean` or `watch`
+value that differs from the stored one, whether typed, piped or read with
+`--from-clipboard`, closes the exposure and records `rotatedAt`; the same
+value leaves it open and says so. The two values are compared in memory, and
+no hash of either is kept. When `clean` or `watch`
 redacts a value equal to a stored secret, it marks that secret exposed and
 prints its name and the next step; the store is read only when something was
 redacted. `status` shows the number of open exposures with the command that
