@@ -136,4 +136,17 @@ describe('#124 config files off the built-in list', () => {
       expect(isConfigShaped(n), n).toBe(false);
     }
   });
+
+  it('DOCS: the CHANGELOG [Unreleased] section records the new field, the flag and the changed count', () => {
+    // #241 — README documented `unscannedConfig` and `--include-config` while
+    // the CHANGELOG said nothing, so the release notes would have left out a
+    // new `--json` field, a new flag and a `skippedUnsupported` count that can
+    // drop for the same tree.
+    const changelog = fs.readFileSync(path.resolve(__dirname, '..', 'CHANGELOG.md'), 'utf-8');
+    const unreleased = changelog.split(/^## /m).find(s => s.startsWith('[Unreleased]')) ?? '';
+    expect(unreleased.length).toBeGreaterThan(0);
+    for (const term of ['--include-config', 'unscannedConfig', 'unscannedConfigFiles', 'skippedUnsupported', '(#190)']) {
+      expect(unreleased, term).toContain(term);
+    }
+  });
 });
