@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { exportBundle, importBundle } from '../bundle-transfer';
+import { checkBundleOutPath, exportBundle, importBundle } from '../bundle-transfer';
 import { PASSPHRASE_ENV, BUNDLE_EXTENSION, type KdfParams } from '../bundle';
 import { detectAgentRuntime } from '../env';
 import { EXIT_USAGE } from '../argv';
@@ -115,6 +115,9 @@ export async function runExport(args: string[], deps: BundleCommandDeps = {}): P
   console.log('\n  Secretless Export\n');
   const outPath = path.resolve(out);
   try {
+    // A file name export would refuse anyway is reported before the passphrase
+    // is asked for twice, or reported missing (#242).
+    checkBundleOutPath(outPath);
     const passphrase = await (deps.readPassphrase ?? passphraseReader(env))(true);
     if (passphrase === null) {
       for (const line of NO_PASSPHRASE) console.error(line);
