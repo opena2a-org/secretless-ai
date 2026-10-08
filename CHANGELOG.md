@@ -426,7 +426,10 @@ the cache layer,
 whose file is keyed by name alone and would otherwise serve the shared value as
 the local one. `setup --check` now names `secret sync` when required names are
 missing. The sync flags are refused on the other `secret` subcommands, so
-`secret set --dry-run` cannot store the value it was asked to preview.
+`secret set --dry-run` cannot store the value it was asked to preview. Its
+errors print in the same layout as the other `secret` subcommands (#233): a
+blank line, `Error:` before the first line, every further line at two spaces,
+and for an unreachable source the Verify line inside that block.
 
 **`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
 CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS

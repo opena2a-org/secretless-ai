@@ -657,7 +657,7 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
       ? deps.createSource(fromType)
       : createBackend(fromType, undefined, true, { role: 'source' });
   } catch (err) {
-    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    console.error(formatCommandError(err));
     return 1;
   }
 
@@ -680,10 +680,9 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
   try {
     result = await syncSecrets(source, store, names, { dryRun, force });
   } catch (err) {
-    console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
     const verify = SOURCE_VERIFY[fromType];
-    if (verify) console.error(`\n  Verify:  ${verify}`);
-    console.error();
+    console.error(formatCommandError(verify ? `${message}\n\n  Verify:  ${verify}` : message));
     return 1;
   }
 

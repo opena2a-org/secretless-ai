@@ -253,6 +253,45 @@ describe('secret sync reports what it could not copy', () => {
   });
 });
 
+describe('secret sync prints its errors in the layout the other secret commands use (#233)', () => {
+  function stderr(): string {
+    return errSpy.mock.calls.map((call: unknown[]) => call.map(String).join(' ')).join('\n');
+  }
+
+  it('an unreachable source: a blank line, Error:, the message, its Verify line, a blank line', async () => {
+    const source = shared();
+    source.healthy = false;
+    expect(await sync(['--from', '1password', '--only', 'API_KEY'], source)).toBe(1);
+    expect(stderr()).toBe([
+      '',
+      '  Error: Source backend "1password" is not reachable: 1Password CLI not authenticated. Run `op signin`.',
+      '',
+      '  Nothing was read from it, and nothing on this machine was changed.',
+      '',
+      '  Verify:  op account get',
+      '',
+    ].join('\n'));
+  });
+
+  it('a source that cannot be opened: every line of the message indented, none at column 0', async () => {
+    const code = await runSecretSync(['--from', '1password', '--only', 'API_KEY'], {
+      store,
+      cwd: projectDir,
+      createSource: () => {
+        throw new Error('op is not installed\nInstall it, then run the sync again.');
+      },
+    });
+    expect(code).toBe(1);
+    expect(stderr()).toBe([
+      '',
+      '  Error: op is not installed',
+      '  Install it, then run the sync again.',
+      '',
+    ].join('\n'));
+    expect(await localSnapshot()).toEqual({});
+  });
+});
+
 describe('secret sync reads by name, so a source that cannot list still syncs', () => {
   it('copies every requested name from a backend whose prefix listing returns nothing', async () => {
     const source = shared();
