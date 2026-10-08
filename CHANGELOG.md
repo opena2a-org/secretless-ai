@@ -140,7 +140,9 @@ write that fails stops the rest. A refused token, a vault that does not exist
 and a missing role or access policy each exit 1 with `Verify:` and `Fix:` lines
 naming the role or command, and nothing is written to another store.
 `--dry-run` reports, per name, "would create" or "would add a version" from
-metadata alone and writes nothing.
+metadata alone and writes nothing. A target or store that cannot be opened is
+reported in the same layout as the other `secret` subcommands (#247): a blank
+line, `Error:` before the first line, and every further line at two spaces.
 
 **`protect-mcp` prints a control character in an MCP env key name as an
 escape (#229).** An env key name comes from the client's config file, and
