@@ -1,4 +1,4 @@
-export { discoverMcpConfigs, type McpClient, type McpConfigFile, type McpServerEntry } from './discover';
+export { discoverMcpConfigs, type McpClient, type McpConfigFile, type McpServerEntry, type UnparsedMcpConfig } from './discover';
 export { classifyEnvVars, type ClassifiedEnv } from './classify';
 export { McpVault } from './vault';
 export { rewriteConfig, restoreConfig, type RewriteResult } from './rewrite';

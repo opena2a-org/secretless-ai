@@ -255,6 +255,31 @@ describe('the human report names a file it did not open', () => {
     expect(text).not.toMatch(/Scan one: npx secretless-ai scan .*a\\x1b/);
   });
 
+  it('prints a control character in a skipped directory name in visible form, never raw', async () => {
+    const dir = tree({
+      'src/app.ts': 'export const x = 1;\n',
+      'a\u001b[2Jb/.cache/app.ts': 'export const y = 2;\n',
+    });
+    const { text } = await report(dir);
+    expect(text).not.toContain('\u001b[2J');
+    expect(text).toMatch(/director(y|ies) not entered/);
+    expect(text).toContain('a\\x1b[2Jb/.cache');
+    // No runnable command is offered for a name the terminal cannot show as typed.
+    expect(text).not.toMatch(/Scan one: npx secretless-ai scan .*a\\x1b/);
+  });
+
+  it('CONTROL: an ordinary skipped directory is still offered as the command', async () => {
+    const dir = tree({
+      'src/app.ts': 'export const x = 1;\n',
+      'b/.cache/app.ts': 'export const y = 2;\n',
+    });
+    const { text } = await report(dir);
+    const block = text.slice(text.indexOf('not entered'));
+    const scanOne = /Scan one: npx secretless-ai scan (\S+)/.exec(block);
+    expect(scanOne).not.toBeNull();
+    expect(scanOne![1].endsWith(path.join('b', '.cache'))).toBe(true);
+  });
+
   it('CONTROL: a tree with nothing skipped prints no file block', async () => {
     const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
     const { text } = await report(dir);

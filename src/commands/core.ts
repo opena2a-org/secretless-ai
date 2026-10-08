@@ -556,10 +556,12 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       const n = stats.skips.dirCount;
       console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered`)} — declared boundaries, not findings.`);
       for (const d of stats.skips.dirs.slice(0, 8)) {
-        console.log(`  ${c.dim(`  ${runnable(d.path)} — ${d.reason}`)}`);
+        console.log(`  ${c.dim(`  ${visibleControls(runnable(d.path))} — ${d.reason}`)}`);
       }
       if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
-      const first = stats.skips.dirs[0];
+      // As for files below: a name holding a control character is listed in
+      // visible form but never offered as the command.
+      const first = stats.skips.dirs.find(d => !CONTROL_CHARS.test(d.path));
       if (first) {
         console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${runnable(first.path)}`);
       }

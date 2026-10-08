@@ -28,6 +28,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       servers: [{ client: 'claude-code', server: 'demo', secretKeys: ['X\x1b[2J_TOKEN', 'Y\u009b2J_TOKEN', 'GITHUB_TOKEN'] }],
       alreadyProtected: 0,
       injectionWarnings: [],
+      unparsed: [],
     });
 
     const output = await protectOutput();
@@ -45,6 +46,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       servers: [{ client: 'cursor', server: 'github', secretKeys: ['GITHUB_TOKEN'] }],
       alreadyProtected: 0,
       injectionWarnings: [],
+      unparsed: [],
     });
 
     expect(await protectOutput()).toContain('\n      GITHUB_TOKEN (encrypted)');
@@ -58,6 +60,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       servers: [{ client: 'cursor', server: 'github', secretKeys: ['"X\\u001b[2J_TOKEN"'] }],
       alreadyProtected: 0,
       injectionWarnings: [],
+      unparsed: [],
     });
 
     expect(await protectOutput()).toContain('      "\\"X\\\\u001b[2J_TOKEN\\"" (encrypted)');
@@ -71,12 +74,32 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       servers: [{ client: 'cursor', server: 'github', secretKeys: ['GITHUB_TOKEN'] }],
       alreadyProtected: 0,
       injectionWarnings: [{ client: 'cursor', server: 'github', key: 'NOTE\x1b[2J', injectionType: 'instruction', severity: 'high' }],
+      unparsed: [],
     });
 
     const output = await protectOutput();
 
     expect(output).not.toMatch(RAW_CONTROL);
     expect(output).toContain('    ! cursor/github -> "NOTE\\u001b[2J"');
+  });
+
+  it('names a config it could not parse beside the secrets it encrypted', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      clientsScanned: 1,
+      secretsFound: 1,
+      serversProtected: 1,
+      servers: [{ client: 'cursor', server: 'github', secretKeys: ['GITHUB_TOKEN'] }],
+      alreadyProtected: 0,
+      injectionWarnings: [],
+      unparsed: [{ client: 'windsurf', filePath: '/home/u/.windsurf/mcp.json', reason: 'not valid JSON (line 2, column 1)' }],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).toContain('1 secret(s) encrypted across 1 server(s).');
+    expect(output).toContain('  windsurf (/home/u/.windsurf/mcp.json)\n    ? not checked: not valid JSON (line 2, column 1)');
+    expect(output).toContain('1 config(s) could not be parsed, so the servers in them were not checked.');
+    expect(output).toContain('Fix the file(s) above, then run `npx secretless-ai protect-mcp` again.');
   });
 
   it('writes a control character in the key of a refused value as an escape on every line', async () => {

@@ -7,7 +7,8 @@
  */
 
 import * as path from 'path';
-import { discoverMcpConfigs } from './discover';
+import { discoverMcpConfigsDetailed } from './discover';
+import type { UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
 import { McpVault } from './vault';
 import { rewriteConfig } from './rewrite';
@@ -51,6 +52,8 @@ export interface ProtectResult {
   alreadyProtected: number;
   /** Prompt injection warnings found in MCP env var values (requires @nanomind/guard) */
   injectionWarnings: InjectionWarning[];
+  /** Config files that exist but could not be read or parsed: nothing in them was checked or protected. */
+  unparsed: UnparsedMcpConfig[];
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +97,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   });
 
   // 1. Discover all MCP configs
-  const configs = discoverMcpConfigs(home);
+  const { configs, unparsed } = discoverMcpConfigsDetailed(home);
 
   const result: ProtectResult = {
     clientsScanned: configs.length,
@@ -103,6 +106,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     servers: [],
     alreadyProtected: 0,
     injectionWarnings: [],
+    unparsed,
   };
 
   // 2. For each config: classify, encrypt, rewrite

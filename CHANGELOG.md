@@ -578,23 +578,28 @@ errors print in the same layout as the other `secret` subcommands (#233): a
 blank line, `Error:` before the first line, every further line at two spaces,
 and for an unreachable source the Verify line inside that block.
 
-**`mcp-status` and `doctor` name every file they could not read or parse
-instead of reporting it as clean.** `mcp-status` skipped an MCP config it could
-not parse, so a Cursor config holding a plaintext token behind one trailing
-comma printed "No MCP configurations found." Each such config is now listed
-under its client and path as `? not checked:` with the reason (`not valid
-JSON (line 4, column 3)`, `could not be read (EACCES)`, `not a JSON object`),
-followed by a count and a Fix line. The reason gives a position only and never
-quotes the file, because the JSON parser's own message can quote the text
-around the error. A config whose top level is `null` no longer makes
-`mcp-status`, `protect-mcp` or `mcp-unprotect` fail with a TypeError. `doctor`
-listed a shell profile it could not read as "no keys" and could still print
-"HEALTHY: All keys correctly configured"; the profile is now marked `could not
-be read (<code>), not checked`, the verdict says it covers only the profiles
-that were read, and a `Not checked:` line names each file with a Fix line. The
-`doctor` health value and the exit codes of both commands are unchanged; a
-profile in the library `doctor()` result carries `readError` when it could not
-be read.
+**`mcp-status`, `protect-mcp`, `mcp-unprotect` and `doctor` name every file
+they could not read or parse instead of reporting it as clean.** `mcp-status`
+skipped an MCP config it could not parse, so a Cursor config holding a
+plaintext token behind one trailing comma printed "No MCP configurations
+found." Each such config is now listed under its client and path as `? not
+checked:` with the reason (`not valid JSON (line 4, column 3)`, `could not be
+read (EACCES)`, `not a JSON object`), followed by a count and a Fix line. The
+reason gives a position only and never quotes the file, because the JSON
+parser's own message can quote the text around the error. `protect-mcp` and
+`mcp-unprotect` passed over such a config without naming it, so `protect-mcp`
+could print "Already clean." beside a config it never read; they now list it as
+`? not checked:` and `? not restored:` with the same reason, count and Fix
+line, and the `protectMcp()` result carries the list as `unparsed`. A config
+whose top level is `null` no longer makes `mcp-status`, `protect-mcp` or
+`mcp-unprotect` fail with a TypeError: each of them exited 1 on such a config
+and now exits 0. `doctor` listed a shell profile it could not read as "no keys"
+and could still print "HEALTHY: All keys correctly configured"; the profile is
+now marked `could not be read (<code>), not checked`, the verdict says it
+covers only the profiles that were read, and a `Not checked:` line names each
+file with a Fix line. The `doctor` health value is unchanged, and so are the
+exit codes of these commands outside that `null` case; a profile in the library
+`doctor()` result carries `readError` when it could not be read.
 
 **`scan` names every file it did not open, even when no directory was
 skipped.** The count of files not opened was printed only inside the
@@ -604,9 +609,10 @@ beside it: an AWS access key id in `notes.txt` was never read, and the report
 did not say so. Files not opened now have their own block, listed with the
 reason each was not opened, followed by a `Scan one:` command that names a
 file, because naming a file scans it whatever its type. A control character in
-a listed file name is shown as `\xNN`, and such a name is never offered as the
-command. What the scan detects, the exit code and the `--json` output are
-unchanged. `--help` lists scanning a single file under Scan Coverage.
+a listed file or directory name is shown as `\xNN`, and such a name is never
+offered as the command. What the scan detects, the exit code and the `--json`
+output are unchanged. `--help` lists scanning a single file under Scan
+Coverage.
 
 **`SECRETLESS_OS_KEYCHAIN=off` refuses every call to the OS credential-store
 CLIs.** Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS

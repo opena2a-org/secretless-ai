@@ -5,8 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 /**
- * `mcp-status` and `doctor` never print a clean result over a file they could
- * not parse or read. Spawns the built entry point (`dist/cli.js`) so the
+ * `mcp-status`, `protect-mcp`, `mcp-unprotect` and `doctor` never print a
+ * clean result over a file they could not parse or read. Spawns the built entry point (`dist/cli.js`) so the
  * assertions are on what a user sees.
  */
 
@@ -79,6 +79,81 @@ describe('mcp-status over a config it could not parse', () => {
     const out = runCli(['mcp-status']);
     expect(out).toContain('No MCP configurations found.');
     expect(out).not.toContain('not checked');
+  });
+});
+
+// A Cursor config with a trailing comma: valid but for one byte.
+const TRAILING_COMMA = `{\n  "mcpServers": {\n    "gh": { "command": "npx", "env": { "GITHUB_TOKEN": "${MARKER}" } },\n  }\n}\n`;
+
+describe('protect-mcp over a config it could not parse', () => {
+  // The local backend keeps everything this command stores under the test HOME.
+  const protect = () => runCli(['protect-mcp', '--backend', 'local']);
+
+  it('names the config as not checked instead of printing "No MCP configurations found."', () => {
+    const configPath = write('.cursor/mcp.json', TRAILING_COMMA);
+
+    const out = protect();
+
+    expect(out).not.toContain('No MCP configurations found.');
+    expect(out).toContain(`cursor (${configPath})`);
+    expect(out).toContain('? not checked: not valid JSON (line 4, column 3)');
+    expect(out).toContain('1 config(s) could not be parsed, so the servers in them were not checked.');
+    expect(out).toContain('Fix the file(s) above, then run `npx secretless-ai protect-mcp` again.');
+    expect(out).not.toContain('PLAINTEXT');
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(TRAILING_COMMA);
+  });
+
+  it('does not call the configs clean when one of them was not read', () => {
+    write('.vscode/mcp.json', JSON.stringify({ mcpServers: { fs: { command: 'npx', env: {} } } }));
+    const configPath = write('.cursor/mcp.json', TRAILING_COMMA);
+
+    const out = protect();
+
+    expect(out).toContain('Scanned 1 client(s)');
+    expect(out).not.toContain('Already clean.');
+    expect(out).toContain('No plaintext secrets found in the MCP configs that were read.');
+    expect(out).toContain(`cursor (${configPath})`);
+    expect(out).toContain('? not checked: not valid JSON (line 4, column 3)');
+  });
+
+  it('CONTROL: still prints "No MCP configurations found." when there is none', () => {
+    const out = protect();
+    expect(out).toContain('No MCP configurations found.');
+    expect(out).not.toContain('not checked');
+  });
+});
+
+describe('mcp-unprotect over a config it could not parse', () => {
+  it('names the config as not restored instead of printing "No backups found to restore."', () => {
+    const configPath = write('.cursor/mcp.json', TRAILING_COMMA);
+
+    const out = runCli(['mcp-unprotect']);
+
+    expect(out).not.toContain('No backups found to restore');
+    expect(out).toContain(`cursor (${configPath})`);
+    expect(out).toContain('? not restored: not valid JSON (line 4, column 3)');
+    expect(out).toContain('1 config(s) could not be parsed, so no backup of them was restored.');
+    expect(out).toContain('Fix the file(s) above, then run `npx secretless-ai mcp-unprotect` again.');
+    expect(out).not.toContain('PLAINTEXT');
+  });
+
+  it('qualifies "No backups found" when it read other configs', () => {
+    write('.vscode/mcp.json', JSON.stringify({ mcpServers: { fs: { command: 'npx', env: {} } } }));
+    write('.cursor/mcp.json', TRAILING_COMMA);
+
+    const out = runCli(['mcp-unprotect']);
+
+    expect(out).toContain('No backups found to restore for the configs that were read.');
+    expect(out).toContain('? not restored: not valid JSON (line 4, column 3)');
+  });
+
+  it('CONTROL: still prints "No backups found to restore." when every config was read', () => {
+    write('.vscode/mcp.json', JSON.stringify({ mcpServers: { fs: { command: 'npx', env: {} } } }));
+
+    const out = runCli(['mcp-unprotect']);
+
+    expect(out).toContain('No backups found to restore.');
+    expect(out).not.toContain('not restored');
   });
 });
 
