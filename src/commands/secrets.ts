@@ -192,8 +192,11 @@ function annotationJson(name: string, annotation: SecretAnnotation | undefined):
   };
 }
 
-/** What `secret set` says about an open exposure (#236). Never the value. */
-function reportRotation(name: string, rotation: RotationOutcome): void {
+/**
+ * What `secret set` says about an open exposure (#236). Never the value.
+ * `setCommand` is the form the user ran, so the Fix line repeats it.
+ */
+function reportRotation(name: string, rotation: RotationOutcome, setCommand = `${CLI_BARE} secret set ${name}`): void {
   switch (rotation.kind) {
     case 'closed':
       console.log(`  Rotated: the exposure recorded ${printable(rotation.exposure.exposedAt)} is closed (rotatedAt ${rotation.rotatedAt}).`);
@@ -201,7 +204,7 @@ function reportRotation(name: string, rotation: RotationOutcome): void {
     case 'still-open': {
       const where = rotation.exposure.exposedWhere ? `, ${printable(rotation.exposure.exposedWhere)}` : '';
       console.log(`  Still exposed: this is the value that was already stored, so the exposure recorded ${printable(rotation.exposure.exposedAt)}${where} stays open.`);
-      console.log(`  Fix:     replace the key at its provider, then  ${CLI_BARE} secret set ${name}  with the new value`);
+      console.log(`  Fix:     replace the key at its provider, then  ${setCommand}  with the new value`);
       return;
     }
     case 'unknown':
@@ -545,7 +548,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       const usage = `\n  Usage: ${CLI_BARE} secret exposed <NAME> --where "<short note>" [--at <date>]\n`;
       if (!name || name.startsWith('--') || extra.length > 0) {
         console.error(usage);
-        return name ? 2 : 1;
+        return 2;
       }
       const where = parsed.values.get('--where')?.[0];
       if (where === undefined || where.trim() === '') {
@@ -1208,8 +1211,9 @@ async function storeFromClipboard(
     console.log(`  Recorded: ${describeAnnotation(store.getAnnotation(name))}  (${CLI_BARE} secret show ${name})`);
   }
   // The clipboard form closes or leaves an exposure exactly like the typed
-  // and piped forms, so it reports the outcome the same way (#236).
-  reportRotation(name, rotation);
+  // and piped forms, so it reports the outcome the same way (#236), and its
+  // Fix line names the clipboard form again.
+  reportRotation(name, rotation, rerun);
 
   let code = 0;
   if (keep) {

@@ -16,7 +16,8 @@ import { SecretStore } from './secret-store';
 import { LocalBackend } from './backends/local';
 import { prepareArgv } from './argv';
 import { redactMatches } from './redact';
-import { parseExposureTime, storedSecretsIn, transcriptWhere } from './secret-exposure';
+import { markRedactedSecretsExposed, parseExposureTime, storedSecretsIn, transcriptWhere } from './secret-exposure';
+import { printCommandHelp } from './command-help';
 
 // Assembled from parts so the tree never carries a whole provider-shaped literal.
 const STORED_KEY = ['sk-ant-api03', 'FAKE'.repeat(6) + 'exposure0test'].join('-');
@@ -118,6 +119,18 @@ describe('secret exposed and secret list --needs-rotation', () => {
     expect(noWhere.err).toMatch(/--where is required/);
   });
 
+  it('every usage refusal exits 2: no NAME, an extra argument, a flag where NAME goes', async () => {
+    for (const args of [
+      ['exposed'],
+      ['exposed', '--where', 'chat'],
+      ['exposed', 'ANTHROPIC_API_KEY', 'extra', '--where', 'chat'],
+    ]) {
+      const res = await secret(args);
+      expect(res.code, args.join(' ')).toBe(2);
+      expect(res.err).toMatch(/Usage: .*secret exposed <NAME>/);
+    }
+  });
+
   it('refuses a name that is not stored, and a note that holds the value, recording nothing', async () => {
     const missing = await secret(['exposed', 'NOT_STORED', '--where', 'chat']);
     expect(missing.code).toBe(1);
@@ -148,6 +161,7 @@ describe('secret set closes an exposure only with a different value', () => {
     const same = await secret(['set', `ANTHROPIC_API_KEY=${STORED_KEY}`]);
     expect(same.code, same.err).toBe(0);
     expect(same.out).toMatch(/Still exposed/);
+    expect(same.out).toMatch(/then +secretless-ai secret set ANTHROPIC_API_KEY +with the new value/);
     expect((await needsRotation()).code).toBe(1);
 
     const rotated = await secret(['set', `ANTHROPIC_API_KEY=${ROTATED_KEY}`]);
@@ -310,6 +324,24 @@ describe('helpers', () => {
     expect(parseExposureTime('2026-10-08', now)).toMatch(/future/);
     expect(parseExposureTime('2026-02-30', now)).toEqual(expect.any(String));
     expect(parseExposureTime('last week', now)).toMatch(/takes a date/);
+  });
+
+  it('markRedactedSecretsExposed does not open the store when nothing was redacted', async () => {
+    const createStore = vi.fn((): SecretStore => { throw new Error('the store must not be opened'); });
+    for (const dryRun of [false, true]) {
+      expect(await markRedactedSecretsExposed([], createStore, { foundBy: 'clean', dryRun }))
+        .toEqual({ marked: [], alreadyOpen: [], failed: [] });
+    }
+    expect(createStore).not.toHaveBeenCalled();
+  });
+
+  it('help says a dry run still reads stored values, and which writers do not report an exposure', async () => {
+    const clean = await capture(async () => { printCommandHelp('clean'); return 0; });
+    expect(clean.out).toMatch(/--dry-run\s+Report findings without redacting or marking secrets exposed/);
+    expect(clean.out).toMatch(/read whenever a credential is found, on a dry run too/);
+    const secretHelp = await capture(async () => { printCommandHelp('secret'); return 0; });
+    expect(secretHelp.out.replace(/\s+/g, ' '))
+      .toMatch(/A value written by `sync`, `import` \(a \.env file or a bundle\) or `setup` closes or leaves an exposure the same way, but those commands do not print which/);
   });
 
   it('transcriptWhere stays one printable line within the metadata limit', () => {

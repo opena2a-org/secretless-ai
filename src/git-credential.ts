@@ -48,13 +48,32 @@ const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:
 /** Same reason as HOST: the username is part of the helper's command line. */
 const USERNAME = /^[A-Za-z0-9._@+][A-Za-z0-9._@+-]*$/;
 
-/** Why a `--host` value cannot be used, or null when it can. */
-export function hostProblem(host: string): string | null {
+/**
+ * Why a `--host` value cannot be written into git config, or null when it can.
+ * This is the shape check alone: `uninstall` uses it, so an entry written
+ * before the port range was checked can still be removed.
+ */
+export function hostShapeProblem(host: string): string | null {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
     return `--host takes a host name, not a URL: use --host ${host.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '')}`;
   }
   if (!HOST.test(host)) {
     return `--host "${host}" is not a host name (letters, digits, dots and dashes, optionally :port)`;
+  }
+  return null;
+}
+
+/**
+ * Why a `--host` value cannot be used, or null when it can. A port outside
+ * 1-65535 is refused: git never matches a URL with that port, so the entry
+ * would be written and never asked.
+ */
+export function hostProblem(host: string): string | null {
+  const shape = hostShapeProblem(host);
+  if (shape) return shape;
+  const port = /:([0-9]+)$/.exec(host)?.[1];
+  if (port !== undefined && (Number(port) < 1 || Number(port) > 65535)) {
+    return `--host "${host}" has port ${port}; a port is a number from 1 to 65535`;
   }
   return null;
 }
@@ -119,7 +138,9 @@ export type RequestMatch =
  * the helper is configured for it by hand. It answers only its own host. And
  * it never answers for a different account than the one asked for: when both
  * the request and `--username` name a user and they differ, git moves on to the
- * next helper or its own prompt.
+ * next helper or its own prompt. A requested username that the answer could not
+ * carry as one line (one decoded from `url=` can hold `%0A`) is not answered,
+ * so the reply never gains an attribute the request wrote.
  */
 export function matchRequest(request: Map<string, string>, mapping: HelperMapping): RequestMatch {
   const protocol = request.get('protocol');
@@ -131,6 +152,10 @@ export function matchRequest(request: Map<string, string>, mapping: HelperMappin
     return { ours: false, reason: `the request is for ${host || 'no host'}, not ${mapping.host}` };
   }
   const requested = request.get('username');
+  const userProblem = requested ? valueProblem(requested) : null;
+  if (userProblem) {
+    return { ours: false, reason: `the requested username ${userProblem}` };
+  }
   if (requested && mapping.username && requested !== mapping.username) {
     return { ours: false, reason: `the request names a different user than --username` };
   }

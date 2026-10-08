@@ -105,6 +105,23 @@ describe('the git credential protocol', () => {
     expect(hostProblem('-c')).not.toBeNull();
   });
 
+  it('refuses a port git can never use', () => {
+    expect(hostProblem('git.example.com:1')).toBeNull();
+    expect(hostProblem('git.example.com:65535')).toBeNull();
+    expect(hostProblem('github.com:65536')).toMatch(/port 65536; a port is a number from 1 to 65535/);
+    expect(hostProblem('github.com:99999')).toMatch(/port 99999/);
+    expect(hostProblem('github.com:0')).toMatch(/port 0/);
+  });
+
+  it('does not answer a request whose username would end its line early', () => {
+    const decoded = parseCredentialRequest('url=https://a%0Apassword=x@github.com/\n');
+    expect(decoded.get('username')).toBe('a\npassword=x');
+    const match = matchRequest(decoded, { host: 'github.com', name: 'T' });
+    expect(match).toEqual({ ours: false, reason: expect.stringMatching(/requested username holds a line break/) });
+    const nul = parseCredentialRequest('protocol=https\nhost=github.com\nusername=a\0b\n');
+    expect(matchRequest(nul, { host: 'github.com', name: 'T' }).ours).toBe(false);
+  });
+
   it('recognises its own entry for a host under any command prefix, and nothing else', () => {
     const ours = helperCommand('npx secretless-ai', { host: 'github.com', name: 'GITHUB_TOKEN', username: 'octo' });
     expect(ours).toBe('!npx secretless-ai git-credential --host github.com --name GITHUB_TOKEN --username octo');
@@ -243,6 +260,13 @@ describe('git-credential command', () => {
     expect(err.join('\n')).toMatch(/secret set GITHUB_TOKEN/);
   });
 
+  it('get answers nothing, without opening the store, for a url= username holding a line break', async () => {
+    const input = 'protocol=https\nhost=github.com\nurl=https://a%0Apassword=x@github.com/\n\n';
+    expect(await runGitCredential(GET, deps(input, { GITHUB_TOKEN: TOKEN }))).toBe(0);
+    expect(answers).toEqual([]);
+    expect(storeOpened).toBe(0);
+  });
+
   it('get refuses a stored value with a line break and does not print it', async () => {
     expect(await runGitCredential(GET, deps(REQUEST, { GITHUB_TOKEN: `${TOKEN}\nhost=evil.example` }))).toBe(1);
     expect(answers).toEqual([]);
@@ -269,6 +293,24 @@ describe('git-credential command', () => {
     expect(await runGitCredential(['instal', '--host', 'github.com', '--name', 'T'], d)).toBe(2);
     expect(err.join('\n')).toMatch(/did you mean `install`/);
     expect(await runGitCredential([], d)).toBe(2);
+  });
+
+  it('install refuses a port above 65535 before running git; uninstall still removes such an entry', async () => {
+    // What an earlier install wrote: the empty entry, then the helper.
+    const written = `\0!npx secretless-ai git-credential --host github.com:99999 --name T\0`;
+    const calls: string[][] = [];
+    const d: GitCredentialDeps = {
+      ...deps('', {}),
+      git: (args) => {
+        calls.push(args);
+        return { status: 0, stdout: args.includes('--get-all') ? written : '', stderr: '' };
+      },
+    };
+    expect(await runGitCredential(['install', '--host', 'github.com:99999', '--name', 'T'], d)).toBe(2);
+    expect(err.join('\n')).toMatch(/port 99999; a port is a number from 1 to 65535/);
+    expect(calls).toEqual([]);
+    expect(await runGitCredential(['uninstall', '--host', 'github.com:99999'], d)).toBe(0);
+    expect(out.join('\n')).toMatch(/Removed 2 entries from credential\.https:\/\/github\.com:99999\.helper/);
   });
 });
 

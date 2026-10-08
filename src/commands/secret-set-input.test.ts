@@ -98,7 +98,8 @@ describe('secret set --from-clipboard', () => {
     expect(same.code, same.err).toBe(0);
     expect(same.out).toContain('Stored: API_KEY (40 chars, alphanumeric, from the clipboard)');
     expect(same.out).toMatch(/Still exposed: this is the value that was already stored/);
-    expect(same.out).toMatch(/Fix: +replace the key at its provider, then +secretless-ai secret set API_KEY/);
+    // The Fix line repeats the form the user ran, so a paste is answered with a paste.
+    expect(same.out).toMatch(/Fix: +replace the key at its provider, then +secretless-ai secret set API_KEY --from-clipboard +with the new value/);
     expect(store().getAnnotation('API_KEY')!.meta.exposedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
     const fresh = await run(['set', 'API_KEY', '--from-clipboard'], { clipboard: fakeClipboard(rotated).clipboard });

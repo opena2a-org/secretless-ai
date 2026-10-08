@@ -68,6 +68,26 @@ describe('runStatus --json', () => {
     expect(doc.summary.verdict).toBe('not-protected');
   });
 
+  it('docs/testing/release-smoke.md names every top-level key, and no other', async () => {
+    const dir = tmpProject();
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
+    const savedHome = process.env.HOME;
+    process.env.HOME = tmpProject();
+    try {
+      await runStatus(dir, { json: true });
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+    const emitted = Object.keys(JSON.parse(lines.join('\n'))).sort();
+
+    const smoke = fs.readFileSync(path.resolve(__dirname, '..', '..', 'docs', 'testing', 'release-smoke.md'), 'utf-8');
+    const listed = /`status --json`: single JSON document — `\{([^}]*)\}`/.exec(smoke);
+    expect(listed, 'the status --json key list in release-smoke.md').not.toBeNull();
+    expect(listed![1].split(',').map((k) => k.trim()).sort()).toEqual(emitted);
+  });
+
   it('reports protected when the guard hook is installed', async () => {
     const dir = tmpProject({
       '.claude/hooks/secretless-guard.sh': '#!/bin/bash\nexit 0\n',

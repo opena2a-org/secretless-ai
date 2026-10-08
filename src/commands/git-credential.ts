@@ -22,6 +22,7 @@ import {
   type HelperMapping,
   runGit,
   hostProblem,
+  hostShapeProblem,
   nameProblem,
   usernameProblem,
   parseCredentialRequest,
@@ -119,7 +120,9 @@ function parse(args: string[]): Parsed {
 function mappingFrom(values: Record<string, string>, needName: boolean): HelperMapping | string {
   const host = values['--host']?.toLowerCase();
   if (!host) return '--host is required, e.g. --host github.com';
-  const hp = hostProblem(host);
+  // Only `uninstall` takes no name. It checks the shape alone, so an entry
+  // written before the port range was checked can still be removed.
+  const hp = needName ? hostProblem(host) : hostShapeProblem(host);
   if (hp) return hp;
   const name = values['--name'];
   if (needName) {

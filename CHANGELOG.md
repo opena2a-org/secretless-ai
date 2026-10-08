@@ -173,12 +173,15 @@ note and recorded provider, and exits 1 while any is open; `--json` gives
 `name`, `exposedAt`, `exposedWhere` and `provider` for each. `secret set` with a
 value that differs from the stored one, whether typed, piped or read with
 `--from-clipboard`, closes the exposure and records `rotatedAt`; the same
-value leaves it open and says so. The two values are compared in memory, and
-no hash of either is kept. When `clean` or `watch`
-redacts a value equal to a stored secret, it marks that secret exposed and
-prints its name and the next step; the store is read only when something was
-redacted. `status` shows the number of open exposures with the command that
-lists them.
+value leaves it open and says so, with a Fix line that repeats the form used.
+The two values are compared in memory, and no hash of either is kept. When
+`clean` or `watch` redacts a value equal to a stored secret, it marks that
+secret exposed and prints its name and the next step; the store is read only
+when something was redacted, on a `clean --dry-run` too, which `clean --help`
+says. A value written by `secret sync`, `import` or `setup` closes or leaves an
+exposure the same way without printing which, as `secret --help` says. Every
+`secret exposed` usage error exits 2. `status` shows the number of open
+exposures with the command that lists them.
 
 **`git-credential` serves a stored token to git over HTTPS, and `doctor` and
 `status` report plaintext git credential files (#238).** `git-credential
@@ -186,17 +189,20 @@ install --host <host> --name <NAME> [--username <user>]` adds two entries to
 `credential.https://<host>.helper` in the global git config: an empty entry,
 which stops git asking any helper configured before it (such as `store`) for
 that host or handing it the token, and a helper that answers from the secret
-store. No value is written to any config file, and `git-credential uninstall
---host <host>` removes those two entries and leaves any other helper for the
-host as it was. Git runs the helper as `git-credential get`, which answers
+store. A port outside 1-65535 is refused, since git never matches it. No value
+is written to any config file, and `git-credential uninstall --host <host>`
+removes those two entries, for any host `install` could have written, and
+leaves any other helper for the host as it was. Git runs the helper as `git-credential get`, which answers
 only HTTPS requests for its host, never for a different user than
-`--username`, refuses when stdin or stdout is a terminal without opening the
-store, and refuses a stored value holding a line break rather than trimming
+`--username` or for a requested username holding a line break or NUL (which a
+`url=` username can after decoding), refuses when stdin or stdout is a terminal
+without opening the store, and refuses a stored value holding a line break rather than trimming
 it; `store` and `erase` write nothing. These protocol calls are not counted by
 telemetry. `doctor` now has a Git credentials block, and `status` a row per
 finding: `~/.git-credentials`, `~/.config/git/credentials`, `~/.netrc` and a
 `store` helper's `--file` with lines that hold a credential (count, line
-numbers and hosts, never a user or value), and a `credential.helper` set to
+numbers and hosts, never a user or value; a `.netrc` `default` entry is not
+named as a host or provider), and a `credential.helper` set to
 `store`, each with Verify and Fix lines. `doctor`'s verdict and exit code
 still reflect the shell profile check alone, and `--fix` does not touch these
 files. `status --json` carries them as `gitCredentials`, with the Verify and
