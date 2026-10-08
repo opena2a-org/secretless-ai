@@ -13,6 +13,9 @@ import { parseManifestDetailed, MANIFEST_FORMAT_HINT } from '../manifest';
 import { syncSecrets, displayName } from '../secret-sync';
 import type { SyncAction, SyncResult } from '../secret-sync';
 import { resolveGcpProject, repositoryProjectNote } from '../backends/gcp-project';
+import { Clipboard, clipboardInstallHint } from '../clipboard';
+import { canReadHidden, readHiddenLine } from '../hidden-line';
+import type { TtyInput } from '../hidden-line';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -58,12 +61,12 @@ function ensureShellHook(): void {
 
 /** Flags read by one subcommand only. Another subcommand refuses them (#172). */
 const SECRET_SUBCOMMAND_FLAGS: Readonly<Record<string, readonly string[]>> = {
-  set: ['--description', '--meta'],
+  set: ['--description', '--meta', '--from-clipboard', '--keep-clipboard'],
   list: ['--long', '--json', '--app'],
   show: ['--json'],
 };
 const SECRET_SUBCOMMANDS = new Set(['set', 'list', 'show', 'get', 'rm', 'remove', 'delete']);
-const SCOPED_FLAGS = new Set(['--description', '--meta', '--long', '--json', '--app']);
+const SCOPED_FLAGS = new Set(['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--long', '--json', '--app']);
 const VALUE_FLAGS = new Set(['--description', '--meta', '--app']);
 
 interface ParsedSecretArgs {
@@ -190,6 +193,22 @@ export interface RunSecretOptions {
   createStore?: () => SecretStore;
   /** Called after a successful `secret set`. For DI/testing. */
   afterSet?: () => void;
+  /** Where `secret set NAME` reads a value from. For DI/testing. */
+  stdin?: TtyInput;
+  /** Whether stdin is a pipe or a file rather than a terminal. For DI/testing. */
+  stdinIsPiped?: () => boolean;
+  /** Clipboard for `secret set --from-clipboard`. For DI/testing. */
+  clipboard?: Clipboard;
+}
+
+/** True when a value may be arriving on stdin from a pipe or a redirected file. */
+function stdinIsPiped(): boolean {
+  try {
+    const st = fs.fstatSync(0);
+    return st.isFIFO() || st.isFile();
+  } catch {
+    return false;
+  }
 }
 
 export async function runSecret(args: string[], options: RunSecretOptions = {}): Promise<number> {
@@ -225,13 +244,21 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
     case 'set': {
       const nameArg = parsed.rest[0];
       if (!nameArg) {
-        console.error(`\n  Usage: ${CLI_BARE} secret set <NAME[=VALUE]> [--description <text>] [--meta <key=value>]...\n`);
+        console.error(`\n  Usage: ${CLI_BARE} secret set <NAME[=VALUE]> [--description <text>] [--meta <key=value>]...`);
+        console.error(`  Or:    ${CLI_BARE} secret set <NAME> --from-clipboard [--keep-clipboard]\n`);
         return 1;
       }
 
       const annotation = annotationFromArgs(parsed);
       if (typeof annotation === 'string') {
         console.error(`\n  ${annotation}\n`);
+        return 2;
+      }
+
+      const fromClipboard = parsed.switches.has('--from-clipboard');
+      const keepClipboard = parsed.switches.has('--keep-clipboard');
+      if (keepClipboard && !fromClipboard) {
+        console.error('\n  --keep-clipboard applies with --from-clipboard only. Nothing was stored.\n');
         return 2;
       }
 
@@ -242,6 +269,25 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       let value: string | null;
       // Check for inline value: NAME=VALUE
       const eqIdx = nameArg.indexOf('=');
+      if (fromClipboard) {
+        if (eqIdx !== -1) {
+          console.error('\n  --from-clipboard reads the value from the clipboard, so NAME=VALUE cannot also give one. Nothing was stored.');
+          console.error(`  Fix:     ${CLI_BARE} secret set ${nameArg.slice(0, eqIdx)} --from-clipboard\n`);
+          return 2;
+        }
+        if ((options.stdinIsPiped ?? stdinIsPiped)()) {
+          console.error('\n  --from-clipboard reads the value from the clipboard, but stdin is a pipe or a file that may carry another one. Nothing was stored.');
+          console.error(`  Fix:     run ${CLI_BARE} secret set ${nameArg} --from-clipboard without a pipe or redirect,`);
+          console.error('           or drop --from-clipboard to store what is piped in.\n');
+          return 2;
+        }
+        name = nameArg;
+        if (!SECRET_NAME_RE.test(name)) {
+          console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
+          return 1;
+        }
+        return storeFromClipboard(name, annotation, keepClipboard, options.clipboard ?? new Clipboard(), createStore, afterSet);
+      }
       if (eqIdx !== -1) {
         name = nameArg.slice(0, eqIdx);
         value = nameArg.slice(eqIdx + 1);
@@ -261,10 +307,15 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
           return 1;
         }
-        value = await readSecretFromStdin(name);
+        const read = await readSecretFromStdin(name, options.stdin ?? process.stdin);
+        if (read === CANCELLED) {
+          console.error('  Cancelled. Nothing was stored.\n');
+          return 130;
+        }
+        value = read;
         if (value === null) {
           console.error('  Error: no value provided.');
-          console.error(`  Usage: ${CLI_BARE} secret set NAME=VALUE`);
+          console.error(`  Usage: ${CLI_BARE} secret set NAME --from-clipboard`);
           console.error(`  Or:    echo "value" | ${CLI_BARE} secret set NAME\n`);
           return 1;
         }
@@ -751,15 +802,92 @@ function shellWord(word: string): string {
 }
 
 /**
- * Read a secret value from stdin. In TTY mode, reads one line (until Enter).
- * In piped mode, reads until stdin closes. Returns null if value is empty.
+ * `secret set NAME --from-clipboard`: store what the clipboard holds, then
+ * clear it unless it changed since it was read or --keep-clipboard was given.
+ * The value reaches this process through the clipboard tool's stdout only;
+ * it is never in argv, and only its shape is printed.
  */
-function readSecretFromStdin(name: string): Promise<string | null> {
+async function storeFromClipboard(
+  name: string,
+  annotation: AnnotationUpdate,
+  keep: boolean,
+  clipboard: Clipboard,
+  createStore: () => SecretStore,
+  afterSet: () => void,
+): Promise<number> {
+  const rerun = `${CLI_BARE} secret set ${name} --from-clipboard`;
+  const read = clipboard.read();
+  if (!read.ok) {
+    if (read.reason === 'no-tool') {
+      console.error(`\n  No clipboard tool was found (tried ${read.tried.join(', ')}). Nothing was stored.`);
+      console.error(`  Fix:     ${clipboardInstallHint(clipboard.platform)}\n`);
+    } else {
+      console.error(`\n  The clipboard could not be read: ${read.detail}. Nothing was stored.`);
+      console.error(`  Fix:     copy the key again, then run: ${rerun}\n`);
+    }
+    return 1;
+  }
+  const value = read.text.trim();
+  if (value === '') {
+    console.error('\n  The clipboard is empty. Nothing was stored.');
+    console.error(`  Fix:     copy the key again, then run: ${rerun}\n`);
+    return 1;
+  }
+
+  const store = createStore();
+  try {
+    await store.setSecret(name, value, annotation);
+  } catch (err) {
+    console.error(formatCommandError(err));
+    return 1;
+  }
+  console.log(`  Stored: ${name} (${describeSecretShape(value)}, from the clipboard)`);
+  if (!isEmptyUpdate(annotation)) {
+    console.log(`  Recorded: ${describeAnnotation(store.getAnnotation(name))}  (${CLI_BARE} secret show ${name})`);
+  }
+
+  let code = 0;
+  if (keep) {
+    console.log('  Clipboard: kept (--keep-clipboard). It still holds the value.');
+  } else {
+    // Clear only what was read: a newer copy made since then is the user's.
+    const again = clipboard.read();
+    if (again.ok && again.text !== read.text) {
+      console.log('  Clipboard: left as is. It changed after the value was read.');
+    } else {
+      const failure = again.ok ? clipboard.clear(read.tool) : `it could not be read again (${again.reason === 'failed' ? again.detail : 'no tool'})`;
+      if (failure === null) {
+        console.log('  Clipboard: cleared.');
+      } else {
+        console.error(`  Clipboard: NOT cleared, ${failure}. It may still hold the value.`);
+        console.error('  Fix:     copy something else to replace it.');
+        code = 1;
+      }
+    }
+  }
+  afterSet();
+  return code;
+}
+
+/** `readSecretFromStdin` result when the user pressed Ctrl-C at the prompt. */
+const CANCELLED = Symbol('cancelled');
+
+/**
+ * Read a secret value from stdin. On a terminal, reads one line with echo
+ * off. In piped mode, reads until stdin closes. Returns null if value is empty.
+ */
+async function readSecretFromStdin(name: string, stdin: TtyInput): Promise<string | null | typeof CANCELLED> {
+  if (canReadHidden(stdin)) {
+    const result = await readHiddenLine(stdin, process.stderr, `  Enter value for ${name} (input hidden): `);
+    if (result.kind === 'cancelled') return CANCELLED;
+    const trimmed = result.value.trim();
+    return trimmed === '' ? null : trimmed;
+  }
   return new Promise((resolve) => {
     let input = '';
-    process.stdin.setEncoding('utf-8');
+    stdin.setEncoding('utf-8');
 
-    if (process.stdin.isTTY) {
+    if (stdin.isTTY) {
       process.stderr.write(`  Enter value for ${name}: `);
     }
 
@@ -771,17 +899,17 @@ function readSecretFromStdin(name: string): Promise<string | null> {
       resolve(trimmed === '' ? null : trimmed);
     };
 
-    process.stdin.on('data', (chunk) => {
+    stdin.on('data', (chunk) => {
       input += chunk;
       // In TTY mode, each Enter press delivers a line — store immediately.
       // In piped mode, we may get multiple chunks; wait for 'end'.
-      if (process.stdin.isTTY) {
+      if (stdin.isTTY) {
         finish(input);
       }
     });
 
     // Piped mode: wait for stdin to close, then store
-    process.stdin.on('end', () => {
+    stdin.on('end', () => {
       finish(input);
     });
   });

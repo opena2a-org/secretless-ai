@@ -38,7 +38,9 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} install   Install broker as login daemon (macOS)
 
   Secret Management:
-    ${CLI} secret set <NAME[=VALUE]>  Store a secret
+    ${CLI} secret set <NAME[=VALUE]>  Store a secret (prompts with input hidden)
+    ${CLI} secret set NAME --from-clipboard
+                                      Store a key copied from a web page, then clear the clipboard
     ${CLI} secret set NAME --description TEXT --meta key=value
                                       Also record what it is for (app, scopes, ...)
     ${CLI} secret list                List stored secret names
