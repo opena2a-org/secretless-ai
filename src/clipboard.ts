@@ -19,8 +19,6 @@ export interface ClipboardTool {
   name: string;
   readArgs: string[];
   clearArgs: string[];
-  /** Feed an empty stdin to the clear command (pbcopy, xclip). */
-  clearWithEmptyInput?: boolean;
 }
 
 export interface ClipboardRunResult {
@@ -31,7 +29,11 @@ export interface ClipboardRunResult {
   errorCode?: string;
 }
 
-/** Runs one tool. `capture` is false for clear commands, whose output is not read. */
+/**
+ * Runs one tool. `capture` is false for clear commands, whose output is not
+ * read and whose stdin is an empty input: pbcopy and `xclip -i` write that
+ * empty input to the clipboard, and the other clear commands ignore it.
+ */
 export type ClipboardRunner = (command: string, args: string[], capture: boolean) => ClipboardRunResult;
 
 export type ClipboardReadResult =
@@ -50,7 +52,7 @@ const POWERSHELL = ['-NoProfile', '-NonInteractive', '-Command'];
 /** The tools to try on this platform, in order. */
 export function clipboardTools(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): ClipboardTool[] {
   if (platform === 'darwin') {
-    return [{ name: 'pbpaste', readArgs: [], clearArgs: [], clearWithEmptyInput: true }];
+    return [{ name: 'pbpaste', readArgs: [], clearArgs: [] }];
   }
   if (platform === 'win32') {
     return [{
@@ -61,7 +63,7 @@ export function clipboardTools(platform: NodeJS.Platform, env: NodeJS.ProcessEnv
   }
   const wayland: ClipboardTool = { name: 'wl-paste', readArgs: ['--no-newline'], clearArgs: ['--clear'] };
   const x11: ClipboardTool[] = [
-    { name: 'xclip', readArgs: ['-selection', 'clipboard', '-o'], clearArgs: ['-selection', 'clipboard', '-i'], clearWithEmptyInput: true },
+    { name: 'xclip', readArgs: ['-selection', 'clipboard', '-o'], clearArgs: ['-selection', 'clipboard', '-i'] },
     { name: 'xsel', readArgs: ['--clipboard', '--output'], clearArgs: ['--clipboard', '--clear'] },
   ];
   return env.WAYLAND_DISPLAY ? [wayland, ...x11] : [...x11, wayland];
