@@ -552,7 +552,8 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // like `.claude/`, and it is invisible inside a single total. Each line is
     // followed by the command that scans it, so naming a gap is never a dead
     // end. These are the source walk's boundaries: the key and config walks
-    // still enter a hidden directory, and a finding can come from one.
+    // can still enter a hidden directory listed here, so a finding can come
+    // from one.
     if (stats.skips.dirCount > 0) {
       const n = stats.skips.dirCount;
       console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered for source files`)} — declared boundaries, not findings.`);
