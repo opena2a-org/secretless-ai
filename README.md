@@ -134,6 +134,18 @@ npx secretless-ai import team.secretless-bundle                  # on the other 
 
 The passphrase is asked for in the terminal, or read from `SECRETLESS_EXPORT_PASSPHRASE`; it is never accepted as an argument, and no value is printed. `import` writes nothing when the passphrase is wrong or a name already exists (`--force` replaces it), then reads each name back from the store and reports whether all of them resolve. The bundle also carries the `required` flag and description from the exporting project's `.secretless`. `scan` and `scan-staged` flag a `*.secretless-bundle` file, `clean` redacts a bundle printed into a transcript, and `verify` fails while one is in a recent transcript. Delete the bundle on both machines once it is imported. `export` refuses to run inside an AI agent session.
 
+### Track an exposed key until it is rotated
+
+Redacting a transcript does not revoke a key. When a stored value has been pasted into a chat, shown on screen or committed, record it, and the record stays open until the stored value changes:
+
+```bash
+npx secretless-ai secret exposed OPENAI_API_KEY --where "pasted into a chat"   # --at 2026-10-07 for an earlier date
+npx secretless-ai secret list --needs-rotation          # exits 1 while any exposure is open (--json for CI)
+npx secretless-ai secret set OPENAI_API_KEY             # the new value from the provider closes it
+```
+
+The record is `exposedAt` and `exposedWhere` in the secret's metadata, never the value. `secret set` compares the new value with the stored one in memory: a different value closes the exposure and records `rotatedAt`; the same value leaves it open and says so. When `clean` or `watch` redacts a value equal to a stored secret, it marks that secret exposed and prints its name and the next step. `status` shows the open count.
+
 ### Ask your AI assistant to use a secret
 
 After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursor/rules/secretless.mdc`, ...) lists which keys are available as environment variables and tells the tool to reference them as `$VAR_NAME` without reading values. So this works in Claude Code:

@@ -146,6 +146,20 @@ refusal naming the character (for example `a C1 control character (U+009B)`)
 and its position, never the value. U+00A0 and above, including accented and
 non-Latin letters, are still accepted.
 
+**Exposed secrets are tracked until they are rotated (#236).** `secret
+exposed NAME --where "<note>" [--at <date>]` records `exposedAt` and
+`exposedWhere` in the secret's metadata, beside the store and never with the
+value. `secret list --needs-rotation` lists every open exposure with its date,
+note and recorded provider, and exits 1 while any is open; `--json` gives
+`name`, `exposedAt`, `exposedWhere` and `provider` for each. `secret set` with a
+value that differs from the stored one closes the exposure and records
+`rotatedAt`; the same value leaves it open and says so. The two values are
+compared in memory, and no hash of either is kept. When `clean` or `watch`
+redacts a value equal to a stored secret, it marks that secret exposed and
+prints its name and the next step; the store is read only when something was
+redacted. `status` shows the number of open exposures with the command that
+lists them.
+
 **`protect-mcp` refuses an MCP server value that holds terminal escapes or
 U+FFFD, the same rule `secret set` applies (#104).** A value in a server's
 `env` block containing an escape or other control character, a null byte, or

@@ -903,6 +903,18 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     addRow({ glyph: '✓', label: `Transcripts clean (${tp.transcriptFilesScanned} file${tp.transcriptFilesScanned === 1 ? '' : 's'} scanned)` });
   }
 
+  // Exposed stored secrets not yet rotated (#236). A redacted transcript does
+  // not end an exposure; only a new value at the provider does.
+  if (s.exposuresOpen === null) {
+    addRow({ glyph: '⚠', label: 'Exposed-secret records could not be read', action: 'secretless-ai secret list --needs-rotation' });
+  } else if (s.exposuresOpen > 0) {
+    addRow({
+      glyph: '⚠',
+      label: `${s.exposuresOpen} exposed secret${s.exposuresOpen === 1 ? '' : 's'} not yet rotated`,
+      action: 'secretless-ai secret list --needs-rotation',
+    });
+  }
+
   // Broker daemon.
   if (brokerStatus) {
     addRow({ glyph: '✓', label: `Broker running (PID ${brokerStatus.pid}, ${formatUptime(brokerStatus.uptimeSeconds)})` });
@@ -950,6 +962,8 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
         ? { ...user, unreadable: user.unreadable ?? null, ambiguous: user.ambiguous ?? null }
         : null,
       transcriptProtection: tp,
+      // Null when the metadata file could not be read, never 0 (#236).
+      exposuresOpen: s.exposuresOpen,
       backend: effectiveBackend,
       configuredBackend: configuredBackend ?? null,
       // Null unless the backend is gcp-sm. `source` says which rule applied:

@@ -3,6 +3,10 @@ import { cleanTranscripts, MAX_LINE_SIZE, type CleanResult } from '../transcript
 import { startWatch, stopWatch, isWatchRunning, installLaunchAgent, uninstallLaunchAgent } from '../watch';
 import { scanHistory, cleanHistory } from '../history';
 import { shellQuote } from './core';
+import { CLI_BARE } from './utils';
+import { SecretStore } from '../secret-store';
+import { markRedactedSecretsExposed } from '../secret-exposure';
+import type { ExposureMarks, RedactedSpan } from '../secret-exposure';
 
 /**
  * Name the lines `clean` did not read. A line over the length cap is skipped
@@ -23,7 +27,40 @@ function reportLinesNotRead(result: CleanResult): void {
   console.log(`  Verify:   awk 'length($0) > ${MAX_LINE_SIZE} { print FNR ": " length($0) }' ${shellQuote(result.linesNotRead[0].path)}\n`);
 }
 
-export function runClean(args: string[]): number {
+/**
+ * Name the stored secrets whose values were among the redacted spans, and the
+ * next step for each (#236). Redacting a transcript does not revoke a key.
+ */
+function reportExposures(marks: ExposureMarks, dryRun: boolean): void {
+  if (marks.notChecked) {
+    console.log('  Not checked: whether a redacted value is one of your stored secrets.');
+    console.log(`  Reason:   ${marks.notChecked}`);
+    console.log(`  Verify:   ${CLI_BARE} secret list\n`);
+    return;
+  }
+  const total = marks.marked.length + marks.alreadyOpen.length + marks.failed.length;
+  if (total === 0) return;
+  console.log(`  Stored secrets among the redacted values: ${total}`);
+  for (const m of marks.marked) {
+    console.log(`    ${m.name}  ${dryRun ? 'would be marked exposed' : 'marked exposed'} (${m.where})`);
+  }
+  for (const m of marks.alreadyOpen) {
+    console.log(`    ${m.name}  already marked exposed since ${m.exposedAt}`);
+  }
+  for (const m of marks.failed) {
+    console.log(`    ${m.name}  NOT marked exposed: ${m.reason}`);
+  }
+  console.log('  A redacted value still works until it is replaced at its provider.');
+  console.log(`  Next:     rotate each one at its provider, then  ${CLI_BARE} secret set NAME`);
+  console.log(`  Open:     ${CLI_BARE} secret list --needs-rotation${dryRun ? '   (run without --dry-run to record)' : ''}\n`);
+}
+
+export interface RunCleanOptions {
+  /** Store factory, read only when something was redacted. For DI/testing. */
+  createStore?: () => SecretStore;
+}
+
+export async function runClean(args: string[], options: RunCleanOptions = {}): Promise<number> {
   const dryRun = args.includes('--dry-run');
   const lastSession = args.includes('--last');
   let targetPath: string | undefined;
@@ -46,7 +83,14 @@ export function runClean(args: string[]): number {
     ? `\n  Scanning transcripts at ${targetPath}...\n`
     : '\n  Scanning Claude Code transcripts...\n');
 
-  const result = cleanTranscripts({ dryRun, targetPath, lastSession });
+  // Held in memory for the stored-secret comparison below, then dropped.
+  const spans: RedactedSpan[] = [];
+  const result = cleanTranscripts({
+    dryRun,
+    targetPath,
+    lastSession,
+    onRedacted: (span, where) => { spans.push({ span, ...where }); },
+  });
 
   if (result.totalFindings === 0) {
     console.log(`  Scanned: ${result.filesScanned} files`);
@@ -83,6 +127,12 @@ export function runClean(args: string[]): number {
   } else {
     console.log(`  Redacted: ${result.totalRedacted}\n`);
   }
+  const marks = await markRedactedSecretsExposed(spans, options.createStore ?? (() => new SecretStore()), {
+    foundBy: 'clean',
+    dryRun,
+  });
+  spans.length = 0;
+  reportExposures(marks, dryRun);
   reportLinesNotRead(result);
   return 0;
 }

@@ -122,12 +122,15 @@ const CREDENTIAL_TAIL = /[A-Za-z0-9_-]/;
  * `AWS_SECRET_ACCESS_KEY = "..."` match ACROSS the variable name, so replacing
  * the whole match erased the name and left a bare quote. When the pattern
  * captures the value in group 1, only from that group onward is replaced.
+ *
+ * `onSpan` is handed each replaced span, so `clean` can tell whether a stored
+ * secret was among them (#236). The span is credential text.
  */
 export function redactMatches(
   text: string,
   regex: RegExp,
   label: string,
-  opts?: { preferCaptureGroup?: boolean },
+  opts?: { preferCaptureGroup?: boolean; onSpan?: (span: string) => void },
 ): string {
   const flags = regex.flags.includes('g') ? regex.flags : regex.flags + 'g';
   const scanner = new RegExp(regex.source, flags);
@@ -160,6 +163,7 @@ export function redactMatches(
     let cutTo = matchStart + m[0].length;
     while (cutTo < text.length && CREDENTIAL_TAIL.test(text[cutTo])) cutTo++;
 
+    opts?.onSpan?.(text.slice(cutFrom, cutTo));
     out += text.slice(cursor, cutFrom) + label;
     cursor = cutTo;
     // The tail is consumed, so continue scanning after it rather than from the

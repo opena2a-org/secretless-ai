@@ -14,6 +14,8 @@ import { findSecretValueProblem, unstorableSecretError } from './secret-value';
 import { editDistance, NEAR_MISS_MAX } from './near-miss';
 import { SecretAnnotations, checkAnnotation, defaultAnnotationsPath, isEmptyUpdate } from './secret-annotations';
 import type { AnnotationMap, AnnotationUpdate, SecretAnnotation } from './secret-annotations';
+import { exposureUpdate, openExposure, rotationUpdate } from './secret-exposure';
+import type { OpenExposure } from './secret-exposure';
 
 /** Key prefix for user secrets: `secret/<NAME>` in every backend. */
 export const SECRET_PREFIX = 'secret';
@@ -73,8 +75,15 @@ export class SecretStore {
    * the value, and the annotation file is read, BEFORE the value is stored, so
    * a refused annotation stores nothing. Without one, an existing annotation is
    * left as it is: rotating a value does not change what it is for.
+   *
+   * When the name has an open exposure (#236), the stored value is read and
+   * compared with the new one in memory: a different value closes the exposure
+   * and records `rotatedAt`; the same value leaves it open. Without an open
+   * exposure the stored value is not read. A plain set whose annotation file
+   * cannot be read still stores the value, and says the exposure could not be
+   * checked, so a damaged metadata file never blocks a rotation.
    */
-  async setSecret(name: string, value: string, annotation?: AnnotationUpdate): Promise<void> {
+  async setSecret(name: string, value: string, annotation?: AnnotationUpdate): Promise<SetSecretResult> {
     validateSecretName(name);
     const problem = findSecretValueProblem(value);
     if (problem) throw unstorableSecretError(name, problem);
@@ -82,21 +91,64 @@ export class SecretStore {
     if (annotate) {
       const reason = checkAnnotation(annotation!, value);
       if (reason) throw unrecordableAnnotationError(name, reason);
-      // An unreadable file or too many keys refuses here, before the value
-      // changes, rather than after it as a half-done write.
-      this.annotations.preview(name, annotation!);
     }
+
     const key = `${SECRET_PREFIX}/${name}`;
-    await this.backend.store(key, value);
-    if (!annotate) return;
+    let rotation: RotationOutcome = { kind: 'none' };
+    let current: SecretAnnotation | undefined;
     try {
-      this.annotations.update(name, annotation!);
+      current = this.annotations.get(name);
     } catch (err) {
-      throw new Error(
-        `Stored ${name}, but its description and metadata were not recorded: ` +
-        `${err instanceof Error ? err.message : String(err)}`,
-      );
+      if (annotate) throw err;
+      rotation = { kind: 'unknown', reason: err instanceof Error ? err.message : String(err) };
     }
+    let update = annotation;
+    const exposure = openExposure(current);
+    if (exposure) {
+      const previous = (await this.backend.resolve(key))[key];
+      if (previous === value) {
+        rotation = { kind: 'still-open', exposure };
+      } else {
+        const now = new Date();
+        rotation = { kind: 'closed', exposure, rotatedAt: now.toISOString() };
+        update = rotationUpdate(now, annotation);
+      }
+    }
+
+    const write = !isEmptyUpdate(update);
+    // An unreadable file or too many keys refuses here, before the value
+    // changes, rather than after it as a half-done write.
+    if (write) this.annotations.preview(name, update!);
+    await this.backend.store(key, value);
+    if (!write) return { rotation };
+    try {
+      this.annotations.update(name, update!);
+    } catch (err) {
+      const what = rotation.kind === 'closed'
+        ? 'the rotation was not recorded, so it is still listed as exposed'
+        : 'its description and metadata were not recorded';
+      throw new Error(`Stored ${name}, but ${what}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return { rotation };
+  }
+
+  /**
+   * Record that `name`'s stored value was exposed at `at`, and where (#236).
+   *
+   * The value is read to confirm it is stored and to refuse a note that holds
+   * it; it goes no further. An open exposure is replaced, and returned so the
+   * caller can say so.
+   */
+  async recordExposure(name: string, where: string, at: Date): Promise<{ previous: OpenExposure | null }> {
+    validateSecretName(name);
+    const value = await this.getSecret(name);
+    if (value === undefined) throw notStoredError(name);
+    const update = exposureUpdate(at, where);
+    const reason = checkAnnotation(update, value);
+    if (reason) throw unrecordableExposureError(name, reason.replace('--meta exposedWhere', '--where'));
+    const previous = openExposure(this.annotations.get(name));
+    this.annotations.update(name, update);
+    return { previous };
   }
 
   /** Description and metadata recorded for a name. Never reads the value. */
@@ -205,6 +257,48 @@ export class SecretStore {
     }
     return result;
   }
+}
+
+/** What `setSecret` did about an open exposure (#236). */
+export type RotationOutcome =
+  /** No exposure was open. */
+  | { kind: 'none' }
+  /** The new value differs from the stored one: the exposure is closed. */
+  | { kind: 'closed'; exposure: OpenExposure; rotatedAt: string }
+  /** The new value is the stored one: the exposure stays open. */
+  | { kind: 'still-open'; exposure: OpenExposure }
+  /** The annotation file could not be read, so it is not known. */
+  | { kind: 'unknown'; reason: string };
+
+export interface SetSecretResult {
+  rotation: RotationOutcome;
+}
+
+/** `recordExposure` on a name with no stored value. */
+function notStoredError(name: string): Error {
+  return new Error(
+    [
+      `Secret not found: ${name}`,
+      '',
+      '  Nothing was recorded. An exposure is recorded against a stored value.',
+      '',
+      '  Verify:  secretless-ai secret list',
+      `  Fix:     secretless-ai secret set ${name}`,
+    ].join('\n'),
+  );
+}
+
+/** An exposure note refused by `checkAnnotation`. Nothing was recorded. */
+function unrecordableExposureError(name: string, reason: string): Error {
+  return new Error(
+    [
+      reason,
+      '',
+      `  Nothing was recorded for ${name}.`,
+      '',
+      `  Fix:     secretless-ai secret exposed ${name} --where "where it was exposed, without the value"`,
+    ].join('\n'),
+  );
 }
 
 /** An annotation refused by `checkAnnotation`. Nothing was stored. */

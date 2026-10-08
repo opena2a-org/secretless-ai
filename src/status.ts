@@ -9,6 +9,8 @@ import { detectAITools, type AITool } from './detect';
 import { scan } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
+import { defaultAnnotationsPath, readAnnotations } from './secret-annotations';
+import { needsRotation } from './secret-exposure';
 
 /**
  * How many of the most recent transcripts `status` reads. A full pass is a
@@ -130,6 +132,13 @@ export interface StatusResult {
     transcriptFilesScanned: number;
     transcriptSecretsFound: number;
   };
+  /**
+   * Stored secrets with an open exposure: recorded by `secret exposed`, `clean`
+   * or `watch`, not yet closed by `secret set` with a new value (#236). Read
+   * from the metadata file alone, so `status` never unlocks the store. Null
+   * when that file could not be read: a count over an unread file is not one.
+   */
+  exposuresOpen: number | null;
 }
 
 /** A Claude Code settings file, read the way `status` reports on one. */
@@ -292,6 +301,7 @@ export async function status(projectDir: string, options?: { homeDir?: string })
       transcriptFilesScanned: 0,
       transcriptSecretsFound: 0,
     },
+    exposuresOpen: null,
   };
 
   // Check Claude Code hook
@@ -415,6 +425,12 @@ export async function status(projectDir: string, options?: { homeDir?: string })
     }
   } catch {
     // Transcript scanning is best-effort
+  }
+
+  try {
+    result.exposuresOpen = needsRotation(readAnnotations(defaultAnnotationsPath())).length;
+  } catch {
+    // Left null: the metadata file exists but could not be read.
   }
 
   // Protected if hook is installed OR instructions are present in at least one tool

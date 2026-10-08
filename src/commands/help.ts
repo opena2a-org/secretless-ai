@@ -46,6 +46,8 @@ ${banner}  Keep secrets out of AI context.
     ${CLI} secret list                List stored secret names
     ${CLI} secret list --long         Names with descriptions and metadata (--json, --app NAME)
     ${CLI} secret show <NAME>         Description and metadata, never the value
+    ${CLI} secret exposed <NAME> --where NOTE  Record that a value was exposed
+    ${CLI} secret list --needs-rotation  Exposed secrets not yet rotated (exit 1 if any)
     ${CLI} secret get <NAME>          Retrieve a secret value
     ${CLI} secret get --force <NAME>  Retrieve in non-interactive contexts
     ${CLI} secret rm <NAME>           Remove a secret

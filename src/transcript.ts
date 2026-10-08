@@ -39,6 +39,22 @@ export interface CleanOptions {
   dryRun?: boolean;
   targetPath?: string;
   lastSession?: boolean;
+  /**
+   * Called with each span that is redacted (or, on a dry run, would be) and
+   * where it is, so a caller can tell whether a stored secret was exposed
+   * (#236). The span is credential text: compare it in memory, keep it nowhere.
+   */
+  onRedacted?: OnRedacted;
+}
+
+/** Receives one redacted span and where it was. */
+export type OnRedacted = (span: string, where: { file: string; line: number }) => void;
+
+/** Where a string being scanned came from. */
+export interface FileInfo {
+  file: string;
+  line: number;
+  onRedacted?: OnRedacted;
 }
 
 /** Metadata keys that should never be scanned for credentials (ID/hash fields, not user content) */
@@ -153,7 +169,7 @@ export function deepScan(
   value: unknown,
   jsonPath: string,
   findings: TranscriptFinding[],
-  fileInfo: { file: string; line: number },
+  fileInfo: FileInfo,
 ): unknown {
   if (value === null || value === undefined) return value;
 
@@ -199,7 +215,7 @@ function scanString(
   value: string,
   jsonPath: string,
   findings: TranscriptFinding[],
-  fileInfo: { file: string; line: number },
+  fileInfo: FileInfo,
 ): string {
   // Skip very long strings (ReDoS protection)
   if (value.length > MAX_LINE_SIZE) return value;
@@ -211,8 +227,12 @@ function scanString(
       // value longer than the pattern's fixed quantifier. Plain String.replace
       // wrote the tail of an over-length credential back into the user's
       // transcript while reporting the line as redacted.
+      const onSpan = fileInfo.onRedacted
+        ? (span: string) => fileInfo.onRedacted!(span, { file: fileInfo.file, line: fileInfo.line })
+        : undefined;
       const redacted = redactMatches(result, pattern.regex, `[REDACTED:${pattern.id}]`, {
         preferCaptureGroup: pattern === SECRET_ASSIGNMENT_PATTERN,
+        onSpan,
       });
       const preview = redacted.substring(0, 80);
       findings.push({
@@ -236,6 +256,7 @@ function scanString(
 export function scanTranscriptFile(
   filePath: string,
   dryRun: boolean,
+  onRedacted?: OnRedacted,
 ): { findings: TranscriptFinding[]; redactedLines: string[] | null; linesNotRead: number[] } {
   const findings: TranscriptFinding[] = [];
   let hasChanges = false;
@@ -272,7 +293,7 @@ export function scanTranscriptFile(
     // Handle .md files (non-JSONL)
     if (filePath.endsWith('.md')) {
       const lineFindingsBefore = findings.length;
-      const scanned = scanString(line, 'content', findings, { file: displayPath, line: i + 1 });
+      const scanned = scanString(line, 'content', findings, { file: displayPath, line: i + 1, onRedacted });
       if (scanned !== line) hasChanges = true;
       if (!dryRun) redactedLines.push(scanned);
       continue;
@@ -289,7 +310,7 @@ export function scanTranscriptFile(
     }
 
     const findingsBefore = findings.length;
-    const redacted = deepScan(parsed, '', findings, { file: displayPath, line: i + 1 });
+    const redacted = deepScan(parsed, '', findings, { file: displayPath, line: i + 1, onRedacted });
 
     if (findings.length > findingsBefore) {
       hasChanges = true;
@@ -357,7 +378,7 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
 
   for (const file of files) {
     result.filesScanned++;
-    const { findings, redactedLines, linesNotRead } = scanTranscriptFile(file, dryRun);
+    const { findings, redactedLines, linesNotRead } = scanTranscriptFile(file, dryRun, options?.onRedacted);
 
     if (linesNotRead.length > 0) {
       result.linesNotRead.push({ file: file.replace(os.homedir(), '~'), path: file, lines: linesNotRead });
