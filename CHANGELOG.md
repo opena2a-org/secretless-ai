@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+**`scan`, `status` and `verify` name the file a path runs through, `init`
+prints its path argument escaped, and `scan --help` names the ignore file
+(#273).** `scan notes.txt/sub`, where `notes.txt` is a file, said "Directory not
+found" and "Check the path and try again"; `scan`, `status` and `verify` now say
+"Not a directory", name the file, and print a `Verify:` line and a `Fix:` line:
+`scan` on the file, `status` and `verify` on the directory that holds it.
+`scan --json` prints the same lines to stderr and no document. `init` printed
+its path argument as given, so a line feed in a directory name started a new
+line that read like one of its own; it now prints each control character in
+the path as an escape such as `\n` or `\e`, as `scan` does for a file name, and
+a `Verify:` or `Fix:` command names `<path>` when the path cannot be printed as
+itself. `init` on a symbolic link whose target does not exist, or on a path
+under one, suggested a `mkdir -p` that fails on that link; it now names the
+link and leaves that suggestion out. For a caller of `runInit`, a path with
+`..` after a symbolic link named a file in the link's own parent directory; it
+now names the file the lookup stopped at. `scan --help` said a directory scan
+opens nothing beyond the files it lists, while it also reads
+`.secretlessignore` at the top of the scanned directory for its rules; the
+help now names it. An option description too long for its line in any
+command's `--help` now continues on the next line, so `scan --help` fits an
+80-column terminal. The published type declarations no longer include four
+exports that exist for this package's own tests and help text:
+`withDirsVisitedBudget` and `GLOBAL_CONFIG_LABELS` in `dist/scan`, and
+`nearMissCellsEvaluated` and `resetNearMissCellsEvaluated` in
+`dist/near-miss`. Detection, exit codes and `--json` output are unchanged.
+
 **`scan --help` names the home-directory files a scan reads, `--json` carries
 the count a `--max-files` cap needs, and `init` under a file names that file
 (#263).** `scan --help` said a directory scan opens nothing beyond the files it

@@ -15,6 +15,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** The user's ignore file, read from the root of the directory being scanned. */
+export const IGNORE_FILENAME = '.secretlessignore';
+
 /**
  * Default-ignore list. Every entry maps to a real-world false-positive
  * class. Do NOT add speculatively.
@@ -232,7 +235,7 @@ export function loadSecretlessIgnore(rootDir: string, options?: LoadOptions): Ig
     }
   }
 
-  const filePath = path.join(rootDir, '.secretlessignore');
+  const filePath = path.join(rootDir, IGNORE_FILENAME);
   if (fs.existsSync(filePath)) {
     try {
       const stat = fs.statSync(filePath);

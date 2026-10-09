@@ -389,7 +389,10 @@ const GLOBAL_CONFIG_FILES = [
   { dir: path.join(os.homedir(), '.cursor'), file: 'mcp.json', label: '~/.cursor/mcp.json' },
 ];
 
-/** The home-directory files every directory scan also reads, as `scan --help` names them. */
+/**
+ * @internal The home-directory files every directory scan also reads, as
+ * `scan --help` names them. Read by the help text and its tests only.
+ */
 export const GLOBAL_CONFIG_LABELS: readonly string[] = GLOBAL_CONFIG_FILES.map((g) => g.label);
 
 /**

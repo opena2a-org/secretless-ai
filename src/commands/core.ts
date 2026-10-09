@@ -35,26 +35,38 @@ export function runInit(projectDir: string): number {
   // step. Checked before anything is written.
   const notDir = notADirectoryReason(projectDir);
   if (notDir) {
-    const quoted = shellQuote(projectDir);
+    // The path is the caller's argument and can hold any character a name can.
+    // Printed as given, a line feed in it started a line that read like one of
+    // these, so a message names it escaped and a command names it only when it
+    // prints as itself.
+    const named = escapePathForDisplay(projectDir);
+    const quoted = pathOperand(projectDir);
     if (notDir.kind === 'underFile') {
       // `mkdir -p` cannot make a directory under a file, so the Fix the
       // "not found" branch prints would fail on this path.
-      console.error(`  Not a directory: ${notDir.file}`);
-      console.error(`  Nothing was written. ${projectDir} is inside ${notDir.file}, which is a file, so no directory can be made there.`);
-      console.error(`  Verify: ls -ld ${shellQuote(notDir.file)}`);
-      console.error(`  Fix:    ${CLI} init ${shellQuote(path.dirname(notDir.file))}\n`);
+      const file = escapePathForDisplay(notDir.file);
+      console.error(`  Not a directory: ${file}`);
+      console.error(`  Nothing was written. ${named} is inside ${file}, which is a file, so no directory can be made there.`);
+      console.error(`  Verify: ls -ld ${pathOperand(notDir.file)}`);
+      console.error(`  Fix:    ${CLI} init ${pathOperand(path.dirname(notDir.file))}\n`);
+    } else if (notDir.kind === 'danglingLink') {
+      // `mkdir -p` fails on a link whose target is missing, at the link or
+      // under it, so this branch does not print that Fix either.
+      console.error(`  Directory not found: ${named}`);
+      console.error(`  Nothing was written. ${escapePathForDisplay(notDir.link)} is a symbolic link to a path that does not exist.`);
+      console.error(`  Verify: ls -ld ${pathOperand(notDir.link)}`);
+      console.error(`  Fix:    ${CLI} init   ${c.dim('# run from inside your project')}\n`);
     } else if (notDir.kind === 'missing') {
-      console.error(`  Directory not found: ${projectDir}`);
+      console.error(`  Directory not found: ${named}`);
       console.error('  Nothing was written. init sets up a project directory that already exists.');
       console.error(`  Verify: ls -ld ${quoted}`);
       console.error(`  Fix:    ${CLI} init   ${c.dim('# run from inside your project')}`);
       console.error(`          mkdir -p ${quoted} && ${CLI} init ${quoted}   ${c.dim('# or create this directory first')}\n`);
     } else {
-      const parent = path.dirname(projectDir);
-      console.error(`  Not a directory: ${projectDir}`);
+      console.error(`  Not a directory: ${named}`);
       console.error('  Nothing was written. init sets up a project directory, and this path is a file.');
       console.error(`  Verify: ls -ld ${quoted}`);
-      console.error(`  Fix:    ${CLI} init ${shellQuote(parent)}\n`);
+      console.error(`  Fix:    ${CLI} init ${pathOperand(path.dirname(projectDir))}\n`);
     }
     return 1;
   }
@@ -312,33 +324,121 @@ export function shellQuote(p: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
 }
 
-/** Why `dir` cannot be set up by `init`, or null when it is a directory. */
-function notADirectoryReason(dir: string): { kind: 'missing' } | { kind: 'file' } | { kind: 'underFile'; file: string } | null {
+/**
+ * A path as the operand of a `Verify:` or `Fix:` command we print: quoted for
+ * pasting, or `<path>` when the name cannot be printed as itself. Quoting keeps
+ * such a name one shell word, but a line feed inside the quotes still starts a
+ * new line on the screen, and the escaped form names a different path.
+ */
+function pathOperand(p: string): string {
+  return hasDisplayHazard(p) ? '<path>' : shellQuote(p);
+}
+
+type NotADirectory =
+  | { kind: 'missing' }
+  | { kind: 'file' }
+  | { kind: 'underFile'; file: string }
+  | { kind: 'danglingLink'; link: string };
+
+/**
+ * The directory `..` names from `dir`, as the kernel resolves it: the parent of
+ * the directory a symbolic link points at, not of the link. `path.dirname`
+ * takes the link's own parent, and the two can hold different files. The
+ * caller's spelling is kept when both name the same directory.
+ */
+function parentAsResolved(dir: string): string | null {
   const nodeFs = require('fs') as typeof import('fs');
+  const bySpelling = path.dirname(dir);
+  try {
+    const real = path.dirname(nodeFs.realpathSync(dir));
+    return nodeFs.realpathSync(bySpelling) === real ? bySpelling : real;
+  } catch {
+    return null;
+  }
+}
+
+/** Why `dir` cannot be set up by `init`, or null when it is a directory. */
+function notADirectoryReason(dir: string): NotADirectory | null {
+  const nodeFs = require('fs') as typeof import('fs');
+  let code: string | undefined;
   try {
     return nodeFs.statSync(dir).isDirectory() ? null : { kind: 'file' };
   } catch (err) {
-    // Only an absent path is "not found". Anything else (EACCES, ELOOP) is
-    // left to init, whose own error names it, rather than misreported here.
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === 'ENOENT') return { kind: 'missing' };
-    if (code !== 'ENOTDIR') return null;
-    // ENOTDIR: a component of the path is a file. It was reported as "not
-    // found" with a `mkdir -p` that fails on that same file (`notes.txt/sub`).
-    const resolved = path.resolve(dir);
-    // Each prefix of the path, the filesystem root first.
-    const chain: string[] = [];
-    for (let p = resolved; ; p = path.dirname(p)) {
-      chain.unshift(p);
-      if (path.dirname(p) === p) break;
-    }
-    for (const component of chain) {
-      let isDir: boolean;
-      try { isDir = nodeFs.statSync(component).isDirectory(); } catch { return null; }
-      if (!isDir) return component === resolved ? { kind: 'file' } : { kind: 'underFile', file: component };
-    }
-    return null;
+    code = (err as NodeJS.ErrnoException)?.code;
   }
+  // Only an absent path is "not found". Anything else (EACCES, ELOOP) is
+  // left to init, whose own error names it, rather than misreported here.
+  if (code !== 'ENOENT' && code !== 'ENOTDIR') return null;
+  const undetermined: NotADirectory | null = code === 'ENOENT' ? { kind: 'missing' } : null;
+
+  // Find the component the lookup stopped at. ENOTDIR: it is a file, and was
+  // reported as "not found" with a `mkdir -p` that fails on that same file
+  // (`notes.txt/sub`). ENOENT: it is absent, or a link to an absent path.
+  //
+  // The path is walked one name at a time, as the kernel walks it. Collapsing
+  // `..` by spelling first (`path.resolve`) named `x/notes.txt` for
+  // `x/link/../notes.txt/sub` when `link` pointed into another directory and
+  // the file in the way was that directory's sibling. Windows collapses `..`
+  // by spelling before it opens anything, so there `path.resolve` is the walk.
+  const abs = process.platform === 'win32' ? path.resolve(dir)
+    : path.isAbsolute(dir) ? dir : `${process.cwd()}/${dir}`;
+  const root = path.parse(abs).root;
+  const names = abs.slice(root.length).split(path.sep).filter((n) => n !== '' && n !== '.');
+  let current = root;
+  for (let i = 0; i < names.length; i++) {
+    if (names[i] === '..') {
+      const parent = parentAsResolved(current);
+      if (parent === null) return undetermined;
+      current = parent;
+      continue;
+    }
+    current = path.join(current, names[i]);
+    let isDir: boolean;
+    try {
+      isDir = nodeFs.statSync(current).isDirectory();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return undetermined;
+      // A name `lstat` finds and `stat` does not is a link to an absent path.
+      let isLink = false;
+      try { isLink = nodeFs.lstatSync(current).isSymbolicLink(); } catch { /* absent */ }
+      return isLink ? { kind: 'danglingLink', link: current } : { kind: 'missing' };
+    }
+    if (!isDir) return i === names.length - 1 ? { kind: 'file' } : { kind: 'underFile', file: current };
+  }
+  return undetermined;
+}
+
+/**
+ * Refuse a `scan`, `status` or `verify` target that is not there, on stderr.
+ * Returns true when it refused.
+ *
+ * A path under a file (`notes.txt/sub`) is a different mistake from a mistyped
+ * directory: "Directory not found" and "Check the path" sent the reader looking
+ * for a directory that cannot exist. It names the file instead, as `init` does.
+ * `scan` reads a named file, so its Fix names the file; `status` and `verify`
+ * take a directory, so theirs names the one that holds it.
+ *
+ * `bare` is the `--json` form: no indent and no trailing blank line.
+ */
+function refuseMissingTarget(projectDir: string, verb: 'scan' | 'status' | 'verify', bare = false): boolean {
+  const nodeFs = require('fs') as typeof import('fs');
+  if (nodeFs.existsSync(projectDir)) return false;
+  const named = escapePathForDisplay(projectDir);
+  const reason = notADirectoryReason(projectDir);
+  const lines = reason?.kind === 'underFile'
+    ? [
+      `Not a directory: ${escapePathForDisplay(reason.file)}`,
+      `${named} is inside ${escapePathForDisplay(reason.file)}, which is a file, so nothing can be at that path.`,
+      `Verify: ls -ld ${pathOperand(reason.file)}`,
+      `Fix:    ${CLI} ${verb} ${pathOperand(verb === 'scan' ? reason.file : path.dirname(reason.file))}`,
+    ]
+    : bare
+      ? [`Directory not found: ${named}`]
+      : [`Directory not found: ${named}`, 'Check the path and try again.'];
+  lines.forEach((line, i) => {
+    console.error(bare ? line : `  ${line}${i === lines.length - 1 ? '\n' : ''}`);
+  });
+  return true;
 }
 
 /**
@@ -414,10 +514,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   // output is machine-parseable (issue #63 — the flag previously printed the human
   // report). Errors go to stderr; exit code still signals findings for CI gating.
   if (options?.json) {
-    if (!nodeFs.existsSync(projectDir)) {
-      console.error(`Directory not found: ${projectDir}`);
-      return 1;
-    }
+    if (refuseMissingTarget(projectDir, 'scan', true)) return 1;
     const stats = {
       placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
       oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
@@ -489,11 +586,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
 
   console.log('\n  Secretless Scanner\n');
 
-  if (!nodeFs.existsSync(projectDir)) {
-    console.error(`  Directory not found: ${projectDir}`);
-    console.error('  Check the path and try again.\n');
-    return 1;
-  }
+  if (refuseMissingTarget(projectDir, 'scan')) return 1;
 
   const stats = {
     placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
@@ -881,22 +974,14 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
   return findings.length > 0 ? 1 : 0;
 }
 
-/**
- * Refuse a target directory that does not exist, with the same message and
- * exit code as `scan`. `status` and `verify` used to answer anyway: a typo in
- * a CI path produced a clean verdict and exit 0 over a directory nobody read
- * (#125). Errors go to stderr, so `status --json` keeps stdout empty.
- */
-function refuseMissingDir(projectDir: string): boolean {
-  const nodeFs = require('fs') as typeof import('fs');
-  if (nodeFs.existsSync(projectDir)) return false;
-  console.error(`  Directory not found: ${projectDir}`);
-  console.error('  Check the path and try again.\n');
-  return true;
-}
+// `status` and `verify` refuse a target directory that does not exist, with the
+// same message and exit code as `scan` (`refuseMissingTarget`). They used to
+// answer anyway: a typo in a CI path produced a clean verdict and exit 0 over a
+// directory nobody read (#125). Errors go to stderr, so `status --json` keeps
+// stdout empty.
 
 export async function runStatus(projectDir: string, options?: { json?: boolean }): Promise<number> {
-  if (refuseMissingDir(projectDir)) return 1;
+  if (refuseMissingTarget(projectDir, 'status')) return 1;
   const s = await status(projectDir);
   const session = getSessionStatus();
   const brokerStatus = getDaemonStatus();
@@ -1204,7 +1289,7 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
 }
 
 export function runVerify(projectDir: string, showAll = false): number {
-  if (refuseMissingDir(projectDir)) return 1;
+  if (refuseMissingTarget(projectDir, 'verify')) return 1;
   console.log(`\n  ${c.boldWhite('Secretless Verify')}\n`);
 
   // Scope disclosure: verify spans more than the current project — it reads the
