@@ -238,8 +238,8 @@ describe('the human report names a file it did not open', () => {
     const { text, code } = await report(dir);
 
     expect(text).toContain('No hardcoded credentials found.');
-    expect(text).toMatch(/1 file not opened — declared boundaries, not findings\./);
-    expect(text).toMatch(/notes\.txt — unsupported file type/);
+    expect(text).toMatch(/1 file not opened, so not covered by the scan result\./);
+    expect(text).toMatch(/notes\.txt: unsupported file type/);
     const scanOne = /Scan one: npx secretless-ai scan (\S+)/.exec(text.slice(text.indexOf('file not opened')));
     expect(scanOne).not.toBeNull();
     expect(path.basename(scanOne![1])).toBe('notes.txt');
@@ -302,9 +302,9 @@ describe('the human report names a file it did not open', () => {
 
     expect(text).toContain('.github/workflows/config.yml');
     expect(code).toBe(1);
-    expect(text).toMatch(/1 directory not entered for source files — declared boundaries, not findings\./);
-    expect(text).not.toMatch(/director(y|ies) not entered —/);
-    expect(text).toMatch(/\.github — hidden directory$/m);
+    expect(text).toMatch(/1 directory not entered for source files: declared boundaries, not findings\./);
+    expect(text).not.toMatch(/director(y|ies) not entered[:,]/);
+    expect(text).toMatch(/\.github: hidden directory$/m);
   });
 
   it('gives the ignore rule, not "still scanned", for a hidden directory an ignore rule covers', async () => {
@@ -318,7 +318,7 @@ describe('the human report names a file it did not open', () => {
 
     expect(text).toContain('No hardcoded credentials found.');
     expect(code).toBe(0);
-    expect(text).toMatch(/\.golden — ignore rule \(--no-ignore\)/);
+    expect(text).toMatch(/\.golden: ignore rule \(--no-ignore\)/);
     expect(text).not.toMatch(/still scanned/);
   });
 
@@ -338,9 +338,9 @@ describe('the human report names a file it did not open', () => {
     const { text, code } = await report(dir);
 
     expect(text).toContain('No hardcoded credentials found.');
-    expect(text).toMatch(/1 symlink points outside the scan root — not followed\./);
+    expect(text).toMatch(/1 symlink points outside the scan root, so not followed\./);
     expect(code).toBe(0);
-    expect(text).toMatch(/\.claude — hidden directory$/m);
+    expect(text).toMatch(/\.claude: hidden directory$/m);
     expect(text).not.toMatch(/still scanned/);
   });
 
@@ -353,8 +353,8 @@ describe('the human report names a file it did not open', () => {
     fs.chmodSync(locked, 0o000);
     try {
       const { text } = await report(dir);
-      expect(text).toMatch(/1 path could not be read — not scanned, so not known to be clean\./);
-      expect(text).toMatch(/\.locked — hidden directory$/m);
+      expect(text).toMatch(/1 path could not be read, so not known to be clean\./);
+      expect(text).toMatch(/\.locked: hidden directory$/m);
       expect(text).not.toMatch(/still scanned/);
     } finally {
       fs.chmodSync(locked, 0o755);

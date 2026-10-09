@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**`scan` words its coverage lines with the separators `vault scan` uses.**
+The coverage section joined each heading to its explanation with a dash, and
+each directory not entered and each file not opened to its reason the same
+way. It now prints
+`Scan incomplete: stopped at the 5000-file cap, so files were left unscanned.`,
+`1 path could not be read, so not known to be clean.`,
+`1 symlink points outside the scan root, so not followed.`,
+`1 file skipped for size, so not known to be clean.`,
+`1 config file not scanned: its name is not on the built-in config list, so not known to be clean.`,
+`1 directory not entered for source files: declared boundaries, not findings.`,
+`1 file not opened, so not covered by the scan result.` and one
+`<path>: <reason>` line per directory or file, such as
+`node_modules: dependency or build output`. The line under an unreadable path
+reads `Cause differs by path: permissions, ...`. Detection, exit codes and
+`--json` output are unchanged.
+
 **`status --json` and `vault scan` count a file skipped for size as
 unscanned.** `status --json` read `scanIncomplete: false` over a tree holding a
 file skipped for size, and `vault scan` printed `No hardcoded credentials

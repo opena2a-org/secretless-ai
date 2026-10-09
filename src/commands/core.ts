@@ -475,16 +475,19 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   // not open was never read at all. Either way the findings are a SUBSET, so
   // rendering them as "No hardcoded credentials found." is the fail-open these
   // warnings close: an answer we never got is not a good answer.
+  //
+  // Separators match `vault scan`: `: ` after a header that names the state,
+  // `, so` before its consequence, `<path>: <reason>` for a listed name.
   const coverageWarnings = () => {
     if (stats.truncated) {
-      console.log(`  ${c.boldYellow('Scan incomplete')} — stopped at the ${capUsed}-file cap, so files were left unscanned.`);
+      console.log(`  ${c.boldYellow('Scan incomplete')}: stopped at the ${capUsed}-file cap, so files were left unscanned.`);
       console.log(`  ${c.dim('This is not a clean result. Raise the cap, or scan a subtree at a time:')}`);
       console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4}`);
       console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${runnable('.')} --max-files ${capUsed * 4} --json | jq .summary.truncated\n`);
     }
     if (stats.unreadable.length > 0) {
       const n = stats.unreadable.length;
-      console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} could not be read`)} — not scanned, so not known to be clean.`);
+      console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} could not be read`)}, so not known to be clean.`);
       for (const f of stats.unreadable.slice(0, 10)) {
         console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
       }
@@ -495,13 +498,13 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       // `ls -ld` distinguishes them, so it leads. `+rx` not `+r`: a directory
       // needs the execute bit to be traversed, so `+r` alone leaves the scan
       // still unable to enter it.
-      console.log(`  ${c.dim('Cause differs by path — permissions, a broken or looping symlink, or an I/O error.')}`);
+      console.log(`  ${c.dim('Cause differs by path: permissions, a broken or looping symlink, or an I/O error.')}`);
       console.log(`  ${c.cyan('Verify:')} ls -ld ${runnable(stats.unreadable[0])}`);
       console.log(`  ${c.cyan('Fix:')}    chmod +rx ${runnable(stats.unreadable[0])}   ${c.dim('# if the cause is permissions')}\n`);
     }
     if (stats.outOfRoot.length > 0) {
       const n = stats.outOfRoot.length;
-      console.log(`  ${c.boldYellow(`${n} symlink${n > 1 ? 's' : ''} ${n > 1 ? 'point' : 'points'} outside the scan root`)} — not followed.`);
+      console.log(`  ${c.boldYellow(`${n} symlink${n > 1 ? 's' : ''} ${n > 1 ? 'point' : 'points'} outside the scan root`)}, so not followed.`);
       for (const f of stats.outOfRoot.slice(0, 10)) {
         console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
       }
@@ -514,7 +517,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     }
     if (stats.oversize.length > 0) {
       const n = stats.oversize.length;
-      console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} skipped for size`)} — not scanned, so not known to be clean.`);
+      console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} skipped for size`)}, so not known to be clean.`);
       for (const f of stats.oversize.slice(0, 10)) {
         console.log(`  ${c.dim(`  ${runnable(f.path)} (${formatSizeOverCap(f.bytes, f.capBytes)})`)}`);
       }
@@ -533,7 +536,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // command that reads one. A boundary, so it does not change the exit code.
     if (stats.unscannedConfig.count > 0) {
       const n = stats.unscannedConfig.count;
-      console.log(`  ${c.boldYellow(`${n} config file${n > 1 ? 's' : ''} not scanned`)} — ${n > 1 ? 'their names are' : 'its name is'} not on the built-in config list, so not known to be clean.`);
+      console.log(`  ${c.boldYellow(`${n} config file${n > 1 ? 's' : ''} not scanned`)}: ${n > 1 ? 'their names are' : 'its name is'} not on the built-in config list, so not known to be clean.`);
       for (const f of stats.unscannedConfig.files.slice(0, 10)) {
         console.log(`  ${c.dim(`  ${runnable(f)}`)}`);
       }
@@ -556,9 +559,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // from one.
     if (stats.skips.dirCount > 0) {
       const n = stats.skips.dirCount;
-      console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered for source files`)} — declared boundaries, not findings.`);
+      console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered for source files`)}: declared boundaries, not findings.`);
       for (const d of stats.skips.dirs.slice(0, 8)) {
-        console.log(`  ${c.dim(`  ${visibleControls(runnable(d.path))} — ${d.reason}`)}`);
+        console.log(`  ${c.dim(`  ${visibleControls(runnable(d.path))}: ${d.reason}`)}`);
       }
       if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
       // As for files below: a name holding a control character is listed in
@@ -576,9 +579,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // whatever its type, so `Scan one:` names a file, not a flag.
     if (stats.skips.fileCount > 0) {
       const n = stats.skips.fileCount;
-      console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)} — declared boundaries, not findings.`);
+      console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)}, so not covered by the scan result.`);
       for (const f of stats.skips.files.slice(0, 8)) {
-        console.log(`  ${c.dim(`  ${visibleControls(runnable(f.path))} — ${f.reason}`)}`);
+        console.log(`  ${c.dim(`  ${visibleControls(runnable(f.path))}: ${f.reason}`)}`);
       }
       if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
       // A name holding a control character cannot be copied as it reads, so it
