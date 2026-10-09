@@ -29,7 +29,7 @@ import {
   SOURCE_FILE_EXTENSIONS,
   SOURCE_SKIP_DIRS,
 } from './patterns';
-import { DEFAULT_IGNORE_PATTERNS } from './secretlessignore';
+import { DEFAULT_IGNORE_PATTERNS, IGNORE_FILENAME } from './secretlessignore';
 import {
   SOURCE_SKIP_REASONS,
   TEST_DIRS,
@@ -145,6 +145,9 @@ function scanCoverageNotes(): string[] {
     // nothing else" was untrue while these went unnamed.
     ...wrapList([...GLOBAL_CONFIG_LABELS], ' '.repeat(11), ' ', '  home     '),
     '           (AI tool settings in your home directory)',
+    // Read for its rules, never for secrets, and not at all under --no-ignore.
+    `  ignore   ${IGNORE_FILENAME} at the top of the scanned directory, for its`,
+    '           rules only (--no-ignore leaves it unread)',
     '',
     'It opens nothing else. These are the reasons the scan reports for what',
     'it skipped, each with the flag that opens it, where one does:',
@@ -540,7 +543,10 @@ export function printCommandHelp(verb: string): void {
   lines.push('');
   lines.push('  Options:');
   for (const [l, d] of rows) {
-    lines.push(`    ${d ? l.padEnd(width) + d : l}`);
+    // A description too long for its row continues under itself, so an option
+    // line stays inside 80 columns as the notes do.
+    const row = d ? wrapList(d.split(' '), ' '.repeat(width), ' ', l.padEnd(width)) : [l];
+    for (const line of row) lines.push(`    ${line}`);
   }
   if (doc.notes && doc.notes.length > 0) {
     lines.push('');
