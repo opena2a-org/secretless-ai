@@ -1131,7 +1131,13 @@ const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
 // the rest), the grep variants (egrep, fgrep, rgrep, ugrep, pcregrep,
 // pcre2grep), the awk variants (gawk, mawk, nawk), and the GNU names Homebrew
 // installs beside the system tools (gcat, ghead, gtail, gless, ggrep, gsed,
-// gstrings). gzcat is stock macOS and prints a plain file with -f.
+// gstrings). gzcat is stock macOS and prints a plain file with -f. So are the
+// other installable programs whose name ends in a reader verb and that print
+// or transmit a plain file: lolcat, ccat and mdcat, socat and netcat (a FILE:
+// address or a redirected stdin), multitail, colortail, logtail and xtail,
+// mdless and jless, agrep, hgrep, cgrep, sgrep, vgrep, pdfgrep and zipgrep.
+// The list is closed: a reader program it does not name is admitted by this
+// rule, and the Bash deny rules init writes do not name it either.
 //
 // A `\n` or `\t` escape also starts a word. Without python3 the hook takes the
 // command from the raw JSON payload, where a line break is the two characters
@@ -1142,7 +1148,7 @@ const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
 // `printf 'x\ncat .env' | sh` runs that read too.
 const READER_VERB_START = '(^|[^A-Za-z0-9_.-]|\\\\[nt])';
 const FILE_READERS =
-  '(g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[efru]?grep)|pcre2?grep|g?head|g?tail|[gmn]?awk|g?sed|g?strings|xxd';
+  '(g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[acefhrsuv]?grep)|(pcre2?|zip|pdf)grep|(lol|c|md|so|net)cat|(md|j)less|(g|multi|color|log|x)?tail|g?head|[gmn]?awk|g?sed|g?strings|xxd';
 
 // What separates a verb from its operands in the command rules: whitespace, or
 // a `\t` escape. Without python3 a tab reaches the rules as the two characters

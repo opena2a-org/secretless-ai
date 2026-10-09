@@ -569,7 +569,13 @@ suffix-named flavours of the readers: the compressor front ends (`zcat`,
 `more` and `grep` forms), the grep variants (`egrep`, `fgrep`, `rgrep`,
 `ugrep`, `pcregrep`, `pcre2grep`), the awk variants (`gawk`, `mawk`, `nawk`),
 and the GNU names Homebrew installs beside the system tools (`gcat`, `ghead`,
-`gtail`, `gless`, `ggrep`, `gsed`, `gstrings`). A `\n` or `\t` escape also
+`gtail`, `gless`, `ggrep`, `gsed`, `gstrings`), as well as the other
+installable programs whose name ends in a reader verb and that print or
+transmit a plain file: `lolcat`, `ccat`, `mdcat`, `socat` and `netcat`,
+`multitail`, `colortail`, `logtail`, `xtail`, `mdless`, `jless`, `agrep`,
+`hgrep`, `cgrep`, `sgrep`, `vgrep`, `pdfgrep` and `zipgrep`. The list is
+closed: a reader program the rule does not name is admitted by it, and the
+Bash deny rules `init` writes do not name it either. A `\n` or `\t` escape also
 starts a word: on a host without `python3` the hook reads the command from the
 raw JSON payload, where a line break arrives as `\n`, so a reader verb at the
 start of a heredoc line or of a later command line is still refused there, and
