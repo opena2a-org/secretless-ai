@@ -19,7 +19,7 @@ so a `: ` inside the name cannot pass for the separator before its reason. A
 `Verify:` or `Fix:` command names the first listed path that prints as itself,
 or for symlinks outside the scan root the first target that does, and `<path>`
 when none does; a `Scan one:` line names such a path or is left out. On
-Windows a finding's path prints with `/` between its parts, as the lists do.
+Windows a finding's path prints with `/` between its parts.
 `scan --explain` prints generated context line by line under its own indent,
 and `vault scan` prints each finding's path escaped. Escaping happens after
 detection and masking. Detection, exit codes and `--json` output are unchanged.
@@ -32,8 +32,8 @@ path, which does not exist. A symlink named `l\nk` that points outside the
 scan root stopped the report with `ENOENT` while it built that link's `Fix:`
 line. Those lists, their `Scan one:` and `Fix:` lines and the same paths in
 `--json` now keep the backslash. On Windows, where `\` separates the parts of
-a path, they print `/` as before. What the scan opens, its findings and its
-exit code are unchanged.
+a path, `--json` prints `/` between them as before. What the scan opens, its
+findings and its exit code are unchanged.
 
 **`scan` lists a key file that an ignore or test-file rule covers with that
 rule.** The source walk listed each `.pem`, `.key`, `.crt`, `.p12`, `.pfx` or
