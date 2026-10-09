@@ -2215,9 +2215,11 @@ while IFS= read -r CANDIDATE; do
   # Only a path that passes through a link is judged by what it reaches. The
   # resolved path is absolute, and the path-fragment rules (secrets/, .ssh/,
   # credentials/) match anywhere in it, so a path with no link in any component
-  # is judged by its name alone: a relative path is not joined to the working
-  # directory first, and a project kept under a directory named secrets/ still
-  # reads its own src/app.js by relative path.
+  # is judged by its name alone: a relative path is not judged by the working
+  # directory it is joined to, and a project kept under a directory named
+  # secrets/ still reads its own src/app.js by relative path. A link in that
+  # project is judged by its absolute target, which names secrets/, so it is
+  # refused even when it reaches a plain file there.
   if [ -n "$RESOLVED" ] && path_has_link "$CANDIDATE"; then
     classify_path "$RESOLVED"
     if [ "$CLASS" = blocked ]; then
