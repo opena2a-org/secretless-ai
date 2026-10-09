@@ -1900,7 +1900,9 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    it('a bare env is blocked, env as a prefix that runs a command is not', () => {
+    // One test per family: an env that prints the environment, and env as a
+    // prefix or a plain word.
+    it('a bare env is blocked', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
       for (const c of [
@@ -1919,6 +1921,11 @@ describe('init', { timeout: 30_000 }, () => {
       ]) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
       }
+    });
+
+    it('env as a prefix that runs a command, or as a plain word, is not blocked', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
       for (const c of [
         'env -u GITHUB_TOKEN git push',
         'env FOO=1 node app.js',
