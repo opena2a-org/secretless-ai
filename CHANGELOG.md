@@ -563,11 +563,17 @@ A reader verb now has to be a whole word, and a secret extension has to end a
 path component, which a closing `}}` never does. Real reads are still refused
 wherever the shell runs the verb from: `cat .env`, `sudo cat .env`,
 `ssh host cat .env`, `if [ -f .env ]; then cat .env; fi`, `/bin/cat .env`, a
-`cat .env` line in a heredoc fed to bash, and the `zcat`, `egrep`, `gawk` and
-`gsed` flavours. A `\n` or `\t` escape also starts a word: on a host without
-`python3` the hook reads the command from the raw JSON payload, where a line
-break arrives as `\n`, so a reader verb at the start of a heredoc line or of a
-later command line is still refused there, and `printf 'x\ncat .env' | sh` is
+`cat .env` line in a heredoc fed to bash, and the compressed, alternative and
+suffix-named flavours of the readers: the compressor front ends (`zcat`,
+`gzcat`, `bzcat`, `xzcat`, `lzcat`, `lz4cat`, `zstdcat` and their `less`,
+`more` and `grep` forms), the grep variants (`egrep`, `fgrep`, `rgrep`,
+`ugrep`, `pcregrep`, `pcre2grep`), the awk variants (`gawk`, `mawk`, `nawk`),
+and the GNU names Homebrew installs beside the system tools (`gcat`, `ghead`,
+`gtail`, `gless`, `ggrep`, `gsed`, `gstrings`). A `\n` or `\t` escape also
+starts a word: on a host without `python3` the hook reads the command from the
+raw JSON payload, where a line break arrives as `\n`, so a reader verb at the
+start of a heredoc line or of a later command line is still refused there, and
+`printf 'x\ncat .env' | sh` is
 refused too. In the rules for a secret file and `python3 -c`/`node -e`, a `\t`
 escape also counts as the space after the verb: without `python3` a tab arrives
 as `\t`, so `cat<TAB>.env` and `node<TAB>-e` reading `.env` are refused there,

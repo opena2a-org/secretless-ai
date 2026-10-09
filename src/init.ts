@@ -1125,8 +1125,13 @@ const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
 // have let `sudo cat .env`, `ssh host cat .env` and `then cat .env` through;
 // a whole word still catches each of those, and `cat .env` on a line of a
 // heredoc fed to bash, because every line is matched on its own. The
-// compressed and alternative flavours of the same readers (zcat, egrep, gawk,
-// gsed) were caught only because the verb was unanchored, so they are named.
+// compressed, alternative and suffix-named flavours of the same readers were
+// caught only because the verb was unanchored, so they are named: the
+// compressor front ends (zcat, bzcat, xzcat, lzcat, zstdcat, zless, zgrep and
+// the rest), the grep variants (egrep, fgrep, rgrep, ugrep, pcregrep,
+// pcre2grep), the awk variants (gawk, mawk, nawk), and the GNU names Homebrew
+// installs beside the system tools (gcat, ghead, gtail, gless, ggrep, gsed,
+// gstrings). gzcat is stock macOS and prints a plain file with -f.
 //
 // A `\n` or `\t` escape also starts a word. Without python3 the hook takes the
 // command from the raw JSON payload, where a line break is the two characters
@@ -1137,7 +1142,7 @@ const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
 // `printf 'x\ncat .env' | sh` runs that read too.
 const READER_VERB_START = '(^|[^A-Za-z0-9_.-]|\\\\[nt])';
 const FILE_READERS =
-  '(z|bz|xz|lz|zstd)?(cat|less|more|[efr]?grep)|head|tail|[gmn]?awk|g?sed|strings|xxd';
+  '(g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[efru]?grep)|pcre2?grep|g?head|g?tail|[gmn]?awk|g?sed|g?strings|xxd';
 
 // What separates a verb from its operands in the command rules: whitespace, or
 // a `\t` escape. Without python3 a tab reaches the rules as the two characters
