@@ -49,6 +49,18 @@ check` for a name with a stored baseline but no stored credential calls the
 baseline stale and offers `scope reset` or `secret set`. Scan findings, verdicts
 and exit codes are unchanged.
 
+**`scan --help` says what a directory scan does not open.** The help named
+only dependency and build output as unread, while a directory scan prints one
+of eight reasons beside each path it skipped and explains none of them before
+the run. `scan --help` now lists the source extensions, config file names and
+key file extensions a directory scan opens; each reason the scan reports for a
+path it skipped (`unsupported file type`, `config file not on the built-in
+list`, `test file`, `test directory`, `ignore rule`, `hidden directory`,
+`dependency or build output`, `git metadata`), with what it covers and the
+flag that opens it where one does; and that naming a file scans it whatever
+its type. `--include-config` now has a description in the options list. What
+the scan opens, its findings and its exit code are unchanged.
+
 **`status --json` and `vault scan` count a file skipped for size as
 unscanned.** `status --json` read `scanIncomplete: false` over a tree holding a
 file skipped for size, and `vault scan` printed `No hardcoded credentials

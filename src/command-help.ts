@@ -22,6 +22,22 @@
 import { VERSION, CLI, IS_EMBEDDED } from './commands/utils';
 import { printHelp } from './commands/help';
 import { VERBS } from './argv';
+import {
+  CONFIG_FILES,
+  CONFIG_SHAPED_BASENAMES,
+  CONFIG_SHAPED_EXTENSIONS,
+  SOURCE_FILE_EXTENSIONS,
+  SOURCE_SKIP_DIRS,
+} from './patterns';
+import { DEFAULT_IGNORE_PATTERNS } from './secretlessignore';
+import {
+  SOURCE_SKIP_REASONS,
+  TEST_DIRS,
+  TEST_FILE_GLOBS,
+  KEY_FILE_EXTENSIONS,
+  ENV_TEMPLATE_SUFFIXES,
+  isEnvFile,
+} from './scan';
 
 /** `[placeholder, description]` for a value-taking flag; a description alone otherwise. */
 type FlagDoc = string | [string, string];
@@ -40,6 +56,102 @@ interface VerbDoc {
 const BACKENDS = 'local, keychain, 1password, vault, gcp-sm';
 const JSON_DOC = 'Machine-readable JSON output (for CI)';
 
+/** Help lines stay inside an 80-column terminal, counting the 4-space notes indent. */
+const NOTE_WIDTH = 76;
+
+/**
+ * Pack `items` into lines no wider than NOTE_WIDTH. The first line starts with
+ * `lead`, the rest with `indent`; pass both the same length.
+ */
+function wrapList(items: readonly string[], indent: string, sep = ' ', lead = indent): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const item of items) {
+    const next = line ? `${line}${sep}${item}` : item;
+    if (line && indent.length + next.length > NOTE_WIDTH) {
+      lines.push((lines.length ? indent : lead) + line);
+      line = item;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push((lines.length ? indent : lead) + line);
+  return lines;
+}
+
+/**
+ * What each source-walk skip reason covers, keyed like `SOURCE_SKIP_REASONS`.
+ *
+ * Typed as a Record over the catalog's keys, so a reason added to the walk
+ * without a line here does not compile. Each list is read from the set the
+ * walk consults rather than written out, and the test-file globs are checked
+ * against `isTestFile` by a test, so a list cannot name something the walk
+ * opens.
+ */
+function skipReasonDetails(): Record<keyof typeof SOURCE_SKIP_REASONS, string[]> {
+  const at = ' '.repeat(6);
+  const pruned = new Set([...TEST_DIRS, ...SOURCE_SKIP_DIRS]);
+  const ignoreOnly = DEFAULT_IGNORE_PATTERNS.filter((p) => !pruned.has(p.replace(/\/$/, '')));
+  const buildDirs = [...SOURCE_SKIP_DIRS].filter((d) => d !== '.git').map((d) => `${d}/`);
+  return {
+    unsupportedType: [
+      `${at}any other file, e.g. notes.txt, README.md, report.ipynb, and`,
+      `${at}generated lockfiles such as package-lock.json`,
+    ],
+    configNotListed: [
+      `${at}a config-format file whose name is not listed above, e.g.`,
+      `${at}secrets.json, values.yaml, app.toml; by extension:`,
+      ...wrapList([...CONFIG_SHAPED_EXTENSIONS], at),
+      `${at}and by name:`,
+      ...wrapList([...CONFIG_SHAPED_BASENAMES, 'Dockerfile.*', '*.Dockerfile'], at),
+    ],
+    testFile: wrapList(TEST_FILE_GLOBS, at, '  '),
+    testDir: wrapList([...TEST_DIRS].map((d) => `${d}/`), at, '  '),
+    ignoreRule: [
+      `${at}a path in .secretlessignore or in the default-ignore list,`,
+      `${at}which also holds ${ignoreOnly.join(' ')}`,
+    ],
+    hiddenDir: [`${at}source files under .claude/, .vscode/ or any other dot-directory`],
+    buildOutput: [...wrapList(buildDirs, at), `${at}no flag enters these`],
+    gitMetadata: [`${at}.git/`],
+  };
+}
+
+/**
+ * The `scan --help` notes: what a directory scan opens, what it does not and
+ * the reason the scan reports for each skip, and that naming a path scans it.
+ *
+ * The help named only dependency and build output as unread, while the scan
+ * prints one of several reasons beside each path it skipped. The reason labels
+ * below are the exact strings the scan prints, so a user can look one up here.
+ */
+function scanCoverageNotes(): string[] {
+  const templates = [...ENV_TEMPLATE_SUFFIXES].map((t) => `.env.${t}`).join(' ');
+  const configNames = CONFIG_FILES.filter((f) => !isEnvFile(f));
+  const details = skipReasonDetails();
+  const reasons = (Object.keys(SOURCE_SKIP_REASONS) as Array<keyof typeof SOURCE_SKIP_REASONS>)
+    .flatMap((key) => [`  ${SOURCE_SKIP_REASONS[key]}`, ...details[key]]);
+  return [
+    'A directory scan opens only these files:',
+    ...wrapList([...SOURCE_FILE_EXTENSIONS], ' '.repeat(11), ' ', '  source   '),
+    '  config   .env and .env.*, except the templates',
+    `           ${templates}; and by name:`,
+    ...wrapList(configNames, ' '.repeat(11)),
+    `  key      ${[...KEY_FILE_EXTENSIONS].join(' ')}`,
+    '           (a .p12, .pfx or .secretless-bundle file is a finding by its',
+    '           presence alone)',
+    '',
+    'It opens nothing else. These are the reasons the scan reports for what',
+    'it skipped, each with the flag that opens it, where one does:',
+    ...reasons,
+    '',
+    'Name a path to scan it. A named file is opened whatever its type, and no',
+    'ignore or test-file rule applies to it (scan notes.txt). A named directory',
+    'is walked with the rules above, even one a scan of its parent skips',
+    '(scan dist, scan .claude).',
+  ];
+}
+
 const DOCS: Readonly<Record<string, VerbDoc>> = {
   scan: {
     summary: 'Scan config and source files for hardcoded secrets.',
@@ -47,6 +159,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     flags: {
       '--history': 'Scan shell history for credentials instead of files',
       '--include-tests': 'Include test files in the source scan',
+      '--include-config': 'Also scan config files not on the built-in list',
       '--explain': 'Detailed per-finding view with remediation',
       '--no-ignore': 'Disable .secretlessignore and the default-ignore list',
       '--show-placeholders': 'Show values hidden as placeholders',
@@ -55,10 +168,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--max-file-size': ['<size>', 'Raise the per-file size cap (e.g. 20mb, 500kb)'],
       '--json': JSON_DOC,
     },
-    notes: [
-      'Dependency and build output (node_modules/, dist/, build/, ...) is never entered',
-      'by a directory scan; name one by its path to scan it.',
-    ],
+    notes: scanCoverageNotes(),
   },
   status: {
     summary: 'Show protection status.',
@@ -429,7 +539,7 @@ export function printCommandHelp(verb: string): void {
   }
   if (doc.notes && doc.notes.length > 0) {
     lines.push('');
-    for (const n of doc.notes) lines.push(`    ${n}`);
+    for (const n of doc.notes) lines.push(n ? `    ${n}` : '');
   }
   lines.push('');
   lines.push(`  Run \`${CLI} --help\` for every command.`);

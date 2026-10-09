@@ -904,7 +904,15 @@ function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFind
  * `includeTests` has to open BOTH — opening only this one is what made
  * `--include-tests` a no-op for files under `test/`.
  */
-const TEST_DIRS = new Set(['__tests__', '__mocks__', 'test', 'tests', 'fixtures', '__fixtures__']);
+export const TEST_DIRS: ReadonlySet<string> = new Set(['__tests__', '__mocks__', 'test', 'tests', 'fixtures', '__fixtures__']);
+
+/**
+ * The names `isTestFile` matches, written as globs for `scan --help`. Kept
+ * beside the function because they are two statements of one rule; a test
+ * walks a file named after each glob and checks the walk skips it as a test
+ * file, so an edit to one without the other fails.
+ */
+export const TEST_FILE_GLOBS: readonly string[] = ['*.test.*', '*.spec.*', '*.e2e.*', 'test_*', '*_test.go'];
 
 /** File name patterns that indicate test files */
 function isTestFile(name: string): boolean {
@@ -923,7 +931,7 @@ function isTestFile(name: string): boolean {
  * and again at the file level (in case the user uses a file-name glob).
  */
 /** Private-key file extensions scanned in addition to source/config files. */
-export const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.p12', '.pfx', BUNDLE_EXTENSION]);
+export const KEY_FILE_EXTENSIONS: ReadonlySet<string> = new Set(['.pem', '.key', '.crt', '.p12', '.pfx', BUNDLE_EXTENSION]);
 
 /** What a walker collected, and every reason its coverage fell short. */
 interface WalkResult {
@@ -989,6 +997,27 @@ export interface CoverageSkips {
   fileCount: number;
 }
 
+/**
+ * Every reason the SOURCE walk gives for a directory it did not enter or a file
+ * it did not open: the strings the scan prints beside each path. The flag in
+ * parentheses is the one that opens it.
+ *
+ * `scan --help` names each of these before the run, and a test walks a tree
+ * that produces every one, so the walk, this catalog and the help cannot drift
+ * apart. A new reason added to the walk as a bare string would print a skip the
+ * help never explained.
+ */
+export const SOURCE_SKIP_REASONS = {
+  unsupportedType: 'unsupported file type',
+  configNotListed: 'config file not on the built-in list (--include-config)',
+  testFile: 'test file (--include-tests)',
+  testDir: 'test directory (--include-tests)',
+  ignoreRule: 'ignore rule (--no-ignore)',
+  hiddenDir: 'hidden directory',
+  buildOutput: 'dependency or build output',
+  gitMetadata: 'git metadata',
+} as const;
+
 /** Samples are for a human; the counts carry the magnitude. */
 const SKIP_SAMPLE_CAP = 20;
 
@@ -1052,7 +1081,7 @@ function classifyEntry(entryPath: string, entry: fs.Dirent): 'dir' | 'file' | 's
  * `.env.staging`, `.env.test` and `.env.prod` — the exact set the CLAUDE.md
  * block Secretless itself installs tells the user it protects (#116 P2-3).
  */
-const ENV_TEMPLATE_SUFFIXES = new Set(['example', 'sample', 'template', 'dist']);
+export const ENV_TEMPLATE_SUFFIXES: ReadonlySet<string> = new Set(['example', 'sample', 'template', 'dist']);
 
 /**
  * True for a real `.env` file; false for a committed template.
@@ -1436,11 +1465,11 @@ function walkSourceFiles(
     // still read inside it, but not through a link out of the root or into a
     // directory that cannot be read, which this arm cannot tell.
     skipDir: (name, rel) =>
-      (name === '.git' && 'git metadata')
-      || (SOURCE_SKIP_DIRS.has(name) && 'dependency or build output')
-      || (name.startsWith('.') && !(ignore && ignore.matches(rel + '/.')) && 'hidden directory')
-      || (!includeTests && TEST_DIRS.has(name) && 'test directory (--include-tests)')
-      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule (--no-ignore)'),
+      (name === '.git' && SOURCE_SKIP_REASONS.gitMetadata)
+      || (SOURCE_SKIP_DIRS.has(name) && SOURCE_SKIP_REASONS.buildOutput)
+      || (name.startsWith('.') && !(ignore && ignore.matches(rel + '/.')) && SOURCE_SKIP_REASONS.hiddenDir)
+      || (!includeTests && TEST_DIRS.has(name) && SOURCE_SKIP_REASONS.testDir)
+      || (!!(ignore && ignore.matches(rel + '/.')) && SOURCE_SKIP_REASONS.ignoreRule),
     // The config walk reads these (it applies the ignore rule itself).
     coveredElsewhere: (name, rel) =>
       matchesConfigName(name, rel, configMatcher) && !(ignore && ignore.matches(rel)),
@@ -1454,13 +1483,13 @@ function walkSourceFiles(
       // JavaScript file, and an exact match never opened it (#120).
       const supported = SOURCE_FILE_EXTENSIONS.has(path.extname(name).toLowerCase());
       const configShaped = !supported && isConfigShaped(name);
-      if (!supported && !configShaped) return 'unsupported file type';
-      if (!(includeTests || !isTestFile(name))) return 'test file (--include-tests)';
-      if (ignore && ignore.matches(rel)) return 'ignore rule (--no-ignore)';
+      if (!supported && !configShaped) return SOURCE_SKIP_REASONS.unsupportedType;
+      if (!(includeTests || !isTestFile(name))) return SOURCE_SKIP_REASONS.testFile;
+      if (ignore && ignore.matches(rel)) return SOURCE_SKIP_REASONS.ignoreRule;
       if (configShaped && !includeConfig) {
         unscannedConfig.count++;
         if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(rel);
-        return 'config file not on the built-in list (--include-config)';
+        return SOURCE_SKIP_REASONS.configNotListed;
       }
       return false;
     },
