@@ -678,6 +678,12 @@ refused, and a template-named link to another template is still allowed. A
 link that cannot be resolved (its target is missing, or it loops) is refused,
 because what it reaches is unknown. A file that does not exist yet, such as
 the target of a Write, is still checked under its resolved parent directory.
+A path that passes through no link is judged by the name it was given alone,
+as before: the resolved path is absolute, and the path-fragment rules
+(`secrets/`, `.ssh/`, `credentials/`, a custom `files:` pattern) match
+anywhere in it, so a relative path is not first joined to the working
+directory, and a project kept under a directory named `secrets/` still reads
+its own `src/app.js` by relative path.
 Re-running `npx secretless-ai init` refreshes the hook in an existing project.
 
 **An absolute file pattern in `.secretless-rules.yaml` is enforced, in either

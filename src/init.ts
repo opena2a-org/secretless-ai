@@ -2129,6 +2129,27 @@ deny_file() {
   exit 0
 }
 
+# True when a component of $1, a parent directory or the last one, is a
+# symlink. Walks the path as it was given, so a relative path is checked under
+# the working directory without the working directory's own components.
+path_has_link() {
+  local rest="$1" acc="" comp
+  case "$rest" in /*) acc=/; rest="\${rest#/}" ;; esac
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      */*) comp="\${rest%%/*}"; rest="\${rest#*/}" ;;
+      *) comp="$rest"; rest="" ;;
+    esac
+    [ -n "$comp" ] || continue
+    case "$acc" in
+      ''|*/) acc="$acc$comp" ;;
+      *) acc="$acc/$comp" ;;
+    esac
+    [ -L "$acc" ] && return 0
+  done
+  return 1
+}
+
 # Print the physical path a tool opens for $1: every symlink followed, in the
 # parent directories and in the last component. Written with cd -P and
 # single-step readlink because realpath and readlink -f are missing from older
@@ -2191,7 +2212,13 @@ while IFS= read -r CANDIDATE; do
     # be a link into a secret store. Nothing to read if the parent is missing.
     RESOLVED=$(resolve_path "$CANDIDATE") || RESOLVED=""
   fi
-  if [ -n "$RESOLVED" ]; then
+  # Only a path that passes through a link is judged by what it reaches. The
+  # resolved path is absolute, and the path-fragment rules (secrets/, .ssh/,
+  # credentials/) match anywhere in it, so a path with no link in any component
+  # is judged by its name alone: a relative path is not joined to the working
+  # directory first, and a project kept under a directory named secrets/ still
+  # reads its own src/app.js by relative path.
+  if [ -n "$RESOLVED" ] && path_has_link "$CANDIDATE"; then
     classify_path "$RESOLVED"
     if [ "$CLASS" = blocked ]; then
       deny_file "Secretless: blocked access to secret file matching pattern '$REASON' at the path this one resolves to"

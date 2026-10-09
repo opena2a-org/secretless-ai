@@ -298,6 +298,34 @@ describe('init', { timeout: 30_000 }, () => {
       }
       expect(runHook(hookPath, path.join(dir, 'src', 'new-file.ts'), 'Write')).toBe(false);
     });
+
+    // The resolved path is absolute and the fragment rules (secrets/, .ssh/,
+    // credentials/) match anywhere in it, so a path that passes through no link
+    // must be judged by its name alone: a relative path is not joined to the
+    // working directory first. A project kept under a directory named secrets/
+    // reads its own files by relative path, while a relative link to .env in
+    // the same project is still refused, and the name secrets/ in an absolute
+    // path is refused as it always was.
+    it('judges a path with no link by its name alone, so a project under secrets/ reads its own files', () => {
+      const project = path.join(dir, 'secrets', 'proj');
+      fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(project, 'src', 'app.js'), 'export {};\n');
+      fs.writeFileSync(path.join(project, '.env'), FAKE);
+      fs.symlinkSync('.env', path.join(project, 'notes.txt'));
+      init(project);
+      const hookPath = path.join(project, '.claude', 'hooks', 'secretless-guard.sh');
+      const run = (tool: string, toolInput: Record<string, string>): boolean => {
+        const input = JSON.stringify({ tool_name: tool, tool_input: toolInput });
+        const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', cwd: project });
+        return /"permissionDecision":"deny"/.test(out);
+      };
+
+      expect(run('Read', { file_path: 'src/app.js' }), 'relative Read in a project under secrets/').toBe(false);
+      expect(run('Grep', { pattern: 'x', path: 'src' }), 'relative Grep path in a project under secrets/').toBe(false);
+      expect(run('Write', { file_path: 'src/new-file.ts' }), 'relative Write of a new file in a project under secrets/').toBe(false);
+      expect(run('Read', { file_path: 'notes.txt' }), 'relative link to .env').toBe(true);
+      expect(run('Read', { file_path: path.join(project, 'src', 'app.js') }), 'absolute path naming secrets/').toBe(true);
+    });
   });
 
   // Release-test 2026-07-16 P1: `secretless-ai env` prints every stored secret as
