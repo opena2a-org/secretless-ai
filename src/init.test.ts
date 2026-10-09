@@ -32,6 +32,11 @@ function cleanup(dir: string): void {
 // at 30s the slowest test has ~10x headroom, while a genuinely hung `execSync`
 // still fails the run rather than hanging it. This is a timeout, not an
 // assertion — nothing here starts passing because the number went up.
+//
+// The bound holds only while each test checks about twenty commands or fewer:
+// lists of forty to seventy ran past it when the whole suite shared a loaded
+// machine, so the long lists are split into one test per family. A new case
+// joins the family it belongs to; a new family gets a test of its own.
 describe('init', { timeout: 30_000 }, () => {
   let dir: string;
 
@@ -892,6 +897,17 @@ describe('init', { timeout: 30_000 }, () => {
         'echo -n $GITHUB_TOKEN',
         'echo "token: $GITHUB_TOKEN"',
         'echo "Using ${GITHUB_TOKEN:0:4}"',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+    });
+
+    it('echo/printenv of a PREFIXED secret variable is blocked after a separator, a tab, a quote or an escape', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
         // Bare printenv followed by another command still dumps the environment.
         'printenv; echo done',
         'printenv && echo done',
@@ -911,6 +927,11 @@ describe('init', { timeout: 30_000 }, () => {
       for (const c of mustBlock) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
       }
+    });
+
+    it('echo/printenv of a non-secret, and a secret handed to a program, stay allowed', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
       const mustAllow = [
         'echo $HOME',
@@ -1053,8 +1074,7 @@ describe('init', { timeout: 30_000 }, () => {
       // A real read stays refused wherever the shell runs the verb from: at the
       // start of a line, after a wrapper or keyword, through a path, and on a
       // line of a heredoc fed to an interpreter. The prefixed flavours of the
-      // readers were covered only because the verb was unanchored, and a single
-      // `}` can still close a path the shell expands.
+      // readers were covered only because the verb was unanchored.
       const mustBlock = [
         'cat .env',
         'sed -n 1p x/.env',
@@ -1070,9 +1090,24 @@ describe('init', { timeout: 30_000 }, () => {
         'egrep KEY .env',
         'gawk 1 server.key',
         'gsed -n 1p client.pem',
-        // Suffix-named readers: the stock macOS gzcat, the GNU names Homebrew
-        // installs beside the system tools, and other grep and compressor
-        // front ends. Each was refused by the unanchored verb.
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
+      }
+    });
+
+    // The reader families below each get a test of their own: every command
+    // costs a hook process, and a list of sixty commands ran past the 30 s
+    // bound when the whole suite shared a loaded machine. Each list stays
+    // short enough to keep the headroom the bound was sized for.
+    it('a suffix-named reader such as gzcat or ghead is refused', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Suffix-named readers: the stock macOS gzcat, the GNU names Homebrew
+      // installs beside the system tools, and other grep and compressor
+      // front ends. Each was refused by the unanchored verb.
+      const mustBlock = [
         'gzcat -f .env',
         'gcat .env',
         'ghead -n1 .env',
@@ -1088,9 +1123,20 @@ describe('init', { timeout: 30_000 }, () => {
         'xzgrep KEY client.pem',
         'lz4cat .env',
         'mawk 1 .env',
-        // Other installable programs whose name ends in a reader verb and that
-        // print or transmit a plain file. Each was refused by the unanchored
-        // verb too.
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
+      }
+    });
+
+    it('a named reader whose name ends in a reader verb, such as lolcat, socat or agrep, is refused', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // Other installable programs whose name ends in a reader verb and that
+      // print or transmit a plain file. Each was refused by the unanchored
+      // verb too.
+      const mustBlock = [
         'lolcat .env',
         'ccat .env',
         'mdcat .env',
@@ -1110,6 +1156,18 @@ describe('init', { timeout: 30_000 }, () => {
         'vgrep KEY .env',
         'pdfgrep KEY .env',
         'zipgrep KEY .env',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
+      }
+    });
+
+    it('a brace, an expansion, the data directory or an escape still reaches the reader rules', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // A single `}` can still close a path the shell expands.
+      const mustBlock = [
         'cat {a,.env}',
         'cat "${ENV_FILE:-.env}"',
         "grep -c x '{.Config.Env}'",
@@ -1163,13 +1221,18 @@ describe('init', { timeout: 30_000 }, () => {
       for (const c of mustAllow) {
         expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${JSON.stringify(c)}`).toBe(false);
       }
+    });
 
-      // Refused before the change and still refused: a consumer that runs or
-      // reads the text, a consumer the hook does not know, a second command on
-      // the first line or after the terminator, a later line equal to the
-      // delimiter (the heredoc ends at the first), an unquoted delimiter or a
-      // double-quoted argument the shell expands, a pipe, a `cat` operand, and a
-      // target that is itself a secret file.
+    // Refused before the change and still refused: a consumer that runs or
+    // reads the text, a consumer the hook does not know, a second command on
+    // the first line or after the terminator, a later line equal to the
+    // delimiter (the heredoc ends at the first), an unquoted delimiter or a
+    // double-quoted argument the shell expands, a pipe, a `cat` operand, and a
+    // target that is itself a secret file.
+    (hasPython3 ? it : it.skip)('a heredoc a program runs, or a second command beside the write, is still refused', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
       const mustBlock = [
         "frobnicate <<'EOF'\ncat .env\nEOF",
         "command bash <<'EOF'\ncat .env\nEOF",
@@ -1185,6 +1248,17 @@ describe('init', { timeout: 30_000 }, () => {
         "cat > notes.md <<'EOF'; cat .env\nhello\nEOF",
         "cat <<'EOF' | bash\ncat .env\nEOF",
         "cat <<'EOF' | sh > out.txt\ncat .env\nEOF",
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${JSON.stringify(c)}`).toBe(true);
+      }
+    });
+
+    (hasPython3 ? it : it.skip)('an expanded, piped, evaluated or secret-targeted write is still refused', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
         'cat > notes.md <<EOF\n$(cat .env)\nEOF',
         'cat .env > notes.md',
         "cat .env - > notes.md <<'EOF'\nx\nEOF",
@@ -1622,7 +1696,10 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    it('ps forms that print the environment, unlimited width or the command column are blocked', () => {
+    // Each ps family gets a test of its own: every command costs a hook process,
+    // and one list of forty ran past the 30 s bound when the whole suite shared
+    // a loaded machine.
+    it('ps forms that print the environment or unlimited width are blocked', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
       for (const c of [
@@ -1639,6 +1716,15 @@ describe('init', { timeout: 30_000 }, () => {
         'ps auxww',
         'ps -axww',
         'ps -efww',
+      ]) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+    });
+
+    it('ps forms that print the command column are blocked, wherever ps sits in the line', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      for (const c of [
         // The command column by name.
         'ps -p 123 -o command=',
         'ps -ocommand -p 123',
@@ -1658,6 +1744,11 @@ describe('init', { timeout: 30_000 }, () => {
       ]) {
         expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
       }
+    });
+
+    it('ps forms that print neither the environment nor the command column are allowed', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
       for (const c of [
         // -e is "every process" on macOS and Linux, not the environment.
         'ps -e',
