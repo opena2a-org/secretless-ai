@@ -10,6 +10,7 @@ import { redactMatches } from './redact';
 import { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceTier } from './confidence';
 import { BUNDLE_EXTENSION } from './bundle';
+import { withSlashSeparators } from './display-safe';
 
 export interface ScanFinding {
   file: string;
@@ -737,7 +738,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         if (!stat.isFile()) continue;
         if (stat.size > sourceCap) {
           stats?.oversize?.push({
-            path: relPath.replace(/\\/g, '/'),
+            path: withSlashSeparators(relPath),
             bytes: stat.size,
             capBytes: sourceCap,
           });
@@ -772,7 +773,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           }
         }
       } catch {
-        stats?.unreadable?.push(relPath.replace(/\\/g, '/'));
+        stats?.unreadable?.push(withSlashSeparators(relPath));
       }
     }
   }
@@ -815,7 +816,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         if (stat.size > sourceCap) {
           // A private-key file over the cap is exactly the case worth naming.
           stats?.oversize?.push({
-            path: relPath.replace(/\\/g, '/'),
+            path: withSlashSeparators(relPath),
             bytes: stat.size,
             capBytes: sourceCap,
           });
@@ -854,7 +855,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       } catch {
         // Non-UTF8 is expected for .p12/.pfx and handled above, so reaching here
         // means the file could not be opened at all.
-        stats?.unreadable?.push(relPath.replace(/\\/g, '/'));
+        stats?.unreadable?.push(withSlashSeparators(relPath));
       }
     }
   }
@@ -1244,8 +1245,11 @@ interface WalkSpec {
    * drift — and a disclosure that disagrees with the walk is worse than none.
    */
   skipDir(name: string, relFromRoot: string): string | false;
-  /** A REASON string to reject this file, or false to keep it. Same rule. */
-  rejectFile(name: string, relFromRoot: string): string | false;
+  /**
+   * A REASON string to reject this file, or false to keep it. Same rule.
+   * `listedFromRoot` is the path as a report lists it (see `walkTree`).
+   */
+  rejectFile(name: string, relFromRoot: string, listedFromRoot: string): string | false;
   /**
    * True when another walk reads this file, so this one leaves it out WITHOUT
    * disclosing it: `config.json` is read by the config walk, and counting it
@@ -1297,6 +1301,12 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   let dirsVisited = 0;
 
   const rel = (p: string) => path.relative(dir, p).replace(/\\/g, '/');
+  // What the lists of skipped, unread and unfollowed paths record. `rel` above
+  // is what the filters match against, and it turns every backslash into `/`,
+  // which on POSIX names a different path: a file named `n\x.txt` was listed,
+  // and offered as `Scan one:`, as `n/x.txt`. A listed path changes only the
+  // platform's own separator.
+  const listed = (p: string) => withSlashSeparators(path.relative(dir, p));
 
   // `truncated` is a claim about FILES: a candidate that passed every filter
   // and was dropped because the cap was full. Reaching the cap with directories
@@ -1311,7 +1321,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     const { dir: current, ancestors } = queue.shift()!;
 
     const currentReal = realpathOrNull(current);
-    if (currentReal === null) { unreadable.push(rel(current)); continue; }
+    if (currentReal === null) { unreadable.push(listed(current)); continue; }
     // A directory inside its own ancestry is a genuine loop.
     if (ancestors.includes(currentReal)) continue;
     // Bound how many distinct routes to one directory we follow (see the
@@ -1328,7 +1338,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     } catch {
       // Was a bare `continue`: an unreadable directory vanished from the result
       // while the scan still reported itself complete.
-      unreadable.push(rel(current));
+      unreadable.push(listed(current));
       continue;
     }
     // The samples and the `Scan one:` command name the first entries the walk
@@ -1339,9 +1349,10 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     for (const entry of entries) {
       const entryPath = path.join(current, entry.name);
       const relFromRoot = rel(entryPath);
+      const listedFromRoot = listed(entryPath);
       const kind = classifyEntry(entryPath, entry);
 
-      if (kind === 'unreadable') { unreadable.push(relFromRoot); continue; }
+      if (kind === 'unreadable') { unreadable.push(listedFromRoot); continue; }
       if (kind === 'skip') continue;
 
       if (kind === 'dir') {
@@ -1353,7 +1364,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (skipReason) {
           if (spec.discloseSkips) {
             skips.dirCount++;
-            if (skips.dirs.length < SKIP_SAMPLE_CAP) skips.dirs.push({ path: relFromRoot, reason: skipReason });
+            if (skips.dirs.length < SKIP_SAMPLE_CAP) skips.dirs.push({ path: listedFromRoot, reason: skipReason });
           }
           continue;
         }
@@ -1364,17 +1375,17 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (entry.isSymbolicLink()) {
           const target = realpathOrNull(entryPath);
           if (target === null) continue;
-          if (!isWithinRoot(target, rootReal)) { outOfRoot.push(relFromRoot); continue; }
+          if (!isWithinRoot(target, rootReal)) { outOfRoot.push(listedFromRoot); continue; }
         }
 
         queue.push({ dir: entryPath, ancestors: childAncestors });
       } else {
         if (spec.coveredElsewhere?.(entry.name, relFromRoot)) continue;
-        const rejectReason = spec.rejectFile(entry.name, relFromRoot);
+        const rejectReason = spec.rejectFile(entry.name, relFromRoot, listedFromRoot);
         if (rejectReason) {
           if (spec.discloseSkips) {
             skips.fileCount++;
-            if (skips.files.length < SKIP_SAMPLE_CAP) skips.files.push({ path: relFromRoot, reason: rejectReason });
+            if (skips.files.length < SKIP_SAMPLE_CAP) skips.files.push({ path: listedFromRoot, reason: rejectReason });
           }
           continue;
         }
@@ -1473,7 +1484,7 @@ function walkSourceFiles(
     // The config walk reads these (it applies the ignore rule itself).
     coveredElsewhere: (name, rel) =>
       matchesConfigName(name, rel, configMatcher) && !(ignore && ignore.matches(rel)),
-    rejectFile: (name, rel) => {
+    rejectFile: (name, rel, listedRel) => {
       // #124 — a config-format file off the CONFIG_FILES list was "unsupported
       // file type" to this walk and unknown to the config walk: read by
       // neither, and a clean scan said nothing. It now takes the test and
@@ -1481,14 +1492,25 @@ function walkSourceFiles(
       // reported as a boundary with its own reason.
       // Lowered like the key-file and config matchers: `Legacy.JS` is a
       // JavaScript file, and an exact match never opened it (#120).
-      const supported = SOURCE_FILE_EXTENSIONS.has(path.extname(name).toLowerCase());
+      const ext = path.extname(name).toLowerCase();
+      const supported = SOURCE_FILE_EXTENSIONS.has(ext);
       const configShaped = !supported && isConfigShaped(name);
-      if (!supported && !configShaped) return SOURCE_SKIP_REASONS.unsupportedType;
+      if (!supported && !configShaped) {
+        // The key walk reads a key file this walk does not, under the same
+        // test-file and ignore rules. When one of those rules stops it there
+        // too, that rule is why no walk opened it, and its flag is the one
+        // that does: "unsupported file type" named a type the key walk reads.
+        if (KEY_FILE_EXTENSIONS.has(ext)) {
+          if (!(includeTests || !isTestFile(name))) return SOURCE_SKIP_REASONS.testFile;
+          if (ignore && ignore.matches(rel)) return SOURCE_SKIP_REASONS.ignoreRule;
+        }
+        return SOURCE_SKIP_REASONS.unsupportedType;
+      }
       if (!(includeTests || !isTestFile(name))) return SOURCE_SKIP_REASONS.testFile;
       if (ignore && ignore.matches(rel)) return SOURCE_SKIP_REASONS.ignoreRule;
       if (configShaped && !includeConfig) {
         unscannedConfig.count++;
-        if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(rel);
+        if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(listedRel);
         return SOURCE_SKIP_REASONS.configNotListed;
       }
       return false;

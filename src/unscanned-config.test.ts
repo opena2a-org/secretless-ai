@@ -39,6 +39,10 @@ function tree(files: Record<string, string>): string {
 const TOKEN = ['ghp_', 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'].join('');
 
 async function capture(target: string, opts: Parameters<typeof runScan>[1]) {
+  // From the directory above the tree a printed path reads `<tree>/<name>`.
+  // From anywhere else it is absolute, and under a TMPDIR with a space in it
+  // an absolute path prints shell-quoted, which `\S+` below does not match.
+  vi.spyOn(process, 'cwd').mockReturnValue(path.dirname(target));
   const lines: string[] = [];
   vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
   vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips } from '../scan';
+import { scan, emptySkips, SOURCE_SKIP_REASONS } from '../scan';
 import { status, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, type AITool } from '../detect';
@@ -17,7 +17,7 @@ import { isDaemonInstalled } from '../session/install';
 import { VERSION, CLI, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime } from './utils';
 import { findGitCredentialExposure, describeExposure } from '../git-credential-files';
 import { explainFinding, isEngineAvailable } from '../nanomind';
-import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard } from '../display-safe';
+import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard, quotePathForDisplay } from '../display-safe';
 import { c, divider } from './colors';
 
 export function runInit(projectDir: string): number {
@@ -509,12 +509,14 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return relToCwd && !atRoot && !relToCwd.startsWith('..') && !relToCwd.startsWith('-') ? relToCwd : abs;
   };
   // A name in a list. Quoted so it can be copied, unless it holds a character
-  // that would reach the terminal as a control (a line feed in a directory name
-  // printed a forged `Scan one:` line): then it is shown escaped, and the
-  // escaped form describes the name rather than quoting it.
+  // that would reach the terminal as a control (a line feed in a config file's
+  // name printed a forged `Scan one:` line): then it is shown escaped inside `$'...'`.
+  // The escaped form describes the name rather than quoting it for pasting, and
+  // the quotes mark where it ends, so a `: ` inside it cannot pass for the one
+  // before the reason.
   const shown = (rel: string) => {
     const p = fromCwd(rel);
-    return hasDisplayHazard(p) ? escapePathForDisplay(p) : shellQuote(p);
+    return hasDisplayHazard(p) ? quotePathForDisplay(p) : shellQuote(p);
   };
   // The first candidate that prints as itself, quoted for pasting, or null. A
   // name that cannot be printed as itself cannot be an operand: the raw form is
@@ -657,17 +659,29 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // whatever its type, so `Scan one:` names a file, not a flag. Like the
     // directory heading, this one does not say the files went unscanned: the
     // key walk still checks a `.pem`, `.key`, `.crt`, `.p12`, `.pfx` or
-    // export bundle listed here, and a finding can come from one.
-    if (stats.skips.fileCount > 0) {
-      const n = stats.skips.fileCount;
+    // export bundle listed here as an unsupported file type, and a finding can
+    // come from one. One that an ignore or test-file rule keeps from the key
+    // walk too is listed with that rule.
+    //
+    // A config file off the built-in list is left out here: the block above
+    // names it under a heading that says it is not known to be clean, and
+    // listing it again under "declared boundaries" put one file under two
+    // headings that disagree. The `--json` lists still carry it in both.
+    const notOpened = stats.skips.files.filter(f => f.reason !== SOURCE_SKIP_REASONS.configNotListed);
+    const notOpenedCount = stats.skips.fileCount - stats.unscannedConfig.count;
+    if (notOpenedCount > 0) {
+      const n = notOpenedCount;
       console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)}: declared boundaries, not findings.`);
-      for (const f of stats.skips.files.slice(0, 8)) {
+      // The sample is shared with the config files left out above, so it can
+      // hold fewer than eight of these while more exist, or none at all.
+      const listed = notOpened.slice(0, 8);
+      for (const f of listed) {
         console.log(`  ${c.dim(`  ${shown(f.path)}: ${f.reason}`)}`);
       }
-      if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
+      if (listed.length > 0 && n > listed.length) console.log(`  ${c.dim(`  … and ${n - listed.length} more`)}`);
       // A name that cannot be printed as itself cannot be copied as it reads, so
       // it is listed but never offered as the command.
-      const first = firstOperand(stats.skips.files.map(f => f.path));
+      const first = firstOperand(notOpened.map(f => f.path));
       if (first) {
         console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${first}`);
       }

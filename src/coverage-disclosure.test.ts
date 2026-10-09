@@ -3,7 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { runScan } from './commands/core';
+import { runScan, shellQuote } from './commands/core';
 
 /**
  * What the scan did NOT look at, disclosed beside what it did.
@@ -192,12 +192,14 @@ describe('coverage-warning paths are printed so they run where they are pasted (
   it('prints absolute paths when run from the filesystem root', async () => {
     // From `/` the cwd-relative form of `/tmp/x/big.js` is `tmp/x/big.js`:
     // runnable there, but it reads as a path under the current directory.
+    // Quoted as the report quotes it: a temporary directory whose path holds a
+    // space prints inside single quotes.
     const dir = tree({ 'big.js': 'export const x = 1;\n' });
     const big = path.join(dir, 'big.js');
     const out = await humanOutput(dir, path.parse(dir).root);
 
-    expect(out).toContain(`Verify: head -c 4096 ${big}`);
-    expect(out).toContain(`npx secretless-ai scan ${dir} --max-file-size`);
+    expect(out).toContain(`Verify: head -c 4096 ${shellQuote(big)}`);
+    expect(out).toContain(`npx secretless-ai scan ${shellQuote(dir)} --max-file-size`);
     expect(out).not.toContain(` ${path.relative(path.parse(dir).root, big)}`);
   });
 
@@ -225,11 +227,17 @@ describe('the human report names a file it did not open', () => {
   // Assembled from parts so the committed source never carries the key shape.
   const AWS_KEY_ID = ['AK', 'IA', 'Q7XN3P2LMRT4VW8K'].join('');
 
-  async function report(target: string) {
+  // Run from the directory above the scanned tree, so a listed path reads
+  // `<tree>/<name>` whatever the temporary directory's own path holds. From
+  // anywhere else the path is absolute, and under a TMPDIR with a space in it an
+  // absolute path prints shell-quoted, which no pattern below expects.
+  async function report(target: string, options?: Parameters<typeof runScan>[1]) {
+    const root = fs.statSync(target).isDirectory() ? target : path.dirname(target);
+    vi.spyOn(process, 'cwd').mockReturnValue(path.dirname(root));
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const code = await runScan(target);
+    const code = await runScan(target, options);
     // eslint-disable-next-line no-control-regex
     return { text: lines.join('\n').replace(/\x1b\[[0-9;]*m/g, ''), code };
   }
@@ -333,6 +341,95 @@ describe('the human report names a file it did not open', () => {
     expect(text).toMatch(/server\.crt: unsupported file type$/m);
     expect(text).toMatch(/backup\.secretless-bundle: unsupported file type$/m);
     expect(text).not.toMatch(/not covered by the scan result/);
+  });
+
+  // Generated at run time so the committed source never carries a private key.
+  function pemKey(): string {
+    return crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    }).privateKey;
+  }
+
+  it('lists a key file an ignore rule keeps from every walk with that rule, not as an unsupported file type', async () => {
+    // The key walk reads `kept.pem` and reports what it holds. It applies the
+    // ignore rule too, so no walk opens `ignored.pem`, and the flag that would
+    // is --no-ignore: "unsupported file type" named a type the key walk reads.
+    const dir = tree({
+      'app.js': 'const a = 1;\n',
+      'ignored.pem': pemKey(),
+      'kept.pem': pemKey(),
+      '.secretlessignore': 'ignored.pem\n',
+    });
+    const { text, code } = await report(dir);
+
+    expect(text).toMatch(/kept\.pem:1$/m);
+    expect(text).not.toMatch(/ignored\.pem:1$/m);
+    expect(code).toBe(1);
+    expect(text).toMatch(/ignored\.pem: ignore rule \(--no-ignore\)$/m);
+    expect(text).toMatch(/kept\.pem: unsupported file type$/m);
+  });
+
+  it('CONTROL: --no-ignore, the flag that reason names, reads that key file', async () => {
+    const dir = tree({ 'ignored.pem': pemKey(), '.secretlessignore': 'ignored.pem\n' });
+    const { text, code } = await report(dir, { noIgnore: true });
+    expect(text).toMatch(/ignored\.pem:1$/m);
+    expect(code).toBe(1);
+  });
+
+  it('lists a key file the test-file rule keeps from every walk with that rule', async () => {
+    const dir = tree({ 'app.js': 'const a = 1;\n', 'server.test.pem': pemKey() });
+    const { text, code } = await report(dir);
+    expect(text).toMatch(/server\.test\.pem: test file \(--include-tests\)$/m);
+    expect(text).not.toMatch(/server\.test\.pem:1$/m);
+    expect(code).toBe(0);
+  });
+
+  it('CONTROL: --include-tests, the flag that reason names, reads that key file', async () => {
+    const dir = tree({ 'server.test.pem': pemKey() });
+    const { text, code } = await report(dir, { includeTests: true });
+    expect(text).toMatch(/server\.test\.pem:1$/m);
+    expect(code).toBe(1);
+  });
+
+  it('lists a config file off the built-in list once, under the heading that says it is not known to be clean', async () => {
+    // It was also listed under "files not opened: declared boundaries", with a
+    // second `Scan one:` line for it.
+    const dir = tree({ 'config.json': '{}\n', 'secrets.json': '{}\n', 'notes.txt': 'x\n' });
+    const { text, code } = await report(dir);
+    const base = path.basename(dir);
+
+    expect(code).toBe(0);
+    expect(text).toContain('1 config file not scanned: its name is not on the built-in config list, so not known to be clean.');
+    expect(text).toContain(`\n    ${base}/secrets.json\n`);
+    expect(text).toContain(`Scan one: npx secretless-ai scan ${base}/secrets.json`);
+    expect(text.match(/secrets\.json/g)).toHaveLength(2);
+    expect(text).toContain('1 file not opened: declared boundaries, not findings.');
+    expect(text).toMatch(/notes\.txt: unsupported file type$/m);
+    expect(text).toContain(`Scan one: npx secretless-ai scan ${base}/notes.txt`);
+  });
+
+  it('CONTROL: a tree whose only unopened file is such a config file prints no "not opened" block', async () => {
+    const dir = tree({ 'config.json': '{}\n', 'secrets.json': '{}\n' });
+    const { text } = await report(dir);
+    expect(text).toContain('1 config file not scanned');
+    expect(text).not.toMatch(/not opened/);
+    expect(text.match(/Scan one:/g)).toHaveLength(1);
+  });
+
+  it('counts the other unopened files when config files fill the shared sample', async () => {
+    // Twenty-one config files sort ahead of the two text files and fill the
+    // twenty-entry sample, so no name is left to list under the heading.
+    const files: Record<string, string> = { 'z1.txt': 'x\n', 'z2.txt': 'x\n' };
+    for (let i = 0; i < 21; i++) files[`c${String(i).padStart(2, '0')}.json`] = '{}\n';
+    const { text } = await report(tree(files));
+
+    expect(text).toContain('21 config files not scanned');
+    expect(text).not.toMatch(/c\d\d\.json: config file not on the built-in list/);
+    // The heading carries the count; no "… and 2 more" hangs under it.
+    const block = text.slice(text.indexOf('2 files not opened'));
+    expect(block.split('\n\n')[0]).toBe('2 files not opened: declared boundaries, not findings.');
   });
 
   it('gives the ignore rule, not "still scanned", for a hidden directory an ignore rule covers', async () => {

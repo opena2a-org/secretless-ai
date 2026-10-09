@@ -13,6 +13,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
+import { escapePathForDisplay } from './display-safe';
 
 // ── Types for the dynamically loaded aim-core vault module ──────────
 
@@ -523,7 +524,9 @@ export async function vaultScan(targetDir?: string): Promise<void> {
   console.log(`  Found ${findings.length} credential(s) that could be moved to the vault:\n`);
   for (const finding of findings) {
     const relPath = path.relative(dir, finding.file);
-    console.log(`  ${relPath}:${finding.line}`);
+    // A name from the scanned tree, escaped as `scan` escapes it: printed raw,
+    // an ESC or an OSC sequence in a directory name reached the terminal.
+    console.log(`  ${escapePathForDisplay(relPath)}:${finding.line}`);
     console.log(`    Pattern:  ${finding.patternId}`);
     console.log(`    Migrate:  secretless-ai vault register ${finding.patternId.toLowerCase()}`);
     console.log();
