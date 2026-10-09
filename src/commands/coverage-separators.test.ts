@@ -85,6 +85,10 @@ describe('the coverage section prints no em dash', () => {
   it('scan: every header, the cause line and the not-entered and not-opened lines', async () => {
     const { runScan } = await load();
     const dir = treeWithEveryGap(300);
+    // From the directory above the tree a listed path reads `<tree>/<name>`.
+    // From anywhere else it is absolute, and under a TMPDIR with a space in it
+    // an absolute path prints shell-quoted.
+    vi.spyOn(process, 'cwd').mockReturnValue(path.dirname(dir));
     const lines = captureLog();
 
     expect(await runScan(dir, { maxFileSizeBytes: 200 })).toBe(1);
@@ -102,8 +106,9 @@ describe('the coverage section prints no em dash', () => {
     expect(out).toContain('1 directory not entered for source files: declared boundaries, not findings.');
     expect(out).toContain('node_modules: dependency or build output');
     expect(out).toContain('1 config file not scanned: its name is not on the built-in config list, so not known to be clean.');
-    // `secrets.json` is listed here too, with the flag that reads it.
-    expect(out).toContain('2 files not opened: declared boundaries, not findings.');
+    // `secrets.json` is listed once, in the block above; `notes.txt` is the one
+    // file left here.
+    expect(out).toContain('1 file not opened: declared boundaries, not findings.');
     expect(out).toContain('notes.txt: unsupported file type');
 
     expect(out.split(EM_DASH).length - 1).toBe(0);

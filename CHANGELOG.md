@@ -4,18 +4,54 @@
 
 **`scan` prints a control character in a file name or an excerpt as a visible escape.**
 The report printed names and excerpts from the scanned files as they were,
-so a line feed in a directory name started a new report line that read like
-the scanner's own, and an escape character reached the terminal as a control
+so a line feed in a file name started a new report line that read like the
+scanner's own, and an escape character reached the terminal as a control
 sequence. The human report now prints each control character (U+0000 to
-U+001F and U+007F to U+009F) and each Unicode format character in every name
-and excerpt it shows as an escape such as `\n`, `\t`, `\e` or `\x07`, the
-same escapes `hackmyagent` prints. A literal backslash that could be read as
-one of these escapes is doubled, so `dir\nx` and a name holding a line feed
-print apart. A `Verify:` or `Fix:` command names the first listed path that
-prints as itself, and `<path>` when none does; a `Scan one:` line names such a
-path or is left out. `scan --explain` prints generated context line by line
-under its own indent. Escaping happens after detection and masking. Detection,
-exit codes and `--json` output are unchanged.
+U+001F and U+007F to U+009F), each Unicode format character, and each
+character that prints as nothing or as a blank, such as U+034F, U+2800 and the
+variation selectors, in every name and excerpt it shows as an escape such as
+`\n`, `\t`, `\e`, `\x07` or `\u2800`, written as `hackmyagent` writes them. In
+a finding's path, a literal backslash that could be read as one of these
+escapes is doubled, so `dir\nx` and a name holding a line feed print apart. In
+a list of paths the scan skipped or could not read, such a name is printed
+inside `$'...'` with every backslash doubled and a single quote written `\'`,
+so a `: ` inside the name cannot pass for the separator before its reason. A
+`Verify:` or `Fix:` command names the first listed path that prints as itself,
+or for symlinks outside the scan root the first target that does, and `<path>`
+when none does; a `Scan one:` line names such a path or is left out. On
+Windows a finding's path prints with `/` between its parts, as the lists do.
+`scan --explain` prints generated context line by line under its own indent,
+and `vault scan` prints each finding's path escaped. Escaping happens after
+detection and masking. Detection, exit codes and `--json` output are unchanged.
+
+**`scan` lists a file whose name holds a backslash under that name.** On Linux
+and macOS a backslash is a character a file name can hold, and the lists of
+skipped, unread and unfollowed paths turned it into `/`: a file named
+`n\x.txt` in `dir` was listed as `dir/n/x.txt`, and `Scan one:` offered that
+path, which does not exist. A symlink named `l\nk` that points outside the
+scan root stopped the report with `ENOENT` while it built that link's `Fix:`
+line. Those lists, their `Scan one:` and `Fix:` lines and the same paths in
+`--json` now keep the backslash. On Windows, where `\` separates the parts of
+a path, they print `/` as before. What the scan opens, its findings and its
+exit code are unchanged.
+
+**`scan` lists a key file that an ignore or test-file rule covers with that
+rule.** The source walk listed each `.pem`, `.key`, `.crt`, `.p12`, `.pfx` or
+`.secretless-bundle` file it skipped as `unsupported file type`, because the
+key walk reads those. The key walk applies the ignore and test-file rules as
+well, so a key file named in `.secretlessignore` was read by no walk while its
+reason named a type the scan reads. Such a file is now listed with
+`ignore rule (--no-ignore)` or `test file (--include-tests)`, the flag that
+reads it, in the report and in `skippedUnsupportedFiles` in `--json`. Findings
+and exit codes are unchanged.
+
+**`scan` lists a config file that is not on the built-in list once.** A
+config-format file such as `secrets.json` was named under
+`1 config file not scanned: ..., so not known to be clean.` and again under
+`1 file not opened: declared boundaries, not findings.`, each with its own
+`Scan one:` line. It is now listed only under the first heading, and the count
+in the second leaves it out. `--json` is unchanged: `skippedUnsupported` and
+`skippedUnsupportedFiles` still include it, as `unscannedConfig` does.
 
 **`scan` words its coverage lines with the separators `vault scan` uses.**
 The coverage section joined each heading to its explanation with a dash, and

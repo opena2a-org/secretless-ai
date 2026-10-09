@@ -6,8 +6,8 @@
  * an excerpt of a file's content. Written straight to a terminal, two things
  * go wrong:
  *
- * A line feed SPLITS the line. A hidden directory named
- * `.x<LF>  Scan one: npx secretless-ai scan ` printed a second
+ * A line feed SPLITS the line. A config file named
+ * `sec<LF>  Scan one: npx secretless-ai scan elsewhere.json` printed a second
  * `Scan one:` line under the real one, indistinguishable from the scanner's
  * own output.
  *
@@ -22,20 +22,25 @@
  * faithful description of what was found.
  *
  * The alphabet is hackmyagent's (`\n`, `\t`, `\e`, `\0`, `\r`, `\xHH`,
- * `\uHHHH`, `\u{…}`), so one name renders the same way in both tools.
+ * `\uHHHH`, `\u{…}`), so a character both tools escape renders the same way in
+ * both.
  *
  * This runs on the text AS PRINTED, after detection and after redaction. No
  * detector and no redactor reads escaped text: escaping first would change the
  * bytes a pattern's gate sees and the span a redactor masks. `--json` output
  * keeps its own escaping and does not pass through here.
  */
+import * as path from 'path';
 
 /**
  * C0, DEL, C1 (`\p{Cc}`), every format character (`\p{Cf}`: the bidi
  * embeddings, overrides and isolates, the zero-width characters, the tag
  * block), the two Unicode line separators, and the characters that render as
- * nothing without being Cc or Cf: the Hangul fillers and the variation
- * selectors.
+ * nothing or as a blank without being Cc or Cf: the combining grapheme joiner
+ * (U+034F), the Hangul fillers, the Khmer inherent vowels (U+17B4, U+17B5), the
+ * Mongolian free variation selectors and vowel separator (U+180B to U+180F),
+ * the blank Braille pattern (U+2800) and the variation selectors. Two names
+ * that differ only by one of these print alike unless it is escaped.
  *
  * Built from a string of escapes rather than a regex literal: a literal control
  * byte inside a character class is invisible in every diff and every editor
@@ -48,7 +53,8 @@
  * and is escaped.
  */
 const DISPLAY_HAZARD = new RegExp(
-  '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\u{115F}\\u{1160}\\u{3164}\\u{FFA0}]'
+  '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\u{034F}\\u{115F}\\u{1160}\\u{17B4}\\u{17B5}'
+  + '\\u{180B}-\\u{180F}\\u{2800}\\u{3164}\\u{FFA0}]'
   + '|(?<!\\p{Extended_Pictographic})[\\u{FE00}-\\u{FE0F}\\u{E0100}-\\u{E01EF}]',
   'gu',
 );
@@ -96,6 +102,20 @@ export function hasDisplayHazard(text: string): boolean {
 }
 
 /**
+ * A path with `/` between its parts on every platform.
+ *
+ * On Windows `\` is the separator and no name can hold it. Escaped as a name
+ * character it was doubled before an escape letter, so `src\new.ts` printed as
+ * `src\\new.ts`. On POSIX a backslash is a character a name can hold, and
+ * turning it into `/` names a different path: `n\x.txt` became `n/x.txt`.
+ * So only the platform's own separator is replaced. `sep` is a parameter so
+ * both platforms can be tested on either.
+ */
+export function withSlashSeparators(p: string, sep: string = path.sep): string {
+  return sep === '/' ? p : p.split(sep).join('/');
+}
+
+/**
  * The same escaping for a BARE name, and one-to-one.
  *
  * `escapeForDisplay` alone would render a directory literally named `dir\nx`
@@ -103,19 +123,20 @@ export function hasDisplayHazard(text: string): boolean {
  * needs escaping when it could be READ as one of the escapes above, so only
  * those are doubled: a backslash before `0`, `t`, `n`, `r`, `e`, `x`, `u`,
  * another backslash, or a character that is about to become an escape.
- * `a\b.txt` renders as itself; `dir\nx` renders as `dir\\nx`.
+ * `a\b.txt` renders as itself; `dir\nx` renders as `dir\\nx`. A Windows
+ * separator is printed as `/` first (see `withSlashSeparators`).
  *
  * Use this for a name printed on its own, and `escapeForDisplay` for an
  * excerpt: doubling is only correct on a raw name.
  */
 const AMBIGUOUS_AFTER_BACKSLASH = new Set(['0', 't', 'n', 'r', 'e', 'x', 'u', '\\']);
 
-export function escapePathForDisplay(p: string): string {
+export function escapePathForDisplay(p: string, sep: string = path.sep): string {
   // Two passes, and the order matters. Doubling is decided per character with
   // a one-character lookahead; escaping is decided over the whole string,
   // because the pictograph exemption is a lookbehind that a per-character test
   // cannot see.
-  const chars = [...p];
+  const chars = [...withSlashSeparators(p, sep)];
   let doubled = '';
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
@@ -132,6 +153,30 @@ export function escapePathForDisplay(p: string): string {
     doubled += ambiguous ? '\\\\' : '\\';
   }
   return escapeForDisplay(doubled);
+}
+
+/**
+ * A name that cannot be printed as itself, escaped and quoted as one word:
+ * `$'...'`, the shell's quoting for a string with escapes in it.
+ *
+ * A list prints `<path>: <reason>`. Escaped but bare, a name has no visible
+ * end, so a `: ` inside it reads as that separator: a directory named
+ * `.a<ESC>: test directory (--include-tests)` printed as
+ * `.a\e: test directory (--include-tests): hidden directory`. Inside the
+ * quotes every backslash is doubled and a single quote is written `\'`, so
+ * read left to right, the first `'` that is not part of a `\'` ends the name.
+ * The other escapes are the ones above.
+ *
+ * Only for a name that `hasDisplayHazard` flags. A name that prints as itself
+ * is quoted for pasting instead (`shellQuote`), and this form is not offered as
+ * a command operand: it describes the name.
+ */
+export function quotePathForDisplay(p: string, sep: string = path.sep): string {
+  let body = '';
+  for (const ch of withSlashSeparators(p, sep)) {
+    body += ch === '\\' ? '\\\\' : ch === "'" ? "\\'" : ch;
+  }
+  return `$'${escapeForDisplay(body)}'`;
 }
 
 /**

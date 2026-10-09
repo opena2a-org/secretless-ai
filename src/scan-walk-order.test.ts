@@ -68,6 +68,10 @@ describe('the walk visits each directory in sorted order', () => {
 
   async function human(dir: string, reversed: boolean) {
     order.reversed = reversed;
+    // From the directory above the tree a printed path reads `<tree>/<name>`.
+    // From anywhere else it is absolute, and under a TMPDIR with a space in it
+    // an absolute path prints shell-quoted, which `\S+` below does not match.
+    vi.spyOn(process, 'cwd').mockReturnValue(path.dirname(dir));
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
     vi.spyOn(console, 'error').mockImplementation(() => {});
