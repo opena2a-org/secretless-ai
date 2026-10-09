@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -238,7 +239,7 @@ describe('the human report names a file it did not open', () => {
     const { text, code } = await report(dir);
 
     expect(text).toContain('No hardcoded credentials found.');
-    expect(text).toMatch(/1 file not opened, so not covered by the scan result\./);
+    expect(text).toMatch(/1 file not opened: declared boundaries, not findings\./);
     expect(text).toMatch(/notes\.txt: unsupported file type/);
     const scanOne = /Scan one: npx secretless-ai scan (\S+)/.exec(text.slice(text.indexOf('file not opened')));
     expect(scanOne).not.toBeNull();
@@ -305,6 +306,33 @@ describe('the human report names a file it did not open', () => {
     expect(text).toMatch(/1 directory not entered for source files: declared boundaries, not findings\./);
     expect(text).not.toMatch(/director(y|ies) not entered[:,]/);
     expect(text).toMatch(/\.github: hidden directory$/m);
+  });
+
+  it('does not call a key file uncovered while reporting a finding from it', async () => {
+    // The source walk lists a `.crt` and an export bundle as unsupported file
+    // types; the key walk checks both and reports what they hold. Generated at
+    // run time so the committed source never carries a private key.
+    const { privateKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    const dir = tree({
+      'app.js': 'const a = 1;\n',
+      'server.crt': privateKey,
+      'backup.secretless-bundle': 'not a real bundle\n',
+    });
+    const { text, code } = await report(dir);
+
+    expect(text).toContain('PEM Private Key');
+    expect(text).toMatch(/server\.crt:1$/m);
+    expect(text).toContain('Secretless Encrypted Bundle');
+    expect(text).toMatch(/backup\.secretless-bundle:1$/m);
+    expect(code).toBe(1);
+    expect(text).toMatch(/2 files not opened: declared boundaries, not findings\./);
+    expect(text).toMatch(/server\.crt: unsupported file type$/m);
+    expect(text).toMatch(/backup\.secretless-bundle: unsupported file type$/m);
+    expect(text).not.toMatch(/not covered by the scan result/);
   });
 
   it('gives the ignore rule, not "still scanned", for a hidden directory an ignore rule covers', async () => {

@@ -591,10 +591,13 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // there, a tree with no pruned directory printed nothing about a file it
     // never opened, so a planted AWS key in `notes.txt` read as "No hardcoded
     // credentials found." with no qualification. Naming a file scans it
-    // whatever its type, so `Scan one:` names a file, not a flag.
+    // whatever its type, so `Scan one:` names a file, not a flag. Like the
+    // directory heading, this one does not say the files went unscanned: the
+    // key walk still checks a `.pem`, `.key`, `.crt`, `.p12`, `.pfx` or
+    // export bundle listed here, and a finding can come from one.
     if (stats.skips.fileCount > 0) {
       const n = stats.skips.fileCount;
-      console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)}, so not covered by the scan result.`);
+      console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)}: declared boundaries, not findings.`);
       for (const f of stats.skips.files.slice(0, 8)) {
         console.log(`  ${c.dim(`  ${shown(f.path)}: ${f.reason}`)}`);
       }

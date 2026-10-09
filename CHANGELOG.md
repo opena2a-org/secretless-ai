@@ -27,7 +27,7 @@ way. It now prints
 `1 file skipped for size, so not known to be clean.`,
 `1 config file not scanned: its name is not on the built-in config list, so not known to be clean.`,
 `1 directory not entered for source files: declared boundaries, not findings.`,
-`1 file not opened, so not covered by the scan result.` and one
+`1 file not opened: declared boundaries, not findings.` and one
 `<path>: <reason>` line per directory or file, such as
 `node_modules: dependency or build output`. The line under an unreadable path
 reads `Cause differs by path: permissions, ...`. Detection, exit codes and
