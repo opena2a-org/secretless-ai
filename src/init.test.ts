@@ -28,10 +28,11 @@ function cleanup(dir: string): void {
 // guard test — indistinguishable at a glance from the hook having broken.
 //
 // The commands are the coverage, so thinning them to save time would be paying
-// for speed with the thing the test exists to check. Raise the bound instead:
-// at 30s the slowest test has ~10x headroom, while a genuinely hung `execSync`
-// still fails the run rather than hanging it. This is a timeout, not an
-// assertion — nothing here starts passing because the number went up.
+// for speed with the thing the test exists to check. Raise the bound instead,
+// to 30s: several times the slowest test's time as `--reporter=verbose` prints
+// it, while a genuinely hung `execSync` still fails the run rather than
+// hanging it. This is a timeout, not an assertion — nothing here starts
+// passing because the number went up.
 //
 // The bound holds only while each test checks about twenty commands or fewer:
 // lists of forty to seventy ran past it when the whole suite shared a loaded
@@ -301,17 +302,21 @@ describe('init', { timeout: 30_000 }, () => {
 
     // The resolved path is absolute and the fragment rules (secrets/, .ssh/,
     // credentials/) match anywhere in it, so a path that passes through no link
-    // must be judged by its name alone: a relative path is not joined to the
-    // working directory first. A project kept under a directory named secrets/
-    // reads its own files by relative path, while a relative link to .env in
-    // the same project is still refused, and the name secrets/ in an absolute
-    // path is refused as it always was.
+    // must be judged by its name alone: a relative path is not judged by the
+    // working directory it is joined to. A project kept under a directory named
+    // secrets/ reads its own files by relative path, while a relative link to
+    // .env in the same project is still refused, and the name secrets/ in an
+    // absolute path is refused as it always was. A link is judged by its
+    // absolute target, so a link to a plain file in that project is refused
+    // too; the CHANGELOG entry states this.
     it('judges a path with no link by its name alone, so a project under secrets/ reads its own files', () => {
       const project = path.join(dir, 'secrets', 'proj');
       fs.mkdirSync(path.join(project, 'src'), { recursive: true });
       fs.writeFileSync(path.join(project, 'src', 'app.js'), 'export {};\n');
+      fs.writeFileSync(path.join(project, 'README.md'), '# readme\n');
       fs.writeFileSync(path.join(project, '.env'), FAKE);
       fs.symlinkSync('.env', path.join(project, 'notes.txt'));
+      fs.symlinkSync('README.md', path.join(project, 'docs.md'));
       init(project);
       const hookPath = path.join(project, '.claude', 'hooks', 'secretless-guard.sh');
       const run = (tool: string, toolInput: Record<string, string>): boolean => {
@@ -323,7 +328,9 @@ describe('init', { timeout: 30_000 }, () => {
       expect(run('Read', { file_path: 'src/app.js' }), 'relative Read in a project under secrets/').toBe(false);
       expect(run('Grep', { pattern: 'x', path: 'src' }), 'relative Grep path in a project under secrets/').toBe(false);
       expect(run('Write', { file_path: 'src/new-file.ts' }), 'relative Write of a new file in a project under secrets/').toBe(false);
+      expect(run('Read', { file_path: 'README.md' }), 'relative Read of the link target').toBe(false);
       expect(run('Read', { file_path: 'notes.txt' }), 'relative link to .env').toBe(true);
+      expect(run('Read', { file_path: 'docs.md' }), 'relative link to a plain file, judged by its absolute target').toBe(true);
       expect(run('Read', { file_path: path.join(project, 'src', 'app.js') }), 'absolute path naming secrets/').toBe(true);
     });
   });
@@ -1029,7 +1036,7 @@ describe('init', { timeout: 30_000 }, () => {
     // search. A file called `process.env` is a `name.env` file, so the same
     // text as a file argument or under any other command still blocks, as do a
     // real env file in the same command and any command that could rewrite the
-    // accessor into `.env`.
+    // accessor into `.env`. One test per family.
     it('an environment accessor in a search pattern is not a secret file (#119)', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
@@ -1047,26 +1054,49 @@ describe('init', { timeout: 30_000 }, () => {
         expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
       }
 
+      // The exemption covers the pattern, not a real env file beside it.
       const mustBlock = [
         'cat .env.local',
         'grep -rn "process.env" .env.local',
         'grep -c "process\\.env" src/app.ts .env',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+    });
+
+    it('an environment accessor as a file name is a secret file (#119)', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
         'cat myprocess.env',
-        'cat "$(basename process.env | cut -c8-)"',
-        'head `printf %s process.env | cut -c8-`',
-        "awk 'BEGIN{f=substr(\"process.env\",8); while ((getline l < f) > 0) print l}'",
-        "sed -n '1{s/.*/process.env/;s/process/cat /e;p}' README.md",
         // The accessor's text as a file name, outside a search pattern.
         'cat process.env',
         'head -5 Deno.env',
         'grep -f process.env src',
         'grep API_KEY process.env',
-        // grep prints the accessor; a pipe that rewrites its output into `.env`.
-        'grep -o "process.env" README.md | cut -c8- | xargs cat',
         // A later -e makes the first word a file; brace expansion splits one
         // word into a pattern and a file.
         'grep "process.env" -e x',
         'grep {process.env,process.env} src',
+      ];
+      for (const c of mustBlock) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
+    });
+
+    it('a command that can turn an environment accessor into a file name is refused (#119)', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      const mustBlock = [
+        'cat "$(basename process.env | cut -c8-)"',
+        'head `printf %s process.env | cut -c8-`',
+        "awk 'BEGIN{f=substr(\"process.env\",8); while ((getline l < f) > 0) print l}'",
+        "sed -n '1{s/.*/process.env/;s/process/cat /e;p}' README.md",
+        // grep prints the accessor; a pipe that rewrites its output into `.env`.
+        'grep -o "process.env" README.md | cut -c8- | xargs cat',
         // A command substitution inside the pattern runs before grep does, so
         // the accessor it names is a file the shell opens, not a pattern.
         'grep "$(cat process.env)" src',
@@ -1353,16 +1383,10 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    // Without python3 the hook takes the command from the raw JSON payload, so a
-    // line break reaches its rules as the two characters `\n` and a tab as `\t`.
-    // The whole-word reader verb then saw `ncat .env` on the second line of a
-    // heredoc fed to bash and refused none of the reads below. The hook runs
-    // here with a PATH holding the programs it calls and no python3. The
-    // admission of an inert write is a python3-only step, so without python3 a
-    // write of text that names a secret file is refused, as before it existed.
-    it('without python3 the hook sees a reader verb at the start of every line', () => {
-      init(dir);
-      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+    // The hook as a host without python3 runs it: a PATH holding bash and the
+    // programs the hook calls, and no python3, so the hook takes the command
+    // from the raw JSON payload.
+    function decideWithoutPython3(hookPath: string): (command: string) => { decision: string; reason: string } {
       const bin = path.join(dir, 'bin-without-python3');
       fs.mkdirSync(bin);
       for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
@@ -1374,13 +1398,23 @@ describe('init', { timeout: 30_000 }, () => {
         () => execSync('command -v python3', { env, shell: bash, stdio: 'ignore' }),
         'python3 must not be reachable on the test PATH',
       ).toThrow();
-      function decide(command: string): { decision: string; reason: string } {
+      return (command: string) => {
         const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
         const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
         if (!out.trim()) return { decision: 'allow', reason: '' };
         const hso = JSON.parse(out).hookSpecificOutput;
         return { decision: hso.permissionDecision, reason: hso.permissionDecisionReason };
-      }
+      };
+    }
+
+    // Without python3 the hook takes the command from the raw JSON payload, so a
+    // line break reaches its rules as the two characters `\n` and a tab as `\t`.
+    // The whole-word reader verb then saw `ncat .env` on the second line of a
+    // heredoc fed to bash and refused none of the reads below. One test per
+    // family: a line break, a tab or escape beside the verb, and a write.
+    it('without python3 the hook sees a reader verb at the start of every line', () => {
+      init(dir);
+      const decide = decideWithoutPython3(path.join(dir, '.claude', 'hooks', 'secretless-guard.sh'));
 
       const mustBlock = [
         'cat .env',
@@ -1392,6 +1426,32 @@ describe('init', { timeout: 30_000 }, () => {
         "source /dev/stdin > out.txt <<'EOF'\ncat .env\nEOF",
         "printf 'x' > notes.md\ncat .env",
         "bash <<'EOF'\nls ~/.secretless-ai\nEOF",
+      ];
+      for (const c of mustBlock) {
+        expect(decide(c).decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+      }
+
+      const mustAllow = [
+        'npm test',
+        'echo hello\nnpm test',
+        "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
+      ];
+      for (const c of mustAllow) {
+        expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
+      }
+
+      // The reason quotes the text from the verb on, and a line break in it
+      // stays the escape the hook read.
+      const c = "bash <<'EOF'\ncat .env\nEOF";
+      expect(decide(c).reason, `deny reason without python3 must quote the matched text for: ${JSON.stringify(c)}`)
+        .toContain('Matched `cat .env\\nEOF`');
+    });
+
+    it('without python3 a tab or an escape beside a reader verb does not hide it', () => {
+      init(dir);
+      const decide = decideWithoutPython3(path.join(dir, '.claude', 'hooks', 'secretless-guard.sh'));
+
+      const mustBlock = [
         'sudo\tcat .env',
         // A tab after the verb arrives as `\t`, and a `\t` the command writes
         // for printf to expand arrives as `\\t`.
@@ -1401,21 +1461,12 @@ describe('init', { timeout: 30_000 }, () => {
         'ls\t~/.secretless-ai',
         "node\t-e 'console.log(require(`fs`).readFileSync(`.env`, `utf8`))'",
         "printf 'cat\\t.env' | sh",
-        // Admitted with python3 as inert writes; without it, scanned whole.
-        "cat > notes.md <<'EOF'\nthe head of process.env.PATH is all the child sees\nEOF",
-        "printf '%s\\n' 'the head of process.env.PATH' >> notes.md",
-        "echo 'cat .env is refused' > notes.md",
       ];
       for (const c of mustBlock) {
         expect(decide(c).decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
       }
 
       const mustAllow = [
-        'npm test',
-        'echo hello\nnpm test',
-        'git commit -m "the hook refused a heredoc that named server.key"',
-        "git commit -m 'Child environment keeps PATH from process.env and drops NODE_OPTIONS'",
-        "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
         "printf 'a\\tb\\n' | cut -f2",
         "awk -F'\\t' '{print $1}' data.tsv",
       ];
@@ -1426,7 +1477,6 @@ describe('init', { timeout: 30_000 }, () => {
       // The reason quotes the text from the verb on: an escape before the verb
       // is left out, and a backslash that is part of the command is kept.
       const reasons: Array<[string, string]> = [
-        ["bash <<'EOF'\ncat .env\nEOF", 'cat .env\\nEOF'],
         ['sudo\tcat .env', 'cat .env'],
         ['\\tail .env', 'tail .env'],
         ['cat\t.env', 'cat\\t.env'],
@@ -1434,6 +1484,32 @@ describe('init', { timeout: 30_000 }, () => {
       for (const [c, matched] of reasons) {
         expect(decide(c).reason, `deny reason without python3 must quote the matched text for: ${JSON.stringify(c)}`)
           .toContain('Matched `' + matched + '`');
+      }
+    });
+
+    // The admission of an inert write is a python3-only step, so without
+    // python3 a write of text that names a secret file is refused, as before it
+    // existed. A commit message that names one writes no file and is admitted.
+    it('without python3 a write of text that names a secret file is refused', () => {
+      init(dir);
+      const decide = decideWithoutPython3(path.join(dir, '.claude', 'hooks', 'secretless-guard.sh'));
+
+      // Admitted with python3 as inert writes; without it, scanned whole.
+      const mustBlock = [
+        "cat > notes.md <<'EOF'\nthe head of process.env.PATH is all the child sees\nEOF",
+        "printf '%s\\n' 'the head of process.env.PATH' >> notes.md",
+        "echo 'cat .env is refused' > notes.md",
+      ];
+      for (const c of mustBlock) {
+        expect(decide(c).decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+      }
+
+      const mustAllow = [
+        'git commit -m "the hook refused a heredoc that named server.key"',
+        "git commit -m 'Child environment keeps PATH from process.env and drops NODE_OPTIONS'",
+      ];
+      for (const c of mustAllow) {
+        expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
       }
     });
 
