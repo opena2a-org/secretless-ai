@@ -36,7 +36,14 @@ export function runInit(projectDir: string): number {
   const notDir = notADirectoryReason(projectDir);
   if (notDir) {
     const quoted = shellQuote(projectDir);
-    if (notDir === 'missing') {
+    if (notDir.kind === 'underFile') {
+      // `mkdir -p` cannot make a directory under a file, so the Fix the
+      // "not found" branch prints would fail on this path.
+      console.error(`  Not a directory: ${notDir.file}`);
+      console.error(`  Nothing was written. ${projectDir} is inside ${notDir.file}, which is a file, so no directory can be made there.`);
+      console.error(`  Verify: ls -ld ${shellQuote(notDir.file)}`);
+      console.error(`  Fix:    ${CLI} init ${shellQuote(path.dirname(notDir.file))}\n`);
+    } else if (notDir.kind === 'missing') {
       console.error(`  Directory not found: ${projectDir}`);
       console.error('  Nothing was written. init sets up a project directory that already exists.');
       console.error(`  Verify: ls -ld ${quoted}`);
@@ -306,29 +313,32 @@ export function shellQuote(p: string): string {
 }
 
 /** Why `dir` cannot be set up by `init`, or null when it is a directory. */
-function notADirectoryReason(dir: string): 'missing' | 'file' | null {
+function notADirectoryReason(dir: string): { kind: 'missing' } | { kind: 'file' } | { kind: 'underFile'; file: string } | null {
   const nodeFs = require('fs') as typeof import('fs');
   try {
-    return nodeFs.statSync(dir).isDirectory() ? null : 'file';
+    return nodeFs.statSync(dir).isDirectory() ? null : { kind: 'file' };
   } catch (err) {
     // Only an absent path is "not found". Anything else (EACCES, ELOOP) is
     // left to init, whose own error names it, rather than misreported here.
     const code = (err as NodeJS.ErrnoException)?.code;
-    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : null;
+    if (code === 'ENOENT') return { kind: 'missing' };
+    if (code !== 'ENOTDIR') return null;
+    // ENOTDIR: a component of the path is a file. It was reported as "not
+    // found" with a `mkdir -p` that fails on that same file (`notes.txt/sub`).
+    const resolved = path.resolve(dir);
+    // Each prefix of the path, the filesystem root first.
+    const chain: string[] = [];
+    for (let p = resolved; ; p = path.dirname(p)) {
+      chain.unshift(p);
+      if (path.dirname(p) === p) break;
+    }
+    for (const component of chain) {
+      let isDir: boolean;
+      try { isDir = nodeFs.statSync(component).isDirectory(); } catch { return null; }
+      if (!isDir) return component === resolved ? { kind: 'file' } : { kind: 'underFile', file: component };
+    }
+    return null;
   }
-}
-
-/** C0 controls, DEL and C1 controls: bytes a terminal acts on instead of showing. */
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
-
-/**
- * Show control characters in a scanned file name as `\xNN`. A file name in a
- * scanned repository is attacker-chosen, and printed raw an escape sequence in
- * it can clear or rewrite the lines around it.
- */
-function visibleControls(s: string): string {
-  return s.replace(new RegExp(CONTROL_CHARS.source, 'g'), ch => `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`);
 }
 
 /**
@@ -435,6 +445,12 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         // A machine consumer must be able to tell "clean" from "unfinished".
         truncated: stats.truncated,
         maxFiles: capUsed,
+        // The cap that clears a truncation, as the human report's
+        // `--max-files` Fix is sized from it: files that passed every filter,
+        // counted past the cap. 0 when no cap dropped a file. A lower bound
+        // when walkBudgetExceeded is set, which no file cap clears.
+        eligibleFiles: stats.eligibleFiles,
+        walkBudgetExceeded: stats.walkBudgetExceeded,
         unreadable: stats.unreadable.length,
         outOfRoot: stats.outOfRoot.length,
         // Files skipped for size were never opened, so they are coverage lost,

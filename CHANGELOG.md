@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**`scan --help` names the home-directory files a scan reads, `--json` carries
+the count a `--max-files` cap needs, and `init` under a file names that file
+(#263).** `scan --help` said a directory scan opens nothing beyond the files it
+lists, while every directory scan also reads `~/.claude/CLAUDE.md`,
+`~/.claude/settings.json`, `~/.claude.json` and `~/.cursor/mcp.json`; the help
+now lists them. The `--json` summary adds `eligibleFiles`, the count the human
+report's `--max-files` Fix is sized from (0 when no cap dropped a file), and
+`walkBudgetExceeded`, set when the walk's directory limit stopped it, which no
+file cap clears. `init notes.txt/sub`, where `notes.txt` is a file, said
+"Directory not found" and suggested a `mkdir -p` that fails on that file; it
+now names the file and suggests `init` on the directory that holds it.
+Detection, the report's "files not opened" list and exit codes are unchanged.
+
 **`scan` prints a control character in a file name or an excerpt as a visible escape.**
 The report printed names and excerpts from the scanned files as they were,
 so a line feed in a file name started a new report line that read like the

@@ -389,6 +389,9 @@ const GLOBAL_CONFIG_FILES = [
   { dir: path.join(os.homedir(), '.cursor'), file: 'mcp.json', label: '~/.cursor/mcp.json' },
 ];
 
+/** The home-directory files every directory scan also reads, as `scan --help` names them. */
+export const GLOBAL_CONFIG_LABELS: readonly string[] = GLOBAL_CONFIG_FILES.map((g) => g.label);
+
 /**
  * Scan project config files for hardcoded credentials.
  * Also scans global AI tool configs (e.g. ~/.claude/CLAUDE.md).
@@ -1151,6 +1154,24 @@ function matchesConfigName(
  */
 const MAX_DIRS_VISITED = 50_000;
 
+/** The MAX_DIRS_VISITED a walk uses; only {@link withDirsVisitedBudget} changes it. */
+let dirsVisitedBudget = MAX_DIRS_VISITED;
+
+/**
+ * @internal Test only: run `fn` with a lower MAX_DIRS_VISITED, restored on
+ * return. A tree that exceeds the real budget is fifty thousand directories,
+ * so without this the stop on that budget went untested.
+ */
+export function withDirsVisitedBudget<T>(budget: number, fn: () => T): T {
+  const saved = dirsVisitedBudget;
+  dirsVisitedBudget = budget;
+  try {
+    return fn();
+  } finally {
+    dirsVisitedBudget = saved;
+  }
+}
+
 /**
  * How many distinct paths to the SAME real directory one walk will follow.
  *
@@ -1317,7 +1338,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   // `eligible`, the count a `--max-files` suggestion is sized from. The extra
   // work is bounded by MAX_DIRS_VISITED, which still truncates.
   while (queue.length > 0) {
-    if (dirsVisited >= MAX_DIRS_VISITED) { truncated = true; budgetExceeded = true; break; }
+    if (dirsVisited >= dirsVisitedBudget) { truncated = true; budgetExceeded = true; break; }
     const { dir: current, ancestors } = queue.shift()!;
 
     const currentReal = realpathOrNull(current);
