@@ -36,6 +36,7 @@ import {
   TEST_FILE_GLOBS,
   KEY_FILE_EXTENSIONS,
   ENV_TEMPLATE_SUFFIXES,
+  GLOBAL_CONFIG_LABELS,
   isEnvFile,
 } from './scan';
 
@@ -140,6 +141,10 @@ function scanCoverageNotes(): string[] {
     `  key      ${[...KEY_FILE_EXTENSIONS].join(' ')}`,
     '           (a .p12, .pfx or .secretless-bundle file is a finding by its',
     '           presence alone)',
+    // Read on every directory scan, from outside the directory: "it opens
+    // nothing else" was untrue while these went unnamed.
+    ...wrapList([...GLOBAL_CONFIG_LABELS], ' '.repeat(11), ' ', '  home     '),
+    '           (AI tool settings in your home directory)',
     '',
     'It opens nothing else. These are the reasons the scan reports for what',
     'it skipped, each with the flag that opens it, where one does:',
