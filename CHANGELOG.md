@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**The usage event sends `unknown` in place of a first argument that is not a
+command, and records that run as a failure.** The event's `name` field carries
+the command that ran. `secretless-ai ./some/dir`, a mistyped command such as
+`scna`, or another first argument that is not a command was sent there as
+typed, so a path reached the telemetry endpoint, and the run, which printed
+"Unknown command" and did nothing, was recorded as a success. Such a run now
+sends `unknown` with `success: false`. A command that ran is sent by its name
+as before. `OPENA2A_TELEMETRY_DEBUG=print` prints each event to stderr.
+
 **`runInit` sets up the directory it checked when a path has `..` after a
 symlink (#274).** This affects callers of the programmatic API only; the
 command line resolves its argument first and is unchanged. The check that the
