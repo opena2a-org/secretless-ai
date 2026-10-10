@@ -672,6 +672,14 @@ describe('a refusal says which secret holds a name the Fix leaves as <name> (#29
     expect(takenLines()).toEqual(['  "A-B" is taken by DB_PASSWORD as "a-b", which differs only in case; choose another name for API_KEY.']);
   });
 
+  it('Key Vault: of two given names the store would merge, the line names the first, the one the Fix keeps (#301)', async () => {
+    const code = await push(['A,B,C', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,A-B,a.b'], { env: NO_ENV, runChild: azSignedIn() });
+
+    expect(code).toBe(2);
+    expect(fixCommand()).toEqual(['A,B,C', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,<name>,<name>']);
+    expect(takenLines()).toEqual(['  "a-b" is taken by A; choose another name for C.']);
+  });
+
   it('the line comes before the Fix, and none is printed when every suggestion is offered or a name cannot be spelled', async () => {
     await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a_b'], { store, createTarget: vault });
     const lines = printed().split('\n');
