@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { detectAITools, type AITool } from './detect';
+import { detectAITools, type AITool, type Enforcement } from './detect';
 import { scan, newScanStats, coverageIncomplete } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
@@ -67,7 +67,27 @@ export interface StatusResult {
    * the project's). Null otherwise.
    */
   userSettings: UserSettingsStatus | null;
+  /**
+   * The strongest mechanism `isProtected` rests on, and `none` exactly when it
+   * is false.
+   *
+   * `isProtected` is true for a project whose only configuration is an
+   * instruction file, which is advice: nothing enforces it. That boolean and
+   * `summary.verdict` are what consumers gate on, so they keep their meaning;
+   * this field carries the difference they do not. `hook` means Claude Code
+   * applies a guard hook or deny patterns from this project's settings or from
+   * user-level settings that reach it. `ignore-file` and `advisory` mean
+   * nothing of that kind is in place: see `Enforcement`.
+   */
+  enforcement: Enforcement;
+  /** AI tools found in the project, configured or not. */
+  detectedTools: AITool[];
   configuredTools: AITool[];
+  /**
+   * The tools in `configuredTools` that are listed for an ignore file rather
+   * than an instruction file.
+   */
+  ignoreFileTools: AITool[];
   hookInstalled: boolean;
   /**
    * Deny patterns in effect, or NULL when the count was not measured.
@@ -269,6 +289,17 @@ function isFile(p: string): boolean {
   }
 }
 
+/** True when `filePath` is a regular file whose text holds one of `markers`. */
+function fileCarries(filePath: string, markers: string[]): boolean {
+  try {
+    if (!fs.statSync(filePath).isFile()) return false;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return markers.some(marker => content.includes(marker));
+  } catch {
+    return false; // Absent or unreadable: not evidence either way
+  }
+}
+
 function sameFile(a: string, b: string): boolean {
   try {
     return fs.realpathSync(a) === fs.realpathSync(b);
@@ -289,7 +320,10 @@ export async function status(projectDir: string, options?: { homeDir?: string })
     isProtected: false,
     protectionScope: null,
     userSettings: null,
+    enforcement: 'none',
+    detectedTools: [],
     configuredTools: [],
+    ignoreFileTools: [],
     hookInstalled: false,
     denyRuleCount: 0,
     secretsFound: 0,
@@ -369,18 +403,21 @@ export async function status(projectDir: string, options?: { homeDir?: string })
   // path `init` never wrote, so an initialised Cursor project reported
   // "Not protected"; for Cline it is a directory in the documented layout,
   // and reading it threw.
+  //
+  // A tool `init` configures through an ignore file is read there first.
+  // Aider was never listed after `init`, which writes `.aiderignore` and no
+  // instruction block: `init` printed `Configured: Aider` and `status` then
+  // printed `Not protected` for the same directory.
   const detected = detectAITools(projectDir);
+  result.detectedTools = detected.map(d => d.tool);
   for (const tool of detected) {
+    if (tool.ignoreFile && fileCarries(path.join(projectDir, tool.ignoreFile.path), [tool.ignoreFile.marker])) {
+      result.configuredTools.push(tool.tool);
+      result.ignoreFileTools.push(tool.tool);
+      continue;
+    }
     for (const rel of tool.instructionFiles) {
-      const filePath = path.join(projectDir, rel);
-      let content: string;
-      try {
-        if (!fs.statSync(filePath).isFile()) continue;
-        content = fs.readFileSync(filePath, 'utf-8');
-      } catch {
-        continue; // Absent or unreadable: not evidence either way
-      }
-      if (content.includes('secretless:managed') || content.includes('Secretless AI')) {
+      if (fileCarries(path.join(projectDir, rel), ['secretless:managed', 'Secretless AI'])) {
         result.configuredTools.push(tool.tool);
         break;
       }
@@ -446,6 +483,19 @@ export async function status(projectDir: string, options?: { homeDir?: string })
   const userProtects = result.userSettings?.coversProject === true;
   result.isProtected = !result.settingsUnreadable && (projectProtects || userProtects);
   result.protectionScope = !result.isProtected ? null : projectProtects ? 'project' : 'user';
+
+  // Which of the terms above made `isProtected` true, strongest first. An
+  // instruction file and a guard hook both set that boolean, and reporting
+  // them as one state called advice a control.
+  if (!result.isProtected) {
+    result.enforcement = 'none';
+  } else if (result.hookInstalled || userProtects) {
+    result.enforcement = 'hook';
+  } else if (result.ignoreFileTools.length > 0) {
+    result.enforcement = 'ignore-file';
+  } else {
+    result.enforcement = 'advisory';
+  }
 
   return result;
 }

@@ -7,6 +7,43 @@ import * as path from 'path';
 
 export type AITool = 'claude-code' | 'cursor' | 'copilot' | 'windsurf' | 'cline' | 'aider';
 
+/**
+ * What stands behind a tool's Secretless configuration, strongest first.
+ *
+ * - `hook`: Claude Code applies it from a settings file, as a guard hook that
+ *   runs before a tool call or as deny patterns.
+ * - `ignore-file`: a list of paths the tool is given to leave out. The tool
+ *   reads it; no hook enforces it, and Secretless does not check that the
+ *   tool applies it.
+ * - `advisory`: an instruction file. Nothing enforces it, and it has no effect
+ *   unless the tool loads that file.
+ * - `none`: no configuration.
+ */
+export type Enforcement = 'hook' | 'ignore-file' | 'advisory' | 'none';
+
+/** The ignore file `init` writes for a tool, and the line that marks its block. */
+export interface IgnoreFile {
+  path: string;
+  marker: string;
+}
+
+/**
+ * Aider is configured through `.aiderignore`, not through an instruction
+ * file. `init` writes the block under this marker and `status` looks for the
+ * same marker in the same file, so the two cannot name different files.
+ */
+export const AIDER_IGNORE_FILE: IgnoreFile = {
+  path: '.aiderignore',
+  marker: '# Secretless',
+};
+
+/** The mechanism `init` sets up for each tool it configures. */
+export function toolEnforcement(tool: AITool): Exclude<Enforcement, 'none'> {
+  if (tool === 'claude-code') return 'hook';
+  if (tool === 'aider') return 'ignore-file';
+  return 'advisory';
+}
+
 interface DetectionResult {
   tool: AITool;
   configDir: string;
@@ -20,6 +57,11 @@ interface DetectionResult {
    * was a settings path `init` never wrote, so Cursor was never listed.
    */
   instructionFiles: string[];
+  /**
+   * Set for a tool `init` configures through an ignore file. `status` lists
+   * the tool as configured when that file carries the marker.
+   */
+  ignoreFile?: IgnoreFile;
   hooksSupported: boolean;
 }
 
@@ -29,6 +71,7 @@ const DETECTORS: Array<{
   configDir: string;
   settingsFile: string;
   instructionFiles: string[];
+  ignoreFile?: IgnoreFile;
   hooksSupported: boolean;
 }> = [
   {
@@ -81,8 +124,11 @@ const DETECTORS: Array<{
     configDir: '.',
     settingsFile: '.aider.conf.yml',
     // `init` configures Aider through `.aiderignore`, which carries no
-    // instruction block; this keeps the previous `status` read unchanged.
+    // instruction block, so `status` reads it through `ignoreFile`. The
+    // `.aider.conf.yml` read is the one `status` has always made and is kept
+    // as it was; `init` writes nothing there.
     instructionFiles: ['.aider.conf.yml'],
+    ignoreFile: AIDER_IGNORE_FILE,
     hooksSupported: false,
   },
 ];
@@ -106,6 +152,7 @@ export function detectAITools(projectDir: string): DetectionResult[] {
         configDir: detector.configDir,
         settingsFile: detector.settingsFile,
         instructionFiles: detector.instructionFiles,
+        ...(detector.ignoreFile ? { ignoreFile: detector.ignoreFile } : {}),
         hooksSupported: detector.hooksSupported,
       });
     }

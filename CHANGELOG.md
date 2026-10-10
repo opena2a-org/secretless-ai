@@ -96,6 +96,63 @@ exports that exist for this package's own tests and help text:
 `nearMissCellsEvaluated` and `resetNearMissCellsEvaluated` in
 `dist/near-miss`. Detection, exit codes and `--json` output are unchanged.
 
+**`status` no longer prints `Protected` for a project configured only through
+instruction files, and `status --json` adds `enforcement`.** `status` reported
+a project as `Protected` once any AI tool carried the Secretless instruction
+block. For Cursor, GitHub Copilot, Windsurf and Cline that block is an
+instruction file: nothing enforces it, and it has no effect unless the tool
+loads that file. A project whose only configuration was such a file printed
+the same `Protected` verdict as a project with the Claude Code guard hook. Its
+verdict line now reads
+`Advisory only: instructions for Windsurf, which nothing enforces`, and its
+instruction row reads `Tool instructions: Windsurf (advisory, not enforced)`.
+This corrects what `status` reports and is not a regression in protection: a
+project that printed `Protected` on instruction files alone has the same files
+and the same protection after upgrading as before, and it did not have an
+enforced control then either. `Protected` is now printed only where Claude
+Code applies a guard hook or deny patterns, from the project's settings or
+from user-level settings that reach the project.
+
+`status --json` gains `enforcement`, one of `hook`, `ignore-file`, `advisory`
+or `none`: the strongest mechanism `isProtected` rests on, and `none` exactly
+when `isProtected` is false. `isProtected` and `summary.verdict` keep their
+meaning, so a CI job that gates on them behaves as before: a project with
+instruction files alone still reports `isProtected: true` and
+`protected-warnings`. To require an enforced control, gate on `enforcement`
+being `hook`.
+
+**`init` and `status` agree about an Aider project.** `init` configures Aider
+by writing patterns to `.aiderignore` and printed `Configured: Aider`. `status`
+looked for an instruction block in `.aider.conf.yml`, which `init` does not
+write, and printed `Not protected` for the same directory. `status` now reads
+the `.aiderignore` block `init` writes: the project is listed as
+`Ignore file: Aider (.aiderignore, no hook enforces it)`, `enforcement` is
+`ignore-file`, and the verdict line reads
+`Ignore file only: .aiderignore for Aider, which no hook enforces`. For this
+layout `isProtected` changes from `false` to `true` and `summary.verdict` from
+`not-protected` to `protected-warnings`, the values the instruction-file tools
+already report. `.aiderignore` is a list of paths for Aider to leave out; no
+hook enforces it, and Secretless does not check that Aider applies it.
+
+**`init` states the mode of each tool it configures.** Under the `Configured:`
+line `init` prints one line per mode: `Enforced: Claude Code (guard hook and
+deny patterns)`, `Ignore file: Aider (.aiderignore, no hook enforces it)` and
+`Advisory: Cursor (instruction file, nothing enforces it)`. `Configured: Cursor`
+on its own read as protection in place. The README quick start and the
+`docs/use-cases/protect-my-credentials.md` sample show the new lines, and the
+README's supported tools section says what `status` prints for each mode.
+
+**`status` no longer names `secretless-ai init` as the fix for a hook `init`
+does not install.** In a project set up for another tool and not for Claude
+Code, `init` configures that tool and installs no hook, so the
+`Claude Code hook not installed` and `Stop hook not installed` rows, which
+ended in `→ secretless-ai init`, sent the user to a command that left both
+rows as they were. Those rows now end in
+`for Claude Code: mkdir -p .claude && secretless-ai init`, which installs
+both. The `Not protected` line for such a project said to run `init` "to
+install hooks"; it now says that `init` configures the tools it detected and
+that hooks are installed for Claude Code only.
+
 **Scan coverage and exit-code detail moved from the README to
 `docs/scanning.md`.** The README had grown to 417 lines. What a directory scan
 opens, which gaps fail a build, how a command line the tool cannot bind is

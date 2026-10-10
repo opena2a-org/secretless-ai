@@ -4,7 +4,7 @@ import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips, SOURCE_SKIP_REASONS } from '../scan';
 import { status, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
-import { toolDisplayName, type AITool } from '../detect';
+import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles } from '../doctor';
 import { readBackendConfig, resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
@@ -92,6 +92,13 @@ export function runInit(projectDir: string): number {
     }
   } else {
     console.log('  Configured: none');
+  }
+
+  // State the mode where the belief forms. `Configured: Cursor` reads as
+  // protection in place, and for every tool but Claude Code what was written
+  // is a file the tool is asked to follow.
+  for (const line of modeLines(result.toolsConfigured)) {
+    console.log(`    ${line}`);
   }
 
   // Files: keep the breakdown but with a specific deny-rule count when
@@ -269,6 +276,34 @@ export function runInit(projectDir: string): number {
   }
 
   return 0;
+}
+
+/**
+ * One line per mode among the tools `init` configured, strongest first: what
+ * Claude Code enforces, what a tool is given as an ignore file, and what is an
+ * instruction file that nothing enforces.
+ */
+function modeLines(tools: AITool[]): string[] {
+  const named = (mode: Enforcement): string[] =>
+    tools.filter(t => toolEnforcement(t) === mode).map(toolDisplayName);
+  const lines: string[] = [];
+
+  const hook = named('hook');
+  if (hook.length > 0) {
+    lines.push(`Enforced: ${hook.join(', ')} (guard hook and deny patterns)`);
+  }
+  const ignoreFile = named('ignore-file');
+  if (ignoreFile.length > 0) {
+    lines.push(`Ignore file: ${ignoreFile.join(', ')} (${AIDER_IGNORE_FILE.path}, no hook enforces it)`);
+  }
+  const advisory = named('advisory');
+  if (advisory.length > 0) {
+    const detail = advisory.length === 1
+      ? 'instruction file, nothing enforces it'
+      : 'instruction files, nothing enforces them';
+    lines.push(`Advisory: ${advisory.join(', ')} (${detail})`);
+  }
+  return lines;
 }
 
 /**
@@ -1175,6 +1210,14 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   const rows: Row[] = [];
   const addRow = (row: Row): void => { rows[rows.length] = row; };
 
+  // `init` sets up Claude Code where it detects it, or where it detects no AI
+  // tool at all. In a project set up for another tool only, `init` installs
+  // neither hook, so a row naming it as the fix would leave the row as it is.
+  const initSetsUpClaudeCode = s.detectedTools.length === 0 || s.detectedTools.includes('claude-code');
+  const claudeCodeInit = initSetsUpClaudeCode
+    ? 'secretless-ai init'
+    : 'for Claude Code: mkdir -p .claude && secretless-ai init';
+
   // Protection / hook.
   //
   // The guard script on disk is inert until settings.json wires it into
@@ -1213,10 +1256,10 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     addRow({
       glyph: '⚠',
       label: `Claude Code hook not installed in this project (${user.path} expects it here)`,
-      action: 'secretless-ai init',
+      action: claudeCodeInit,
     });
   } else {
-    addRow({ glyph: '⚠', label: 'Claude Code hook not installed', action: 'secretless-ai init' });
+    addRow({ glyph: '⚠', label: 'Claude Code hook not installed', action: claudeCodeInit });
   }
 
   // User-level settings, when this project has no guard of its own. Claude
@@ -1246,12 +1289,17 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   } else if (tp.stopHookInstalled) {
     addRow({ glyph: '✓', label: 'Stop hook installed (transcript redaction)' });
   } else {
-    addRow({ glyph: '⚠', label: 'Stop hook not installed (transcripts unredacted)', action: 'secretless-ai init' });
+    addRow({ glyph: '⚠', label: 'Stop hook not installed (transcripts unredacted)', action: claudeCodeInit });
   }
 
-  // Configured tools (instructions present in tool config files).
-  if (s.configuredTools.length > 0) {
-    addRow({ glyph: '✓', label: `Tool instructions: ${s.configuredTools.map(toolDisplayName).join(', ')}` });
+  // Configured tools. An ignore file is a list the tool reads and an
+  // instruction file is advice; neither is enforced, and each row says so.
+  const instructionTools = s.configuredTools.filter(t => !s.ignoreFileTools.includes(t));
+  if (s.ignoreFileTools.length > 0) {
+    addRow({ glyph: '✓', label: `Ignore file: ${s.ignoreFileTools.map(toolDisplayName).join(', ')} (${AIDER_IGNORE_FILE.path}, no hook enforces it)` });
+  }
+  if (instructionTools.length > 0) {
+    addRow({ glyph: '✓', label: `Tool instructions: ${instructionTools.map(toolDisplayName).join(', ')} (advisory, not enforced)` });
   }
 
   // Secrets in the project scan. The scan covers the file types it knows, not
@@ -1363,6 +1411,10 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       isProtected: s.isProtected,
       // `project` or `user`: which settings scope `isProtected` rests on.
       protectionScope: s.protectionScope,
+      // `hook`, `ignore-file`, `advisory` or `none`: the strongest mechanism
+      // `isProtected` rests on. `isProtected` is true on an instruction file
+      // alone, and only this field says that nothing enforces one.
+      enforcement: s.enforcement,
       hookInstalled: s.hookInstalled,
       denyRuleCount: s.denyRuleCount,
       configuredTools: s.configuredTools,
@@ -1427,8 +1479,9 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     }
   }
 
-  // Verdict — reflects warnings (count of ⚠ rows). "Protected" requires
-  // the hook installed; "Clean" requires zero warnings.
+  // Verdict — reflects warnings (count of ⚠ rows). "Protected" requires a
+  // guard hook or deny patterns Claude Code applies here (`enforcement` is
+  // `hook`); "Clean" requires zero warnings.
   console.log();
   console.log(`  ── Verdict ${headerLine.slice(0, Math.max(0, 49))}`);
   if (!s.isProtected) {
@@ -1437,20 +1490,31 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // end — the same defect as pointing at a command that no-ops for the
       // very state that printed it. Name the blocking step instead.
       console.log(`  Not protected. Fix the JSON in ${s.settingsUnreadable.path}, then run \`secretless-ai init\`.`);
+    } else if (!initSetsUpClaudeCode) {
+      // `init` writes an instruction or ignore file for these tools, so
+      // "to install hooks" would promise something it does not do here.
+      console.log(`  Not protected. Run \`secretless-ai init\` to configure ${s.detectedTools.map(toolDisplayName).join(', ')}. Hooks are installed for Claude Code only.`);
     } else {
       console.log('  Not protected. Run `secretless-ai init` to install hooks.');
     }
   } else {
-    // Say when the protection comes from the user-level file, so a project
-    // covered only by it does not read as having an install of its own.
-    const scopeText = s.protectionScope === 'user' && user ? ` by user-level settings in ${user.path}` : '';
-    if (warningCount === 0) {
-      console.log(`  Protected${scopeText} — Clean`);
-    } else {
-      const credSuffix = s.secretsFound > 0
+    const attention = warningCount === 0
+      ? ''
+      : s.secretsFound > 0
         ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need${s.secretsFound === 1 ? 's' : ''} review)`
         : ` (${warningCount} observation${warningCount === 1 ? '' : 's'} need attention)`;
-      console.log(`  Protected${scopeText}${credSuffix}`);
+    if (s.enforcement === 'advisory') {
+      // `isProtected` is true on instruction files alone, and this line used
+      // to print the same `Protected` a guard hook earns. Nothing enforces an
+      // instruction file, so the line names the mode instead.
+      console.log(`  Advisory only: instructions for ${instructionTools.map(toolDisplayName).join(', ')}, which nothing enforces${attention}`);
+    } else if (s.enforcement === 'ignore-file') {
+      console.log(`  Ignore file only: ${AIDER_IGNORE_FILE.path} for ${s.ignoreFileTools.map(toolDisplayName).join(', ')}, which no hook enforces${attention}`);
+    } else {
+      // Say when the protection comes from the user-level file, so a project
+      // covered only by it does not read as having an install of its own.
+      const scopeText = s.protectionScope === 'user' && user ? ` by user-level settings in ${user.path}` : '';
+      console.log(`  Protected${scopeText}${warningCount === 0 ? ' — Clean' : attention}`);
     }
   }
 
