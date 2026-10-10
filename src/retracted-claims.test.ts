@@ -61,6 +61,17 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
 }
 
 /**
+ * What a scan returns when `read` can count all of it: `T`, but no promise
+ * or other thenable, whose scan goes on after it has returned.
+ */
+type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
+
+/** Whether `value` is a promise or another thenable, which an `await` waits on. */
+function isThenable(value: unknown): boolean {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
+}
+
+/**
  * `content` as a string that counts the characters read from it. A method
  * call is charged what it scans or copies (`indexOf` up to its match, `slice`
  * and its kin their result, a one-character read one) and any other method a
@@ -83,10 +94,17 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
  * is named. A counting string is an object, so a character never `===` the
  * character it is: compare it by its code. `characters` counts the single
  * characters handed out, so a wrong line can be put down to such a compare.
+ *
+ * `read` counts a scan until it returns: from then on the two `String`
+ * functions make plain strings again. A copy a scan that returns a promise
+ * makes from character codes after its first `await` is therefore a plain
+ * string, which nothing names. `read` takes no such scan: the type of a scan
+ * leaves one out, and `read` fails when a scan returns a thenable all the
+ * same.
  */
 function countingString(content: string): {
   text: string;
-  read: <T>(scan: (text: string) => T) => T;
+  read: <T>(scan: (text: string) => SyncResult<T>) => T;
   charsRead: () => number;
   characters: () => number;
   plainStrings: () => string[];
@@ -171,16 +189,28 @@ function countingString(content: string): {
   const text = counting(content);
   // A number stays a number, so a string made from the codes a scan reads is
   // a counting string only because these two make one while the scan runs.
-  const read = <T>(scan: (text: string) => T): T => {
+  const read = <T>(scan: (text: string) => SyncResult<T>): T => {
     const { fromCharCode, fromCodePoint } = String;
     String.fromCharCode = (...codes: number[]) => counted(fromCharCode(...codes)) as string;
     String.fromCodePoint = (...codes: number[]) => counted(fromCodePoint(...codes)) as string;
+    let result: T;
     try {
-      return scan(text);
+      result = scan(text);
     } finally {
       String.fromCharCode = fromCharCode;
       String.fromCodePoint = fromCodePoint;
     }
+    // The type leaves a promise out, but a scan typed as returning its result
+    // can return one all the same, as a function read from a module can.
+    if (isThenable(result)) {
+      throw new Error(
+        "the scan returned a promise: read has String.fromCharCode and String.fromCodePoint make " +
+          "counting strings only until the scan returns, so a copy the scan makes from character " +
+          "codes after its first await is a plain string, whose reads no count sees and nothing " +
+          "names. Give read a scan that returns its result, not a promise of it",
+      );
+    }
+    return result;
   };
   return {
     text,
@@ -466,6 +496,28 @@ describe("the counting string counts a copy's reads and names a plain string it 
   it("control: String.fromCharCode makes a plain string again once the scan is over", () => {
     const content = countingString(file);
     expect(content.read(() => typeof String.fromCharCode(104))).toBe("object");
+    expect(String.fromCharCode(104)).toBe("h");
+    expect(String.fromCodePoint(104)).toBe("h");
+  });
+
+  it("fails a scan that returns a promise, whose copy made from character codes after an await is a plain string", async () => {
+    const content = countingString(file);
+    const made: string[] = [];
+    const scan = async (): Promise<void> => {
+      made.push(typeof String.fromCharCode(104));
+      await 0;
+      made.push(typeof String.fromCharCode(104));
+    };
+    let scanned = Promise.resolve();
+    expect(() =>
+      // @ts-expect-error the type of a scan leaves out one that returns a promise
+      content.read(() => (scanned = scan())),
+    ).toThrow(
+      /^the scan returned a promise: .* makes from character codes after its first await is a plain string, whose reads no count sees and nothing names\. Give read a scan that returns its result, not a promise of it$/,
+    );
+    // What the failure is for: the scan was over for read at its first await.
+    await scanned;
+    expect(made).toEqual(["object", "string"]);
     expect(String.fromCharCode(104)).toBe("h");
     expect(String.fromCodePoint(104)).toBe("h");
   });
