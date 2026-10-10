@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**`runInit` sets up the directory it checked when a path has `..` after a
+symlink (#274).** This affects callers of the programmatic API only; the
+command line resolves its argument first and is unchanged. The check that the
+directory exists reads `..` after a symbolic link as the parent of the
+directory the link points at, as the file system does. `init` then built every
+path it writes by dropping `..` together with the name before it, so
+`runInit('link/../proj')`, with `link` pointing into another directory, passed
+the check on the `proj` beside the link's target and wrote to a `proj` beside
+`link`, creating it when it did not exist. `init` now sets up the directory the
+check found, and the paths it lists as created and under "Not configured" are
+in that directory. A path whose `..` names the same directory either way, such
+as one with no symbolic link before the `..`, is set up and printed as before.
+
 **`scan`, `status` and `verify` name the file a path runs through, `init`
 escapes the path in its "Directory not found" and "Not a directory" messages,
 and `scan --help` names the ignore file

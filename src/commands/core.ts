@@ -71,7 +71,13 @@ export function runInit(projectDir: string): number {
     return 1;
   }
 
-  const result = init(projectDir);
+  // The check above reads `..` after a symbolic link as the kernel does. init
+  // builds every path it writes with `path.join`, which drops `..` together
+  // with the name before it, so `link/../proj` passed as the directory beside
+  // the link's target and was then set up as `proj` beside the link, made
+  // there when none existed. init is given the directory that was checked.
+  const setupDir = checkedDirectory(projectDir);
+  const result = init(setupDir);
 
   // Configured line: collapse Detected + Configured into one row that tells
   // the user what's now active and how it compares to what we found.
@@ -128,7 +134,7 @@ export function runInit(projectDir: string): number {
   // A refused path leaves its tool unconfigured. Without this block the tool
   // just dropped off the Configured line and the run read as a clean no-op.
   if (result.pathsRefused.length > 0) {
-    printRefusedPaths(projectDir, result.pathsRefused);
+    printRefusedPaths(setupDir, result.pathsRefused);
   }
 
   // No-op case: nothing created, nothing modified — already up to date.
@@ -355,6 +361,29 @@ function parentAsResolved(dir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The directory `init` sets up for `dir`, which `notADirectoryReason` found to
+ * be one. That check reads `..` after a symbolic link as the kernel does, and
+ * `path.join` drops `..` with the name before it, so for such a path the two
+ * can name different directories. Then this is the one the check read, by its
+ * real path; otherwise the caller's spelling is kept.
+ */
+function checkedDirectory(dir: string): string {
+  if (!dir.split(/[\\/]/).includes('..')) return dir;
+  const nodeFs = require('fs') as typeof import('fs');
+  // `realpathSync` drops `..` by spelling before it looks; the native call
+  // walks the path as the kernel does.
+  let checked: string;
+  try {
+    checked = nodeFs.realpathSync.native(dir);
+  } catch {
+    return dir;
+  }
+  let joined: string | null = null;
+  try { joined = nodeFs.realpathSync.native(path.resolve(dir)); } catch { /* absent */ }
+  return joined === checked ? dir : checked;
 }
 
 /** Why `dir` cannot be set up by `init`, or null when it is a directory. */
