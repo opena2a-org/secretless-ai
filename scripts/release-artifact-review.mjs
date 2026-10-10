@@ -34,6 +34,9 @@
  *                            consumer's machine
  *   pinned-first-party-deps  no caret or tilde range on any @opena2a/*
  *                            dependency: first-party deps are pinned exactly
+ *   no-retracted-claims      no file in the package carries a sentence listed
+ *                            in retracted-claims.mjs: a security claim an
+ *                            earlier release shipped and the source withdrew
  *   npm-audit                `npm audit --omit=dev --audit-level=high` over a
  *                            lockfile resolved from the packed package.json
  *   global-install-smoke     `npm install -g <tarball> --ignore-scripts` into
@@ -68,6 +71,7 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { childEnv, fetchChild, npmChildEnv } from './child-env.mjs';
+import { RETRACTED_CLAIMS, retractedClaimsIn } from './retracted-claims.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLANTED_NAME = '00-planted-credential-control.js';
@@ -111,6 +115,7 @@ const CHECK_NAMES = [
   'dist-containment',
   'no-install-scripts',
   'pinned-first-party-deps',
+  'no-retracted-claims',
   'npm-audit',
   'global-install-smoke',
   'credential-scan',
@@ -334,6 +339,44 @@ function review(tarball, work, advisoryStates, results) {
       results.fail('pinned-first-party-deps', `caret/tilde range on first-party dependencies: ${loose.join(', ')}`);
     } else {
       results.pass('pinned-first-party-deps');
+    }
+  }
+
+  // no-retracted-claims. Every regular file in the package is read as text,
+  // README and package.json included: a withdrawn claim reaches the user from
+  // any of them. Only the file is read, never run, so a statically bad tarball
+  // is checked too. An entry that is not read here (not a regular file, a name
+  // that is not valid UTF-8, a read error) is named as not checked, never
+  // passed over.
+  if (!fs.existsSync(packageDir) || !fs.lstatSync(packageDir).isDirectory()) {
+    results.precondition('no-retracted-claims', 'package/ absent from the tarball; there is nothing to read');
+  } else {
+    const { files, refused } = filesUnder(packageDir);
+    const unread = refused.map(({ shown, reason }) => `package/${shown} (${reason})`);
+    const found = [];
+    for (const { rel, shown } of files) {
+      let content;
+      try {
+        content = fs.readFileSync(path.join(packageDir, rel), 'utf-8');
+      } catch (error) {
+        unread.push(`package/${shown} (${error.code ?? error.message})`);
+        continue;
+      }
+      for (const { claim, line } of retractedClaimsIn(content)) found.push(`"${claim}" at package/${shown}:${line}`);
+    }
+    const unreadText = `not read, so not checked: ${unread.join(', ')}`;
+    if (found.length > 0) {
+      results.fail(
+        'no-retracted-claims',
+        `retracted claims in shipped files: ${found.join(', ')}${unread.length > 0 ? `; ${unreadText}` : ''}`,
+      );
+    } else if (unread.length > 0) {
+      results.precondition('no-retracted-claims', unreadText);
+    } else {
+      results.pass(
+        'no-retracted-claims',
+        `${files.length} files read, none carries any of the ${RETRACTED_CLAIMS.length} retracted claims`,
+      );
     }
   }
 

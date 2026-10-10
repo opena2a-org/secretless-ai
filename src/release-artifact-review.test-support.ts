@@ -17,6 +17,7 @@ import * as zlib from "zlib";
 export const REPO_ROOT = path.resolve(__dirname, "..");
 export const SCRIPT = path.join(REPO_ROOT, "scripts", "release-artifact-review.mjs");
 export const CHILD_ENV_MODULE = path.join(REPO_ROOT, "scripts", "child-env.mjs");
+export const RETRACTED_CLAIMS_MODULE = path.join(REPO_ROOT, "scripts", "retracted-claims.mjs");
 
 export const CHECKS = [
   "entry-allowlist",
@@ -25,6 +26,7 @@ export const CHECKS = [
   "dist-containment",
   "no-install-scripts",
   "pinned-first-party-deps",
+  "no-retracted-claims",
   "npm-audit",
   "global-install-smoke",
   "credential-scan",
@@ -190,6 +192,10 @@ export function relocatedScript(binStub?: { source: string }): {
     path.join(root, "scripts", "release-artifact-review.mjs"),
   );
   fs.copyFileSync(CHILD_ENV_MODULE, path.join(root, "scripts", "child-env.mjs"));
+  fs.copyFileSync(
+    RETRACTED_CLAIMS_MODULE,
+    path.join(root, "scripts", "retracted-claims.mjs"),
+  );
   if (binStub) {
     const binDir = path.join(root, "node_modules", ".bin");
     fs.mkdirSync(binDir, { recursive: true });
