@@ -378,6 +378,25 @@ describe('init and status agree about an Aider project', () => {
     expect(lines.join('\n')).not.toContain('Tool instructions');
   });
 
+  it('status --json names the ignore file apart from the instruction files', async () => {
+    projectFor('windsurf');
+    init(project);
+
+    const doc = await statusJson(project);
+
+    expect([...doc.configuredTools].sort()).toEqual(['aider', 'windsurf']);
+    expect(doc.ignoreFileTools).toEqual(['aider']);
+    expect([...doc.detectedTools].sort()).toEqual(['aider', 'windsurf']);
+  });
+
+  it('status --json lists a detected tool init has not configured', async () => {
+    const doc = await statusJson(project);
+
+    expect(doc.detectedTools).toEqual(['aider']);
+    expect(doc.configuredTools).toEqual([]);
+    expect(doc.ignoreFileTools).toEqual([]);
+  });
+
   it('an instruction file beside the ignore file is still listed as advisory', async () => {
     projectFor('windsurf');
     init(project);

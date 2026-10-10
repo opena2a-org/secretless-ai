@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**`status --json` adds `ignoreFileTools` and `detectedTools`.**
+`configuredTools` lists Aider, which `init` configures through `.aiderignore`,
+beside the tools configured through an instruction file. The text output lists
+the two apart, as `Ignore file:` and `Tool instructions:`, but a JSON consumer
+could tell them apart only through `enforcement`. `ignoreFileTools` lists the
+configured tools whose file is an ignore file, and `detectedTools` lists the AI
+tools found in the project, configured or not. Every existing key is unchanged.
+The type documentation of `StatusResult.enforcement` no longer says `none` is
+reported exactly when `isProtected` is false; it also names the one case where
+`none` is reported while `isProtected` is true.
+
 **A command's own refusal of a subcommand or value prints the value escaped,
 and the Fix under `init`'s "Not configured" block re-runs `init` on the
 directory it was given (#280).** `backend`, `cache`, `secret`, `scope`,
