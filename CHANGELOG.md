@@ -34,13 +34,16 @@ exports that exist for this package's own tests and help text:
 `nearMissCellsEvaluated` and `resetNearMissCellsEvaluated` in
 `dist/near-miss`. Detection, exit codes and `--json` output are unchanged.
 
-**The Claude Code guard hook refuses every command that prints the
-environment, and a command it cannot parse.** The hook refused a few
-spellings of an environment dump by matching command text (a bare `printenv`,
-a bare `env`, a process listing) and let every other shape through: a bare
-`set`, `set -x`, `export -p`, `declare -p`, `typeset`, `compgen -v`,
-`printenv NAME`, a python, node, ruby or perl one-liner printing `os.environ`,
-`process.env`, `ENV` or `%ENV`, `docker inspect`,
+**The Claude Code guard hook refuses a command that prints the environment
+through `set`, `env`, `printenv`, `export`, `declare`, `compgen`, an
+interpreter one-liner, `docker`, `kubectl`, `tmux`, `launchctl`, `systemctl`
+or `npm`, wherever the shell runs it, and a command it cannot parse.** The
+hook refused a few spellings of an environment dump by matching command text
+(a bare `printenv`, a bare `env`, a process listing, a `node -e` one-liner
+naming `process.env`) and let the other shapes through: a bare `set`,
+`set -x`, `export -p`, `declare -p`, `typeset`, `compgen -v`,
+`printenv NAME`, a python, ruby or perl one-liner printing `os.environ`,
+`ENV` or `%ENV`, `node -p process.env`, `docker inspect`,
 `docker exec <container> env`, `tmux show-environment`, and any of these
 behind `bash -c`, `eval`,
 `sudo`, `xargs`, a subshell, a pipe or a command substitution. Under `python3`
@@ -52,9 +55,12 @@ turns on no tracing or allexport (`set -e`, `set -euo pipefail`,
 (`env -u NAME cmd`); `printenv` and `compgen` never; `export`, `readonly`,
 `declare`, `typeset` and `local` only as assignments (with a bare name and no
 option, `declare`, `typeset` and `local` print the variable in zsh, so they
-need `NAME=value` or an option); an interpreter one-liner only when it reads
-variables by name (`os.environ.get("HOME")`, or `process.env.HOME`, which was
-refused before and is now allowed); `docker inspect` only with a `--format`
+need `NAME=value` or an option); an interpreter one-liner is refused when its
+program names the whole environment (`os.environ` with no subscript or
+`.get`, `process.env` with no property, ruby `ENV`, perl `%ENV`, php
+`getenv()`, awk `ENVIRON`) and allowed when it reads a variable by name
+(`os.environ.get("HOME")`, or `process.env.HOME`, which was refused before
+and is now allowed); `docker inspect` only with a `--format`
 that names no `Env` field. A command the parser cannot read, such as one with
 an unclosed quote or a program name or `bash -c` or `eval` string that comes
 from an expansion, is refused with the span it could not read and a rewrite.
