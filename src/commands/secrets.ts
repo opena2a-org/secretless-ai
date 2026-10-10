@@ -1083,10 +1083,18 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     // starts no line; the Fix cannot spell such a name as a command word, so
     // it leaves `<name>` for the user to fill in. Any other refused name is
     // replaced by one the target accepts, so the Fix is not the command that
-    // was just refused.
+    // was just refused. A replacement that would push as the same name as
+    // another --as name, given or offered, leaves `<name>` too, so the Fix is
+    // not refused for two secrets sharing one name.
+    const taken = new Set(remotes.filter((_, i) => problems[i] === undefined).map((r) => target.foldName(r)));
     const operands = remotes.map((r, i) => {
       if (problems[i] === undefined) return r;
-      return hasDisplayHazard(r) ? '<name>' : target.suggestName(r);
+      if (hasDisplayHazard(r)) return '<name>';
+      const suggested = target.suggestName(r);
+      const folded = target.foldName(suggested);
+      if (taken.has(folded)) return '<name>';
+      taken.add(folded);
+      return suggested;
     });
     console.error(`\n  "${escapeForDisplay(remotes[first])}" cannot name a secret in ${target.label}: ${problems[first]}.`);
     console.error('  Nothing was read or pushed.\n');

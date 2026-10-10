@@ -545,6 +545,59 @@ describe('the --as name a refusal offers (#285)', () => {
   });
 });
 
+describe('the --as names a refusal offers are distinct (#289)', () => {
+  const vault = (): PushTarget => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }));
+  const fixNames = (): string[] => {
+    const args = fixCommand();
+    return args[args.indexOf('--as') + 1].split(',');
+  };
+
+  it('a suggestion that would equal a name the store accepts leaves <name>, and the accepted name stays', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a_b'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(fixNames()).toEqual(['<name>', 'a_b']);
+  });
+
+  it('two refused names that would be offered as the same name: the second leaves <name>', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a:b'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(fixNames()).toEqual(['a_b', '<name>']);
+  });
+
+  it('Key Vault compares names without case, so a suggestion differing only in case leaves <name>', async () => {
+    const code = await push(['API_KEY,DB_PASSWORD', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'A.B,a-b'], { env: NO_ENV, runChild: azSignedIn() });
+
+    expect(code).toBe(2);
+    expect(fixNames()).toEqual(['<name>', 'a-b']);
+  });
+
+  it('suggestions that stay distinct are all offered, and the Fix run as printed pushes', async () => {
+    handler = (call) => {
+      const u = new URL(call.url);
+      if (u.pathname === '/v1/sys/health') return json(200, { initialized: true, sealed: false });
+      if (call.method === 'GET') return json(404, { errors: [] });
+      if (call.method === 'POST') return json(200, { data: { version: 1 } });
+      return json(400, {});
+    };
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a.c'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(fixNames()).toEqual(['a_b', 'a_c']);
+
+    const rerun = await runSecretPush(fixCommand(), { store, createTarget: vault });
+
+    expect(rerun).toBe(0);
+    expect(calls.filter((c) => c.method === 'POST').map((c) => new URL(c.url).pathname)).toEqual([
+      '/v1/secret/data/secret/a_b',
+      '/v1/secret/data/secret/a_c',
+    ]);
+    expectNoLeak();
+  });
+});
+
 // --- Error layout ------------------------------------------------------------
 
 describe('secret push prints a setup error in the layout the other secret commands use (#247)', () => {
