@@ -698,6 +698,39 @@ describe('a refusal says which secret holds a name the Fix leaves as <name> (#29
   });
 });
 
+describe('an --as name left as the <name> a Fix prints is a placeholder, not a name (#302)', () => {
+  const PLACEHOLDER_LINE = (name: string): string => `  "<name>" in --as is a placeholder: replace it with the name ${name} should have in `;
+  const cases: Array<[string, string[], string, () => PushTarget]> = [
+    ['vault', ['--to', 'vault'], 'a_b', () => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }))],
+    ['gcp-sm', ['--to', 'gcp-sm'], 'a_b', () => new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' }))],
+    ['azure-kv', ['--to', 'azure-kv', '--vault', 'kv-demo'], 'a-b', () => new AzureKeyVaultTarget('kv-demo', { env: NO_ENV, runChild: azSignedIn() })],
+  ];
+
+  for (const [type, to, accepted, make] of cases) {
+    it(`--to ${type}: the line says <name> is to be replaced, and the Fix keeps it rather than offering a name made from it`, async () => {
+      const code = await runSecretPush(['API_KEY,DB_PASSWORD', ...to, '--as', `<name>,${accepted}`], { store, createTarget: make });
+      const lines = printed().split('\n');
+
+      expect(code).toBe(2);
+      expect(calls).toEqual([]);
+      expect(lines.some((l) => l.startsWith(PLACEHOLDER_LINE('API_KEY'))), printed()).toBe(true);
+      expect(lines.some((l) => l.includes('cannot name a secret')), printed()).toBe(false);
+      expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', ...to, '--as', `<name>,${accepted}`]);
+    });
+  }
+
+  it('a placeholder beside a refused name: both are said, and only the refused name is replaced', async () => {
+    const vault = (): PushTarget => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }));
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,<name>'], { store, createTarget: vault });
+    const lines = printed().split('\n');
+
+    expect(code).toBe(2);
+    expect(lines.some((l) => l.startsWith(PLACEHOLDER_LINE('DB_PASSWORD'))), printed()).toBe(true);
+    expect(lines.some((l) => l.startsWith('  "a.b" cannot name a secret in Vault')), printed()).toBe(true);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a_b,<name>']);
+  });
+});
+
 // --- Error layout ------------------------------------------------------------
 
 describe('secret push prints a setup error in the layout the other secret commands use (#247)', () => {

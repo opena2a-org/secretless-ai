@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**A `secret push` run with the `<name>` of an earlier `Fix:` left unfilled
+says `<name>` is a placeholder to replace (#302).** `secret push A,B --to
+vault --as '<name>,a_b'` printed `"<name>" cannot name a secret in Vault` and
+offered `--as _name_,a_b` as its `Fix:` (`-name-` for Azure Key Vault), a
+name made from the placeholder's letters. It now prints `"<name>" in --as is
+a placeholder: replace it with the name A should have in` the store, with the
+characters that store allows, and the `Fix:` keeps `<name>` where it stands.
+Any other refused `--as` name in the same line is still reported and replaced
+as before.
+
 **A refused `secret push --as` name says why its `Fix:` leaves `<name>` when
 the replacement is already taken (#295).** `secret push A,B --to vault --as
 a.b,a_b` printed `--as <name>,a_b` with only the character-class reason for
