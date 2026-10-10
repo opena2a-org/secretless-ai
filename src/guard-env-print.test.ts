@@ -272,6 +272,22 @@ describe('guard refuses every command shape that prints the environment', { time
     ]);
   });
 
+  // A process substitution in argument position was unparseable, so
+  // `diff <(sort a) <(sort b)` was refused as a command the guard cannot read.
+  // It is now read like the rest of the command and judged by what runs inside.
+  (hasPython3 ? it : it.skip)('reads a process substitution in an argument and judges what runs inside it', () => {
+    expectAllowed([
+      'diff <(sort a) <(sort b)',
+      'comm -3 <(sort a) <(sort b)',
+      'tee >(cat)',
+    ]);
+    expectBlocked([
+      'cat <(env)',
+      'diff <(env) /tmp/x',
+    ]);
+    expect(decide('cat <(env)')).not.toMatch(/cannot parse/);
+  });
+
   (hasPython3 ? it : it.skip)('refuses a command it cannot parse and names the span it could not read', () => {
     for (const c of ["echo 'unbalanced", 'echo "unbalanced', 'echo $(ls', 'echo ${X', 'ls )']) {
       const reason = decide(c);
