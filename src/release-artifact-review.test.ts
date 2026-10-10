@@ -49,6 +49,7 @@ const NO_NETWORK_CHECKS = [
   "no-test-material",
   "no-install-scripts",
   "pinned-first-party-deps",
+  "no-retracted-claims",
   "global-install-smoke",
   "credential-scan",
 ];
