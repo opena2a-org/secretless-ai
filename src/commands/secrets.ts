@@ -1086,9 +1086,15 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     // was just refused. A replacement that would push as the same name as
     // another --as name, given or offered, leaves `<name>` too, and so does
     // an accepted name the store would merge with an earlier accepted one, so
-    // the Fix is not refused for two secrets sharing one name.
-    const taken = new Set(remotes.filter((_, i) => problems[i] === undefined).map((r) => target.foldName(r)));
+    // the Fix is not refused for two secrets sharing one name, and a line
+    // names the secret that holds that name.
     const kept = new Set<string>();
+    const holders = new Map<string, { index: number; spelled: string }>();
+    remotes.forEach((r, i) => {
+      const folded = target.foldName(r);
+      if (problems[i] === undefined && !holders.has(folded)) holders.set(folded, { index: i, spelled: r });
+    });
+    const takenLines: string[] = [];
     const operands = remotes.map((r, i) => {
       if (problems[i] === undefined) {
         const folded = target.foldName(r);
@@ -1099,11 +1105,17 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
       if (hasDisplayHazard(r)) return '<name>';
       const suggested = target.suggestName(r);
       const folded = target.foldName(suggested);
-      if (taken.has(folded)) return '<name>';
-      taken.add(folded);
+      const holder = holders.get(folded);
+      if (holder !== undefined) {
+        const as = holder.spelled === suggested ? '' : ` as "${escapeForDisplay(holder.spelled)}", which differs only in case`;
+        takenLines.push(`  "${escapeForDisplay(suggested)}" is taken by ${names[holder.index]}${as}; choose another name for ${names[i]}.`);
+        return '<name>';
+      }
+      holders.set(folded, { index: i, spelled: suggested });
       return suggested;
     });
     console.error(`\n  "${escapeForDisplay(remotes[first])}" cannot name a secret in ${target.label}: ${problems[first]}.`);
+    for (const line of takenLines) console.error(line);
     console.error('  Nothing was read or pushed.\n');
     console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
     return 2;

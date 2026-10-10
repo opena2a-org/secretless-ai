@@ -647,6 +647,49 @@ describe('two given --as names the store would merge are not both kept in the Fi
   });
 });
 
+describe('a refusal says which secret holds a name the Fix leaves as <name> (#295)', () => {
+  const vault = (): PushTarget => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }));
+  const takenLines = (): string[] => printed().split('\n').filter((l) => l.includes(' is taken by '));
+
+  it('a suggestion equal to a name another secret is given names that secret', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a_b'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(takenLines()).toEqual(['  "a_b" is taken by DB_PASSWORD; choose another name for API_KEY.']);
+  });
+
+  it('a suggestion equal to one offered earlier in the Fix names the secret it is offered to', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a:b'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(takenLines()).toEqual(['  "a_b" is taken by API_KEY; choose another name for DB_PASSWORD.']);
+  });
+
+  it('Key Vault: a suggestion differing only in case names the spelling that holds it', async () => {
+    const code = await push(['API_KEY,DB_PASSWORD', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'A.B,a-b'], { env: NO_ENV, runChild: azSignedIn() });
+
+    expect(code).toBe(2);
+    expect(takenLines()).toEqual(['  "A-B" is taken by DB_PASSWORD as "a-b", which differs only in case; choose another name for API_KEY.']);
+  });
+
+  it('the line comes before the Fix, and none is printed when every suggestion is offered or a name cannot be spelled', async () => {
+    await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a_b'], { store, createTarget: vault });
+    const lines = printed().split('\n');
+    const taken = lines.findIndex((l) => l.includes(' is taken by '));
+    expect(taken).toBeGreaterThan(-1);
+    expect(taken).toBeLessThan(lines.findIndex((l) => l.startsWith('  Fix:')));
+
+    out.length = 0;
+    await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,a.c'], { store, createTarget: vault });
+    expect(takenLines()).toEqual([]);
+
+    out.length = 0;
+    await runSecretPush(['API_KEY', '--to', 'vault', '--as', 'x\ny'], { store, createTarget: vault });
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', '<name>']);
+    expect(takenLines()).toEqual([]);
+  });
+});
+
 // --- Error layout ------------------------------------------------------------
 
 describe('secret push prints a setup error in the layout the other secret commands use (#247)', () => {
