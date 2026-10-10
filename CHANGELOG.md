@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**A refused `secret push --as` name says why its `Fix:` leaves `<name>` when
+the replacement is already taken (#295).** `secret push A,B --to vault --as
+a.b,a_b` printed `--as <name>,a_b` with only the character-class reason for
+`a.b`, so nothing said that `a_b` was not offered because `B` already uses it.
+The refusal now prints one line per such name, before the `Fix:`:
+`"a_b" is taken by B; choose another name for A.` The line names the secret
+given that name or offered it earlier in the `Fix:`, and for Azure Key Vault,
+which does not tell names apart by case, the spelling that holds it:
+`"A-B" is taken by B as "a-b", which differs only in case; ...`.
+
 **The `Fix:` under a refused `secret push --as` name no longer keeps two given
 names the store would merge (#294).** Given names the store accepts were kept
 as they were, so `secret push A,B,C --to vault --as x,x,c.d` printed
