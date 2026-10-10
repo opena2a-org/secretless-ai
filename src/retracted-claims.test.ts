@@ -68,13 +68,17 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
  * the code, not the machine.
  *
  * The count follows the content where a method takes it: a string a method
- * returns, alone or held by an array, a match or an iterator, is a counting
- * string on the same counter, charged by its own length. Reads of a plain
- * string cannot be counted, so `plainStrings` names what handed one out: a
- * conversion to a primitive string, and a function given to a method, which
- * the method calls with plain strings. A string of one character stays
- * plain, so it still equals the character it is: it was charged when it was
- * read. A copy put together from such characters is read uncounted.
+ * returns or an index read gives, alone or held by an array, a match or an
+ * iterator, is a counting string on the same counter, charged by its own
+ * length. A single character is one too, so a copy put together from the
+ * characters an iteration, a split or reads one at a time hand out is put
+ * together from counting strings. Reads of a plain string cannot be counted,
+ * so `plainStrings` names what handed one out: a conversion to a primitive
+ * string, which putting such a copy together makes, and a function given to
+ * a method, which the method calls with plain strings. A counting string is
+ * an object, so a character never `===` the character it is: compare it by
+ * its code. A number stays a number, so a copy put together from character
+ * codes is read uncounted.
  */
 function countingString(content: string): {
   text: string;
@@ -104,10 +108,11 @@ function countingString(content: string): {
     }
   };
   // `value` as the code under test gets it: each string it holds, at any
-  // depth, a counting one. An array or a match wraps a string when it is read
-  // from it, so taking only its length wraps none.
+  // depth, a counting one, but the empty string, which has nothing to read.
+  // An array or a match wraps a string when it is read from it, so taking
+  // only its length wraps none.
   const counted = (value: unknown): unknown => {
-    if (typeof value === "string") return value.length > 1 ? counting(value) : value;
+    if (typeof value === "string") return value.length > 0 ? counting(value) : value;
     if (typeof value !== "object" || value === null) return value;
     if (!Array.isArray(value) && Symbol.iterator in value) {
       const items = value as Iterable<unknown>;
@@ -121,16 +126,25 @@ function countingString(content: string): {
   };
   const counting = (plain: string): string => {
     const length = plain.length;
-    const text = new Proxy(new String(plain), {
-      get(target, key) {
+    const boxed = new String(plain);
+    // A String object holds each character as a fixed property, which a
+    // proxy of it must hand out as it is: the target holds none of them, so
+    // an index read can hand out a counting string.
+    const target: object = Object.create(String.prototype, { length: { value: length } });
+    const text = new Proxy(target, {
+      has: (_target, key) => Reflect.has(boxed, key),
+      get(_target, key) {
         if (key === Symbol.toPrimitive) {
           return () => {
             plainStrings.add("a conversion to a primitive string");
             return plain;
           };
         }
-        const value: unknown = Reflect.get(target, key);
-        if (typeof key === "string" && /^\d+$/.test(key)) charsRead += 1;
+        const value: unknown = Reflect.get(boxed, key);
+        if (typeof key === "string" && /^\d+$/.test(key)) {
+          charsRead += 1;
+          return counted(value);
+        }
         if (typeof value !== "function" || key === "constructor") return value;
         return (...args: unknown[]) => {
           if (args.some((arg) => typeof arg === "function")) {
@@ -284,6 +298,35 @@ describe("the counting string counts a copy's reads and names a plain string it 
     expect(plainStrings).toEqual(["a conversion to a primitive string"]);
   });
 
+  it.each<[string, (content: string) => string]>([
+    ["Array.from", (content) => Array.from(content).join("")],
+    ["a spread", (content) => [...content].join("")],
+    ["split('')", (content) => content.split("").join("")],
+    [
+      "an index read",
+      (content) => {
+        let copy = "";
+        for (let i = 0; i < content.length; i += 1) copy += content[i];
+        return copy;
+      },
+    ],
+    [
+      "charAt",
+      (content) => {
+        let copy = "";
+        for (let i = 0; i < content.length; i += 1) copy += content.charAt(i);
+        return copy;
+      },
+    ],
+  ])(
+    "names a copy put together from the characters %s hands out, which a line count made once per hit reads",
+    (_how, copyOf) => {
+      const { lines, plainStrings } = readsOf((content) => linesCountedPerHit(copyOf(content)));
+      expect(lines).toEqual(everyLine);
+      expect(plainStrings).toEqual(["a conversion to a primitive string"]);
+    },
+  );
+
   it("names a regular expression run on the content, which converts it", () => {
     const { lines, plainStrings } = readsOf((content) => {
       const lines: number[] = [];
@@ -332,11 +375,17 @@ describe("the counting string counts a copy's reads and names a plain string it 
     expect(plainStrings).toEqual(["replace given a function"]);
   });
 
-  it("control: a single character read from the content equals that character", () => {
+  it("control: a single character read from the content is that character, read on the same counter", () => {
     const content = countingString(file);
-    expect(content.text[3] === "\n").toBe(true);
-    expect(content.text.charAt(3) === "\n").toBe(true);
+    const byIndex = content.text[3];
+    const byCharAt = content.text.charAt(3);
     expect(content.charsRead()).toBe(2);
+    // A counting string is an object, so each is compared by its code.
+    expect(byIndex.length).toBe(1);
+    expect(byIndex.charCodeAt(0)).toBe("\n".charCodeAt(0));
+    expect(byCharAt.length).toBe(1);
+    expect(byCharAt.charCodeAt(0)).toBe("\n".charCodeAt(0));
+    expect(content.charsRead()).toBe(4);
     expect(content.plainStrings()).toEqual([]);
   });
 
