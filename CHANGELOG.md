@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**A `secret push` refusal says which secret needs another name for each
+refused `--as` name its `Fix:` cannot spell as a command word (#307).** A
+refused name that holds a character the refusal prints escaped, such as a tab
+or a zero-width space, is left as `<name>` in the `Fix:`, and only the first
+refused name got a "cannot name a secret" line.
+`secret push A,B --to vault --as $'a.b,c\td'` printed that line for `a.b`
+only, and its `Fix:` left B as `<name>` with no line saying why. Each such
+name now gets the line, and the line ends by naming the secret the name was
+given for: `; choose another name for B.` This holds for one that is the
+first or the only refused name too; its line did not name the secret. A
+refused name with no such character gets the line only when it is the first
+refused name, as before.
+
 **A `secret push` refusal names every secret its `Fix:` leaves as `<name>`
 (#307).** `secret push A,B --to vault --as '<name>,<name>'` said only that
 A's `<name>` was a placeholder; it now prints one placeholder line per
