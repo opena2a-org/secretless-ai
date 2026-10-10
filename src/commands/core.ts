@@ -17,7 +17,7 @@ import { isDaemonInstalled } from '../session/install';
 import { VERSION, CLI, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime } from './utils';
 import { findGitCredentialExposure, describeExposure } from '../git-credential-files';
 import { explainFinding, isEngineAvailable } from '../nanomind';
-import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard, quotePathForDisplay } from '../display-safe';
+import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard, quotePathForDisplay, withSlashSeparators } from '../display-safe';
 import { c, divider } from './colors';
 
 export function runInit(projectDir: string): number {
@@ -66,7 +66,7 @@ export function runInit(projectDir: string): number {
       console.error(`  Not a directory: ${named}`);
       console.error('  Nothing was written. init sets up a project directory, and this path is a file.');
       console.error(`  Verify: ls -ld ${quoted}`);
-      console.error(`  Fix:    ${CLI} init ${pathOperand(path.dirname(projectDir))}\n`);
+      console.error(`  Fix:    ${CLI} init ${pathOperand(path.dirname(withoutTrailingDot(projectDir)))}\n`);
     }
     return 1;
   }
@@ -275,6 +275,10 @@ export function runInit(projectDir: string): number {
  * One line per path `init` refused to write through, with its reason, then a
  * Verify and a Fix line. Paths are shown relative to the working directory so
  * the printed commands run as pasted, including under `init <dir>`.
+ *
+ * The directory part is the caller's argument, so the list names each path
+ * escaped and a command names it only when it prints as itself, as the
+ * "Directory not found" message does.
  */
 function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; path: string; reason: string }>): void {
   const shown = refused.map(r => ({
@@ -286,15 +290,15 @@ function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; pa
   console.log();
   console.log(`  ${c.yellow('Not configured:')} ${tools.join(', ')}`);
   for (const r of shown) {
-    console.log(`    ${r.shown} ${r.reason} (${toolDisplayName(r.tool)})`);
+    console.log(`    ${escapePathForDisplay(r.shown)} ${r.reason} (${toolDisplayName(r.tool)})`);
   }
   console.log('    Nothing was written for these tools: init does not write through a');
   console.log('    symbolic or hard link, into an entry of the wrong kind, or outside the');
   console.log('    project.');
   console.log();
   // `--` because a path relative to the working directory can start with `-`.
-  console.log(`  ${c.cyan('Verify:')} ls -ld -- ${shown.map(r => shellQuote(r.shown)).join(' ')}`);
-  const fixes = shown.map(r => refusedPathFix(shellQuote(r.shown), r.reason));
+  console.log(`  ${c.cyan('Verify:')} ls -ld -- ${shown.map(r => pathOperand(r.shown)).join(' ')}`);
+  const fixes = shown.map(r => refusedPathFix(pathOperand(r.shown), r.reason));
   fixes[fixes.length - 1] += ', then re-run: secretless-ai init';
   fixes.forEach((f, i) => console.log(i === 0 ? `  ${c.cyan('Fix:')}    ${f}` : `          ${f}`));
 }
@@ -331,13 +335,35 @@ export function shellQuote(p: string): string {
 }
 
 /**
- * A path as the operand of a `Verify:` or `Fix:` command we print: quoted for
- * pasting, or `<path>` when the name cannot be printed as itself. Quoting keeps
- * such a name one shell word, but a line feed inside the quotes still starts a
- * new line on the screen, and the escaped form names a different path.
+ * @internal A path as the operand of a `Verify:` or `Fix:` command we print:
+ * quoted for pasting, or `<path>` when the name cannot be printed as itself.
+ * Quoting keeps such a name one shell word, but a line feed inside the quotes
+ * still starts a new line on the screen, and the escaped form names a
+ * different path.
+ *
+ * On Windows the message above the command names the path with `/` between its
+ * parts (`escapePathForDisplay`), so the command spells it the same way; Node
+ * takes either separator there. `sep` is a parameter so both platforms can be
+ * tested on either.
  */
-function pathOperand(p: string): string {
-  return hasDisplayHazard(p) ? '<path>' : shellQuote(p);
+export function pathOperand(p: string, sep: string = path.sep): string {
+  return hasDisplayHazard(p) ? '<path>' : shellQuote(withSlashSeparators(p, sep));
+}
+
+/**
+ * `p` without a trailing `/.` or `/`: `notes.txt/.` names `notes.txt` itself,
+ * and `path.dirname` of the longer spelling is the file, not the directory
+ * that holds it. A trailing `..` names another directory and is kept.
+ */
+function withoutTrailingDot(p: string): string {
+  const isSep = (ch: string): boolean => ch === '/' || (process.platform === 'win32' && ch === '\\');
+  let end = p.length;
+  for (;;) {
+    if (end > 0 && isSep(p[end - 1])) end -= 1;
+    else if (end > 1 && p[end - 1] === '.' && isSep(p[end - 2])) end -= 2;
+    else break;
+  }
+  return end > 0 ? p.slice(0, end) : p;
 }
 
 type NotADirectory =
@@ -438,6 +464,73 @@ function notADirectoryReason(dir: string): NotADirectory | null {
 }
 
 /**
+ * Where the lookup of `dir` stopped when the path is there and cannot be
+ * reached: the error code, and the leading part of the path it stopped at. A
+ * directory this user cannot search stops it at the name under that directory
+ * (EACCES), and a symbolic link loop stops it at the link (ELOOP). Null when
+ * the path can be looked up, or is absent.
+ *
+ * Each leading part is looked up as it is spelled, so the kernel resolves any
+ * `..` in it and the part named is one the caller typed.
+ */
+function lookupStop(dir: string): { code: string; at: string } | null {
+  const nodeFs = require('fs') as typeof import('fs');
+  const codeAt = (p: string): string | undefined => {
+    try {
+      nodeFs.statSync(p);
+      return undefined;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code ?? 'UNKNOWN';
+    }
+  };
+  const code = codeAt(dir);
+  if (code === undefined || code === 'ENOENT' || code === 'ENOTDIR') return null;
+  const root = path.parse(dir).root;
+  let current = root;
+  for (const name of dir.slice(root.length).split(path.sep)) {
+    if (name === '') continue;
+    current = current === root ? root + name : current + path.sep + name;
+    if (codeAt(current) === code) return { code, at: current };
+  }
+  return { code, at: dir };
+}
+
+/**
+ * The refusal for a `scan`, `status` or `verify` target that is there and
+ * cannot be reached: the cause, the part of the path that has it, and a
+ * `Verify:` command on that part.
+ */
+function unreachableTargetLines(projectDir: string, verb: string, stop: { code: string; at: string }): string[] {
+  const named = escapePathForDisplay(projectDir);
+  const rerun = `then re-run: ${CLI} ${verb} ${pathOperand(projectDir)}`;
+  if (stop.code === 'EACCES') {
+    // The lookup reached this name and was refused, so the directory that
+    // holds the name is the one without search permission. `-L` shows that
+    // directory's own mode when the path names it through a symbolic link.
+    const holder = path.dirname(stop.at);
+    return [
+      `Permission denied: ${named}`,
+      `${escapePathForDisplay(holder)} cannot be searched by this user, so nothing inside it can be reached.`,
+      `Verify: ls -ldL ${pathOperand(holder)}`,
+      `Fix:    restore search (x) permission on ${pathOperand(holder)}, ${rerun}`,
+    ];
+  }
+  if (stop.code === 'ELOOP') {
+    return [
+      `Too many levels of symbolic links: ${named}`,
+      `${escapePathForDisplay(stop.at)} is a symbolic link in a loop, or in a chain of links too long to follow.`,
+      `Verify: ls -ld ${pathOperand(stop.at)}`,
+      `Fix:    remove ${pathOperand(stop.at)} or point it at a directory, ${rerun}`,
+    ];
+  }
+  return [
+    `Cannot open: ${named}`,
+    `The lookup stopped at ${escapePathForDisplay(stop.at)} with the error ${stop.code}.`,
+    `Verify: ls -ld ${pathOperand(stop.at)}`,
+  ];
+}
+
+/**
  * Refuse a `scan`, `status` or `verify` target that is not there, on stderr.
  * Returns true when it refused.
  *
@@ -447,23 +540,30 @@ function notADirectoryReason(dir: string): NotADirectory | null {
  * `scan` reads a named file, so its Fix names the file; `status` and `verify`
  * take a directory, so theirs names the one that holds it.
  *
+ * A path that is there and cannot be reached is a third mistake: `existsSync`
+ * is false for it too, and "Directory not found" denied a directory the reader
+ * can see. It names what stopped the lookup instead (`unreachableTargetLines`).
+ *
  * `bare` is the `--json` form: no indent and no trailing blank line.
  */
 function refuseMissingTarget(projectDir: string, verb: 'scan' | 'status' | 'verify', bare = false): boolean {
   const nodeFs = require('fs') as typeof import('fs');
   if (nodeFs.existsSync(projectDir)) return false;
   const named = escapePathForDisplay(projectDir);
-  const reason = notADirectoryReason(projectDir);
-  const lines = reason?.kind === 'underFile'
-    ? [
-      `Not a directory: ${escapePathForDisplay(reason.file)}`,
-      `${named} is inside ${escapePathForDisplay(reason.file)}, which is a file, so nothing can be at that path.`,
-      `Verify: ls -ld ${pathOperand(reason.file)}`,
-      `Fix:    ${CLI} ${verb} ${pathOperand(verb === 'scan' ? reason.file : path.dirname(reason.file))}`,
-    ]
-    : bare
-      ? [`Directory not found: ${named}`]
-      : [`Directory not found: ${named}`, 'Check the path and try again.'];
+  const stop = lookupStop(projectDir);
+  const reason = stop ? null : notADirectoryReason(projectDir);
+  const lines = stop
+    ? unreachableTargetLines(projectDir, verb, stop)
+    : reason?.kind === 'underFile'
+      ? [
+        `Not a directory: ${escapePathForDisplay(reason.file)}`,
+        `${named} is inside ${escapePathForDisplay(reason.file)}, which is a file, so nothing can be at that path.`,
+        `Verify: ls -ld ${pathOperand(reason.file)}`,
+        `Fix:    ${CLI} ${verb} ${pathOperand(verb === 'scan' ? reason.file : path.dirname(reason.file))}`,
+      ]
+      : bare
+        ? [`Directory not found: ${named}`]
+        : [`Directory not found: ${named}`, 'Check the path and try again.'];
   lines.forEach((line, i) => {
     console.error(bare ? line : `  ${line}${i === lines.length - 1 ? '\n' : ''}`);
   });

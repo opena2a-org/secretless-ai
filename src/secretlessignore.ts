@@ -15,7 +15,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-/** The user's ignore file, read from the root of the directory being scanned. */
+/**
+ * @internal The user's ignore file, read from the root of the directory being
+ * scanned. Exported for the help text and its tests only.
+ */
 export const IGNORE_FILENAME = '.secretlessignore';
 
 /**

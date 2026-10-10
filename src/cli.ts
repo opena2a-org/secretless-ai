@@ -10,7 +10,8 @@ import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode':
 import { VERSION, CLI_BARE, formatCommandError } from './commands/utils';
 // @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
 // so they're loaded via dynamic import() inside the async main().
-import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize } from './commands/core';
+import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize, pathOperand } from './commands/core';
+import { escapePathForDisplay } from './display-safe';
 import { runClean, runWatch, runScanHistory, runCleanHistory } from './commands/transcript';
 import { runSecret } from './commands/secrets';
 import { runRun, runEnv, runImport, runSetupCommand } from './commands/env-run';
@@ -190,11 +191,14 @@ async function main(): Promise<number> {
  * Pre-fix: `secretless-ai init --ci` created a literal `--ci/` directory and
  * scaffolded files into it (release-test 2026-05-12 P1).
  *
+ * The argument is printed escaped, as a path is: a line feed in it started a
+ * line of its own under this message.
+ *
  * Returns `false` if the caller should bail with exit 2; `true` to proceed.
  */
 function rejectUnknownFlagAsDirArg(command: string, dirArg: string | undefined): boolean {
   if (dirArg && dirArg.startsWith('-')) {
-    console.error(`  Unknown option: ${dirArg}`);
+    console.error(`  Unknown option: ${escapePathForDisplay(dirArg)}`);
     console.error(`  \`${command}\` takes an optional directory path, not flags.`);
     console.error(`  Run \`${CLI_BARE} ${command} --help\` for usage.`);
     return false;
@@ -295,9 +299,13 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       // file went unscanned — the same silent-shortfall class this release is
       // about. Failing loudly is better than answering for input we ignored.
       if (positionalArgs.length > 1) {
-        console.error(`  scan takes one path, but ${positionalArgs.length} were given: ${positionalArgs.join(', ')}`);
+        // The paths are printed escaped, and the command names the first only
+        // when it prints as itself: a line feed in one started a line of its
+        // own in both places.
+        const given = positionalArgs.map((p) => escapePathForDisplay(p)).join(', ');
+        console.error(`  scan takes one path, but ${positionalArgs.length} were given: ${given}`);
         console.error('  Scan them one at a time, or pass the directory that contains them:');
-        console.error(`    ${CLI_BARE} scan ${positionalArgs[0]}`);
+        console.error(`    ${CLI_BARE} scan ${pathOperand(positionalArgs[0])}`);
         console.error(`    ${CLI_BARE} scan .`);
         return 2;
       }

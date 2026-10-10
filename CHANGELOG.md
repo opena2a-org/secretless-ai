@@ -15,6 +15,41 @@ check found, and the paths it lists as created and under "Not configured" are
 in that directory. A path whose `..` names the same directory either way, such
 as one with no symbolic link before the `..`, is set up and printed as before.
 
+**`scan`, `status` and `verify` say why a directory that is there cannot be
+reached, `init` escapes a path in its "Not configured" block, and an argument
+the command line refuses is printed escaped (#276).** `scan locked/inner`,
+where `locked` is a directory this user cannot search, said "Directory not
+found" and "Check the path and try again"; `scan`, `status` and `verify` now
+say "Permission denied", name the directory that cannot be searched, and print
+a `Verify:` line and a `Fix:` line. A path through a symbolic link that points
+back at itself gets "Too many levels of symbolic links" and names the link,
+and any other failure of the lookup is named by its error code. `scan --json`
+prints the same lines to stderr and no document. `init` printed a path as
+given in the list under "Not configured" and in the `Verify:` and `Fix:` lines
+under that list, so a line feed in a directory name started a new line; the
+list now prints each control character as an escape such as `\n`, and those
+commands name `<path>` in place of a path that cannot be printed as itself.
+`scan` given two paths, and `init` or `status` given an argument that starts
+with `-`, printed the arguments as given; they are now escaped the same way,
+and the `scan` command that message suggests quotes the first path for
+pasting, or names `<path>`. On Windows, the "Directory not found" and "Not a
+directory" messages of `init`, `scan`, `status` and `verify` print a path with
+`/` between its parts, as a finding's path is printed, while the `Verify:` and
+`Fix:` commands under them kept `\`; the commands now spell the path with `/`
+as well, and so do the list and the commands under "Not configured". `scan
+--help` said a directory scan "opens nothing else" beyond the files it lists,
+while every command also reads the telemetry setting and creates its file when
+that is absent; the help now limits that sentence to the files a scan opens
+for secrets or for its rules, and names the file:
+`~/.config/opena2a/telemetry.json`, or
+`$XDG_CONFIG_HOME/opena2a/telemetry.json` when that variable is set. For a
+caller of `runInit`, a file path that ends in `/.`, such as `notes.txt/.`, got
+a `Fix:` that ran `init` on the file; it now names the directory that holds
+the file. `IGNORE_FILENAME` in `dist/secretlessignore`, exported for this
+package's own help text, is left out of the published type declarations, as
+the four exports named under #273 are. Detection, exit codes and the `--json`
+document are unchanged.
+
 **`scan`, `status` and `verify` name the file a path runs through, `init`
 escapes the path in its "Directory not found" and "Not a directory" messages,
 and `scan --help` names the ignore file
@@ -29,15 +64,13 @@ directory" messages, and those of `scan`, `status` and `verify`, now print
 each control character in a path as an escape such as `\n` or `\e`, as `scan`
 does for a file name, and a `Verify:` or `Fix:` command under them names
 `<path>` in place of a path that cannot be printed as itself. `init` still
-prints a path as given in the list under "Not configured", in the `Verify:`
-and `Fix:` lines under that list, and in an error from the file system, such
-as `EACCES: permission denied`. `init` on a symbolic link whose target does
-not exist, or on a path
-under one, suggested a `mkdir -p` that fails on that link; it now names the
-link and leaves that suggestion out. For a caller of `runInit`, a path with
-`..` after a symbolic link named a file in the link's own parent directory; it
-now names the file the lookup stopped at. `scan --help` said a directory scan
-opens nothing beyond the files it lists, while it also reads
+prints a path as given in an error from the file system, such as `EACCES:
+permission denied`. `init` on a symbolic link whose target does not exist, or
+on a path under one, suggested a `mkdir -p` that fails on that link; it now
+names the link and leaves that suggestion out. For a caller of `runInit`, a
+path with `..` after a symbolic link named a file in the link's own parent
+directory; it now names the file the lookup stopped at. `scan --help` said a
+directory scan opens nothing beyond the files it lists, while it also reads
 `.secretlessignore` at the top of the scanned directory for its rules; the
 help now names it. An option description too long for its line in any
 command's `--help` now continues on the next line, so `scan --help` fits an
