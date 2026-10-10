@@ -86,6 +86,7 @@ describe('a command\'s own refusal of a subcommand or value prints the value esc
     [['broker', 'start', '--port', HOSTILE], `  Invalid port: ${SHOWN}.`],
     [['secret', 'sync', '--from', HOSTILE], `  Unknown backend "${SHOWN}".`],
     [['secret', 'push', 'A', '--to', HOSTILE], `  Unknown target "${SHOWN}".`],
+    [['secret', 'push', 'A', '--to', 'vault', '--as', HOSTILE], `  "${SHOWN}" cannot name a secret in Vault`],
     [['scope', 'check', HOSTILE], `  No baseline found for "${SHOWN}".`],
   ];
 
@@ -99,6 +100,15 @@ describe('a command\'s own refusal of a subcommand or value prints the value esc
       expect(lines.some((l) => l.startsWith(named)), lines.join('\n')).toBe(true);
     });
   }
+
+  itIfBuilt('`secret push --as <value>`: the Fix leaves `<name>` where the refused name cannot be spelled as a command word', () => {
+    const res = cli(['secret', 'push', 'A', '--to', 'vault', '--as', HOSTILE]);
+    const lines = res.stderr.split('\n');
+
+    expect(res.status).toBe(2);
+    expect(lines.filter((l) => l.startsWith(FORGED))).toEqual([]);
+    expect(lines).toContain('  Fix:     npx secretless-ai secret push A --to vault --as <name>');
+  });
 
   // Not a refusal, and it exits 0, but it names the value the same way.
   itIfBuilt('`scope reset <value>`: a line feed in the value starts no line', () => {
