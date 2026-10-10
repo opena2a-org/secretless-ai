@@ -68,8 +68,8 @@ export interface StatusResult {
    */
   userSettings: UserSettingsStatus | null;
   /**
-   * The strongest mechanism `isProtected` rests on, and `none` exactly when it
-   * is false.
+   * The strongest mechanism `isProtected` rests on. `none` whenever it is
+   * false, and in the one case below where it is true.
    *
    * `isProtected` is true for a project whose only configuration is an
    * instruction file, which is advice: nothing enforces it. That boolean and

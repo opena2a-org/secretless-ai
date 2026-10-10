@@ -55,8 +55,17 @@ function claimPattern(text) {
 export function retractedClaimsIn(content) {
   const hits = [];
   for (const { text } of RETRACTED_CLAIMS) {
+    // Matches arrive in order, so count only the newlines between one match
+    // and the next: counting from the start of the file for every match made
+    // a file with many hits quadratic.
+    let line = 1;
+    let newline = content.indexOf('\n');
     for (const match of content.matchAll(claimPattern(text))) {
-      hits.push({ claim: text, line: content.slice(0, match.index).split('\n').length });
+      while (newline !== -1 && newline < match.index) {
+        line += 1;
+        newline = content.indexOf('\n', newline + 1);
+      }
+      hits.push({ claim: text, line });
     }
   }
   return hits.sort((a, b) => a.line - b.line);

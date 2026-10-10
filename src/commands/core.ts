@@ -1435,7 +1435,13 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       hookInstalled: s.hookInstalled,
       hookWired: s.hookWired,
       denyRuleCount: s.denyRuleCount,
+      // `detectedTools`: found in the project, configured or not.
+      // `configuredTools`: configured, by an instruction file or an ignore
+      // file. `ignoreFileTools`: the configured tools whose file is an ignore
+      // file, which the text output lists apart as `Ignore file:`.
+      detectedTools: s.detectedTools,
       configuredTools: s.configuredTools,
+      ignoreFileTools: s.ignoreFileTools,
       secretsFound: s.secretsFound,
       // `secretsFound: 0` is a lower bound, not a verdict, when the scan behind
       // it could not read the whole tree. A CI consumer gating on this needs to

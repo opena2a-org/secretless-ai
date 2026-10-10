@@ -101,6 +101,35 @@ describe("the retracted-claims list finds each sentence where a shipped file car
     }
   });
 
+  it("gives each of several hits its own line, two on one line included", async () => {
+    const mod = await loadRetractedClaims();
+    for (const { text } of mod.RETRACTED_CLAIMS) {
+      const content = ["/**", ` * ${text} ${text}`, " */", "", `// ${text}`].join("\n");
+      expect(mod.retractedClaimsIn(content)).toEqual([
+        { claim: text, line: 2 },
+        { claim: text, line: 2 },
+        { claim: text, line: 5 },
+      ]);
+    }
+  });
+
+  it("reads a file with many hits in one pass, not once per hit", async () => {
+    const mod = await loadRetractedClaims();
+    const { text } = mod.RETRACTED_CLAIMS[0];
+    const count = 25_000;
+    const content = `${text}\n`.repeat(count);
+
+    const started = performance.now();
+    const hits = mod.retractedClaimsIn(content);
+    const elapsed = performance.now() - started;
+
+    expect(hits.length).toBe(count);
+    expect(hits.every((hit, i) => hit.line === i + 1)).toBe(true);
+    // Counting each hit's line from the start of the file took seconds on
+    // this input; one pass over it takes milliseconds.
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
   it("control: a sentence that says the opposite, or another one, is not a hit", async () => {
     const mod = await loadRetractedClaims();
     for (const { text } of mod.RETRACTED_CLAIMS) {
