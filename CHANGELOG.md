@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**`secret push` prints a `Fix:` when two secrets would be pushed as one name
+(#303).** `secret push A,B --to vault --as x,x` printed
+`A and B would both be pushed as "x".` and the usage line, with no command to
+run next. It now prints `Fix: ... --as x,<name>`: the first secret keeps the
+name, and each later secret the store would push as the same name is left as
+`<name>` and named in its own line. This covers Azure Key Vault, which does not
+tell names apart by case, so `secret push ab,AB --to azure-kv --vault kv-demo`
+offers `--as ab,<name>`.
+
 **A `secret push` run with the `<name>` of an earlier `Fix:` left unfilled
 says `<name>` is a placeholder to replace (#302).** `secret push A,B --to
 vault --as '<name>,a_b'` printed `"<name>" cannot name a secret in Vault` and
