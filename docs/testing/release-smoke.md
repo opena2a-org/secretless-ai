@@ -97,7 +97,7 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
 - `scan --json`: single JSON document on stdout — `{tool, version, findings,
   summary}`. Exit 1 when findings exist (CI gating), 0 when clean.
 - `status --json`: single JSON document — `{tool, version, isProtected,
-  protectionScope, hookInstalled, denyRuleCount, configuredTools,
+  protectionScope, enforcement, hookInstalled, denyRuleCount, configuredTools,
   secretsFound, scanIncomplete, settingsUnreadable, settingsAmbiguous,
   userSettings, transcriptProtection, exposuresOpen, gitCredentials, backend,
   configuredBackend, gcpProject, session, broker, summary}`.
@@ -166,6 +166,29 @@ distinguishable from the JSON alone -- measured / settingsUnreadable / settingsA
 collision with `grep` or `node -e JSON.parse`: both exit 0 on a duplicate and print
 nothing. Also run it against a REAL settings file from a dev tree, not only fixtures --
 a false positive here is a warning on the tool own status page.
+
+---
+
+### 2e. status and init name the mode (enforced, ignore file, advisory)
+
+```bash
+ADV=$(mktemp -d) && mkdir "$ADV/.windsurf"
+$SL init "$ADV"      # under Configured: "Advisory: Windsurf (instruction file, nothing enforces it)"
+$SL status "$ADV"    # verdict: "Advisory only: instructions for Windsurf, which nothing enforces (...)"
+$SL status --json "$ADV" | jq ".isProtected, .enforcement, .summary.verdict"
+#   true
+#   "advisory"
+#   "protected-warnings"
+AID=$(mktemp -d) && touch "$AID/.aider.conf.yml"
+$SL init "$AID"      # under Configured: "Ignore file: Aider (.aiderignore, no hook enforces it)"
+$SL status "$AID"    # verdict: "Ignore file only: ..."; never "Not protected" after init
+```
+
+`enforcement` is `hook | ignore-file | advisory | none`: the strongest mechanism
+`isProtected` rests on. Fail if the verdict line prints `Protected` for a project with
+no Claude Code guard hook and no user-level settings that reach it, if `init` and
+`status` disagree about either directory, or if a `Claude Code hook not installed` row
+in these projects ends in a bare `secretless-ai init`, which installs no hook there.
 
 ---
 

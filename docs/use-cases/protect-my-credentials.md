@@ -19,6 +19,8 @@ Expected output in a project that Claude Code and Cursor both use, after the ver
 
 ```
   Configured: Claude Code, Cursor (2 of 2 detected)
+    Enforced: Claude Code (guard hook and deny patterns)
+    Advisory: Cursor (instruction file, nothing enforces it)
 
   Created:
     + .claude/hooks/secretless-guard.sh

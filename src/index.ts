@@ -7,7 +7,7 @@ export {
 } from './confidence';
 export { status, type StatusResult } from './status';
 export { verify, type VerifyResult } from './verify';
-export { detectAITools, toolDisplayName, type AITool } from './detect';
+export { detectAITools, toolDisplayName, type AITool, type Enforcement } from './detect';
 export { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, type CredentialPattern } from './patterns';
 export { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher, type LoadOptions as IgnoreLoadOptions } from './secretlessignore';
 export { cleanTranscripts, discoverTranscripts, type CleanResult, type CleanOptions, type TranscriptFinding } from './transcript';

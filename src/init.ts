@@ -5,7 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { detectAITools, toolDisplayName, type AITool } from './detect';
+import { detectAITools, toolDisplayName, AIDER_IGNORE_FILE, type AITool } from './detect';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
 import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filesystemPathForm, mergeRules } from './custom-rules';
 import type { CustomRules, RulesFileIssue } from './custom-rules';
@@ -670,13 +670,15 @@ function configureCline(projectDir: string, result: InitResult): void {
 // ============================================================================
 
 function configureAider(projectDir: string, result: InitResult): void {
-  const ignorePath = path.join(projectDir, '.aiderignore');
+  // The file and the marker are the ones `status` reads, so the block written
+  // here is the block `status` lists Aider for.
+  const ignorePath = path.join(projectDir, AIDER_IGNORE_FILE.path);
   const existing = fs.existsSync(ignorePath) ? fs.readFileSync(ignorePath, 'utf-8') : '';
 
-  if (!existing.includes('# Secretless')) {
+  if (!existing.includes(AIDER_IGNORE_FILE.marker)) {
     const secretPatterns = [
       '',
-      '# Secretless: keep secrets out of AI context',
+      `${AIDER_IGNORE_FILE.marker}: keep secrets out of AI context`,
       '.env',
       '.env.*',
       // Un-ignore committed template files — placeholders, not real secrets.
@@ -698,9 +700,9 @@ function configureAider(projectDir: string, result: InitResult): void {
 
     fs.writeFileSync(ignorePath, existing + secretPatterns + '\n');
     if (existing) {
-      result.filesModified.push('.aiderignore');
+      result.filesModified.push(AIDER_IGNORE_FILE.path);
     } else {
-      result.filesCreated.push('.aiderignore');
+      result.filesCreated.push(AIDER_IGNORE_FILE.path);
     }
   }
 }
