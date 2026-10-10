@@ -1109,6 +1109,7 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
       if (problems[i] === undefined && !holders.has(folded)) holders.set(folded, { index: i, spelled: r });
     });
     const holderLines: string[] = [];
+    const unspelled = new Set<number>();
     const operands = remotes.map((r, i) => {
       if (problems[i] === undefined) {
         // The first accepted name to fold this way holds it, ahead of any
@@ -1121,7 +1122,10 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
         return r;
       }
       if (isPlaceholder(r)) return r;
-      if (hasDisplayHazard(r)) return '<name>';
+      if (hasDisplayHazard(r)) {
+        unspelled.add(i);
+        return '<name>';
+      }
       const suggested = target.suggestName(r);
       const folded = target.foldName(suggested);
       const holder = holders.get(folded);
@@ -1140,9 +1144,14 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
         console.error(`  "${remotes[i]}" in --as is a placeholder: replace it with the name ${names[i]} should have in ${target.label}; ${p}.`);
       }
     });
-    if (refused !== -1) {
-      console.error(`  "${escapeForDisplay(remotes[refused])}" cannot name a secret in ${target.label}: ${problems[refused]}.`);
-    }
+    // The first refused name gets the line that gives the rule. A name the
+    // Fix cannot spell has no name offered in its place, so each one gets the
+    // line too, wherever it stands, ending with the secret it was given for.
+    remotes.forEach((r, i) => {
+      if (i !== refused && !unspelled.has(i)) return;
+      const whose = unspelled.has(i) ? `; choose another name for ${names[i]}` : '';
+      console.error(`  "${escapeForDisplay(r)}" cannot name a secret in ${target.label}: ${problems[i]}${whose}.`);
+    });
     for (const line of holderLines) console.error(line);
     console.error('  Nothing was read or pushed.\n');
     console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);

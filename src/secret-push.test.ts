@@ -795,6 +795,10 @@ describe('two secrets the store would push as one name get a Fix (#303)', () => 
 describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
   const vault = (): PushTarget => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }));
   const placeholderLine = (placeholder: string, name: string): string => `  "${placeholder}" in --as is a placeholder: replace it with the name ${name} should have in `;
+  const cannotLines = (): string[] => printed().split('\n').filter((l) => l.includes(' cannot name a secret in '));
+  const VAULT_RULE = 'Vault https://vault.example.test, KV v2 mount "secret": names allow letters, digits, \'-\' and \'_\'';
+  // Built from its code point, so this file holds no invisible character.
+  const ZERO_WIDTH_SPACE = String.fromCodePoint(0x200b);
 
   it('every placeholder left in --as gets its own line, and the Fix keeps each', async () => {
     const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', '<name>,<name>'], { store, createTarget: vault });
@@ -865,6 +869,105 @@ describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
       for (const target of targets) expect(target.nameProblem(name), `${target.type} U+${code.toString(16)}`).toBeDefined();
     }
     expect(hazards).toBeGreaterThan(0);
+  });
+
+  it('a refused name the Fix cannot spell gets its own line behind another refused name, ending with the secret to rename', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,c\td'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(cannotLines()).toEqual([
+      `  "a.b" cannot name a secret in ${VAULT_RULE}.`,
+      `  "c\\td" cannot name a secret in ${VAULT_RULE}; choose another name for DB_PASSWORD.`,
+    ]);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a_b,<name>']);
+
+    // A refused name the Fix replaces still gets a line only when it is the first refused name.
+    const gcp = (): PushTarget => new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' }));
+    const gcpRule = 'GCP Secret Manager: Secret Manager names allow letters, digits, \'-\' and \'_\', up to 255 characters';
+    out.length = 0;
+    await runSecretPush(['A,B,C', '--to', 'gcp-sm', '--as', 'a.b,c\x1b[2Kd,e.f'], { store, createTarget: gcp });
+    expect(cannotLines()).toEqual([
+      `  "a.b" cannot name a secret in ${gcpRule}.`,
+      `  "c\\e[2Kd" cannot name a secret in ${gcpRule}; choose another name for B.`,
+    ]);
+    expect(fixCommand()).toEqual(['A,B,C', '--to', 'gcp-sm', '--as', 'a_b,<name>,e_f']);
+  });
+
+  it('each of several names the Fix cannot spell gets a line, and so does one that is the only refused name', async () => {
+    await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', `c\td,e${ZERO_WIDTH_SPACE}f`], { store, createTarget: vault });
+    expect(cannotLines()).toEqual([
+      `  "c\\td" cannot name a secret in ${VAULT_RULE}; choose another name for API_KEY.`,
+      `  "e\\u200bf" cannot name a secret in ${VAULT_RULE}; choose another name for DB_PASSWORD.`,
+    ]);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', '<name>,<name>']);
+
+    // The same name given for two secrets: the lines differ in the secret they end with.
+    out.length = 0;
+    await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'c\td,c\td'], { store, createTarget: vault });
+    expect(cannotLines()).toEqual([
+      `  "c\\td" cannot name a secret in ${VAULT_RULE}; choose another name for API_KEY.`,
+      `  "c\\td" cannot name a secret in ${VAULT_RULE}; choose another name for DB_PASSWORD.`,
+    ]);
+
+    out.length = 0;
+    await runSecretPush(['API_KEY', '--to', 'vault', '--as', 'x\ny'], { store, createTarget: vault });
+    expect(cannotLines()).toEqual([`  "x\\ny" cannot name a secret in ${VAULT_RULE}; choose another name for API_KEY.`]);
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', '<name>']);
+  });
+
+  it('on each target, every <name> or placeholder a Fix prints has one line that names its secret', async () => {
+    const targets: Array<[string[], () => PushTarget]> = [
+      [['--to', 'vault'], vault],
+      [['--to', 'gcp-sm'], () => new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' }))],
+      [['--to', 'azure-kv', '--vault', 'kv-demo'], () => new AzureKeyVaultTarget('kv-demo', { env: NO_ENV, runChild: azSignedIn() })],
+    ];
+    // Names a target accepts, two that differ only in case, names it refuses
+    // and replaces, placeholders, and names no Fix can spell.
+    const GIVEN = ['x', 'X', 'a-b', 'a_b', 'a.b', 'a:b', '<name>', '<names>', 'c\td', `e${ZERO_WIDTH_SPACE}f`];
+    const SECRETS = ['A', 'B', 'C'];
+    // Every list of one to three of them.
+    const lists: string[][] = [];
+    let longer: string[][] = [[]];
+    for (let n = 1; n <= SECRETS.length; n++) {
+      longer = longer.flatMap((list) => GIVEN.map((g) => [...list, g]));
+      lists.push(...longer);
+    }
+    const seen = { placeholder: 0, merged: 0, taken: 0, unspelled: 0 };
+
+    for (const [to, make] of targets) {
+      const target = make();
+      for (const given of lists) {
+        // A list the target accepts whole is pushed, not refused.
+        const accepted = given.every((g) => target.nameProblem(g) === undefined);
+        if (accepted && new Set(given.map((g) => target.foldName(g))).size === given.length) continue;
+        const secrets = SECRETS.slice(0, given.length);
+        out.length = 0;
+        const code = await runSecretPush([secrets.join(','), ...to, '--as', given.join(',')], { store, createTarget: make });
+        const lines = printed().split('\n');
+        const said = `${to.join(' ')} --as ${JSON.stringify(given)}\n${printed()}`;
+        expect(code, said).toBe(2);
+
+        const args = fixCommand();
+        args[args.indexOf('--as') + 1].split(',').forEach((operand, i) => {
+          if (!operand.startsWith('<')) return;
+          const rename = `; choose another name for ${secrets[i]}.`;
+          const named: Record<keyof typeof seen, boolean> = {
+            placeholder: lines.some((l) => l.startsWith(`  "${operand}" in --as is a placeholder: replace it with the name ${secrets[i]} should have in `)),
+            merged: lines.some((l) => l.includes(` and ${secrets[i]} would both be pushed as "`)),
+            taken: lines.some((l) => l.includes(' is taken by ') && l.endsWith(rename)),
+            unspelled: lines.some((l) => l.includes(' cannot name a secret in ') && l.endsWith(rename)),
+          };
+          const kinds = (Object.keys(named) as Array<keyof typeof seen>).filter((kind) => named[kind]);
+          expect(kinds, `${secrets[i]} in ${said}`).toHaveLength(1);
+          seen[kinds[0]]++;
+        });
+      }
+    }
+
+    expect(calls).toEqual([]);
+    expect(children).toEqual([]);
+    for (const [kind, count] of Object.entries(seen)) expect(count, kind).toBeGreaterThan(0);
   });
 });
 
