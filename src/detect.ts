@@ -17,7 +17,8 @@ export type AITool = 'claude-code' | 'cursor' | 'copilot' | 'windsurf' | 'cline'
  *   tool applies it.
  * - `advisory`: an instruction file. Nothing enforces it, and it has no effect
  *   unless the tool loads that file.
- * - `none`: no configuration.
+ * - `none`: nothing of the above is in place. A guard script on disk that no
+ *   settings file runs is `none`: Claude Code does not run it.
  */
 export type Enforcement = 'hook' | 'ignore-file' | 'advisory' | 'none';
 

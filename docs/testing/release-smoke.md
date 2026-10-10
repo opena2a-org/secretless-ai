@@ -97,7 +97,7 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
 - `scan --json`: single JSON document on stdout — `{tool, version, findings,
   summary}`. Exit 1 when findings exist (CI gating), 0 when clean.
 - `status --json`: single JSON document — `{tool, version, isProtected,
-  protectionScope, enforcement, hookInstalled, denyRuleCount, configuredTools,
+  protectionScope, enforcement, hookInstalled, hookWired, denyRuleCount, configuredTools,
   secretsFound, scanIncomplete, settingsUnreadable, settingsAmbiguous,
   userSettings, transcriptProtection, exposuresOpen, gitCredentials, backend,
   configuredBackend, gcpProject, session, broker, summary}`.
@@ -182,12 +182,27 @@ $SL status --json "$ADV" | jq ".isProtected, .enforcement, .summary.verdict"
 AID=$(mktemp -d) && touch "$AID/.aider.conf.yml"
 $SL init "$AID"      # under Configured: "Ignore file: Aider (.aiderignore, no hook enforces it)"
 $SL status "$AID"    # verdict: "Ignore file only: ..."; never "Not protected" after init
+UNW=$(mktemp -d) && mkdir "$UNW/.claude" && $SL init "$UNW"
+echo '{}' > "$UNW/.claude/settings.json" && rm "$UNW/CLAUDE.md"   # guard script stays, nothing runs it
+$SL status "$UNW"    # row: "⚠ Claude Code guard script not run: ... → secretless-ai init"
+                     # verdict: "Not enforced: the guard script is on disk and no settings file runs it. ..."
+$SL status --json "$UNW" | jq ".isProtected, .enforcement, .hookInstalled, .hookWired"
+#   true
+#   "none"
+#   true
+#   false
+$SL init "$UNW" && $SL status --json "$UNW" | jq ".enforcement, .hookWired"
+#   "hook"
+#   true
 ```
 
 `enforcement` is `hook | ignore-file | advisory | none`: the strongest mechanism
-`isProtected` rests on. Fail if the verdict line prints `Protected` for a project with
-no Claude Code guard hook and no user-level settings that reach it, if `init` and
-`status` disagree about either directory, or if a `Claude Code hook not installed` row
+`isProtected` rests on. `hookInstalled` says the guard script is on disk; `hookWired`
+says `.claude/settings.json` runs it. `enforcement` is `hook` only when a settings file
+that reaches the project runs the guard or carries deny patterns. Fail if the verdict
+line prints `Protected` for a project where no settings file runs the guard and none
+carries deny patterns, if `init` and
+`status` disagree about any of these directories, or if a `Claude Code hook not installed` row
 in these projects ends in a bare `secretless-ai init`, which installs no hook there.
 
 ---
