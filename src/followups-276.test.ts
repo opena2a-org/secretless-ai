@@ -11,13 +11,14 @@ import { escapePathForDisplay } from './display-safe';
  * Follow-ups to #275 (#276): `scan`, `status` and `verify` print a path
  * escaped in "Directory not found" and "Not a directory", and say what stopped
  * the lookup of a directory that is there and cannot be reached; `init`
- * escapes a path in its "Not configured" block; `scan` with two paths, and
- * `init` or `status` with an argument that starts with `-`, print the
- * arguments escaped; `scan --help` scopes "It opens nothing else" and names
- * the telemetry setting file; a command spells a path as the message above it
- * does; `runInit` on `notes.txt/.` suggests the directory that holds the file;
- * and two exports that exist for this package's own code stay out of the
- * published declarations.
+ * escapes a path in its "Not configured" block; `scan` with two paths, `init`
+ * or `status` with an argument that starts with `-`, a command given an option
+ * it refuses or warns about, and an unknown command or `telemetry` action
+ * print the argument escaped; `scan --help` scopes "It opens nothing else"
+ * and names the telemetry setting file; a command spells a path as the
+ * message above it does; `runInit` on `notes.txt/.` suggests the directory
+ * that holds the file; and two exports that exist for this package's own code
+ * stay out of the published declarations.
  */
 
 const DIST = path.resolve(__dirname, '..', 'dist');
@@ -224,6 +225,70 @@ describe('an argument the command line refuses is printed escaped', () => {
       ]);
     });
   }
+
+  /** Lines of `text` that start with the forged line, which an unescaped line feed produces. */
+  function forgedLines(text: string): string[] {
+    return text.split('\n').filter((l) => l.startsWith(FORGED));
+  }
+
+  for (const verb of ['init', 'status', 'scan']) {
+    itIfBuiltPosix(`\`${verb}\` with an unknown option that starts with \`--\`: a line feed in it starts no line`, () => {
+      const res = cli([verb, `--x\n${FORGED}`]);
+
+      expect(res.status).toBe(2);
+      expect(errorLines(res.stderr)[0]).toBe(`  Unknown option: --x\\n${FORGED}`);
+      expect(errorLines(res.stderr)[1]).toBe(`  \`${verb}\` was not run. Nothing was changed.`);
+      expect(forgedLines(res.stderr)).toEqual([]);
+    });
+  }
+
+  itIfBuiltPosix('a value given to a flag that takes none: a line feed in it starts no line', () => {
+    const res = cli(['status', `--json=\n${FORGED}`]);
+
+    expect(res.status).toBe(2);
+    expect(errorLines(res.stderr)[0]).toBe(`  --json does not take a value, but was given "\\n${FORGED}".`);
+    expect(forgedLines(res.stderr)).toEqual([]);
+  });
+
+  itIfBuiltPosix('a value `scan` cannot use: a line feed in it starts no line', () => {
+    const res = cli(['scan', '--max-files', `1\n${FORGED}`]);
+
+    expect(res.status).toBe(2);
+    expect(errorLines(res.stderr)[0]).toBe(
+      `  --max-files needs a positive whole number, e.g. --max-files 20000, but was given "1\\n${FORGED}".`,
+    );
+    expect(forgedLines(res.stderr)).toEqual([]);
+  });
+
+  itIfBuiltPosix('the warning for an unknown flag a command ignores: a line feed in it starts no line', () => {
+    const res = cli(['feedback', `--x\n${FORGED}`]);
+
+    expect(res.status).toBe(0);
+    expect(res.stderr).toBe(`  Warning: ignoring unknown flag --x\\n${FORGED}.\n`);
+  });
+
+  itIfBuiltPosix('an unknown command: a line feed in it starts no line', () => {
+    const res = cli([`x\n${FORGED}`]);
+
+    expect(res.status).toBe(1);
+    expect(errorLines(res.stderr)[0]).toBe(`Unknown command: x\\n${FORGED}`);
+    expect(forgedLines(res.stderr)).toEqual([]);
+    expect(forgedLines(res.stdout)).toEqual([]);
+  });
+
+  itIfBuiltPosix('an unknown `telemetry` action: a line feed in it starts no line', () => {
+    const res = cli(['telemetry', `x\n${FORGED}`]);
+
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain(`  Unknown telemetry action: x\\n${FORGED}\n`);
+    expect(forgedLines(res.stderr)).toEqual([]);
+  });
+
+  itIfBuilt('CONTROL: an option, a command and a warning that print as themselves are unchanged', () => {
+    expect(errorLines(cli(['init', '--bogus']).stderr)[0]).toBe('  Unknown option: --bogus');
+    expect(errorLines(cli(['bogus']).stderr)[0]).toBe('Unknown command: bogus');
+    expect(cli(['feedback', '--bogus']).stderr).toBe('  Warning: ignoring unknown flag --bogus.\n');
+  });
 });
 
 describe('`scan`, `status` and `verify` on a directory that is there and cannot be reached', () => {

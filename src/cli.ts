@@ -11,7 +11,7 @@ import { VERSION, CLI_BARE, formatCommandError } from './commands/utils';
 // @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
 // so they're loaded via dynamic import() inside the async main().
 import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize, pathOperand } from './commands/core';
-import { escapePathForDisplay } from './display-safe';
+import { escapeForDisplay, escapePathForDisplay } from './display-safe';
 import { runClean, runWatch, runScanHistory, runCleanHistory } from './commands/transcript';
 import { runSecret } from './commands/secrets';
 import { runRun, runEnv, runImport, runSetupCommand } from './commands/env-run';
@@ -45,10 +45,13 @@ import { nearestMatch } from './near-miss';
  * `argv.ts` is in the `mcp-wrapper` require graph, which is copied to a
  * standalone directory where `commands/utils`' `require('../../package.json')`
  * does not resolve. See the import note at the top of `argv.ts`.
+ *
+ * Each error is printed escaped: it quotes the token the user typed, and a
+ * line feed in that token started a line of its own under this message.
  */
 function formatArgvErrors(verb: string, errors: string[]): string[] {
   const spec = VERBS[verb];
-  const lines = errors.map((e) => `  ${e}`);
+  const lines = errors.map((e) => `  ${escapeForDisplay(e)}`);
   lines.push(`  \`${verb}\` was not run. Nothing was changed.`);
   if (spec) {
     lines.push(`  Supported: ${supportedFlags(spec).join(', ')}`);
@@ -138,7 +141,8 @@ async function main(): Promise<number> {
     for (const line of formatArgvErrors(command, prepared.errors)) console.error(line);
     return EXIT_USAGE;
   }
-  for (const warning of prepared.warnings) console.error(`  ${warning}`);
+  // Escaped for the same reason as the errors above: a warning quotes the flag.
+  for (const warning of prepared.warnings) console.error(`  ${escapeForDisplay(warning)}`);
 
   // telemetry subcommand
   if (command === 'telemetry') {
@@ -152,7 +156,7 @@ async function main(): Promise<number> {
     const action = args[1];
     if (action !== undefined && !TELEMETRY_ACTIONS.includes(action)) {
       const near = nearestMatch(action, TELEMETRY_ACTIONS);
-      console.error(`\n  Unknown telemetry action: ${action}${near ? ` (did you mean \`${near}\`?)` : ''}`);
+      console.error(`\n  Unknown telemetry action: ${escapeForDisplay(action)}${near ? ` (did you mean \`${near}\`?)` : ''}`);
       console.error('  Telemetry was NOT changed.');
       console.log(`  Usage: ${CLI_BARE} telemetry <${TELEMETRY_ACTIONS.join('|')}>`);
       console.log(`  Run \`${CLI_BARE} telemetry\` with no action to see the current setting.\n`);
@@ -396,7 +400,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       printHelp();
       return 0;
     default:
-      console.error(`Unknown command: ${command}`);
+      console.error(`Unknown command: ${escapeForDisplay(command)}`);
       printHelp();
       return 1;
   }
