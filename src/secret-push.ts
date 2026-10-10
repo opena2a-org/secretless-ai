@@ -61,7 +61,11 @@ export interface PushTarget {
   readonly type: PushTargetType;
   /** How the output names the target. */
   readonly label: string;
-  /** Why `remote` cannot name a secret here, or undefined when it can. */
+  /**
+   * Why `remote` cannot name a secret here, or undefined when it can. A name
+   * it accepts holds no character `escapeForDisplay` rewrites: a refusal
+   * prints an accepted name as given.
+   */
   nameProblem(remote: string): string | undefined;
   /**
    * A name this target accepts, made from `local`, offered as the `--as` value.

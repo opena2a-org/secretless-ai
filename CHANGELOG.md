@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**A `secret push` refusal names every secret its `Fix:` leaves as `<name>`
+(#307).** `secret push A,B --to vault --as '<name>,<name>'` said only that
+A's `<name>` was a placeholder; it now prints one placeholder line per
+secret. `secret push A,B,C --to azure-kv --vault kv-demo --as a-b,A-B,a.b`
+left B as `<name>` with no line saying why; it now prints
+`A and B would both be pushed as "A-B".` beside the line for C, as it already
+did when no name was refused. Any `<word>` form counts as a placeholder,
+including the `<names>` the usage line prints.
+
 **`secret push` prints a `Fix:` when two secrets would be pushed as one name
 (#303).** `secret push A,B --to vault --as x,x` printed
 `A and B would both be pushed as "x".` and the usage line, with no command to

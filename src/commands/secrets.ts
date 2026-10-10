@@ -975,8 +975,9 @@ function createPushTarget(type: PushTargetType, vaultName: string | undefined): 
 
 /**
  * An `--as` name still in the `<name>` form a Fix prints for the user to fill
- * in. No push target accepts '<' or '>' in a name, and the form prints as
- * given, so it needs no escaping.
+ * in, or in another `<word>` spelling of it, such as the `<names>` the usage
+ * line prints. No push target accepts '<' or '>' in a name, and the form
+ * prints as given, so it needs no escaping.
  */
 const PLACEHOLDER_NAME = /^<[A-Za-z][A-Za-z0-9_-]*>$/;
 
@@ -1084,6 +1085,10 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
 
   const tail = [`--to ${toType}`, ...(vaultName !== undefined ? [`--vault ${vaultName}`] : [])];
   const problems = remotes.map((r) => target.nameProblem(r));
+  // Every given name passed `isValidSecretName` and the --as name passed the
+  // target's `nameProblem`, so none holds a character `escapeForDisplay`
+  // rewrites, and the line prints them as given.
+  const mergeLine = (holder: number, i: number): string => `  ${names[holder]} and ${names[i]} would both be pushed as "${remotes[i]}".`;
   const first = problems.findIndex((p) => p !== undefined);
   if (first !== -1) {
     // A name with a control character prints escaped, so a line feed in it
@@ -1093,23 +1098,26 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     // was just refused. A replacement that would push as the same name as
     // another --as name, given or offered, leaves `<name>` too, and so does
     // an accepted name the store would merge with an earlier accepted one, so
-    // the Fix is not refused for two secrets sharing one name, and a line
-    // names the secret that holds that name. A `<name>` left unfilled
+    // the Fix is not refused for two secrets sharing one name; either way a
+    // line names the secret that holds that name. Each `<name>` left unfilled
     // is said to be a placeholder and stays in the Fix to be replaced, not
     // turned into a name made from its letters.
     const isPlaceholder = (r: string): boolean => PLACEHOLDER_NAME.test(r);
-    const kept = new Set<string>();
     const holders = new Map<string, { index: number; spelled: string }>();
     remotes.forEach((r, i) => {
       const folded = target.foldName(r);
       if (problems[i] === undefined && !holders.has(folded)) holders.set(folded, { index: i, spelled: r });
     });
-    const takenLines: string[] = [];
+    const holderLines: string[] = [];
     const operands = remotes.map((r, i) => {
       if (problems[i] === undefined) {
-        const folded = target.foldName(r);
-        if (kept.has(folded)) return '<name>';
-        kept.add(folded);
+        // The first accepted name to fold this way holds it, ahead of any
+        // suggestion, so a holder at another index is an earlier one.
+        const holder = holders.get(target.foldName(r));
+        if (holder !== undefined && holder.index !== i) {
+          holderLines.push(mergeLine(holder.index, i));
+          return '<name>';
+        }
         return r;
       }
       if (isPlaceholder(r)) return r;
@@ -1119,22 +1127,23 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
       const holder = holders.get(folded);
       if (holder !== undefined) {
         const as = holder.spelled === suggested ? '' : ` as "${escapeForDisplay(holder.spelled)}", which differs only in case`;
-        takenLines.push(`  "${escapeForDisplay(suggested)}" is taken by ${names[holder.index]}${as}; choose another name for ${names[i]}.`);
+        holderLines.push(`  "${escapeForDisplay(suggested)}" is taken by ${names[holder.index]}${as}; choose another name for ${names[i]}.`);
         return '<name>';
       }
       holders.set(folded, { index: i, spelled: suggested });
       return suggested;
     });
-    const placeholder = problems.findIndex((p, i) => p !== undefined && isPlaceholder(remotes[i]));
     const refused = problems.findIndex((p, i) => p !== undefined && !isPlaceholder(remotes[i]));
     console.error();
-    if (placeholder !== -1) {
-      console.error(`  "${remotes[placeholder]}" in --as is a placeholder: replace it with the name ${names[placeholder]} should have in ${target.label}; ${problems[placeholder]}.`);
-    }
+    problems.forEach((p, i) => {
+      if (p !== undefined && isPlaceholder(remotes[i])) {
+        console.error(`  "${remotes[i]}" in --as is a placeholder: replace it with the name ${names[i]} should have in ${target.label}; ${p}.`);
+      }
+    });
     if (refused !== -1) {
       console.error(`  "${escapeForDisplay(remotes[refused])}" cannot name a secret in ${target.label}: ${problems[refused]}.`);
     }
-    for (const line of takenLines) console.error(line);
+    for (const line of holderLines) console.error(line);
     console.error('  Nothing was read or pushed.\n');
     console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
     return 2;
@@ -1145,7 +1154,7 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
   const folded = remotes.map((r) => target.foldName(r));
   const clashes = folded.flatMap((f, i) => (folded.indexOf(f) !== i ? [i] : []));
   if (clashes.length > 0) {
-    const lines = clashes.map((i) => `  ${escapeForDisplay(`${names[folded.indexOf(folded[i])]} and ${names[i]} would both be pushed as "${remotes[i]}".`)}`);
+    const lines = clashes.map((i) => mergeLine(folded.indexOf(folded[i]), i));
     console.error(`\n${lines.join('\n')}`);
     console.error('  Nothing was read or pushed.\n');
     const operands = remotes.map((r, i) => (clashes.includes(i) ? '<name>' : r));

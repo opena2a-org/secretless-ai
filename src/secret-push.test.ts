@@ -25,6 +25,8 @@ import { GCPSecretManagerBackend } from './backends/gcp-sm';
 import { VaultPushTarget, GcpPushTarget } from './secret-push';
 import type { PushTarget, PushTargetType } from './secret-push';
 import { runSecret, runSecretPush } from './commands/secrets';
+import { hasDisplayHazard } from './display-safe';
+import { isValidSecretName } from './secret-store';
 
 const VALUES = {
   API_KEY: 'FAKE-push-api-value-7c1e',
@@ -787,6 +789,82 @@ describe('two secrets the store would push as one name get a Fix (#303)', () => 
       '/v1/secret/data/secret/y',
     ]);
     expectNoLeak();
+  });
+});
+
+describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
+  const vault = (): PushTarget => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }));
+  const placeholderLine = (placeholder: string, name: string): string => `  "${placeholder}" in --as is a placeholder: replace it with the name ${name} should have in `;
+
+  it('every placeholder left in --as gets its own line, and the Fix keeps each', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', '<name>,<name>'], { store, createTarget: vault });
+    const said = printed().split('\n').filter((l) => l.includes(' in --as is a placeholder: '));
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(said, printed()).toHaveLength(2);
+    expect(said[0].startsWith(placeholderLine('<name>', 'API_KEY')), said[0]).toBe(true);
+    expect(said[1].startsWith(placeholderLine('<name>', 'DB_PASSWORD')), said[1]).toBe(true);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', '<name>,<name>']);
+  });
+
+  it('the <names> the usage line prints, and other <word> spellings, are placeholders; <> is not', async () => {
+    await runSecretPush([], { store, createTarget: vault });
+    const fromUsage = /\[--as (<[a-z]+>)\]/.exec(printed())?.[1];
+    expect(fromUsage).toBe('<names>');
+
+    for (const placeholder of [fromUsage!, '<NAME>', '<secret-name>', '<new_name>']) {
+      out.length = 0;
+      const code = await runSecretPush(['API_KEY', '--to', 'vault', '--as', placeholder], { store, createTarget: vault });
+      const lines = printed().split('\n');
+
+      expect(code, placeholder).toBe(2);
+      expect(lines.some((l) => l.startsWith(placeholderLine(placeholder, 'API_KEY'))), printed()).toBe(true);
+      expect(lines.some((l) => l.includes('cannot name a secret')), printed()).toBe(false);
+      expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', placeholder]);
+    }
+
+    out.length = 0;
+    await runSecretPush(['API_KEY', '--to', 'vault', '--as', '<>'], { store, createTarget: vault });
+    expect(printed()).toContain('  "<>" cannot name a secret in Vault');
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', '__']);
+  });
+
+  it('beside a refused name, an accepted name the store would merge with an earlier one is named with the secret that holds it', async () => {
+    const code = await push(['A,B,C', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,A-B,a.b'], { env: NO_ENV, runChild: azSignedIn() });
+    const lines = printed().split('\n');
+
+    expect(code).toBe(2);
+    expect(fixCommand()).toEqual(['A,B,C', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,<name>,<name>']);
+    const merged = lines.indexOf('  A and B would both be pushed as "A-B".');
+    const taken = lines.indexOf('  "a-b" is taken by A; choose another name for C.');
+    expect(merged, printed()).toBeGreaterThan(-1);
+    expect(taken).toBeGreaterThan(merged);
+    expect(taken).toBeLessThan(lines.findIndex((l) => l.startsWith('  Fix:')));
+
+    out.length = 0;
+    await runSecretPush(['API_KEY,DB_PASSWORD,TOKEN', '--to', 'vault', '--as', 'x,x,c.d'], { store, createTarget: vault });
+    expect(printed().split('\n').filter((l) => l.includes(' would both be pushed as '))).toEqual([
+      '  API_KEY and DB_PASSWORD would both be pushed as "x".',
+    ]);
+  });
+
+  it('every target refuses each character escapeForDisplay rewrites, so a refusal prints an accepted name as given', () => {
+    const targets = [
+      vault(),
+      new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' })),
+      new AzureKeyVaultTarget('kv-demo', { env: NO_ENV }),
+    ];
+    let hazards = 0;
+    for (let code = 0; code <= 0x10ffff; code++) {
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const name = `a${String.fromCodePoint(code)}b`;
+      if (!hasDisplayHazard(name)) continue;
+      hazards++;
+      expect(isValidSecretName(name), `U+${code.toString(16)}`).toBe(false);
+      for (const target of targets) expect(target.nameProblem(name), `${target.type} U+${code.toString(16)}`).toBeDefined();
+    }
+    expect(hazards).toBeGreaterThan(0);
   });
 });
 
