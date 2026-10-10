@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+**The `Fix:` under a refused `secret push --as` name offers a name the store
+accepts, `git-credential` prints a `--host`, `--name` or `--username` value it
+refuses escaped, and `init` exits 1 when it left a tool not configured
+(#285).** `secret push NAME --to vault --as a.b`, and the same with `--to
+gcp-sm`, printed as its `Fix:` the command it had just refused, because those
+two stores offered the refused name back. The `Fix:` now names one the store
+accepts: each character outside letters, digits, `-` and `_` becomes `_`, and
+a Secret Manager name is cut to 255 characters, so `--as a.b` gives `--as
+a_b`. A refused name that holds a control character gets `<name>` for every
+store; for Azure Key Vault the `Fix:` used to print that name with every
+character Key Vault does not allow replaced by `-`. `git-credential install`,
+`uninstall` and `get` printed a `--host`, `--name` or `--username` value they
+refused as given, so a line feed in it started a new line that read like one
+of the tool's own. Each is now printed with its control characters escaped,
+such as `\n`, and a URL given as `--host` is answered with `use --host <host>`
+when what is left of it holds one. A value that holds none prints as before.
+`init` exited 0 after its "Not configured" block, printed for a tool whose
+instruction path it refused to write through (a symbolic link, a file with
+more than one hard link, an entry of the wrong kind, or a path outside the
+project). It now exits 1, as it does when `.claude/settings.json` cannot be
+updated, whether or not another tool was configured in the same run, so a
+script that runs `init` on such a project sees a failure until the path is
+changed as the printed `Fix:` says. Its output is unchanged, and the README
+and docs/scanning.md list this case under exit code 1.
+
 **`status --json` adds `ignoreFileTools` and `detectedTools`.**
 `configuredTools` lists Aider, which `init` configures through `.aiderignore`,
 beside the tools configured through an instruction file. The text output lists

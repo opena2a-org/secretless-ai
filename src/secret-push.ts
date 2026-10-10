@@ -63,7 +63,10 @@ export interface PushTarget {
   readonly label: string;
   /** Why `remote` cannot name a secret here, or undefined when it can. */
   nameProblem(remote: string): string | undefined;
-  /** A name this target accepts for `local`, offered as the `--as` value. */
+  /**
+   * A name this target accepts, made from `local`, offered as the `--as` value.
+   * `local` is any non-empty name, including one `nameProblem` refuses.
+   */
   suggestName(local: string): string;
   /** The form two names are compared in: a target that ignores case folds it. */
   foldName(remote: string): string;
@@ -223,7 +226,7 @@ export class VaultPushTarget implements PushTarget {
   }
 
   suggestName(local: string): string {
-    return local;
+    return local.replace(/[^a-zA-Z0-9_-]/g, '_');
   }
 
   foldName(remote: string): string {
@@ -316,7 +319,7 @@ export class GcpPushTarget implements PushTarget {
   }
 
   suggestName(local: string): string {
-    return local;
+    return local.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 255);
   }
 
   foldName(remote: string): string {

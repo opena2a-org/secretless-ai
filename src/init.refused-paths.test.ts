@@ -178,6 +178,30 @@ describe('runInit reports every instruction path it refused', () => {
     expect(second.out).not.toContain('Not configured');
     expect(second.out).toContain('Already up to date. No files changed.');
   });
+
+  // A refused path is work not done. The run used to return 0 over the "Not
+  // configured" block, so a script could not tell it from a finished setup.
+  it('returns 1 when a path was refused, with another tool configured or not, and 0 once the refused path is fixed', () => {
+    const dir = project();
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# rules\n');
+    fs.symlinkSync('AGENTS.md', path.join(dir, '.cursorrules'));
+
+    const alone = capture(() => runInit(dir));
+    expect(alone.out).toMatch(/^\s*Configured: none$/m);
+    expect(alone.out).toMatch(/^\s*Not configured: Cursor$/m);
+    expect(alone.code).toBe(1);
+
+    fs.writeFileSync(path.join(dir, '.windsurfrules'), '# rules\n');
+    const mixed = capture(() => runInit(dir));
+    expect(mixed.out).toMatch(/^\s*Configured: Windsurf \(1 of 2 detected\)$/m);
+    expect(mixed.out).toMatch(/^\s*Not configured: Cursor$/m);
+    expect(mixed.code).toBe(1);
+
+    fs.unlinkSync(path.join(dir, '.cursorrules'));
+    const fixed = capture(() => runInit(dir));
+    expect(fixed.out).not.toContain('Not configured');
+    expect(fixed.code).toBe(0);
+  });
 });
 
 type RaceCell = {

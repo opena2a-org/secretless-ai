@@ -15,6 +15,7 @@
 
 import { spawnSync } from 'child_process';
 import { isValidSecretName } from './secret-store';
+import { escapeForDisplay, hasDisplayHazard } from './display-safe';
 
 /** The protocol actions git sends as the helper's last argument. */
 export const GIT_PROTOCOL_ACTIONS: readonly string[] = ['get', 'store', 'erase'];
@@ -55,10 +56,13 @@ const USERNAME = /^[A-Za-z0-9._@+][A-Za-z0-9._@+-]*$/;
  */
 export function hostShapeProblem(host: string): string | null {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
-    return `--host takes a host name, not a URL: use --host ${host.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '')}`;
+    // What is left of the URL is offered as the value to pass, so it is named
+    // only when it prints as itself.
+    const bare = host.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '');
+    return `--host takes a host name, not a URL: use --host ${hasDisplayHazard(bare) ? '<host>' : bare}`;
   }
   if (!HOST.test(host)) {
-    return `--host "${host}" is not a host name (letters, digits, dots and dashes, optionally :port)`;
+    return `--host "${escapeForDisplay(host)}" is not a host name (letters, digits, dots and dashes, optionally :port)`;
   }
   return null;
 }
@@ -82,14 +86,14 @@ export function hostProblem(host: string): string | null {
 export function usernameProblem(username: string): string | null {
   return USERNAME.test(username)
     ? null
-    : `--username "${username}" may only hold letters, digits and . _ @ + -`;
+    : `--username "${escapeForDisplay(username)}" may only hold letters, digits and . _ @ + -`;
 }
 
 /** Why a `--name` value cannot be used, or null when it can. */
 export function nameProblem(name: string): string | null {
   return isValidSecretName(name)
     ? null
-    : `--name "${name}" is not a secret name (letters, digits, dash and underscore)`;
+    : `--name "${escapeForDisplay(name)}" is not a secret name (letters, digits, dash and underscore)`;
 }
 
 // ── Protocol ─────────────────────────────────────────────────────────────────
