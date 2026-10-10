@@ -63,13 +63,26 @@ program names the whole environment (`os.environ` with no subscript or
 and is now allowed); `docker inspect` only with a `--format`
 that names no `Env` field. A command the parser cannot read, such as one with
 an unclosed quote or a program name or `bash -c` or `eval` string that comes
-from an expansion, is refused with the span it could not read and a rewrite.
+from an expansion, is refused with the reason it could not be read and a
+rewrite. For an expansion the reason quotes the command. For a construct that
+is never closed it quotes up to 60 characters from the point where the parser
+stopped, and that is nothing when the parser stopped at the end of the command
+(an unclosed double quote, `(`, `$(`, `[[`, `case`, `$'` or array assignment).
 A process substitution in an argument, as in `diff <(sort a) <(sort b)`, is
 read like the rest of the command and judged by what runs inside it, so
 `cat <(env)` is refused.
-Without `python3`, a command that runs `set`, `env`, `printenv`, `export`,
+Without `python3` nothing parses the command and the hook matches its text
+instead. A command is refused when `set`, `env`, `printenv`, `export`,
 `declare`, `typeset`, `local`, `readonly`, `compgen`, `ps`, `pgrep`, `tmux` or
-`docker inspect` is refused, and the reason says to install `python3`. Deny
+`docker inspect` stands at the start of a line, after `;`, `&`, `|`, `(`, `{`,
+a backquote or `!`, after `eval` or a shell's `-c`, or behind `sudo`, `doas`,
+`command`, `builtin`, `exec`, `nohup`, `time`, `nice`, `xargs` or `watch`, and
+the reason says to install `python3` unless an older rule refuses the command
+first with its own reason, as for a bare `env`, a bare `printenv` or `ps e`.
+The name is not matched after `then`, `do` or `else`, after an assignment or a
+redirection, in a `case` arm, behind `timeout` or a wrapper option that takes
+a value, or when it is quoted or backslash-escaped: `if true; then set; fi`,
+`X=1 env`, `sudo -u root set` and `"printenv"` are allowed. Deny
 reasons that named `printenv NAME` as the safe path now name
 `[ -n "$NAME" ]`. Re-run `secretless-ai init` to refresh an installed hook.
 
