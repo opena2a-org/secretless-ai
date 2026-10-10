@@ -21,8 +21,10 @@ the command line refuses is printed escaped (#276).** `scan locked/inner`,
 where `locked` is a directory this user cannot search, said "Directory not
 found" and "Check the path and try again"; `scan`, `status` and `verify` now
 say "Permission denied", name the directory that cannot be searched, and print
-a `Verify:` line and a `Fix:` line. A path through a symbolic link that points
-back at itself gets "Too many levels of symbolic links" and names the link,
+a `Verify:` line and a `Fix:` line. When the path runs through a symbolic link
+into that directory, they name the link as well. A path through a symbolic
+link that points back at itself gets "Too many levels of symbolic links" and
+names the link,
 and any other failure of the lookup is named by its error code. `scan --json`
 prints the same lines to stderr and no document. `init` printed a path as
 given in the list under "Not configured" and in the `Verify:` and `Fix:` lines
