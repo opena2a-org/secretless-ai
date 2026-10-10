@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**The `Fix:` under a refused `secret push --as` name no longer offers two
+secrets the same name (#289).** Each refused name was replaced on its own, so
+`secret push A,B --to vault --as a.b,a_b` printed `--as a_b,a_b`, and running
+that line was refused with `A and B would both be pushed as "a_b"`. A
+replacement that would push as the same name as another `--as` name, one
+given or one offered earlier in the line, is now left as `<name>` for the
+user to fill in; for Azure Key Vault, which does not tell names apart by case,
+`--as A.B,a-b` gives `--as <name>,a-b`. Replacements that stay distinct are
+offered as before.
+
 **The `Fix:` under a refused `secret push --as` name offers a name the store
 accepts, `git-credential` prints a `--host`, `--name` or `--username` value it
 refuses escaped, and `init` exits 1 when it left a tool not configured
