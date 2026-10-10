@@ -35,8 +35,8 @@ const CACHE_SUBCOMMANDS = ['clear', 'ttl'];
  * behave the same way, so this matches the tree rather than inventing a third
  * convention.
  *
- * The token is printed escaped, as every value a command refuses is: a line
- * feed in it started a line of its own under this message.
+ * The token is printed escaped, as those eight siblings print the token they
+ * refuse: a line feed in it started a line of its own under this message.
  */
 function refuseUnknownSubcommand(verb: string, token: string, known: string[]): number {
   const near = nearestMatch(token, known);

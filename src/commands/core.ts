@@ -275,7 +275,10 @@ export function runInit(projectDir: string): number {
     return 1;
   }
 
-  return 0;
+  // A refused path left its tool not configured: work not done, as the two
+  // cases above are, and exiting 0 over the "Not configured" block reported
+  // success for it.
+  return result.pathsRefused.length > 0 ? 1 : 0;
 }
 
 /**

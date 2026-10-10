@@ -227,7 +227,7 @@ npx secretless-ai status --json                # protection state for CI (gate o
 
 ### Exit codes and scan coverage
 
-Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
+Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened, or an `init` that left a tool not configured), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
 
 A scan that stops at the file cap, or cannot open a path, exits 1 and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`; `summary.truncated` and `summary.unreadable` carry the same signal in `--json`. An unrecognised flag, or a flag without a value it can use, is refused with exit 2 before anything runs, rather than partly ignored; `feedback`, `diff` and `mcp-status` instead warn about an unrecognised flag and continue. [Scan coverage and exit codes](docs/scanning.md) says what a directory scan opens, which gaps fail a build and which do not, and shows a sample `--json` summary.
 
