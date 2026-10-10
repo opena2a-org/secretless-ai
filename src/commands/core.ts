@@ -464,6 +464,12 @@ function notADirectoryReason(dir: string): NotADirectory | null {
 }
 
 /**
+ * More links than a kernel follows in one lookup (Linux 40, macOS 32), so the
+ * walk through links in `lookupStop` ends even if they change while it runs.
+ */
+const MAX_LINKS_FOLLOWED = 40;
+
+/**
  * Where the lookup of `dir` stopped when the path is there and cannot be
  * reached: the error code, and the leading part of the path it stopped at. A
  * directory this user cannot search stops it at the name under that directory
@@ -472,8 +478,14 @@ function notADirectoryReason(dir: string): NotADirectory | null {
  *
  * Each leading part is looked up as it is spelled, so the kernel resolves any
  * `..` in it and the part named is one the caller typed.
+ *
+ * A symbolic link whose target lies under a directory this user cannot search
+ * stops the walk at the link, and the directory that holds the link can be
+ * searched. So the walk goes on through the link's target to the name under
+ * the directory that refuses the search, and `link` names the link in the
+ * caller's path.
  */
-function lookupStop(dir: string): { code: string; at: string } | null {
+function lookupStop(dir: string, linksFollowed = 0): { code: string; at: string; link?: string } | null {
   const nodeFs = require('fs') as typeof import('fs');
   const codeAt = (p: string): string | undefined => {
     try {
@@ -490,9 +502,32 @@ function lookupStop(dir: string): { code: string; at: string } | null {
   for (const name of dir.slice(root.length).split(path.sep)) {
     if (name === '') continue;
     current = current === root ? root + name : current + path.sep + name;
-    if (codeAt(current) === code) return { code, at: current };
+    if (codeAt(current) !== code) continue;
+    const target = code === 'EACCES' && linksFollowed < MAX_LINKS_FOLLOWED ? linkTarget(current) : null;
+    if (target === null) return { code, at: current };
+    const beyond = lookupStop(target, linksFollowed + 1);
+    return { code, at: beyond?.code === code ? beyond.at : target, link: current };
   }
   return { code, at: dir };
+}
+
+/**
+ * The target of `p` when it is a symbolic link, spelled as the link holds it.
+ * A relative target is joined to the directory that holds `p` without
+ * resolving its `..`, which the kernel reads from that directory. Null when
+ * `p` is not a symbolic link, or cannot be read.
+ */
+function linkTarget(p: string): string | null {
+  const nodeFs = require('fs') as typeof import('fs');
+  try {
+    if (!nodeFs.lstatSync(p).isSymbolicLink()) return null;
+    const target = nodeFs.readlinkSync(p);
+    if (path.isAbsolute(target)) return target;
+    const base = path.dirname(p);
+    return base.endsWith(path.sep) ? base + target : base + path.sep + target;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -500,7 +535,7 @@ function lookupStop(dir: string): { code: string; at: string } | null {
  * cannot be reached: the cause, the part of the path that has it, and a
  * `Verify:` command on that part.
  */
-function unreachableTargetLines(projectDir: string, verb: string, stop: { code: string; at: string }): string[] {
+function unreachableTargetLines(projectDir: string, verb: string, stop: { code: string; at: string; link?: string }): string[] {
   const named = escapePathForDisplay(projectDir);
   const rerun = `then re-run: ${CLI} ${verb} ${pathOperand(projectDir)}`;
   if (stop.code === 'EACCES') {
@@ -508,8 +543,14 @@ function unreachableTargetLines(projectDir: string, verb: string, stop: { code: 
     // holds the name is the one without search permission. `-L` shows that
     // directory's own mode when the path names it through a symbolic link.
     const holder = path.dirname(stop.at);
+    // Reached through a link, that directory is not on the path as typed, so
+    // the link that leads into it is named first.
+    const through = stop.link === undefined
+      ? []
+      : [`${escapePathForDisplay(stop.link)} is a symbolic link into ${escapePathForDisplay(holder)}.`];
     return [
       `Permission denied: ${named}`,
+      ...through,
       `${escapePathForDisplay(holder)} cannot be searched by this user, so nothing inside it can be reached.`,
       `Verify: ls -ldL ${pathOperand(holder)}`,
       `Fix:    restore search (x) permission on ${pathOperand(holder)}, ${rerun}`,

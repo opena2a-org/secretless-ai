@@ -371,6 +371,67 @@ describe('`scan`, `status` and `verify` on a directory that is there and cannot 
     ]);
   });
 
+  /** `parent/proj/<name>`, a symbolic link to `target`, with `vault/inner` made under `parent`. */
+  function linkIntoVault(name: string, target: (parent: string) => string): { parent: string; vault: string; link: string } {
+    const parent = tree({ 'vault/inner/keep': '' });
+    const link = path.join(parent, 'proj', name);
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(target(parent), link);
+    return { parent, vault: path.join(parent, 'vault'), link };
+  }
+
+  for (const verb of VERBS) {
+    itIfBuiltPosixUser(`\`${verb}\` through a symbolic link names the directory the link leads into, not the link's own`, () => {
+      const { vault, link } = linkIntoVault('link', (parent) => path.join(parent, 'vault', 'inner'));
+
+      const res = locked(vault, () => cli([verb, link]));
+
+      expect(res.status).toBe(1);
+      expect(errorLines(res.stderr)).toEqual([
+        `  Permission denied: ${link}`,
+        `  ${link} is a symbolic link into ${vault}.`,
+        `  ${vault} cannot be searched by this user, so nothing inside it can be reached.`,
+        `  Verify: ls -ldL ${shellQuote(vault)}`,
+        `  Fix:    restore search (x) permission on ${shellQuote(vault)}, then re-run: npx secretless-ai ${verb} ${shellQuote(link)}`,
+      ]);
+    });
+  }
+
+  itIfBuiltPosixUser('through a link, the Verify command shows the mode, and the scan runs once the Fix is followed', () => {
+    const { vault, link } = linkIntoVault('link', (parent) => path.join(parent, 'vault', 'inner'));
+
+    const mode = locked(vault, () => spawnSync('ls', ['-ldL', vault], { encoding: 'utf-8' }).stdout);
+    expect(mode).toMatch(/^d-{9}/);
+
+    fs.chmodSync(vault, 0o100);
+    try {
+      const followed = cli(['scan', link]);
+      expect(followed.status).toBe(0);
+      expect(followed.stderr).toBe('');
+    } finally {
+      fs.chmodSync(vault, 0o755);
+    }
+  });
+
+  itIfBuiltPosixUser('a relative link is read from the directory that holds it, and a chain names the first link', () => {
+    const { parent, vault, link } = linkIntoVault('rel', () => path.join('..', 'vault', 'inner'));
+    const chain = path.join(parent, 'proj', 'chain');
+    fs.symlinkSync('rel', chain);
+    // As the link spells it: `..` is read by the kernel, not removed by hand.
+    const holder = `${parent}/proj/../vault`;
+
+    const [viaLink, viaChain] = locked(vault, () => [cli(['scan', link]), cli(['scan', chain])]);
+
+    expect(errorLines(viaLink.stderr).slice(-4, -2)).toEqual([
+      `  ${link} is a symbolic link into ${holder}.`,
+      `  ${holder} cannot be searched by this user, so nothing inside it can be reached.`,
+    ]);
+    expect(errorLines(viaChain.stderr).slice(-4, -2)).toEqual([
+      `  ${chain} is a symbolic link into ${holder}.`,
+      `  ${holder} cannot be searched by this user, so nothing inside it can be reached.`,
+    ]);
+  });
+
   itIfBuiltPosix('a symbolic link that points at itself is named as the link it is', () => {
     const parent = tmp('followups-');
     const link = path.join(parent, 'loop');
