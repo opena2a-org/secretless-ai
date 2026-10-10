@@ -313,7 +313,8 @@ function modeLines(tools: AITool[]): string[] {
  *
  * The directory part is the caller's argument, so the list names each path
  * escaped and a command names it only when it prints as itself, as the
- * "Directory not found" message does.
+ * "Directory not found" message does. The Fix ends by re-running `init` on
+ * the same directory, named the same way.
  */
 function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; path: string; reason: string }>): void {
   const shown = refused.map(r => ({
@@ -334,7 +335,11 @@ function printRefusedPaths(projectDir: string, refused: Array<{ tool: AITool; pa
   // `--` because a path relative to the working directory can start with `-`.
   console.log(`  ${c.cyan('Verify:')} ls -ld -- ${shown.map(r => pathOperand(r.shown)).join(' ')}`);
   const fixes = shown.map(r => refusedPathFix(pathOperand(r.shown), r.reason));
-  fixes[fixes.length - 1] += ', then re-run: secretless-ai init';
+  // The re-run names the directory: a bare `init` sets up the working
+  // directory, not the one this run was given. `./` keeps a name that starts
+  // with `-` from reading as an option, which `init` refuses.
+  const dir = path.relative(process.cwd(), projectDir) || '.';
+  fixes[fixes.length - 1] += `, then re-run: ${CLI} init ${pathOperand(dir.startsWith('-') ? `.${path.sep}${dir}` : dir)}`;
   fixes.forEach((f, i) => console.log(i === 0 ? `  ${c.cyan('Fix:')}    ${f}` : `          ${f}`));
 }
 

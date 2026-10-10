@@ -174,7 +174,7 @@ describe('`init` escapes a path in its "Not configured" block', () => {
       '    project.',
       '',
       '  Verify: ls -ld -- <path>',
-      '  Fix:    replace the link <path> with a copy of what it points to, or remove the link, then re-run: secretless-ai init',
+      '  Fix:    replace the link <path> with a copy of what it points to, or remove the link, then re-run: npx secretless-ai init <path>',
     ]);
   });
 
@@ -322,21 +322,47 @@ describe('`scan`, `status` and `verify` on a directory that is there and cannot 
     });
   }
 
+  /**
+   * Follow the `Verify:` and `Fix:` lines `scan` printed for `target` while
+   * `dir` cannot be searched, as printed: the Verify command runs while the
+   * directory is still locked, then search permission alone is restored on
+   * the directory the Fix names, and its re-run runs with this build in place
+   * of `npx secretless-ai`. Each command is read from the printed line, so a
+   * line that names the wrong directory fails here.
+   */
+  function followPrinted(dir: string, target: string): { verify: string; rerun: { status: number | null; stderr: string } } {
+    fs.chmodSync(dir, 0o000);
+    try {
+      const lines = errorLines(cli(['scan', target]).stderr);
+      const verify = lines.find((l) => l.startsWith('  Verify: '))?.slice('  Verify: '.length);
+      const fix = lines
+        .map((l) => /^ {2}Fix: {4}restore search \(x\) permission on (.+), then re-run: npx secretless-ai (.+)$/.exec(l))
+        .find((m) => m !== null);
+      expect(verify, lines.join('\n')).toBeDefined();
+      expect(fix, lines.join('\n')).toBeDefined();
+      const shown = spawnSync('sh', ['-c', verify!], { encoding: 'utf-8' });
+      const restored = spawnSync('sh', ['-c', `chmod u+x ${fix![1]}`], { encoding: 'utf-8' });
+      expect(restored.status, restored.stderr).toBe(0);
+      const rerun = spawnSync('sh', ['-c', `"$0" "$1" ${fix![2]}`, process.execPath, CLI_PATH], {
+        encoding: 'utf-8',
+        cwd: os.tmpdir(),
+        env: { ...process.env, HOME: tmp('followups-home-'), OPENA2A_TELEMETRY: 'off', NO_COLOR: '1' },
+      });
+      return { verify: shown.stdout, rerun: { status: rerun.status, stderr: rerun.stderr } };
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  }
+
   itIfBuiltPosixUser('the Verify command shows the mode, and the scan runs once the Fix is followed', () => {
     const parent = tree({ 'locked/inner/keep': '' });
     const dir = path.join(parent, 'locked');
 
-    const mode = locked(dir, () => spawnSync('ls', ['-ldL', dir], { encoding: 'utf-8' }).stdout);
-    expect(mode).toMatch(/^d-{9}/);
+    const { verify, rerun } = followPrinted(dir, path.join(dir, 'inner'));
 
-    fs.chmodSync(dir, 0o100);
-    try {
-      const followed = cli(['scan', path.join(dir, 'inner')]);
-      expect(followed.status).toBe(0);
-      expect(followed.stderr).toBe('');
-    } finally {
-      fs.chmodSync(dir, 0o755);
-    }
+    expect(verify).toMatch(/^d-{9}/);
+    expect(rerun.status).toBe(0);
+    expect(rerun.stderr).toBe('');
   });
 
   itIfBuiltPosixUser('`scan --json` prints the same lines to stderr, and no document', () => {
@@ -400,18 +426,52 @@ describe('`scan`, `status` and `verify` on a directory that is there and cannot 
   itIfBuiltPosixUser('through a link, the Verify command shows the mode, and the scan runs once the Fix is followed', () => {
     const { vault, link } = linkIntoVault('link', (parent) => path.join(parent, 'vault', 'inner'));
 
-    const mode = locked(vault, () => spawnSync('ls', ['-ldL', vault], { encoding: 'utf-8' }).stdout);
-    expect(mode).toMatch(/^d-{9}/);
+    const { verify, rerun } = followPrinted(vault, link);
 
-    fs.chmodSync(vault, 0o100);
-    try {
-      const followed = cli(['scan', link]);
-      expect(followed.status).toBe(0);
-      expect(followed.stderr).toBe('');
-    } finally {
-      fs.chmodSync(vault, 0o755);
-    }
+    expect(verify).toMatch(/^d-{9}/);
+    expect(rerun.status).toBe(0);
+    expect(rerun.stderr).toBe('');
   });
+
+  // The lookup stops at the name under the directory that refuses the search,
+  // and that name is not always the last part of the target.
+  for (const verb of VERBS) {
+    itIfBuiltPosixUser(`\`${verb}\` names the directory that cannot be searched two levels above the target`, () => {
+      const parent = tree({ 'locked/a/b/keep': '' });
+      const dir = path.join(parent, 'locked');
+      const target = path.join(dir, 'a', 'b');
+
+      const res = locked(dir, () => cli([verb, target]));
+
+      expect(res.status).toBe(1);
+      expect(errorLines(res.stderr)).toEqual([
+        `  Permission denied: ${target}`,
+        `  ${dir} cannot be searched by this user, so nothing inside it can be reached.`,
+        `  Verify: ls -ldL ${shellQuote(dir)}`,
+        `  Fix:    restore search (x) permission on ${shellQuote(dir)}, then re-run: npx secretless-ai ${verb} ${shellQuote(target)}`,
+      ]);
+    });
+
+    itIfBuiltPosixUser(`\`${verb}\` through a chain of links into a directory two levels under the one that cannot be searched names that one`, () => {
+      const parent = tree({ 'vault/a/b/keep': '' });
+      const vault = path.join(parent, 'vault');
+      fs.mkdirSync(path.join(parent, 'proj'));
+      fs.symlinkSync(path.join(vault, 'a', 'b'), path.join(parent, 'proj', 'l2'));
+      const chain = path.join(parent, 'proj', 'chain');
+      fs.symlinkSync('l2', chain);
+
+      const res = locked(vault, () => cli([verb, chain]));
+
+      expect(res.status).toBe(1);
+      expect(errorLines(res.stderr)).toEqual([
+        `  Permission denied: ${chain}`,
+        `  ${chain} is a symbolic link into ${vault}.`,
+        `  ${vault} cannot be searched by this user, so nothing inside it can be reached.`,
+        `  Verify: ls -ldL ${shellQuote(vault)}`,
+        `  Fix:    restore search (x) permission on ${shellQuote(vault)}, then re-run: npx secretless-ai ${verb} ${shellQuote(chain)}`,
+      ]);
+    });
+  }
 
   itIfBuiltPosixUser('a relative link is read from the directory that holds it, and a chain names the first link', () => {
     const { parent, vault, link } = linkIntoVault('rel', () => path.join('..', 'vault', 'inner'));

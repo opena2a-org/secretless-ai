@@ -27,6 +27,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { maskLine } from '../scan';
 import { CREDENTIAL_PATTERNS } from '../patterns';
+import { escapeForDisplay } from '../display-safe';
 
 /**
  * Redact every credential shape in a diff line before printing it.
@@ -215,7 +216,9 @@ export function computeDiff(ref: string, cwd: string = process.cwd()): DiffResul
     return {
       exitCode: 1,
       changes: [],
-      message: `Invalid git ref: "${ref}". Only [A-Za-z0-9._/^@~+-] are allowed.`,
+      // Escaped: the ref is the refused value, and a line feed in it started
+      // a line of its own.
+      message: `Invalid git ref: "${escapeForDisplay(ref)}". Only [A-Za-z0-9._/^@~+-] are allowed.`,
     };
   }
 

@@ -20,11 +20,11 @@ Symlinks are followed inside the scan root. A link whose target resolves outside
 
 A command line the tool cannot bind is refused with exit 2 before anything runs, rather than partly ignored. That covers an unrecognised flag, a flag given a value it cannot use, and a value-taking flag given no value at all. `--only=NAME`, `--path=DIR` and every other `--flag=value` spelling binds the same way as the spaced form.
 
-`scan`, `scan-staged` and `scan-history` refuse an unrecognised flag rather than warning and continuing, because their output is the answer: a typo in a coverage flag used to produce `No hardcoded credentials found.` at exit 0 over a narrower scan than the one you asked for. `feedback` and `diff` still warn, since they report no verdict.
+`scan`, `scan-staged` and `scan-history` refuse an unrecognised flag rather than warning and continuing, because their output is the answer: a typo in a coverage flag used to produce `No hardcoded credentials found.` at exit 0 over a narrower scan than the one you asked for. `feedback`, `diff` and `mcp-status` still warn, since they report no verdict.
 
 `--json` is implemented by `scan`, `status`, `secret list` and `secret show`. Passing it to any other command exits 2 and names the commands that implement it, rather than printing human text and exiting 0 -- the caller of `--json` is a machine, and a machine reading exit 0 beside prose cannot tell it was ignored.
 
-Exit codes: `0` clean, `1` credentials found (or an incomplete scan), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
+Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
 
 ```bash
 npx secretless-ai clean --dry-run --path ./transcripts   # reports findings without redacting

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { SecretStore, isValidSecretName } from '../secret-store';
 import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
+import { escapeForDisplay, escapePathForDisplay } from '../display-safe';
 import { describeSecretShape } from '../secret-value';
 import { isEmptyUpdate } from '../secret-annotations';
 import type { AnnotationUpdate, SecretAnnotation } from '../secret-annotations';
@@ -417,7 +418,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       // for one field: an exact match on recorded metadata (#172).
       const extra = parsed.rest[0];
       if (extra !== undefined) {
-        console.error(`\n  \`secret list\` takes no arguments other than --long, --json, --app <name> and --needs-rotation, but "${extra}" was given.`);
+        console.error(`\n  \`secret list\` takes no arguments other than --long, --json, --app <name> and --needs-rotation, but "${escapeForDisplay(extra)}" was given.`);
         console.error('  It lists every stored name, and it was NOT filtered by that token.');
         console.log(`\n  List all:  ${CLI_BARE} secret list`);
         console.log(`  By app:    ${CLI_BARE} secret list --app <name>`);
@@ -657,7 +658,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         console.log(`         ${CLI_BARE} secret push NAME[,NAME2] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>]\n`);
         return 0;
       }
-      console.error(`\n  Unknown secret command: ${subcommand}`);
+      console.error(`\n  Unknown secret command: ${escapeForDisplay(subcommand)}`);
       console.log(`  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
       console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
       console.log(`         ${CLI_BARE} secret exposed <NAME> --where "<note>" [--at <date>]`);
@@ -774,8 +775,10 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
   }
 
   const usage = `  Usage: ${CLI_BARE} secret sync --from <${SYNC_SOURCES.join('|')}> [--only K1,K2 | --manifest <file>] [--dry-run] [--force]\n`;
+  // Escaped: each message quotes a value from the command line, and a line
+  // feed in it started a line of its own.
   const usageError = (message: string): number => {
-    console.error(`\n  ${message}`);
+    console.error(`\n  ${escapeForDisplay(message)}`);
     console.error('  Nothing was read or written.\n');
     console.error(usage);
     return 2;
@@ -826,13 +829,13 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
         console.error(`  Or:      ${CLI} secret sync --from ${fromType} --manifest <path to .secretless>\n`);
         return 2;
       }
-      console.error(`\n  Manifest not found: ${given}`);
+      console.error(`\n  Manifest not found: ${escapePathForDisplay(given)}`);
       console.error('  Nothing was read or written.\n');
       return 1;
     }
     const parsed = parseManifestDetailed(fs.readFileSync(manifestPath, 'utf-8'));
     if (parsed.errors.length > 0) {
-      console.error(`\n  ${given} could not be parsed.\n`);
+      console.error(`\n  ${escapePathForDisplay(given)} could not be parsed.\n`);
       for (const e of parsed.errors) {
         console.error(`    line ${e.line}: ${e.text}`);
         console.error(`             ${e.reason}`);
@@ -993,8 +996,9 @@ function labelled(label: string, lines: readonly string[]): string[] {
  */
 export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): Promise<number> {
   const usage = `  Usage: ${CLI_BARE} secret push NAME[,NAME2...] --to <${PUSH_TARGETS.join('|')}> [--vault <name>] [--as <names>] [--dry-run]\n`;
+  // Escaped, as `secret sync`'s are.
   const usageError = (message: string): number => {
-    console.error(`\n  ${message}`);
+    console.error(`\n  ${escapeForDisplay(message)}`);
     console.error('  Nothing was read or pushed.\n');
     console.error(usage);
     return 2;

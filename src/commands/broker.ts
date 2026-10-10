@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { startDaemon, stopDaemon, getLiveDaemonStatus } from '../broker/daemon';
 import { formatUptime } from './utils';
+import { escapeForDisplay } from '../display-safe';
 
 export async function runBroker(args: string[]): Promise<number> {
   const subcommand = args[0];
@@ -23,7 +24,7 @@ export async function runBroker(args: string[]): Promise<number> {
           if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) {
             port = parsed;
           } else {
-            console.error(`\n  Invalid port: ${args[i]}. Must be 1-65535.\n`);
+            console.error(`\n  Invalid port: ${escapeForDisplay(args[i])}. Must be 1-65535.\n`);
             return 1;
           }
         } else if (args[i] === '--policy-file' && args[i + 1]) {
@@ -94,7 +95,7 @@ export async function runBroker(args: string[]): Promise<number> {
     default: {
       const isUnknown = subcommand && subcommand !== '--help' && subcommand !== '-h';
       if (isUnknown) {
-        console.error(`\n  Unknown broker command: ${subcommand}`);
+        console.error(`\n  Unknown broker command: ${escapeForDisplay(subcommand)}`);
       }
       console.log('\n  Usage: secretless-ai broker <start|stop|status>\n');
       console.log('  Commands:');

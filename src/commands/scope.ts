@@ -1,6 +1,7 @@
 import { SecretStore } from '../secret-store';
 import { resolveBackendType } from '../backends/config';
 import { discoverScope, listBaselines, resetBaseline, loadBaseline, detectProvider } from '../scope';
+import { escapeForDisplay } from '../display-safe';
 import { CLI_BARE } from './utils';
 
 export async function runScope(args: string[]): Promise<number> {
@@ -24,7 +25,7 @@ export async function runScope(args: string[]): Promise<number> {
         return 1;
       }
       if (!value) {
-        console.error(`\n  Credential "${credentialName}" not found in secret store.\n`);
+        console.error(`\n  Credential "${escapeForDisplay(credentialName)}" not found in secret store.\n`);
         return 1;
       }
 
@@ -92,7 +93,7 @@ export async function runScope(args: string[]): Promise<number> {
 
       const baseline = loadBaseline(credentialName);
       if (!baseline) {
-        console.error(`\n  No baseline found for "${credentialName}".`);
+        console.error(`\n  No baseline found for "${escapeForDisplay(credentialName)}".`);
         console.log(`  Run "${CLI_BARE} scope discover" first to create a baseline.\n`);
         return 1;
       }
@@ -177,10 +178,10 @@ export async function runScope(args: string[]): Promise<number> {
 
       const cleared = resetBaseline(credentialName);
       if (cleared) {
-        console.log(`\n  Baseline for "${credentialName}" cleared.`);
+        console.log(`\n  Baseline for "${escapeForDisplay(credentialName)}" cleared.`);
         console.log('  Next discover will create a fresh baseline.\n');
       } else {
-        console.log(`\n  No baseline found for "${credentialName}".\n`);
+        console.log(`\n  No baseline found for "${escapeForDisplay(credentialName)}".\n`);
       }
       return 0;
     }
@@ -201,7 +202,7 @@ export async function runScope(args: string[]): Promise<number> {
         usage();
         return 0;
       }
-      console.error(`\n  Unknown scope command: ${subcommand}`);
+      console.error(`\n  Unknown scope command: ${escapeForDisplay(subcommand)}`);
       usage();
       return 1;
     }

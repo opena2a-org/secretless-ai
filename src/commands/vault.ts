@@ -16,6 +16,7 @@ import {
   vaultTest,
   vaultMigrate,
 } from '../vault-core';
+import { escapeForDisplay } from '../display-safe';
 
 export async function runVault(args: string[]): Promise<number> {
   const subcommand = args[0];
@@ -49,7 +50,7 @@ export async function runVault(args: string[]): Promise<number> {
     default: {
       const isUnknown = subcommand && subcommand !== '--help' && subcommand !== '-h';
       if (isUnknown) {
-        console.error(`\n  Unknown vault command: ${subcommand}`);
+        console.error(`\n  Unknown vault command: ${escapeForDisplay(subcommand)}`);
       }
       printVaultHelp();
       return isUnknown ? 1 : 0;
