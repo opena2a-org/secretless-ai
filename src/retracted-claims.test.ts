@@ -75,10 +75,13 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
  * together from counting strings. Reads of a plain string cannot be counted,
  * so `plainStrings` names what handed one out: a conversion to a primitive
  * string, which putting such a copy together makes, and a function given to
- * a method, which the method calls with plain strings. A counting string is
- * an object, so a character never `===` the character it is: compare it by
- * its code. A number stays a number, so a copy put together from character
- * codes is read uncounted.
+ * a method, which the method calls with plain strings. The scan must therefore
+ * read its input through String.prototype methods called on it, or by index: a
+ * RegExp method given the content converts it, so the one-pass test fails a
+ * `pattern.exec(content)` loop even when the loop reads the content once. A
+ * counting string is an object, so a character never `===` the character it
+ * is: compare it by its code. A number stays a number, so a copy put together
+ * from character codes is read uncounted.
  */
 function countingString(content: string): {
   text: string;
@@ -338,6 +341,23 @@ describe("the counting string counts a copy's reads and names a plain string it 
     });
     expect(lines).toEqual(everyLine);
     expect(plainStrings).toEqual(["a conversion to a primitive string"]);
+  });
+
+  it("names a regular expression loop that reads the content once all the same", () => {
+    const { lines, passes, plainStrings } = readsOf((content) => {
+      const lines: number[] = [];
+      const pattern = /hit|\n/g;
+      let line = 1;
+      for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
+        if (match[0] === "\n") line += 1;
+        else lines.push(line);
+      }
+      return lines;
+    });
+    expect(lines).toEqual(everyLine);
+    expect(plainStrings).toEqual(["a conversion to a primitive string"]);
+    // The pattern read the plain string, so its one pass is in no count.
+    expect(passes).toBe(0);
   });
 
   it("counts a line count made once per hit on the input a match carries", () => {
