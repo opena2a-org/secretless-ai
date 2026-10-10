@@ -64,14 +64,26 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
  * `content` as a string that counts the characters read from it. A method
  * call is charged what it scans or copies (`indexOf` up to its match, `slice`
  * and its kin their result, a one-character read one) and any other method a
- * whole pass. An index read is charged one character. A conversion to a
- * primitive string is charged a whole pass, because reads of that primitive
- * cannot be counted. The count depends on the code, not the machine.
+ * whole pass. An index read is charged one character. The count depends on
+ * the code, not the machine.
+ *
+ * The count follows the content where a method takes it: a string a method
+ * returns, alone or held by an array, a match or an iterator, is a counting
+ * string on the same counter, charged by its own length. Reads of a plain
+ * string cannot be counted, so `plainStrings` names what handed one out: a
+ * conversion to a primitive string, and a function given to a method, which
+ * the method calls with plain strings. A string of one character stays
+ * plain, so it still equals the character it is: it was charged when it was
+ * read. A copy put together from such characters is read uncounted.
  */
-function countingString(content: string): { text: string; charsRead: () => number } {
-  const length = content.length;
+function countingString(content: string): {
+  text: string;
+  charsRead: () => number;
+  plainStrings: () => string[];
+} {
   let charsRead = 0;
-  const charge = (method: string, args: unknown[], result: unknown): number => {
+  const plainStrings = new Set<string>();
+  const charge = (length: number, method: string, args: unknown[], result: unknown): number => {
     switch (method) {
       case "indexOf": {
         const from = Math.min(Math.max(Math.trunc(Number(args[1])) || 0, 0), length);
@@ -91,25 +103,52 @@ function countingString(content: string): { text: string; charsRead: () => numbe
         return length;
     }
   };
-  const text = new Proxy(new String(content), {
-    get(target, key) {
-      if (key === Symbol.toPrimitive) {
-        return () => {
-          charsRead += length;
-          return content;
+  // `value` as the code under test gets it: each string it holds, at any
+  // depth, a counting one. An array or a match wraps a string when it is read
+  // from it, so taking only its length wraps none.
+  const counted = (value: unknown): unknown => {
+    if (typeof value === "string") return value.length > 1 ? counting(value) : value;
+    if (typeof value !== "object" || value === null) return value;
+    if (!Array.isArray(value) && Symbol.iterator in value) {
+      const items = value as Iterable<unknown>;
+      return (function* () {
+        for (const item of items) yield counted(item);
+      })();
+    }
+    return new Proxy(value, {
+      get: (target, key, receiver) => counted(Reflect.get(target, key, receiver)),
+    });
+  };
+  const counting = (plain: string): string => {
+    const length = plain.length;
+    const text = new Proxy(new String(plain), {
+      get(target, key) {
+        if (key === Symbol.toPrimitive) {
+          return () => {
+            plainStrings.add("a conversion to a primitive string");
+            return plain;
+          };
+        }
+        const value: unknown = Reflect.get(target, key);
+        if (typeof key === "string" && /^\d+$/.test(key)) charsRead += 1;
+        if (typeof value !== "function" || key === "constructor") return value;
+        return (...args: unknown[]) => {
+          if (args.some((arg) => typeof arg === "function")) {
+            plainStrings.add(`${String(key)} given a function`);
+          }
+          const result: unknown = value.apply(plain, args);
+          charsRead += charge(length, String(key), args, result);
+          return counted(result);
         };
-      }
-      const value: unknown = Reflect.get(target, key);
-      if (typeof key === "string" && /^\d+$/.test(key)) charsRead += 1;
-      if (typeof value !== "function" || key === "constructor") return value;
-      return (...args: unknown[]) => {
-        const result: unknown = value.apply(content, args);
-        charsRead += charge(String(key), args, result);
-        return result;
-      };
-    },
-  });
-  return { text: text as unknown as string, charsRead: () => charsRead };
+      },
+    });
+    return text as unknown as string;
+  };
+  return {
+    text: counting(content),
+    charsRead: () => charsRead,
+    plainStrings: () => [...plainStrings],
+  };
 }
 
 /** The documentation 0.23.0 shipped on a GrantPolicy field, carrying `claim`. */
@@ -175,6 +214,8 @@ describe("the retracted-claims list finds each sentence where a shipped file car
 
     expect(hits.length).toBe(count);
     expect(hits.every((hit, i) => hit.line === i + 1)).toBe(true);
+    // Reads of a plain string are in no count, so none may be handed out.
+    expect(content.plainStrings()).toEqual([]);
     // Counting each hit's line from the start of the file read it about
     // count / 2 times over; one pass per listed claim, plus one to count
     // lines, reads it a few times.
@@ -191,6 +232,127 @@ describe("the retracted-claims list finds each sentence where a shipped file car
       expect(mod.retractedClaimsIn(`/** Not${text} */`)).toEqual([]);
     }
     expect(mod.retractedClaimsIn("// Enforced predicates (v1).\n")).toEqual([]);
+  });
+});
+
+describe("the counting string counts a copy's reads and names a plain string it hands out", () => {
+  const count = 400;
+  const file = "hit\n".repeat(count);
+  const everyLine = Array.from({ length: count }, (_, i) => i + 1);
+
+  /** The line of each hit in `whole`, counted from the start of `whole` for every hit. */
+  const linesCountedPerHit = (whole: string): number[] =>
+    Array.from(whole.matchAll(/hit/g), (match) => whole.slice(0, match.index).split("\n").length);
+
+  /**
+   * The lines `scan` found in `file`, the passes it made over it, and what
+   * handed it a plain string.
+   */
+  const readsOf = (scan: (content: string) => number[]) => {
+    const content = countingString(file);
+    const lines = scan(content.text);
+    return {
+      lines,
+      passes: content.charsRead() / file.length,
+      plainStrings: content.plainStrings(),
+    };
+  };
+
+  it.each<[string, (content: string) => string]>([
+    ["replace", (content) => content.replace(/\r\n/g, "\n")],
+    ["toString", (content) => content.toString()],
+    ["valueOf", (content) => content.valueOf()],
+    ["slice", (content) => content.slice(0)],
+    ["concat", (content) => content.concat("")],
+    ["normalize", (content) => content.normalize()],
+  ])("counts a line count made once per hit on the string %s returns", (_method, copyOf) => {
+    const { lines, passes, plainStrings } = readsOf((content) =>
+      linesCountedPerHit(copyOf(content)),
+    );
+    expect(lines).toEqual(everyLine);
+    expect(plainStrings).toEqual([]);
+    expect(passes).toBeGreaterThan(count / 2);
+  });
+
+  it.each<[string, (content: string) => string]>([
+    ["String()", (content) => String(content)],
+    ["a template literal", (content) => `${content}`],
+    ["a concatenation", (content) => content + ""],
+  ])("names %s, whose plain string a line count made once per hit reads", (_how, plainOf) => {
+    const { lines, plainStrings } = readsOf((content) => linesCountedPerHit(plainOf(content)));
+    expect(lines).toEqual(everyLine);
+    expect(plainStrings).toEqual(["a conversion to a primitive string"]);
+  });
+
+  it("names a regular expression run on the content, which converts it", () => {
+    const { lines, plainStrings } = readsOf((content) => {
+      const lines: number[] = [];
+      const pattern = /hit/g;
+      for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
+        lines.push(match.input.slice(0, match.index).split("\n").length);
+      }
+      return lines;
+    });
+    expect(lines).toEqual(everyLine);
+    expect(plainStrings).toEqual(["a conversion to a primitive string"]);
+  });
+
+  it("counts a line count made once per hit on the input a match carries", () => {
+    const { lines, passes, plainStrings } = readsOf((content) =>
+      Array.from(
+        content.matchAll(/hit/g),
+        (match) => (match.input ?? "").slice(0, match.index).split("\n").length,
+      ),
+    );
+    expect(lines).toEqual(everyLine);
+    expect(plainStrings).toEqual([]);
+    expect(passes).toBeGreaterThan(count / 2);
+  });
+
+  it("counts a read of a string in an array a method returns", () => {
+    const content = countingString(file);
+    const pieces = content.text.split("\n");
+    const before = content.charsRead();
+    expect(pieces.length).toBe(count + 1);
+    expect(pieces[1].indexOf("t")).toBe(2);
+    expect(content.charsRead() - before).toBe(3);
+    expect(content.plainStrings()).toEqual([]);
+  });
+
+  it("names a function given to a method, which the method calls with plain strings", () => {
+    const { lines, plainStrings } = readsOf((content) => {
+      const lines: number[] = [];
+      content.replace(/hit/g, (hit: string, index: number, whole: string) => {
+        lines.push(whole.slice(0, index).split("\n").length);
+        return hit;
+      });
+      return lines;
+    });
+    expect(lines).toEqual(everyLine);
+    expect(plainStrings).toEqual(["replace given a function"]);
+  });
+
+  it("control: a single character read from the content equals that character", () => {
+    const content = countingString(file);
+    expect(content.text[3] === "\n").toBe(true);
+    expect(content.text.charAt(3) === "\n").toBe(true);
+    expect(content.charsRead()).toBe(2);
+    expect(content.plainStrings()).toEqual([]);
+  });
+
+  it("control: the scan of a copy with other line endings stays within a few passes", async () => {
+    const mod = await loadRetractedClaims();
+    const { text } = mod.RETRACTED_CLAIMS[0];
+    const content = countingString(`${text}\r\n`.repeat(count));
+
+    const hits = mod.retractedClaimsIn(content.text.replace(/\r\n/g, "\n"));
+
+    expect(hits.map((hit) => hit.line)).toEqual(everyLine);
+    expect(content.plainStrings()).toEqual([]);
+    // More than the pass the copy took: the scan's reads of the copy count.
+    const passes = content.charsRead() / content.text.length;
+    expect(passes).toBeGreaterThan(1);
+    expect(passes).toBeLessThanOrEqual(2 * mod.RETRACTED_CLAIMS.length + 1);
   });
 });
 
