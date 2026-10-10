@@ -1100,6 +1100,19 @@ const SAME_COMMAND = '[^;&|]*';
 const CMD_POSITION =
   '(^|[;&|({`])\\s*((sudo|command|exec|nohup|time|nice|xargs|watch)(\\s+-[^[:space:]]*)*\\s+)*([^[:space:];&|()]*/)?';
 
+// The same, for the arm that refuses a program able to print the environment
+// when nothing parsed the command. Without python3 the command is the raw JSON
+// string, so a line break or tab arrives as a `\n` or `\t` escape and a quote
+// that opens a nested shell's string as `\"`; command position also follows
+// `!`, eval, and a shell's -c with its opening quote.
+const ENV_CLASS_POSITION =
+  '(^|[;&|({`!]|\\\\+[nt]|(eval|-[A-Za-z]*c)\\s+(\\\\*["\'"\'"\'])?)\\s*' +
+  '((sudo|doas|command|builtin|exec|nohup|time|nice|xargs|watch)(\\s+-[^[:space:]]*)*\\s+)*([^[:space:];&|()]*/)?';
+const ENV_CLASS_WORDS =
+  '(set|env|printenv|export|declare|typeset|local|readonly|compgen|ps|pgrep|tmux|' +
+  'docker(\\s+-[^[:space:]]+)*\\s+((container|image)\\s+)?inspect)' +
+  '([[:space:];&|)}<>`"\'"\'"\']|\\\\|$)';
+
 // A secret file extension must END there. Without a boundary, `.key` matched
 // `.keys()` and `.keychain`, and `.env` matched `.envelope`, so ordinary work
 // was blocked: `python3 -c "...json.load(f).keys()"` was refused as if it were
@@ -1199,8 +1212,16 @@ const OPTIONAL_GAP = '(\\s|\\\\+t)*';
 // file-read arm refuses only a match that survives all three. The data-directory arm, the process-listing, bare-env and
 // git-credential arms, and custom rules read the full command.
 //
+// Before any reduction the same program parses the whole command a second way,
+// for the environment-print arm (NOTE ON ENVIRONMENT PRINTS in the hook), and
+// prints ENV-PRINT with a deny reason instead when a simple command in it can
+// print the environment or when the command cannot be parsed. That parse reads
+// expansions, subshells and nested shells, which the reduction never does: a
+// command the reduction does not understand is only left unreduced, while a
+// command this parse does not understand is refused.
+//
 // Kept free of backticks and `${` so it can sit in the template literal below.
-const GUARD_COMMAND_ANALYZER = String.raw`import sys
+const GUARD_COMMAND_ANALYZER = String.raw`import json, re, sys
 
 SAFE = {"grep", "egrep", "fgrep", "cat", "head", "tail", "wc", "cut", "tr",
         "tee", "sort", "uniq", "mkdir", "echo", "printf"}
@@ -1494,11 +1515,1346 @@ def reducible_spans(cmd):
     return spans
 
 
+# ENVIRONMENT PRINTS. Everything below parses the WHOLE command into its simple
+# commands and judges each one by what it runs; see NOTE ON ENVIRONMENT PRINTS.
+SENT = chr(0xE000)
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
+ARRAY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=\Z")
+CLUSTER_RE = re.compile(r"[-+][A-Za-z]+\Z")
+BRACE_RE = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
+ANSI_RE = re.compile(r"x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3})|c(.)")
+WORD_END = " \t\n|&;<>()"
+RESERVED_SKIP = {"{", "}", "then", "do", "else", "if", "elif", "while", "until",
+                 "!", "fi", "done", "esac", "coproc"}
+MAX_DEPTH = 16
+
+
+class Unparsed(Exception):
+    def __init__(self, src, pos, why, fix):
+        Exception.__init__(self, why)
+        self.src, self.pos, self.why, self.fix = src, pos, why, fix
+
+
+class Refuse(Exception):
+    def __init__(self, reason):
+        Exception.__init__(self, reason)
+        self.reason = reason
+
+
+# A word: its value has SENT where an expansion stands, so a word is literal
+# only when its value holds no SENT and no unquoted glob or brace.
+class PW:
+    def __init__(self, start, value=""):
+        self.start, self.end, self.value, self.quoted, self.glob = start, start, value, False, False
+
+
+# A simple command, with the text it reads on its input when the command line
+# shows that text (a here-document, a here-string, or a pipe from echo).
+class PC:
+    def __init__(self, src):
+        self.src, self.words, self.start, self.end = src, [], None, None
+        self.stdin, self.pipe_from, self.kind, self.display = [], None, "simple", None
+
+    def text(self):
+        if self.display is not None:
+            return self.display
+        return "" if self.start is None else self.src[self.start:self.end].strip()
+
+
+def lit(w):
+    return None if (SENT in w.value or w.glob) else w.value
+
+
+class Parser:
+    def __init__(self, s, depth, out):
+        if depth > MAX_DEPTH:
+            raise Unparsed(s, 0, "commands nested more deeply than the guard reads",
+                           "run the inner command on its own")
+        self.s, self.n, self.i, self.depth, self.out = s, len(s), 0, depth, out
+        self.pending, self.nest = [], 0
+
+    def fail(self, why, fix, pos=None):
+        raise Unparsed(self.s, self.i if pos is None else pos, why, fix)
+
+    def at(self, k=0):
+        j = self.i + k
+        return self.s[j] if j < self.n else ""
+
+    def skip_blanks(self):
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c in BLANKS:
+                self.i += 1
+            elif c == BSL and self.at(1) == "\n":
+                self.i += 2
+            else:
+                break
+
+    def skip_comment(self):
+        j = self.s.find("\n", self.i)
+        self.i = self.n if j < 0 else j
+
+    def skip_ws(self):
+        while True:
+            self.skip_blanks()
+            if self.at() == "\n":
+                self.i += 1
+                if self.pending:
+                    self.read_heredocs()
+            elif self.at() == "#":
+                self.skip_comment()
+            else:
+                return
+
+    def word_here(self, word):
+        if not self.s.startswith(word, self.i):
+            return False
+        j = self.i + len(word)
+        return j >= self.n or self.s[j] in WORD_END
+
+    def read_word(self, paren_ok=False):
+        w = PW(self.i)
+        val, bare = [], []
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c in BLANKS or c == "\n":
+                break
+            if c in "<>" and self.at(1) == "(" and self.i == w.start and not paren_ok:
+                self.i += 2
+                self.parse_list(")")
+                val.append(SENT)
+                bare.append("_")
+                continue
+            if c == "(":
+                if self.i > w.start and ARRAY_RE.match("".join(val)):
+                    self.read_array()
+                    val.append(SENT)
+                    bare.append("_")
+                    continue
+                if (self.i == w.start and not paren_ok) or re.match(r"\([ \t]*\)", self.s[self.i:self.i + 8]):
+                    break
+                self.read_glob_group()
+                w.glob = True
+                val.append(SENT)
+                bare.append("_")
+                continue
+            if c in "|&;<>)":
+                break
+            if c == SQ:
+                j = self.s.find(SQ, self.i + 1)
+                if j < 0:
+                    self.fail("a single quote that is never closed", "close the quote")
+                val.append(self.s[self.i + 1:j])
+                bare.append("_")
+                w.quoted = True
+                self.i = j + 1
+            elif c == DQ:
+                self.i += 1
+                val.append(self.read_dq())
+                bare.append("_")
+                w.quoted = True
+            elif c == BSL:
+                if self.i + 1 >= self.n:
+                    val.append(BSL)
+                    self.i += 1
+                    continue
+                d = self.s[self.i + 1]
+                self.i += 2
+                if d != "\n":
+                    val.append(d)
+                    bare.append("_")
+                    w.quoted = True
+            elif c == "$":
+                val.append(self.read_dollar(False))
+                bare.append("_")
+            elif c == BTK:
+                val.append(self.read_backtick(False))
+                bare.append("_")
+            else:
+                if c in "*?[":
+                    w.glob = True
+                val.append(c)
+                bare.append(c)
+                self.i += 1
+        w.end = self.i
+        w.value = "".join(val)
+        if BRACE_RE.search("".join(bare)):
+            w.glob = True
+        return w
+
+    def read_array(self):
+        self.i += 1
+        while True:
+            self.skip_ws()
+            if self.i >= self.n:
+                self.fail("an array assignment whose ( is never closed", "close the parenthesis")
+            if self.s[self.i] == ")":
+                self.i += 1
+                return
+            start = self.i
+            self.read_word()
+            if self.i == start:
+                self.fail("an array assignment the guard cannot read", "assign the values one by one")
+
+    def read_glob_group(self):
+        start, depth = self.i, 0
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    self.i += 1
+                    group = self.s[start:self.i]
+                    if re.search(r"[^A-Za-z0-9_.|*?!@^~#,/:\[\]()=%-]", group) or \
+                            ("|" not in group and re.search(r"[e+]", group)):
+                        self.fail("a parenthesized glob the guard cannot read",
+                                  "list the files without a glob qualifier or pattern group", start)
+                    return
+            elif c in BLANKS or c in "\n$;&<>" or c in (BTK, SQ, DQ, BSL):
+                break
+            self.i += 1
+        self.fail("a ( the guard cannot read as a subshell or a glob",
+                  "put the subshell at the start of a command", start)
+
+    def read_dq(self):
+        val = []
+        while True:
+            if self.i >= self.n:
+                self.fail("a double quote that is never closed", "close the quote")
+            c = self.s[self.i]
+            if c == DQ:
+                self.i += 1
+                return "".join(val)
+            if c == BSL and self.at(1) in ("$", BTK, DQ, BSL, "\n"):
+                if self.at(1) != "\n":
+                    val.append(self.at(1))
+                self.i += 2
+            elif c == "$":
+                val.append(self.read_dollar(True))
+            elif c == BTK:
+                val.append(self.read_backtick(True))
+            else:
+                val.append(c)
+                self.i += 1
+
+    def read_dollar(self, in_dq):
+        start, nxt = self.i, self.at(1)
+        if nxt == "(":
+            if self.at(2) == "(":
+                mark, outlen = self.i, len(self.out)
+                self.i += 3
+                if self.try_arith():
+                    return SENT
+                self.i = mark
+                del self.out[outlen:]
+            self.i += 2
+            self.parse_list(")")
+            return SENT
+        if nxt == "{":
+            self.i += 2
+            depth = 1
+            while True:
+                if self.i >= self.n:
+                    self.fail("a parameter expansion that is never closed", "close the brace", start)
+                c = self.s[self.i]
+                if c == BSL:
+                    self.i += 2
+                elif c == SQ and not in_dq:
+                    j = self.s.find(SQ, self.i + 1)
+                    if j < 0:
+                        self.fail("a single quote that is never closed", "close the quote")
+                    self.i = j + 1
+                elif c == DQ:
+                    self.i += 1
+                    self.read_dq()
+                elif c == "$" and self.at(1) == "{":
+                    depth += 1
+                    self.i += 2
+                elif c == "$":
+                    self.read_dollar(in_dq)
+                elif c == BTK:
+                    self.read_backtick(in_dq)
+                elif c == "}":
+                    depth -= 1
+                    self.i += 1
+                    if depth == 0:
+                        return SENT
+                else:
+                    self.i += 1
+        if nxt == SQ and not in_dq:
+            self.i += 2
+            return self.read_ansi()
+        if nxt == DQ and not in_dq:
+            self.i += 2
+            return self.read_dq()
+        if nxt and (nxt.isalnum() or nxt == "_"):
+            self.i += 2
+            if not nxt.isdigit():
+                while self.i < self.n and (self.s[self.i].isalnum() or self.s[self.i] == "_"):
+                    self.i += 1
+            return SENT
+        if nxt and nxt in "@*#?-$!":
+            self.i += 2
+            return SENT
+        self.i += 1
+        return "$"
+
+    def read_ansi(self):
+        val = []
+        simple = {"a": "\a", "b": "\b", "e": chr(27), "E": chr(27), "f": "\f", "n": "\n",
+                  "r": "\r", "t": "\t", "v": "\v", BSL: BSL, SQ: SQ, DQ: DQ, "?": "?"}
+        while True:
+            if self.i >= self.n:
+                self.fail("a $' quote that is never closed", "close the quote")
+            c = self.s[self.i]
+            if c == SQ:
+                self.i += 1
+                return "".join(val)
+            if c != BSL:
+                val.append(c)
+                self.i += 1
+                continue
+            d = self.at(1)
+            if d in simple:
+                val.append(simple[d])
+                self.i += 2
+                continue
+            m = ANSI_RE.match(self.s, self.i + 1)
+            if m:
+                if m.group(5) is not None:
+                    val.append(chr(ord(m.group(5)) & 31))
+                elif m.group(4) is not None:
+                    val.append(chr(int(m.group(4), 8) & 255))
+                else:
+                    val.append(chr(min(int(m.group(1) or m.group(2) or m.group(3), 16), 0x10FFFF)))
+                self.i = m.end()
+                continue
+            val.append(BSL)
+            self.i += 1
+
+    def read_backtick(self, in_dq):
+        start = self.i
+        self.i += 1
+        inner = []
+        while True:
+            if self.i >= self.n:
+                self.fail("a backquote that is never closed", "close the backquote", start)
+            c = self.s[self.i]
+            if c == BTK:
+                self.i += 1
+                break
+            if c == BSL and (self.at(1) in ("$", BTK, BSL) or (in_dq and self.at(1) == DQ)):
+                inner.append(self.at(1))
+                self.i += 2
+                continue
+            inner.append(c)
+            self.i += 1
+        Parser("".join(inner), self.depth + 1, self.out).parse_list(None)
+        return SENT
+
+    # Reads (( ... )) arithmetic up to its closing )); False when the text is
+    # not arithmetic, and then the caller reads it as nested subshells.
+    def try_arith(self):
+        depth = 0
+        try:
+            while self.i < self.n:
+                c = self.s[self.i]
+                if c == "(":
+                    depth += 1
+                    self.i += 1
+                elif c == ")":
+                    if depth == 0:
+                        if self.at(1) == ")":
+                            self.i += 2
+                            return True
+                        return False
+                    depth -= 1
+                    self.i += 1
+                elif c == "$":
+                    self.read_dollar(False)
+                elif c == BTK:
+                    self.read_backtick(False)
+                elif c == DQ:
+                    self.i += 1
+                    self.read_dq()
+                elif c == SQ:
+                    j = self.s.find(SQ, self.i + 1)
+                    if j < 0:
+                        return False
+                    self.i = j + 1
+                elif c == BSL:
+                    self.i += 2
+                else:
+                    self.i += 1
+        except Unparsed:
+            return False
+        return False
+
+    def read_delim(self):
+        val, quoted = [], False
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c in BLANKS or c in "\n|&;<>()":
+                break
+            if c in (SQ, DQ):
+                j = self.s.find(c, self.i + 1)
+                if j < 0:
+                    self.fail("a quote that is never closed", "close the quote")
+                val.append(self.s[self.i + 1:j])
+                quoted, self.i = True, j + 1
+            elif c == BSL:
+                val.append(self.at(1))
+                quoted = True
+                self.i += 2
+            else:
+                val.append(c)
+                self.i += 1
+        if not "".join(val):
+            self.fail("a here-document with no delimiter", "name the delimiter after <<")
+        return "".join(val), quoted
+
+    def read_heredocs(self):
+        pending, self.pending = self.pending, []
+        for delim, dash, quoted, owner in pending:
+            start, body_end = self.i, self.n
+            while self.i < self.n:
+                j = self.s.find("\n", self.i)
+                end = self.n if j < 0 else j
+                line = self.s[self.i:end]
+                nxt = self.n if j < 0 else j + 1
+                if (line.lstrip("\t") if dash else line) == delim:
+                    body_end = self.i
+                    self.i = nxt
+                    break
+                self.i = nxt
+            body = self.s[start:body_end]
+            if not quoted:
+                body = Parser(body, self.depth + 1, self.out).expand_body()
+            owner.stdin.append(body)
+
+    def expand_body(self):
+        val = []
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c == BSL and self.at(1) in ("$", BTK, BSL, "\n"):
+                if self.at(1) != "\n":
+                    val.append(self.at(1))
+                self.i += 2
+            elif c == "$":
+                val.append(self.read_dollar(True))
+            elif c == BTK:
+                val.append(self.read_backtick(True))
+            else:
+                val.append(c)
+                self.i += 1
+        return "".join(val)
+
+    def finish(self, cmd):
+        if cmd is not None and cmd.words:
+            self.out.append(cmd)
+        return None
+
+    def parse_list(self, closer, case_item=False):
+        self.nest += 1
+        if self.nest > 48:
+            self.fail("commands nested more deeply than the guard reads", "run the inner command on its own")
+        try:
+            return self.parse_list_body(closer, case_item)
+        finally:
+            self.nest -= 1
+
+    def parse_list_body(self, closer, case_item):
+        cmd, pipe_from = None, None
+        while True:
+            self.skip_blanks()
+            if self.i >= self.n:
+                self.finish(cmd)
+                if self.pending:
+                    self.read_heredocs()
+                if closer:
+                    self.fail("a ( or $( that is never closed", "close the parenthesis")
+                return None
+            c = self.s[self.i]
+            if c == "\n":
+                cmd, pipe_from = self.finish(cmd), None
+                self.i += 1
+                if self.pending:
+                    self.read_heredocs()
+                continue
+            if c == "#" and (self.i == 0 or self.s[self.i - 1] in " \t\n;&|()"):
+                self.skip_comment()
+                continue
+            if c == ")":
+                if closer == ")":
+                    self.finish(cmd)
+                    self.i += 1
+                    return None
+                self.fail("a ) with no ( before it", "remove the stray parenthesis")
+            if c in "|&;":
+                op = next(o for o in (";;&", ";;", ";&", "||", "|&", "&&", "&>>", "&>", "|", "&", ";")
+                          if self.s.startswith(o, self.i))
+                if op in ("&>", "&>>"):
+                    if cmd is None:
+                        cmd = PC(self.s)
+                        cmd.pipe_from = pipe_from
+                    self.read_redirect(cmd, op)
+                    continue
+                if op in (";;", ";&", ";;&"):
+                    if not case_item:
+                        self.fail("a ;; outside a case statement", "remove the extra semicolon")
+                    self.finish(cmd)
+                    self.i += len(op)
+                    return op
+                prev = cmd
+                cmd = self.finish(cmd)
+                pipe_from = prev if op in ("|", "|&") else None
+                self.i += len(op)
+                continue
+            if c in "<>" and self.at(1) != "(":
+                if cmd is None:
+                    cmd = PC(self.s)
+                    cmd.pipe_from = pipe_from
+                self.read_redirect(cmd, None)
+                continue
+            if c == "(" and cmd is not None and len(cmd.words) == 1 and not cmd.words[0].quoted and \
+                    cmd.words[0].value == "time":
+                cmd.words, cmd.start = [], None
+            at_start = cmd is None or (not cmd.words and cmd.kind == "simple")
+            if at_start and c == "(":
+                if self.at(1) == "(":
+                    mark, outlen = self.i, len(self.out)
+                    self.i += 2
+                    if self.try_arith():
+                        cmd = PC(self.s)
+                        cmd.kind = "compound"
+                        continue
+                    self.i = mark
+                    del self.out[outlen:]
+                self.i += 1
+                self.parse_list(")")
+                cmd = PC(self.s)
+                cmd.kind = "compound"
+                continue
+            if at_start and case_item and self.word_here("esac"):
+                self.finish(cmd)
+                return "esac"
+            if c == "(" and cmd is not None and len(cmd.words) == 1 and cmd.kind == "simple":
+                j = self.i + 1
+                while j < self.n and self.s[j] in BLANKS:
+                    j += 1
+                if j < self.n and self.s[j] == ")":
+                    self.i = j + 1
+                    cmd = PC(self.s)
+                    continue
+            start = self.i
+            w = self.read_word(paren_ok=cmd is not None and bool(cmd.words))
+            if self.i == start:
+                self.fail("a character the guard cannot read here", "rewrite the command more simply")
+            if not w.quoted and self.at() in ("<", ">") and self.at(1) != "(" and \
+                    (w.value.isdigit() or re.match(r"\{[A-Za-z_][A-Za-z0-9_]*\}\Z", w.value)):
+                continue
+            if cmd is None or cmd.kind == "compound":
+                cmd = PC(self.s)
+                cmd.pipe_from = pipe_from
+            if cmd.kind == "for":
+                if not w.quoted and w.value == "do":
+                    cmd = self.finish(cmd)
+                continue
+            if not cmd.words and not w.quoted:
+                v = w.value
+                if v in RESERVED_SKIP:
+                    continue
+                if v == "case":
+                    self.parse_case()
+                    cmd = PC(self.s)
+                    cmd.kind = "compound"
+                    continue
+                if v in ("for", "select"):
+                    self.skip_blanks()
+                    if self.s.startswith("((", self.i):
+                        self.i += 2
+                        if not self.try_arith():
+                            self.fail("a for (( )) loop the guard cannot read", "loop over a word list")
+                    cmd.kind = "for"
+                    continue
+                if v == "[[":
+                    self.parse_cond()
+                    cmd = PC(self.s)
+                    cmd.kind = "compound"
+                    continue
+                if v == "function":
+                    self.skip_blanks()
+                    self.read_word()
+                    self.skip_blanks()
+                    if self.s.startswith("()", self.i):
+                        self.i += 2
+                    continue
+            if cmd.start is None:
+                cmd.start = start
+            cmd.words.append(w)
+            cmd.end = self.i
+
+    def read_redirect(self, cmd, op):
+        if op is None:
+            op = next(o for o in ("<<<", "<<-", "<<", ">>", ">|", "<&", ">&", "<>", "<", ">")
+                      if self.s.startswith(o, self.i))
+        if cmd.start is None:
+            cmd.start = self.i
+        self.i += len(op)
+        self.skip_blanks()
+        if op in ("<<", "<<-"):
+            delim, quoted = self.read_delim()
+            self.pending.append((delim, op == "<<-", quoted, cmd))
+        else:
+            if self.i >= self.n or self.s[self.i] in "\n|&;)":
+                self.fail("a redirection with no target", "name the file after the redirection")
+            w = self.read_word()
+            if op == "<<<":
+                cmd.stdin.append(w.value + "\n")
+        cmd.end = self.i
+
+    def parse_case(self):
+        self.skip_ws()
+        self.read_word()
+        self.skip_ws()
+        if not self.word_here("in"):
+            self.fail("a case statement the guard cannot read", "write it as if statements")
+        self.i += 2
+        while True:
+            self.skip_ws()
+            if self.i >= self.n:
+                self.fail("a case statement with no esac", "close it with esac")
+            if self.word_here("esac"):
+                self.i += 4
+                return
+            if self.s[self.i] == "(":
+                self.i += 1
+            while True:
+                self.skip_blanks()
+                if self.i >= self.n:
+                    self.fail("a case pattern with no )", "close the pattern with )")
+                c = self.s[self.i]
+                if c == ")":
+                    self.i += 1
+                    break
+                if c == "|":
+                    self.i += 1
+                    continue
+                start = self.i
+                self.read_word(paren_ok=True)
+                if self.i == start:
+                    self.fail("a case pattern the guard cannot read", "write it as if statements")
+            end = self.parse_list(None, case_item=True)
+            if end == "esac":
+                self.i += 4
+                return
+            if end is None:
+                self.fail("a case statement with no esac", "close it with esac")
+
+    def parse_cond(self):
+        while True:
+            self.skip_ws()
+            if self.i >= self.n:
+                self.fail("a [[ test with no ]]", "close it with ]]")
+            if self.word_here("]]"):
+                self.i += 2
+                return
+            if self.s.startswith("&&", self.i) or self.s.startswith("||", self.i):
+                self.i += 2
+                continue
+            if self.s[self.i] in "()!<>":
+                self.i += 1
+                continue
+            start = self.i
+            self.read_word(paren_ok=True)
+            if self.i == start:
+                self.fail("a [[ test the guard cannot read", "use [ ] or test")
+
+
+def parse_all(text, depth):
+    out = []
+    Parser(text, depth, out).parse_list(None)
+    return out
+
+
+def shown(text):
+    t = "".join(ch if 32 <= ord(ch) < 127 or ord(ch) > 159 else "?" for ch in text.replace(SENT, "$"))
+    return t if len(t) <= 160 else t[:157] + "..."
+
+
+SAFE_TEST = 'check that a variable is set without printing its value, [ -n "$NAME" ] && echo set'
+SET_LETTERS = {
+    "x": "traces each later command with its variables expanded.",
+    "v": "prints each later command line as the shell reads it.",
+    "a": "exports every variable set after it to each program run.",
+    "k": "turns NAME=value arguments into environment assignments.",
+    "A": "with no name prints every array with its values.",
+}
+SET_SAFE = "set only with a literal option, set -e, set -u or set -o pipefail"
+
+
+def refuse(cmd, what, safe):
+    raise Refuse("Secretless: blocked a command that can print the environment, credentials included. Matched " +
+                 BTK + shown(cmd.text()) + BTK + ": " + what + " Safe path: " + safe + ".")
+
+
+def cmd_name(w):
+    base = w.value.rsplit("/", 1)[-1]
+    if base in ("[", "[["):
+        return base
+    if SENT in base or (w.glob and re.search(r"[*?\[{]", base)):
+        return None
+    if base.startswith("=") and not w.quoted:
+        base = base[1:]
+    return base.lower()
+
+
+def opt_skip(args, k, with_arg, long_arg=()):
+    while k < len(args):
+        v = args[k].value
+        if v == "--":
+            return k + 1
+        if not v.startswith("-") or v == "-" or SENT in v:
+            return k
+        if v.startswith("--"):
+            k += 2 if ("=" not in v and v in long_arg) else 1
+            continue
+        step = 1
+        for idx, ch in enumerate(v[1:]):
+            if ch in with_arg:
+                if idx == len(v) - 2:
+                    step = 2
+                break
+        k += step
+    return k
+
+
+def word(value):
+    return PW(0, value)
+
+
+def strip_assign(words):
+    k = 0
+    while k < len(words) and ASSIGN_RE.match(words[k].value):
+        k += 1
+    return words[k:]
+
+
+def unescape(t):
+    table = {"n": "\n", "t": "\t", "r": "\r", BSL: BSL, "a": "\a", "b": "\b", "f": "\f", "v": "\v"}
+
+    def one(m):
+        g = m.group(1)
+        if g[0] == "0" and len(g) > 1:
+            return chr(int(g[1:], 8) & 255)
+        if g[0] == "x" and len(g) > 1:
+            return chr(int(g[1:], 16))
+        return table.get(g, BSL + g)
+    return re.sub(r"\\(0[0-7]{0,3}|x[0-9A-Fa-f]{1,2}|.)", one, t, flags=re.S)
+
+
+def literal_out(prod):
+    """What a cat of a here-document, or an echo or printf of literal words, writes; else None."""
+    words = strip_assign(prod.words)
+    if not words:
+        return None
+    name = cmd_name(words[0])
+    args = [w.value for w in words[1:]]
+    if name == "cat" and prod.stdin and all(a.startswith("-") for a in args):
+        return prod.stdin[-1]
+    if name == "echo":
+        while args and re.match(r"-[neE]+\Z", args[0]):
+            args = args[1:]
+        return unescape(" ".join(args)) + "\n"
+    if name == "printf" and args:
+        fmt, rest, out = unescape(args[0]), args[1:], []
+        for _ in range(64):
+            used = False
+            for p in re.split(r"(%%|%[-+ #0-9.]*[a-zA-Z])", fmt):
+                if p == "%%":
+                    out.append("%")
+                elif p.startswith("%") and len(p) > 1:
+                    used = True
+                    out.append(unescape(rest.pop(0)) if rest else "")
+                else:
+                    out.append(p)
+            if not rest or not used:
+                break
+        return "".join(out)
+    return None
+
+
+def stdin_text(cmd):
+    """The text a command reads on its input when the command line shows it, else None."""
+    if cmd.stdin:
+        return cmd.stdin[-1]
+    if cmd.pipe_from is not None:
+        return literal_out(cmd.pipe_from)
+    return None
+
+
+def judge_text(cmd, text, depth, what):
+    if SENT in text:
+        refuse(cmd, what + " carries an expansion, so the guard cannot read the commands it runs.",
+               "pass values as arguments, bash -c " + SQ + 'cmd "$1"' + SQ + ' _ "$VALUE"')
+    for sub in parse_all(text, depth + 1):
+        sub.display = cmd.text()
+        judge(sub, sub.words, depth + 1)
+
+
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh"}
+DECLARE = {"export", "readonly", "declare", "typeset", "local"}
+TRACE_NAMES = ("xtrace", "verbose", "allexport", "keyword")
+
+
+def judge(cmd, words, depth):
+    words = strip_assign(words)
+    if not words or cmd.kind != "simple":
+        return
+    name = cmd_name(words[0])
+    if name is None:
+        refuse(cmd, "the program name comes from an expansion, so the guard cannot tell which program runs.",
+               "name the program literally")
+    args = words[1:]
+    if name in ("sudo", "doas"):
+        k = opt_skip(args, 0, "ugCDhprtTUc", ("--user", "--group", "--prompt", "--chdir", "--host", "--role",
+                                               "--type", "--other-user", "--close-from", "--command-timeout"))
+        if any(re.match(r"-[A-Za-z]*[elvkKV]", a.value) or a.value in ("--edit", "--list", "--validate")
+               for a in args[:k]):
+            return
+        return judge(cmd, args[k:], depth)
+    if name in ("nohup", "builtin", "noglob", "nocorrect", "busybox", "unbuffer", "chronic"):
+        return judge(cmd, args, depth)
+    if name in ("stdbuf", "setsid", "caffeinate", "ionice"):
+        return judge(cmd, args[opt_skip(args, 0, {"stdbuf": "ioe", "caffeinate": "tw", "ionice": "cnp"}.get(name, ""),
+                                        ("--input", "--output", "--error", "--class", "--classdata")):], depth)
+    if name == "su":
+        k = 0
+        while k < len(args):
+            v = args[k].value
+            if v in ("-c", "--command"):
+                if k + 1 < len(args):
+                    judge_text(cmd, args[k + 1].value, depth, "the string su -c runs")
+                return
+            if v.startswith("--command="):
+                return judge_text(cmd, v.split("=", 1)[1], depth, "the string su -c runs")
+            k += 2 if v in ("-s", "--shell", "-g", "--group") else 1
+        return
+    if name == "alias":
+        for a in args:
+            if "=" in a.value and not a.value.startswith("-"):
+                judge_text(cmd, a.value.split("=", 1)[1], depth, "the alias body")
+        return
+    if name == "trap":
+        k = opt_skip(args, 0, "")
+        if k < len(args) and args[k].value not in ("-", "") and len(args) > k + 1:
+            judge_text(cmd, args[k].value, depth, "the trap action")
+        return
+    if name == "command":
+        k = opt_skip(args, 0, "")
+        if any(re.match(r"-[a-zA-Z]*[vV]", a.value) for a in args[:k]):
+            return
+        return judge(cmd, args[k:], depth)
+    if name == "exec":
+        return judge(cmd, args[opt_skip(args, 0, "a"):], depth)
+    if name == "nice":
+        return judge(cmd, args[opt_skip(args, 0, "n", ("--adjustment",)):], depth)
+    if name == "time":
+        return judge(cmd, args[opt_skip(args, 0, "fo", ("--format", "--output")):], depth)
+    if name == "timeout":
+        return judge(cmd, args[opt_skip(args, 0, "sk", ("--signal", "--kill-after")) + 1:], depth)
+    if name == "xargs":
+        k = opt_skip(args, 0, "IadELnPsRSJ", ("--arg-file", "--delimiter", "--eof", "--max-lines", "--max-args",
+                                              "--max-procs", "--max-chars", "--process-slot-var"))
+        return judge(cmd, args[k:], depth)
+    if name == "watch":
+        k = opt_skip(args, 0, "n", ("--interval",))
+        if any(re.match(r"-[a-wyz]*x", a.value) or a.value == "--exec" for a in args[:k]):
+            return judge(cmd, args[k:], depth)
+        if k < len(args):
+            judge_text(cmd, " ".join(a.value for a in args[k:]), depth, "the command watch runs")
+        return
+    if name == "find":
+        k = 0
+        while k < len(args):
+            if args[k].value in ("-exec", "-execdir", "-ok", "-okdir"):
+                j = k + 1
+                while j < len(args) and args[j].value not in (";", "+"):
+                    j += 1
+                judge(cmd, args[k + 1:j], depth)
+                k = j
+            k += 1
+        return
+    if name == "env":
+        return judge_env(cmd, args, depth)
+    if name in SHELLS:
+        return judge_shell(cmd, name, args, depth)
+    if name == "eval":
+        if args:
+            judge_text(cmd, " ".join(a.value for a in args), depth, "the text eval runs")
+        return
+    if name in ("source", "."):
+        if args and (SENT in args[0].value or args[0].value in ("/dev/stdin", "/dev/fd/0")):
+            text = None if SENT in args[0].value else stdin_text(cmd)
+            if text is None:
+                refuse(cmd, "it runs shell code the guard cannot read before it runs.", "run the commands directly")
+            judge_text(cmd, text, depth, "the text source runs")
+        return
+    if name == "set":
+        return judge_set(cmd, args)
+    if name in ("setopt", "unsetopt"):
+        for a in args:
+            n = a.value.lower().replace("_", "")
+            if SENT in n or n in TRACE_NAMES or (n.startswith("no") and n[2:] in TRACE_NAMES):
+                refuse(cmd, name + " " + a.value + " can turn on tracing or export every variable in zsh.",
+                       "leave tracing off; setopt pipefail and setopt errexit are allowed")
+        return
+    if name == "printenv":
+        refuse(cmd, "printenv prints the whole environment, or the value of each variable it names.", SAFE_TEST)
+    if name == "compgen":
+        refuse(cmd, "compgen lists shell variables, functions and names.", SAFE_TEST)
+    if name in DECLARE:
+        return judge_declare(cmd, name, args)
+    fam = interp_family(name)
+    if fam:
+        return judge_interp(cmd, fam, args)
+    if name in ("docker", "podman"):
+        return judge_docker(cmd, args, depth)
+    if name in ("docker-compose", "podman-compose"):
+        return judge_compose(cmd, args, depth)
+    if name == "kubectl":
+        return judge_kubectl(cmd, args, depth)
+    if name == "tmux":
+        if any(a.value == "showenv" or a.value.startswith("show-e") for a in args):
+            refuse(cmd, "tmux show-environment prints the environment of the tmux server or session.", SAFE_TEST)
+        return
+    if name == "launchctl":
+        if args and args[0].value in ("getenv", "print", "export"):
+            refuse(cmd, "launchctl " + args[0].value + " prints environment values.", SAFE_TEST)
+        return
+    if name == "systemctl":
+        if any(a.value == "show-environment" for a in args):
+            refuse(cmd, "systemctl show-environment prints the service manager environment.", SAFE_TEST)
+        return
+    if name == "npm":
+        k = opt_skip(args, 0, "")
+        if k < len(args) and args[k].value in ("run", "run-script", "rum", "urn"):
+            j = opt_skip(args, k + 1, "")
+            if j < len(args) and args[j].value == "env":
+                refuse(cmd, "npm run env prints the whole environment npm gives a script.", SAFE_TEST)
+
+
+def judge_env(cmd, args, depth):
+    k = 0
+    while k < len(args):
+        v = args[k].value
+        if SENT in v:
+            break
+        if v == "--":
+            k += 1
+            break
+        if re.match(r"-[iv0]+\Z", v) or v in ("-", "--ignore-environment", "--null", "--debug"):
+            k += 1
+        elif v in ("-u", "--unset", "-C", "--chdir", "-P"):
+            k += 2
+        elif re.match(r"-[iv0]*[uCP].|--unset=|--chdir=", v):
+            k += 1
+        elif re.match(r"-[iv0]*S|--split-string", v):
+            if v == "--split-string" or v.endswith("S"):
+                text, rest = (args[k + 1].value if k + 1 < len(args) else ""), args[k + 2:]
+            else:
+                text, rest = (v.split("=", 1)[1] if v.startswith("--") else v[v.index("S") + 1:]), args[k + 1:]
+            if SENT in text:
+                refuse(cmd, "the string env -S splits carries an expansion.", "write the program after env literally")
+            return judge_env(cmd, [word(t) for t in text.split()] + list(rest), depth)
+        elif v.startswith(("--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling")):
+            k += 1
+        elif v.startswith("-"):
+            refuse(cmd, "env has an option the guard does not know, so it cannot tell whether a program follows.",
+                   "use env -u NAME or env NAME=value before the program it runs")
+        else:
+            break
+    while k < len(args) and ASSIGN_RE.match(args[k].value):
+        k += 1
+    if k >= len(args):
+        refuse(cmd, "env with no program after its options and assignments prints the whole environment.",
+               "use env only as a prefix that runs a program (env -u NAME cmd), or " + SAFE_TEST)
+    judge(cmd, args[k:], depth)
+
+
+def judge_shell(cmd, name, args, depth):
+    k, code_flag, reads_stdin = 0, False, False
+    while k < len(args):
+        v = args[k].value
+        if SENT in v:
+            break
+        if v in ("--", "-"):
+            k += 1
+            break
+        if v in ("--rcfile", "--init-file"):
+            k += 2
+            continue
+        if v in ("--verbose", "--debugger"):
+            refuse(cmd, name + " " + v + " prints the commands it runs.", "run the shell without it")
+        if v.startswith("--"):
+            k += 1
+            continue
+        if not CLUSTER_RE.match(v):
+            break
+        if v[0] == "-" and ("x" in v or "v" in v):
+            refuse(cmd, name + " " + v + " traces each command with its variables expanded.",
+                   "run the shell without -x or -v")
+        k += 1
+        if "o" in v[1:] or "O" in v[1:]:
+            if k < len(args) and args[k].value.lower().replace("_", "") in TRACE_NAMES:
+                refuse(cmd, name + " -o " + args[k].value + " traces commands or exports every variable.",
+                       "run the shell without that option")
+            k += 1
+        code_flag = code_flag or "c" in v[1:]
+        reads_stdin = reads_stdin or "s" in v[1:]
+    if code_flag:
+        if k < len(args):
+            judge_text(cmd, args[k].value, depth, "the string " + name + " -c runs")
+        return
+    if k < len(args) and not reads_stdin:
+        return
+    text = stdin_text(cmd)
+    if text is not None:
+        judge_text(cmd, text, depth, "the text " + name + " reads on its input")
+
+
+def judge_set(cmd, args):
+    if not args:
+        refuse(cmd, "a bare set prints every shell variable.", SET_SAFE)
+    first = lit(args[0])
+    if first is None or not CLUSTER_RE.match(first):
+        refuse(cmd, "set prints every variable unless its first word is a literal option such as -e, and a word "
+                    "that is an expansion may expand to nothing.", SET_SAFE)
+    want_name = False
+    for w in args:
+        v = lit(w)
+        if v is None:
+            refuse(cmd, "a set word that is an expansion may turn on tracing.", "write every set option literally")
+        if want_name:
+            n = v.lower().replace("_", "")
+            if n in TRACE_NAMES or (n.startswith("no") and n[2:] in TRACE_NAMES):
+                refuse(cmd, "set -o " + v + " traces commands with their variables expanded, or exports every "
+                            "variable.", SET_SAFE)
+            want_name = False
+            continue
+        if v == "--":
+            break
+        if CLUSTER_RE.match(v):
+            bad = [ch for ch in v[1:] if ch in SET_LETTERS]
+            if bad:
+                refuse(cmd, "set " + v[0] + bad[0] + " " + SET_LETTERS[bad[0]], SET_SAFE)
+            want_name = "o" in v[1:]
+            continue
+        if v[:1] in ("-", "+"):
+            refuse(cmd, "set " + v + " is not an option the guard reads.", SET_SAFE)
+        break
+    if want_name:
+        refuse(cmd, "set -o with no option name prints every shell option.", SET_SAFE)
+
+
+def judge_declare(cmd, name, args):
+    names, opts, after = 0, "", False
+    for w in args:
+        v = w.value
+        if SENT in v.split("=", 1)[0]:
+            refuse(cmd, name + " has an argument that is an expansion, which may be an option that prints "
+                               "variables.", "write each name literally, " + name + " NAME=value")
+        if not after and v == "--":
+            after = True
+            continue
+        if not after and v[:1] in ("-", "+"):
+            if re.search(r"[pfFm]", v[1:]):
+                refuse(cmd, name + " " + v + " prints variables or functions with their values.", SAFE_TEST)
+            opts += v[1:] or v
+            continue
+        if ASSIGN_RE.match(v):
+            names += 1
+            continue
+        if NAME_RE.match(v):
+            if name in ("declare", "typeset", "local") and not opts:
+                refuse(cmd, name + " " + v + " with no option prints the variable with its value in zsh when it is "
+                                            "already set.", "assign it, " + name + " " + v + "=value; to check it, " +
+                       SAFE_TEST)
+            names += 1
+            continue
+        refuse(cmd, name + " has an argument that is neither NAME=value nor NAME.", "write each name literally")
+    if names == 0:
+        refuse(cmd, "a bare " + name + " lists variables with their values.",
+               "assign one, " + name + " NAME=value; to check a variable, " + SAFE_TEST)
+
+
+PY_WHOLE = [re.compile(r"\benvironb?\b(?!\s*\[)(?!\s*\.\s*get\s*\()")]
+JS_TAIL = r"(?!\s*(\?\.|\.)\s*[A-Za-z_$])(?!\s*(\?\.)?\s*\[)"
+JS_WHOLE = [re.compile(r"\bprocess\s*(\?\.|\.)\s*env\b" + JS_TAIL),
+            re.compile(r"\bprocess\s*(\?\.)?\s*\[\s*[" + SQ + DQ + BTK + r"]env[" + SQ + DQ + BTK + r"]\s*\]" + JS_TAIL),
+            re.compile(r"\brequire\s*\(\s*[" + SQ + DQ + BTK + r"](node:)?process[" + SQ + DQ + BTK +
+                       r"]\s*\)\s*(\?\.|\.)\s*env\b" + JS_TAIL),
+            re.compile(r"\bDeno\s*\.\s*env\s*\.\s*toObject\b"),
+            re.compile(r"\bBun\s*\.\s*env\b" + JS_TAIL)]
+WHOLE_ENV = {
+    "python": PY_WHOLE, "node": JS_WHOLE, "bun": JS_WHOLE, "deno": JS_WHOLE,
+    "ruby": [re.compile(r"\bENV\b(?!\s*\[)(?!\s*\.\s*fetch\b)")],
+    "perl": [re.compile(r"%(main)?(::)?ENV\b")],
+    "php": [re.compile(r"\bgetenv\s*\(\s*\)"), re.compile(r"\$_(ENV|SERVER)\b(?!\s*\[)")],
+    "awk": [re.compile(r"\bENVIRON\b(?!\s*\[)")],
+    "jq": [re.compile(r"(^|[^.\w$" + SQ + DQ + r"])env\b(?!\s*[." + SQ + DQ + r"])"),
+           re.compile(r"\$ENV\b(?!\s*[.\[])")],
+}
+
+
+def interp_family(name):
+    if re.match(r"(python|pypy)(\d+(\.\d+)*)?\Z", name):
+        return "python"
+    if name in ("node", "nodejs"):
+        return "node"
+    if name in ("awk", "gawk", "mawk", "nawk"):
+        return "awk"
+    return name if name in ("bun", "deno", "ruby", "perl", "php", "jq") else None
+
+
+def cluster_codes(args, k, spec):
+    """Read the option cluster at args[k]: (program texts it names, next index)."""
+    code_flags, attached, separate, digits = spec
+    body, i = args[k].value[1:], 0
+    while i < len(body):
+        ch, rest = body[i], body[i + 1:]
+        if ch in code_flags:
+            if rest:
+                return [rest], k + 1
+            return ([args[k + 1].value] if k + 1 < len(args) else []), k + 2
+        if ch in separate:
+            return [], (k + 1 if rest else k + 2)
+        if ch in attached:
+            return [], k + 1
+        i += 1
+        if ch in digits:
+            while i < len(body) and body[i].isdigit():
+                i += 1
+    return [], k + 1
+
+
+def program_texts(fam, args, cmd):
+    """The program texts an interpreter call runs; None when it runs a file the guard does not read."""
+    codes, k = [], 0
+    if fam == "deno":
+        while k < len(args) and args[k].value.startswith("-"):
+            k += 1
+        if k >= len(args) or args[k].value != "eval":
+            return None
+        k = opt_skip(args, k + 1, "", ("--ext",))
+        return [args[k].value] if k < len(args) else None
+    if fam in ("awk", "jq"):
+        while k < len(args):
+            v = args[k].value
+            if v == "--":
+                k += 1
+                break
+            if SENT in v or not v.startswith("-") or v == "-":
+                break
+            if fam == "jq" and v in ("--arg", "--argjson", "--slurpfile", "--rawfile"):
+                k += 3
+            elif fam == "awk" and v in ("-e", "--source"):
+                codes.append(args[k + 1].value if k + 1 < len(args) else "")
+                k += 2
+            elif fam == "awk" and v.startswith("--source="):
+                codes.append(v.split("=", 1)[1])
+                k += 1
+            elif v in ("-f", "--file", "--from-file") or v.startswith(("--file=", "--from-file=")):
+                return codes or None
+            elif v in ("-F", "-v", "--field-separator", "--assign", "--indent", "-L"):
+                k += 2
+            else:
+                k += 1
+        if k < len(args):
+            codes.append(args[k].value)
+        return codes or None
+    spec = {"python": ("c", "", "WX", ""), "node": ("ep", "", "r", ""), "bun": ("ep", "", "r", ""),
+            "ruby": ("e", "xTWK", "rICEF", "0"), "perl": ("eE", "MmdDCxi", "I", "l0"),
+            "php": ("rRBE", "", "dcz", "")}[fam]
+    while k < len(args):
+        v = args[k].value
+        if SENT in v or not v.startswith("-"):
+            break
+        if v == "--":
+            k += 1
+            break
+        if v == "-":
+            t = stdin_text(cmd)
+            return [t] if t is not None else None
+        if fam == "python" and re.match(r"-[A-Za-z]*m", v) and "c" not in v.split("m")[0]:
+            return codes or None
+        if fam == "php" and v == "-f":
+            return codes or None
+        if v.startswith("--"):
+            name, eq, val = v.partition("=")
+            if fam in ("node", "bun") and name in ("--eval", "--print"):
+                if eq:
+                    codes.append(val)
+                    k += 1
+                else:
+                    codes.append(args[k + 1].value if k + 1 < len(args) else "")
+                    k += 2
+                continue
+            k += 2 if (fam in ("node", "bun") and not eq and name in ("--require", "--import", "--loader",
+                                                                       "--experimental-loader")) else 1
+            continue
+        if fam in ("node", "bun") and re.match(r"-[ep]+\Z", v):
+            codes.append(args[k + 1].value if k + 1 < len(args) else "")
+            k += 2
+            continue
+        found, k = cluster_codes(args, k, spec)
+        codes.extend(found)
+        if found and fam == "python":
+            return codes
+    if codes:
+        return codes
+    if k >= len(args):
+        t = stdin_text(cmd)
+        return [t] if t is not None else None
+    return None
+
+
+def judge_interp(cmd, fam, args):
+    codes = program_texts(fam, args, cmd)
+    if not codes:
+        return
+    text = "\n".join(codes)
+    if SENT in text and not text.replace(SENT, "").strip():
+        refuse(cmd, "the program text comes from an expansion, so the guard cannot read it.",
+               "write the program text literally")
+    for p in WHOLE_ENV[fam]:
+        m = p.search(text)
+        if m:
+            raise Refuse("Secretless: blocked script command that reads environment variables. Matched " + BTK +
+                         shown(cmd.text()) + BTK + ": a " + fam + " program that names the whole environment (" +
+                         shown(m.group(0).strip()) + "), so what it prints can hold every variable, credentials "
+                         "included. Safe path: read one variable that holds no secret by name (os.environ.get(" +
+                         DQ + "NAME" + DQ + "), process.env.NAME), or " + SAFE_TEST + ".")
+
+
+RUN_FLAGS = set("ditPT")
+RUN_LONG_FLAGS = {"--rm", "--init", "--privileged", "--read-only", "--tty", "--interactive", "--detach",
+                  "--publish-all", "--sig-proxy", "--no-healthcheck", "--oom-kill-disable", "--no-deps",
+                  "--service-ports", "--use-aliases", "--build", "--quiet-pull", "--no-TTY", "--remove-orphans"}
+
+
+def skip_run_opts(args, k):
+    while k < len(args):
+        v = args[k].value
+        if v == "--":
+            return k + 1
+        if not v.startswith("-") or SENT in v:
+            return k
+        if v.startswith("--"):
+            k += 1 if ("=" in v or v in RUN_LONG_FLAGS) else 2
+        else:
+            k += 1 if all(ch in RUN_FLAGS for ch in v[1:]) else 2
+    return k
+
+
+def judge_docker(cmd, args, depth):
+    k = opt_skip(args, 0, "Hcl", ("--host", "--context", "--config", "--log-level", "--tlscacert", "--tlscert",
+                                  "--tlskey"))
+    if k >= len(args):
+        return
+    sub = args[k].value
+    if sub in ("container", "image", "service") and k + 1 < len(args):
+        k, sub = k + 1, args[k + 1].value
+    if sub == "compose":
+        return judge_compose(cmd, args[k + 1:], depth)
+    if sub in ("exec", "run", "create"):
+        return judge(cmd, args[skip_run_opts(args, k + 1) + 1:], depth)
+    if sub != "inspect":
+        return
+    rest, fmt, j = args[k + 1:], None, 0
+    while j < len(rest):
+        v = rest[j].value
+        if v in ("-f", "--format"):
+            fmt = rest[j + 1].value if j + 1 < len(rest) else ""
+            j += 2
+            continue
+        if v.startswith("--format="):
+            fmt = v.split("=", 1)[1]
+        elif v.startswith("-f") and not v.startswith("--"):
+            fmt = v[2:]
+        j += 1
+    if fmt is None:
+        refuse(cmd, "docker inspect with no --format prints the whole configuration, Env included.",
+               "name the fields you need, docker inspect --format " + SQ + "{{.State.Status}}" + SQ + " NAME")
+    if SENT in fmt or re.search(r"env", fmt, re.I) or \
+            re.search(r"(^|[^A-Za-z0-9_.])\.(Config|ContainerConfig|Spec|TaskTemplate|ContainerSpec)?(?![A-Za-z0-9_.])", fmt):
+        refuse(cmd, "the docker inspect template names the Env field or a field that holds it.",
+               "name fields that hold no environment, --format " + SQ + "{{.State.Status}}" + SQ)
+
+
+def judge_compose(cmd, args, depth):
+    k = opt_skip(args, 0, "fp", ("--file", "--project-name", "--project-directory", "--env-file", "--profile",
+                                 "--ansi", "--progress", "--parallel"))
+    if k < len(args) and args[k].value in ("exec", "run"):
+        judge(cmd, args[skip_run_opts(args, k + 1) + 1:], depth)
+
+
+def judge_kubectl(cmd, args, depth):
+    vals = [a.value for a in args]
+    if "exec" not in vals:
+        return
+    k = vals.index("exec")
+    if "--" in vals[k:]:
+        return judge(cmd, args[vals.index("--", k) + 1:], depth)
+    j = k + 1
+    while j < len(args) and vals[j].startswith("-"):
+        j += 1 if ("=" in vals[j] or re.match(r"-[itq]+\Z", vals[j]) or
+                   vals[j] in ("--stdin", "--tty", "--quiet")) else 2
+    judge(cmd, args[j + 1:], depth)
+
+
+def env_print_verdict(text):
+    """A deny reason when the command can print the environment or cannot be parsed, else None."""
+    try:
+        for c in parse_all(text, 0):
+            judge(c, c.words, 0)
+    except Refuse as r:
+        return r.reason
+    except Unparsed as u:
+        return ("Secretless: blocked a command the guard cannot parse. Unparsed at " + BTK +
+                shown(u.src[u.pos:u.pos + 60]) + BTK + ": " + u.why + ". A command the guard cannot read may print "
+                "the environment, so it is refused. Safe path: " + u.fix + ", or split it into simpler commands.")
+    except RecursionError:
+        return ("Secretless: blocked a command the guard cannot parse: it nests more deeply than the guard reads. "
+                "Safe path: split it into simpler commands.")
+    return None
+
+
+# The first line of output is the verdict: ENV-PRINT: and a JSON string, the
+# deny reason; OK: and the reduced command; or PASS: when the command prints no
+# environment and nothing in it can be reduced.
 def main():
     try:
         cmd = sys.stdin.buffer.read().decode("utf-8")
+    except Exception:
+        sys.stdout.write("ENV-PRINT:" + json.dumps("Secretless: blocked a command that is not UTF-8 text, which "
+                                                   "the guard cannot parse. Safe path: write the command in UTF-8."))
+        return
+    try:
+        verdict = env_print_verdict(cmd)
+    except Exception:
+        verdict = ("Secretless: blocked a command the guard failed to parse. A command the guard cannot read may "
+                   "print the environment, so it is refused. Safe path: split it into simpler commands.")
+    if verdict:
+        sys.stdout.write("ENV-PRINT:" + json.dumps(verdict))
+        return
+    try:
         spans = sorted(reducible_spans(cmd))
     except Exception:
+        sys.stdout.write("PASS:")
         return
     out, last = [], 0
     for start, end, repl in spans:
@@ -1865,14 +3221,50 @@ SECRETLESS_SEARCH_SHAPE
   # read SCAN_TEXT match the reduced text; the data-directory arm, the arms for
   # process listings, a bare env and git credentials, and custom rules read the
   # full command.
+  #
+  # NOTE ON ENVIRONMENT PRINTS. The same program first parses the whole command
+  # into its simple commands, across ; && || | & and line breaks, subshells,
+  # command and process substitution, backquotes, brace groups, if/for/while/case
+  # bodies, here-documents, wrappers (sudo, env, xargs, nice, nohup, time,
+  # command, builtin, exec, watch, timeout, find -exec) and nested shells (bash,
+  # sh, zsh or dash -c, eval, a shell reading a here-document or a pipe from
+  # echo), and refuses, with ENV-PRINT and a reason, every one that prints the
+  # environment:
+  #   - set, unless its first word is a literal option and no option turns on
+  #     tracing or allexport (x, v, a, k, -o xtrace and the like); set -e,
+  #     set -euo pipefail and set +e pass, a bare set or set "$X" does not;
+  #     zsh setopt and unsetopt naming xtrace, verbose or allexport;
+  #   - env with no program after its options and assignments; printenv in
+  #     every form; compgen;
+  #   - export, readonly, declare, typeset and local unless every argument is
+  #     NAME=value or NAME and no option is -p, -f, -F or -m. declare, typeset
+  #     and local with a bare NAME and no option print that variable in zsh, so
+  #     they need an assignment or an option;
+  #   - a python, node, bun, deno, ruby, perl, php, awk or jq program that names
+  #     the whole environment (os.environ with no subscript or .get, process.env
+  #     with no property, ENV, %ENV, getenv(), ENVIRON, Deno.env.toObject());
+  #   - docker inspect unless --format names no Env field, docker/kubectl exec
+  #     and run of any of the above, tmux show-environment, launchctl getenv,
+  #     print and export, systemctl show-environment, npm run env.
+  # A command it cannot parse is refused too (an unclosed quote, a construct
+  # outside the grammar, a program name or nested-shell string that comes from
+  # an expansion), because a command the guard cannot read is the one it cannot
+  # vouch for. ps, pgrep and /proc/*/environ keep their own arm below. Run with
+  # -I so a module in the working directory cannot stand in for re or json.
   SCAN_TEXT="$COMMAND"
+  ENV_VERDICT=""
   if command -v python3 >/dev/null 2>&1; then
     IFS= read -r -d '' GUARD_ANALYZER <<'SECRETLESS_ANALYZER' || true
 ${GUARD_COMMAND_ANALYZER}
 SECRETLESS_ANALYZER
-    REDUCED=$(printf '%s' "$COMMAND" | python3 -c "$GUARD_ANALYZER" 2>/dev/null || true)
+    REDUCED=$(printf '%s' "$COMMAND" | python3 -I -c "$GUARD_ANALYZER" 2>/dev/null || true)
     case "$REDUCED" in
-      OK:*) SCAN_TEXT="\${REDUCED#OK:}" ;;
+      ENV-PRINT:*)
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\\n' "\${REDUCED#ENV-PRINT:}"
+        exit 0
+        ;;
+      OK:*) ENV_VERDICT=parsed; SCAN_TEXT="\${REDUCED#OK:}" ;;
+      PASS:*) ENV_VERDICT=parsed ;;
     esac
   fi
   # Block commands that dump secret files (expanded to cover grep, awk, sed, strings, xxd).
@@ -1903,18 +3295,27 @@ SECRETLESS_ANALYZER
     # what matched. With each process.env set aside, a secret-file name still
     # left is a file; otherwise the one-liner reads the environment. If sed is
     # missing, nothing matches and an environment reason is given: still a deny.
+    #
+    # When the analyzer parsed the command (NOTE ON ENVIRONMENT PRINTS), it has
+    # already refused a one-liner that names the whole environment, so a
+    # process.env read here that names a property in every place, such as
+    # process.env.HOME, is let through. A process.env with no property after it
+    # is still refused here, which also covers one the analyzer did not reach
+    # (a one-liner inside an ssh argument). Without python3 the deny stands.
     if echo "$FILE_READ_SCAN" | sed -E 's/process(\\??)\\.env/process\\1_env/g' \\
       | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}'; then
       printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads secret files. Matched \`%s\`: a python or node one-liner that names a secret file. This guard matches command text and cannot tell a filename from a search pattern, so a one-liner that merely names a secret-file token inside a regex is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash."}}\\n' \\
         "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+      exit 0
     elif echo "$FILE_READ_SCAN" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
       printf '${SECRET_ENV_SCRIPT_DENY}' \\
         "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})' "$FILE_READ_SCAN")"
-    else
-      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads environment variables. Matched \`%s\`: a python or node one-liner that names process.env, the Node environment, which holds every variable, credentials included. This guard matches command text and cannot tell which variable a one-liner reads or whether it prints them all, so a variable that holds no secret is blocked too. Safe path: print a variable that holds no secret with printenv NAME."}}\\n' \\
+      exit 0
+    elif [ -z "$ENV_VERDICT" ] || grep -qE 'process\\??\\.env([^.?A-Za-z0-9_$[]|$)' <<< "$FILE_READ_SCAN"; then
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads environment variables. Matched \`%s\`: a python or node one-liner that names process.env, the Node environment, which holds every variable, credentials included. This guard cannot tell which variable this one-liner reads or whether it prints them all, so a variable that holds no secret is blocked too. Safe path: read one variable that holds no secret by property name, process.env.NAME, in a one-liner run directly by node; to check a secret, test it with the shell test -n instead of printing it."}}\\n' \\
         "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*process\\??\\.env' "$FILE_READ_SCAN")"
+      exit 0
     fi
-    exit 0
   fi
   # Block python/node one-liners that read env vars containing secrets
   if echo "$SCAN_TEXT" | grep -qiE '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})'; then
@@ -1998,7 +3399,7 @@ SECRETLESS_ANALYZER
   # \`env | grep KEY\`); once a command word follows (\`env -u X git push\`,
   # \`/usr/bin/env node\`) it is a prefix and is allowed.
   if echo "$COMMAND" | grep -qE '${CMD_POSITION}[Ee][Nn][Vv](\\s+(-[iv0]+|-|--(ignore-environment|null|debug)|-u\\s*[A-Za-z_][A-Za-z0-9_]*|--unset[=[:space:]]\\s*[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*))*\\s*($|[;&|)}\`<>]|[0-9]+>)'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via env. Safe path: printenv NAME prints one non-secret variable, and env as a prefix that runs a command (env -u NAME cmd) is not blocked."}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked full environment dump via env. Safe path: env as a prefix that runs a command (env -u NAME cmd) is not blocked; to check that a variable is set without printing its value, use [ -n \\"$NAME\\" ] && echo set."}}'
     exit 0
   fi
   # Block secretless-ai secret extraction with --force
@@ -2085,6 +3486,19 @@ SECRETLESS_ANALYZER
       echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked access to secretless data directory. Only one plain secretless-ai command may name it; any other program, a shell redirect, or a command that chains, substitutes or starts another program is refused. This guard matches command text and cannot tell a filename from a search pattern, so a command that merely searches source for the directory name is blocked too. Safe path: open files with the Read tool and search with the Grep tool instead of Bash."}}'
       exit 0
     fi
+  fi
+  # Without python3, or when the analyzer printed no verdict, nothing parsed the
+  # command (NOTE ON ENVIRONMENT PRINTS), so a command that runs one of the
+  # programs that can print the environment is refused on its name alone: set,
+  # env, printenv, export, declare, typeset, local, readonly, compgen, ps, pgrep,
+  # tmux and docker inspect, in command position (line start, after a separator,
+  # \`(\`, a backquote or \`!\`, after a \`\\n\` or \`\\t\` escape, after eval or a
+  # shell's -c, behind a wrapper or a directory). The arms above keep their own
+  # reasons; this one names the missing parse and its fix. The command reaches
+  # grep as a here-string, so no writer is left to die of SIGPIPE.
+  if [ -z "$ENV_VERDICT" ] && grep -qiE '${ENV_CLASS_POSITION}${ENV_CLASS_WORDS}' <<< "$COMMAND"; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked a command that may print the environment. python3 is missing or did not run, so the guard cannot parse this command, and without a parse a command that runs set, env, printenv, export, declare, typeset, local, readonly, compgen, ps, pgrep, tmux or docker inspect is refused. Fix: install python3 (macOS: xcode-select --install; Debian or Ubuntu: sudo apt-get install python3), then run the command again."}}'
+    exit 0
   fi
 ${customRules ? customRulesToHookBlocks(customRules) : ''}  exit 0
 fi
