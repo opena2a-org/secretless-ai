@@ -731,6 +731,65 @@ describe('an --as name left as the <name> a Fix prints is a placeholder, not a n
   });
 });
 
+describe('two secrets the store would push as one name get a Fix (#303)', () => {
+  const vault = (): PushTarget => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }));
+  const clashLines = (): string[] => printed().split('\n').filter((l) => l.includes(' would both be pushed as '));
+
+  it('two equal --as names: the refusal names both secrets, and the Fix leaves <name> for the second', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'x,x'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(clashLines()).toEqual(['  API_KEY and DB_PASSWORD would both be pushed as "x".']);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'x,<name>']);
+    expect(printed()).not.toContain('Usage:');
+  });
+
+  it('Key Vault: two names differing only in case, given without --as, get a Fix that adds --as', async () => {
+    const code = await push(['ab,AB', '--to', 'azure-kv', '--vault', 'kv-demo'], { env: NO_ENV, runChild: azSignedIn() });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(children).toEqual([]);
+    expect(clashLines()).toEqual(['  ab and AB would both be pushed as "AB".']);
+    expect(fixCommand()).toEqual(['ab,AB', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'ab,<name>']);
+  });
+
+  it('every secret after the first to share a name leaves <name>, and each is named', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD,TOKEN', '--to', 'vault', '--as', 'x,x,x'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(clashLines()).toEqual([
+      '  API_KEY and DB_PASSWORD would both be pushed as "x".',
+      '  API_KEY and TOKEN would both be pushed as "x".',
+    ]);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD,TOKEN', '--to', 'vault', '--as', 'x,<name>,<name>']);
+  });
+
+  it('with <name> filled in, the Fix pushes each secret under its own name', async () => {
+    handler = (call) => {
+      const u = new URL(call.url);
+      if (u.pathname === '/v1/sys/health') return json(200, { initialized: true, sealed: false });
+      if (call.method === 'GET') return json(404, { errors: [] });
+      if (call.method === 'POST') return json(200, { data: { version: 1 } });
+      return json(400, {});
+    };
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'x,x'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    const fix = fixCommand();
+    fix[fix.indexOf('--as') + 1] = fix[fix.indexOf('--as') + 1].replace('<name>', 'y');
+    const rerun = await runSecretPush(fix, { store, createTarget: vault });
+
+    expect(rerun).toBe(0);
+    expect(calls.filter((c) => c.method === 'POST').map((c) => new URL(c.url).pathname)).toEqual([
+      '/v1/secret/data/secret/x',
+      '/v1/secret/data/secret/y',
+    ]);
+    expectNoLeak();
+  });
+});
+
 // --- Error layout ------------------------------------------------------------
 
 describe('secret push prints a setup error in the layout the other secret commands use (#247)', () => {

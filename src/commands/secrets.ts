@@ -1139,10 +1139,18 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
     return 2;
   }
+  // Every name is accepted, but the store would merge two of them. Each
+  // secret after the first to hold a name is named with the one that holds
+  // it, and leaves `<name>` in the Fix, so the Fix is not this refusal again.
   const folded = remotes.map((r) => target.foldName(r));
-  const clash = folded.findIndex((f, i) => folded.indexOf(f) !== i);
-  if (clash !== -1) {
-    return usageError(`${names[folded.indexOf(folded[clash])]} and ${names[clash]} would both be pushed as "${remotes[clash]}".`);
+  const clashes = folded.flatMap((f, i) => (folded.indexOf(f) !== i ? [i] : []));
+  if (clashes.length > 0) {
+    const lines = clashes.map((i) => `  ${escapeForDisplay(`${names[folded.indexOf(folded[i])]} and ${names[i]} would both be pushed as "${remotes[i]}".`)}`);
+    console.error(`\n${lines.join('\n')}`);
+    console.error('  Nothing was read or pushed.\n');
+    const operands = remotes.map((r, i) => (clashes.includes(i) ? '<name>' : r));
+    console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
+    return 2;
   }
 
   console.log('\n  Secretless Push\n');
