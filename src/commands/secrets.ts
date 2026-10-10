@@ -973,6 +973,13 @@ function createPushTarget(type: PushTargetType, vaultName: string | undefined): 
   }
 }
 
+/**
+ * An `--as` name still in the `<name>` form a Fix prints for the user to fill
+ * in. No push target accepts '<' or '>' in a name, and the form prints as
+ * given, so it needs no escaping.
+ */
+const PLACEHOLDER_NAME = /^<[A-Za-z][A-Za-z0-9_-]*>$/;
+
 /** A `Verify:` or `Fix:` block; a second line continues under the first. */
 function labelled(label: string, lines: readonly string[]): string[] {
   return lines.map((line, i) => `  ${i === 0 ? `${label}:`.padEnd(9) : ' '.repeat(9)}${line}`);
@@ -1087,7 +1094,10 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     // another --as name, given or offered, leaves `<name>` too, and so does
     // an accepted name the store would merge with an earlier accepted one, so
     // the Fix is not refused for two secrets sharing one name, and a line
-    // names the secret that holds that name.
+    // names the secret that holds that name. A `<name>` left unfilled
+    // is said to be a placeholder and stays in the Fix to be replaced, not
+    // turned into a name made from its letters.
+    const isPlaceholder = (r: string): boolean => PLACEHOLDER_NAME.test(r);
     const kept = new Set<string>();
     const holders = new Map<string, { index: number; spelled: string }>();
     remotes.forEach((r, i) => {
@@ -1102,6 +1112,7 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
         kept.add(folded);
         return r;
       }
+      if (isPlaceholder(r)) return r;
       if (hasDisplayHazard(r)) return '<name>';
       const suggested = target.suggestName(r);
       const folded = target.foldName(suggested);
@@ -1114,7 +1125,15 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
       holders.set(folded, { index: i, spelled: suggested });
       return suggested;
     });
-    console.error(`\n  "${escapeForDisplay(remotes[first])}" cannot name a secret in ${target.label}: ${problems[first]}.`);
+    const placeholder = problems.findIndex((p, i) => p !== undefined && isPlaceholder(remotes[i]));
+    const refused = problems.findIndex((p, i) => p !== undefined && !isPlaceholder(remotes[i]));
+    console.error();
+    if (placeholder !== -1) {
+      console.error(`  "${remotes[placeholder]}" in --as is a placeholder: replace it with the name ${names[placeholder]} should have in ${target.label}; ${problems[placeholder]}.`);
+    }
+    if (refused !== -1) {
+      console.error(`  "${escapeForDisplay(remotes[refused])}" cannot name a secret in ${target.label}: ${problems[refused]}.`);
+    }
     for (const line of takenLines) console.error(line);
     console.error('  Nothing was read or pushed.\n');
     console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
