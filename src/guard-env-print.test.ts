@@ -275,6 +275,9 @@ describe('guard refuses every command shape that prints the environment', { time
   // A process substitution in argument position was unparseable, so
   // `diff <(sort a) <(sort b)` was refused as a command the guard cannot read.
   // It is now read like the rest of the command and judged by what runs inside.
+  // A bare `env` is also refused by the text rule that predates the parser, so
+  // `set`, `printenv HOME` and `printenv` inside the substitution are the cells
+  // that fail when the parser reads the substitution and drops what it runs.
   (hasPython3 ? it : it.skip)('reads a process substitution in an argument and judges what runs inside it', () => {
     expectAllowed([
       'diff <(sort a) <(sort b)',
@@ -284,8 +287,12 @@ describe('guard refuses every command shape that prints the environment', { time
     expectBlocked([
       'cat <(env)',
       'diff <(env) /tmp/x',
+      'cat <(set)',
+      'cat <(printenv HOME)',
+      'tee >(printenv)',
     ]);
     expect(decide('cat <(env)')).not.toMatch(/cannot parse/);
+    expect(decide('cat <(set)')).toContain('Matched `set`');
   });
 
   (hasPython3 ? it : it.skip)('refuses a command it cannot parse and names the span it could not read', () => {
