@@ -69,7 +69,7 @@ node dist/cli.js verify
 
 ### Verifying what was installed
 
-Every release publishes via npm Trusted Publishing with SLSA v1 provenance. No long-lived `NPM_TOKEN`. GitHub Actions exchanges its OIDC token with npm at publish time.
+Every version from 0.15.1 on has been published from GitHub Actions through npm Trusted Publishing, with SLSA v1 provenance; earlier versions carry no attestation. The publishing workflow references no npm token; GitHub Actions exchanges its OIDC token with npm at publish time. The command below prints, without verifying anything, the provenance type and attestation URL the registry lists for the latest `secretless-ai` (append `@<version>` for another; an unattested version prints nothing). `npm audit signatures` checks the registry's signatures and attestations for installed versions, not the installed files or who built them, and does not flag a version without an attestation.
 
 ```bash
 npm view secretless-ai dist.attestations --json
