@@ -21,8 +21,9 @@ A's `<name>` was a placeholder; it now prints one placeholder line per
 secret. `secret push A,B,C --to azure-kv --vault kv-demo --as a-b,A-B,a.b`
 left B as `<name>` with no line saying why; it now prints
 `A and B would both be pushed as "A-B".` beside the line for C, as it already
-did when no name was refused. Any `<word>` form counts as a placeholder,
-including the `<names>` the usage line prints.
+did when no name was refused. A `<word>` counts as a placeholder when the
+word starts with a letter a-z or A-Z and holds only those letters, digits,
+`-` and `_` after it; the `<names>` the usage line prints is one.
 
 **`secret push` prints a `Fix:` when two secrets would be pushed as one name
 (#303).** `secret push A,B --to vault --as x,x` printed
