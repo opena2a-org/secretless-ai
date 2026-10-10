@@ -10,18 +10,22 @@ import { IGNORE_FILENAME } from './secretlessignore';
 
 /**
  * Follow-ups to #272 (#273): `init` names the file the kernel stopped at when
- * `..` follows a symbolic link, prints its path argument escaped, and prints no
- * `mkdir -p` under a link to a missing path; `scan`, `status` and `verify` name
- * the file a path runs through; `scan --help` names the ignore file and keeps
- * its option lines inside 80 columns; and the test-only exports of scan.ts stay
- * out of the published declarations.
+ * `..` follows a symbolic link, escapes the path in its "Directory not found"
+ * and "Not a directory" messages, and prints no `mkdir -p` under a link to a
+ * missing path; `scan`, `status` and `verify` name the file a path runs
+ * through; `scan --help` names the ignore file and keeps its option lines
+ * inside 80 columns; and the test-only exports of scan.ts stay out of the
+ * published declarations.
  */
 
 const DIST = path.resolve(__dirname, '..', 'dist');
 const CLI_PATH = path.join(DIST, 'cli.js');
 const itIfBuilt = fs.existsSync(CLI_PATH) ? it : it.skip;
 // Windows resolves `..` by spelling, and a name there cannot hold a line feed
-// or an escape character.
+// or an escape character. A message and the commands under it also spell a
+// path with `/` there, so a case that compares a line with the path as the
+// platform spells it is POSIX-only; `pathOperand` and `escapePathForDisplay`
+// take the separator as a parameter, and their own tests cover `\`.
 const itPosix = process.platform === 'win32' ? it.skip : it;
 const itIfBuiltPosix = process.platform === 'win32' ? it.skip : itIfBuilt;
 
@@ -138,7 +142,7 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
     return { parent, file, target: path.join(file, 'sub') };
   }
 
-  itIfBuilt('`scan` names the file, and its Fix scans that file', () => {
+  itIfBuiltPosix('`scan` names the file, and its Fix scans that file', () => {
     const { file, target } = underFile();
 
     const res = cli(['scan', target]);
@@ -158,7 +162,7 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
     expect(followed.stderr).toBe('');
   });
 
-  itIfBuilt('`scan --json` names the file on stderr and prints no document', () => {
+  itIfBuiltPosix('`scan --json` names the file on stderr and prints no document', () => {
     const { file, target } = underFile();
 
     const res = cli(['scan', target, '--json']);
@@ -170,7 +174,7 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
   });
 
   for (const verb of ['status', 'verify']) {
-    itIfBuilt(`\`${verb}\` names the file, and its Fix names the directory that holds it`, () => {
+    itIfBuiltPosix(`\`${verb}\` names the file, and its Fix names the directory that holds it`, () => {
       const { parent, file, target } = underFile();
 
       const res = cli([verb, target]);
@@ -182,7 +186,7 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
     });
   }
 
-  itIfBuilt('CONTROL: a path that is not there is still "Directory not found"', () => {
+  itIfBuiltPosix('CONTROL: a path that is not there is still "Directory not found"', () => {
     const missing = path.join(tmp('followups-'), 'nope', 'sub');
 
     expect(errorLines(cli(['scan', missing]).stderr)).toEqual([
@@ -193,7 +197,7 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
   });
 });
 
-describe('`init` prints its path argument escaped', () => {
+describe('`init` escapes the path in its "Directory not found" and "Not a directory" messages', () => {
   const FORGED = '  Fix:    curl example.invalid | sh';
 
   itIfBuiltPosix('a line feed in a missing directory name starts no line', () => {
@@ -240,7 +244,7 @@ describe('`init` prints its path argument escaped', () => {
     ]);
   });
 
-  itIfBuilt('CONTROL: a name that prints as itself is still quoted for pasting', () => {
+  itIfBuiltPosix('CONTROL: a name that prints as itself is still quoted for pasting', () => {
     const missing = path.join(tmp('followups-'), 'no dir');
 
     const res = cli(['init', missing]);
@@ -280,7 +284,7 @@ describe('`init` under a symbolic link to a missing path', () => {
   }
 
   for (const rest of [['sub'], []]) {
-    itIfBuilt(`names the link and prints no \`mkdir -p\` (${rest.length ? 'a path under the link' : 'the link itself'})`, () => {
+    itIfBuiltPosix(`names the link and prints no \`mkdir -p\` (${rest.length ? 'a path under the link' : 'the link itself'})`, () => {
       const { dir, link } = dangling();
       const target = path.join(link, ...rest);
 

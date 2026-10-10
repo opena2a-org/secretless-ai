@@ -61,6 +61,15 @@ const JSON_DOC = 'Machine-readable JSON output (for CI)';
 const NOTE_WIDTH = 76;
 
 /**
+ * The file the telemetry setting is kept in, as `scan --help` names it. The
+ * package that reads and creates it is an ES module loaded in cli.ts, so the
+ * two spellings are written here and a test checks each against the file a
+ * scan creates.
+ */
+const TELEMETRY_SETTING_FILE = '~/.config/opena2a/telemetry.json';
+const TELEMETRY_SETTING_FILE_XDG = '$XDG_CONFIG_HOME/opena2a/telemetry.json';
+
+/**
  * Pack `items` into lines no wider than NOTE_WIDTH. The first line starts with
  * `lead`, the rest with `indent`; pass both the same length.
  */
@@ -133,7 +142,7 @@ function scanCoverageNotes(): string[] {
   const reasons = (Object.keys(SOURCE_SKIP_REASONS) as Array<keyof typeof SOURCE_SKIP_REASONS>)
     .flatMap((key) => [`  ${SOURCE_SKIP_REASONS[key]}`, ...details[key]]);
   return [
-    'A directory scan opens only these files:',
+    'A directory scan opens only these files, for secrets or for its rules:',
     ...wrapList([...SOURCE_FILE_EXTENSIONS], ' '.repeat(11), ' ', '  source   '),
     '  config   .env and .env.*, except the templates',
     `           ${templates}; and by name:`,
@@ -149,8 +158,15 @@ function scanCoverageNotes(): string[] {
     `  ignore   ${IGNORE_FILENAME} at the top of the scanned directory, for its`,
     '           rules only (--no-ignore leaves it unread)',
     '',
-    'It opens nothing else. These are the reasons the scan reports for what',
-    'it skipped, each with the flag that opens it, where one does:',
+    // "It opens nothing else" was untrue without a scope: a scan, like every
+    // command, reads the telemetry setting and creates its file when absent.
+    'It opens nothing else for either. Like every command, scan also reads the',
+    'telemetry setting, and creates its file when that is absent:',
+    `  ${TELEMETRY_SETTING_FILE}`,
+    `  (${TELEMETRY_SETTING_FILE_XDG} when that variable is set)`,
+    '',
+    'These are the reasons the scan reports for what it skipped, each with the',
+    'flag that opens it, where one does:',
     ...reasons,
     '',
     'Name a path to scan it. A named file is opened whatever its type, and no',
