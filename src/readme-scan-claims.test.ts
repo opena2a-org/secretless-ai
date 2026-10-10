@@ -13,23 +13,32 @@ import { CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
  * source code", which read as covering `values.yaml`, `main.tf`, workflows and
  * notebooks. These tests hold the published text and the walker's file filter
  * together: a change that starts opening one of these files fails here, and
- * the text has to change with it.
+ * the text has to change with it. The full paragraph lives in
+ * docs/scanning.md, which the README's How it works step 1 links to.
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const README = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+const SCAN_DOC_PATH = 'docs/scanning.md';
+const SCAN_DOC = fs.readFileSync(path.join(REPO_ROOT, SCAN_DOC_PATH), 'utf8');
 
 const TEXT_DRIFT =
-  'README.md How it works step 1, the README paragraph beginning "A directory scan checks", ' +
-  'the README paragraph beginning "Dot-directories are among" and the scan line of --help ' +
+  `README.md How it works step 1, the ${SCAN_DOC_PATH} paragraph beginning "A directory scan checks", ` +
+  `the ${SCAN_DOC_PATH} paragraph beginning "Dot-directories are among" and the scan line of --help ` +
   '(src/commands/help.ts) say a directory scan does not open this file; update them in the ' +
   'same change that starts opening it.';
 
-/** The README paragraph that says what a directory scan opens. */
+/** The published paragraph that says what a directory scan opens. */
 function directoryScanParagraph(): string {
-  const para = README.split('\n').filter(l => l.startsWith('A directory scan checks'));
-  expect(para, 'README.md must hold exactly one paragraph beginning "A directory scan checks"').toHaveLength(1);
+  const para = SCAN_DOC.split('\n').filter(l => l.startsWith('A directory scan checks'));
+  expect(para, `${SCAN_DOC_PATH} must hold exactly one paragraph beginning "A directory scan checks"`).toHaveLength(1);
+  expect(README, 'README.md must not hold a second copy of the directory-scan paragraph').not.toMatch(/^A directory scan checks/m);
   return para[0];
+}
+
+/** GitHub's anchor for a heading: lowercase, punctuation dropped, spaces to hyphens. */
+function headingAnchor(text: string): string {
+  return text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
 }
 
 // The real-looking AWS key src/scan.test.ts already plants, joined at run
@@ -84,14 +93,14 @@ describe('README claims about what a directory scan opens', () => {
   it('the paragraph names every key-file extension the walker opens', () => {
     const para = directoryScanParagraph();
     for (const ext of KEY_FILE_EXTENSIONS) {
-      expect(para, `the README directory-scan paragraph does not name \`${ext}\` (KEY_FILE_EXTENSIONS in src/scan.ts)`).toContain(`\`${ext}\``);
+      expect(para, `the ${SCAN_DOC_PATH} directory-scan paragraph does not name \`${ext}\` (KEY_FILE_EXTENSIONS in src/scan.ts)`).toContain(`\`${ext}\``);
     }
   });
 
   it('a workflow is opened only when its file name is a recognized config name, and the paragraph says so', () => {
     // No config name points into .github/workflows, but config names match by
     // basename inside dot-directories, so a workflow named config.yml is opened
-    // while deploy.yml is not. The README must not state the absolute.
+    // while deploy.yml is not. The published text must not state the absolute.
     expect(CONFIG_FILES.filter(name => name.includes('.github/workflows'))).toEqual([]);
     expect(CONFIG_FILES).toContain('config.yml');
     expect(directoryScanParagraph()).toContain('GitHub Actions workflows other than one whose file name is a recognized config name (such as `.github/workflows/config.yml`)');
@@ -134,10 +143,19 @@ describe('README claims about what a directory scan opens', () => {
   });
 
   it('the step 1 link target exists and holds the directory-scan paragraph', () => {
-    const lines = README.split('\n');
-    const heading = '### Incomplete scans do not report clean';
-    const at = lines.flatMap((l, i) => (l === heading ? [i] : []));
-    expect(at, `README.md must hold exactly one "${heading}" heading`).toHaveLength(1);
+    const step1 = README.split('\n').filter(l => l.startsWith('1. **Scans**'));
+    expect(step1, 'README.md must hold exactly one How it works step beginning "1. **Scans**"').toHaveLength(1);
+    const link = step1[0].match(/\]\(([^)#\s]+)#([^)\s]+)\)/);
+    expect(link, 'README.md How it works step 1 no longer links to the paragraph that says what a directory scan opens').not.toBeNull();
+    const [, target, anchor] = link!;
+    expect(target, 'the step 1 link must point at the scan coverage page').toBe(SCAN_DOC_PATH);
+
+    const lines = SCAN_DOC.split('\n');
+    const at = lines.flatMap((l, i) => {
+      const h = l.match(/^#{1,6} (.+)$/);
+      return h && headingAnchor(h[1]) === anchor ? [i] : [];
+    });
+    expect(at, `${SCAN_DOC_PATH} must hold exactly one heading whose anchor is #${anchor}`).toHaveLength(1);
 
     let inFence = false;
     let found = false;
@@ -149,6 +167,6 @@ describe('README claims about what a directory scan opens', () => {
         break;
       }
     }
-    expect(found, `the paragraph beginning "A directory scan checks" must follow "${heading}" before the next heading`).toBe(true);
+    expect(found, `the paragraph beginning "A directory scan checks" must follow the #${anchor} heading before the next heading`).toBe(true);
   });
 });

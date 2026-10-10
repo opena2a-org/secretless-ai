@@ -24,4 +24,4 @@ Step-by-step guides for common secretless-ai workflows. Each guide takes 2-5 min
 
 ## Full Reference
 
-For the complete command reference, see the [README](../README.md).
+For the complete command reference, see the [README](../README.md). For what a scan opens, which gaps fail a build, and what each exit code means, see [Scan coverage and exit codes](scanning.md).

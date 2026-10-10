@@ -80,6 +80,15 @@ exports that exist for this package's own tests and help text:
 `nearMissCellsEvaluated` and `resetNearMissCellsEvaluated` in
 `dist/near-miss`. Detection, exit codes and `--json` output are unchanged.
 
+**Scan coverage and exit-code detail moved from the README to
+`docs/scanning.md`.** The README had grown to 417 lines. What a directory scan
+opens, which gaps fail a build, how a command line the tool cannot bind is
+refused, and the sample `--json` summary are on that page, with the text
+unchanged. The README keeps the exit codes, a short summary and a link, and
+How it works step 1 links to the page's "What a directory scan opens" section.
+A test holds the README under 400 lines and checks that every relative link
+and anchor in the README and `docs/` resolves.
+
 **The Claude Code guard hook refuses a command that prints the environment
 through `set`, `env`, `printenv`, `export`, `declare`, `compgen`, an
 interpreter one-liner, `docker`, `kubectl`, `tmux`, `launchctl`, `systemctl`
