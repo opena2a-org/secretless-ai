@@ -598,6 +598,55 @@ describe('the --as names a refusal offers are distinct (#289)', () => {
   });
 });
 
+describe('two given --as names the store would merge are not both kept in the Fix (#294)', () => {
+  const vault = (): PushTarget => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }));
+  const fixNames = (): string[] => {
+    const args = fixCommand();
+    return args[args.indexOf('--as') + 1].split(',');
+  };
+
+  it('the second of two equal accepted names leaves <name>, so the Fix is not refused for the pair', async () => {
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD,TOKEN', '--to', 'vault', '--as', 'x,x,c.d'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(fixNames()).toEqual(['x', '<name>', 'c_d']);
+  });
+
+  it('Key Vault compares names without case, so a given name differing only in case leaves <name>', async () => {
+    const code = await push(['API_KEY,DB_PASSWORD,TOKEN', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'x,X,c.d'], { env: NO_ENV, runChild: azSignedIn() });
+
+    expect(code).toBe(2);
+    expect(fixNames()).toEqual(['x', '<name>', 'c-d']);
+  });
+
+  it('with <name> filled in, the Fix pushes each secret under its own name', async () => {
+    await store.setSecret('TOKEN', 'FAKE-push-token-value-5b2d');
+    handler = (call) => {
+      const u = new URL(call.url);
+      if (u.pathname === '/v1/sys/health') return json(200, { initialized: true, sealed: false });
+      if (call.method === 'GET') return json(404, { errors: [] });
+      if (call.method === 'POST') return json(200, { data: { version: 1 } });
+      return json(400, {});
+    };
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD,TOKEN', '--to', 'vault', '--as', 'x,x,c.d'], { store, createTarget: vault });
+
+    expect(code).toBe(2);
+    const fix = fixCommand();
+    fix[fix.indexOf('--as') + 1] = fix[fix.indexOf('--as') + 1].replace('<name>', 'y');
+    const rerun = await runSecretPush(fix, { store, createTarget: vault });
+
+    expect(rerun).toBe(0);
+    expect(calls.filter((c) => c.method === 'POST').map((c) => new URL(c.url).pathname)).toEqual([
+      '/v1/secret/data/secret/x',
+      '/v1/secret/data/secret/y',
+      '/v1/secret/data/secret/c_d',
+    ]);
+    expect(printed()).not.toContain('FAKE-push-token-value-5b2d');
+    expectNoLeak();
+  });
+});
+
 // --- Error layout ------------------------------------------------------------
 
 describe('secret push prints a setup error in the layout the other secret commands use (#247)', () => {
