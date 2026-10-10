@@ -58,6 +58,9 @@ refused before and is now allowed); `docker inspect` only with a `--format`
 that names no `Env` field. A command the parser cannot read, such as one with
 an unclosed quote or a program name or `bash -c` or `eval` string that comes
 from an expansion, is refused with the span it could not read and a rewrite.
+A process substitution in an argument, as in `diff <(sort a) <(sort b)`, is
+read like the rest of the command and judged by what runs inside it, so
+`cat <(env)` is refused.
 Without `python3`, a command that runs `set`, `env`, `printenv`, `export`,
 `declare`, `typeset`, `local`, `readonly`, `compgen`, `ps`, `pgrep`, `tmux` or
 `docker inspect` is refused, and the reason says to install `python3`. Deny

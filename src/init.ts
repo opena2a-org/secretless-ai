@@ -1620,7 +1620,7 @@ class Parser:
             c = self.s[self.i]
             if c in BLANKS or c == "\n":
                 break
-            if c in "<>" and self.at(1) == "(" and self.i == w.start and not paren_ok:
+            if c in "<>" and self.at(1) == "(" and self.i == w.start:
                 self.i += 2
                 self.parse_list(")")
                 val.append(SENT)
