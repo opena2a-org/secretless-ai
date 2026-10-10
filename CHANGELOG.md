@@ -9,12 +9,14 @@ directory it was given (#280).** `backend`, `cache`, `secret`, `scope`,
 given a subcommand or action they do not know, `diff` given a ref it refuses,
 and a value refused by `backend set`, `backend purge --prefix`, `cache ttl`,
 `rules test`, `secret show`, `secret rm`, `secret list`, `secret sync`,
-`secret push`, `scope discover`, `scope check`, `broker start --port`,
-`warm --ttl` or `protect-mcp --backend` printed that value as given, and so
-did `scope reset`; a line feed in it started a new line that read like one of
-the tool's own. Each is now printed with its control characters escaped, such
-as `\n`, as the command line's own refusals are. Text that holds none prints as
-before. The `Fix:` under `init`'s "Not configured" block ended with `re-run:
+`secret push` (its `--to` target and its `--as` name), `scope discover`,
+`scope check`, `broker start --port`, `warm --ttl` or `protect-mcp --backend`
+printed that value as given, and so did `scope reset`; a line feed in it
+started a new line that read like one of the tool's own. Each is now printed
+with its control characters escaped, such as `\n`, as the command line's own
+refusals are. The `Fix:` under a refused `secret push --as` name leaves
+`<name>` where that name cannot be spelled as a command word. Text that holds
+none prints as before. The `Fix:` under `init`'s "Not configured" block ended with `re-run:
 secretless-ai init`, which sets up the working directory, not the one given to
 `init`; it now ends with `npx secretless-ai init` and that directory, as the
 `Fix:` under `init`'s "Not a directory" message spells the command. The README

@@ -3,7 +3,7 @@ import * as path from 'path';
 import { SecretStore, isValidSecretName } from '../secret-store';
 import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
-import { escapeForDisplay, escapePathForDisplay } from '../display-safe';
+import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard } from '../display-safe';
 import { describeSecretShape } from '../secret-value';
 import { isEmptyUpdate } from '../secret-annotations';
 import type { AnnotationUpdate, SecretAnnotation } from '../secret-annotations';
@@ -1079,10 +1079,14 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
   const problems = remotes.map((r) => target.nameProblem(r));
   const first = problems.findIndex((p) => p !== undefined);
   if (first !== -1) {
+    // A name with a control character prints escaped, so a line feed in it
+    // starts no line; the Fix cannot spell such a name as a command word, so
+    // it leaves `<name>` for the user to fill in.
     const suggested = remotes.map((r, i) => (problems[i] !== undefined ? target.suggestName(r) : r));
-    console.error(`\n  "${remotes[first]}" cannot name a secret in ${target.label}: ${problems[first]}.`);
+    const operands = suggested.map((r) => (hasDisplayHazard(r) ? '<name>' : r));
+    console.error(`\n  "${escapeForDisplay(remotes[first])}" cannot name a secret in ${target.label}: ${problems[first]}.`);
     console.error('  Nothing was read or pushed.\n');
-    console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${suggested.join(',')}\n`);
+    console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
     return 2;
   }
   const folded = remotes.map((r) => target.foldName(r));
