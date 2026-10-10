@@ -60,6 +60,58 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
   return hits;
 }
 
+/**
+ * `content` as a string that counts the characters read from it. A method
+ * call is charged what it scans or copies (`indexOf` up to its match, `slice`
+ * and its kin their result, a one-character read one) and any other method a
+ * whole pass. An index read is charged one character. A conversion to a
+ * primitive string is charged a whole pass, because reads of that primitive
+ * cannot be counted. The count depends on the code, not the machine.
+ */
+function countingString(content: string): { text: string; charsRead: () => number } {
+  const length = content.length;
+  let charsRead = 0;
+  const charge = (method: string, args: unknown[], result: unknown): number => {
+    switch (method) {
+      case "indexOf": {
+        const from = Math.min(Math.max(Math.trunc(Number(args[1])) || 0, 0), length);
+        const end = result === -1 ? length : (result as number) + String(args[0]).length;
+        return end - from;
+      }
+      case "slice":
+      case "substring":
+      case "substr":
+        return (result as string).length;
+      case "at":
+      case "charAt":
+      case "charCodeAt":
+      case "codePointAt":
+        return 1;
+      default:
+        return length;
+    }
+  };
+  const text = new Proxy(new String(content), {
+    get(target, key) {
+      if (key === Symbol.toPrimitive) {
+        return () => {
+          charsRead += length;
+          return content;
+        };
+      }
+      const value: unknown = Reflect.get(target, key);
+      if (typeof key === "string" && /^\d+$/.test(key)) charsRead += 1;
+      if (typeof value !== "function" || key === "constructor") return value;
+      return (...args: unknown[]) => {
+        const result: unknown = value.apply(content, args);
+        charsRead += charge(String(key), args, result);
+        return result;
+      };
+    },
+  });
+  return { text: text as unknown as string, charsRead: () => charsRead };
+}
+
 /** The documentation 0.23.0 shipped on a GrantPolicy field, carrying `claim`. */
 function grantPolicyDts(claim: string): string {
   return [
@@ -117,17 +169,18 @@ describe("the retracted-claims list finds each sentence where a shipped file car
     const mod = await loadRetractedClaims();
     const { text } = mod.RETRACTED_CLAIMS[0];
     const count = 25_000;
-    const content = `${text}\n`.repeat(count);
+    const content = countingString(`${text}\n`.repeat(count));
 
-    const started = performance.now();
-    const hits = mod.retractedClaimsIn(content);
-    const elapsed = performance.now() - started;
+    const hits = mod.retractedClaimsIn(content.text);
 
     expect(hits.length).toBe(count);
     expect(hits.every((hit, i) => hit.line === i + 1)).toBe(true);
-    // Counting each hit's line from the start of the file took seconds on
-    // this input; one pass over it takes milliseconds.
-    expect(elapsed).toBeLessThan(1_000);
+    // Counting each hit's line from the start of the file read it about
+    // count / 2 times over; one pass per listed claim, plus one to count
+    // lines, reads it a few times.
+    const passes = content.charsRead() / content.text.length;
+    expect(passes).toBeGreaterThan(0);
+    expect(passes).toBeLessThanOrEqual(2 * mod.RETRACTED_CLAIMS.length + 1);
   });
 
   it("control: a sentence that says the opposite, or another one, is not a hit", async () => {
