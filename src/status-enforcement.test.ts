@@ -148,6 +148,19 @@ describe('status --json names the mechanism isProtected rests on', () => {
     expect(doc.enforcement).toBe('hook');
   });
 
+  it('deny patterns with no Secretless guard script leave an instruction-file project advisory', async () => {
+    projectFor('windsurf');
+    expect(init(project).toolsConfigured).toEqual(['windsurf']);
+    fs.mkdirSync(path.join(project, '.claude'));
+    fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(rm -rf *)'] } }));
+
+    const doc = await statusJson(project);
+
+    expect(doc.hookInstalled).toBe(false);
+    expect(doc.denyRuleCount).toBe(1);
+    expect(doc.enforcement).toBe('advisory');
+  });
+
   it('reports none for a project with no configuration', async () => {
     const doc = await statusJson(project);
 
@@ -196,6 +209,131 @@ describe('status verdict line names the mode', () => {
     init(project);
 
     expect(verdictLine(await statusText(project))).toMatch(/^Protected/);
+  });
+});
+
+describe('status reads the guard wiring, not only the guard script', () => {
+  // `init` writes the guard script and wires it into PreToolUse in
+  // `.claude/settings.json`. Claude Code runs only what a settings file wires,
+  // so a script whose entry was removed (another tool rewrote the file, or it
+  // was edited by hand) enforces nothing. `status` read the script's existence
+  // as the hook: `enforcement: hook`, a green hook row and `Protected`.
+  const settingsPath = (): string => path.join(project, '.claude', 'settings.json');
+
+  /** Rewrite the project settings without the guard entry, and optionally without the deny patterns. */
+  function unwireGuard(opts: { keepDeny: boolean }): void {
+    const settings = JSON.parse(fs.readFileSync(settingsPath(), 'utf-8'));
+    delete settings.hooks.PreToolUse;
+    if (!opts.keepDeny) delete settings.permissions;
+    fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
+  }
+
+  function hookRow(lines: string[]): string {
+    const row = lines.find(l => /Claude Code (guard|hook)/.test(l));
+    expect(row, 'status printed no Claude Code hook row').toBeDefined();
+    return row!.trim();
+  }
+
+  beforeEach(() => {
+    init(project);
+    expect(fs.existsSync(path.join(project, '.claude', 'hooks', 'secretless-guard.sh'))).toBe(true);
+  });
+
+  it('reports hookWired for the settings init writes', async () => {
+    const doc = await statusJson(project);
+
+    expect(doc.hookInstalled).toBe(true);
+    expect(doc.hookWired).toBe(true);
+    expect(doc.enforcement).toBe('hook');
+  });
+
+  it('does not report hook for a guard script nothing runs', async () => {
+    unwireGuard({ keepDeny: false });
+    fs.rmSync(path.join(project, 'CLAUDE.md'));
+
+    const doc = await statusJson(project);
+
+    expect(doc.hookInstalled).toBe(true);
+    expect(doc.hookWired).toBe(false);
+    expect(doc.enforcement).toBe('none');
+    // What CI consumers gate on is unchanged.
+    expect(doc.isProtected).toBe(true);
+    expect(doc.summary.verdict).toBe('protected-warnings');
+  });
+
+  it('does not report hook when the project settings file is gone', async () => {
+    fs.rmSync(settingsPath());
+    fs.rmSync(path.join(project, 'CLAUDE.md'));
+
+    const doc = await statusJson(project);
+
+    expect(doc.hookWired).toBe(false);
+    expect(doc.enforcement).toBe('none');
+  });
+
+  it('the hook row and the verdict line say the guard is not run, and name init as the fix', async () => {
+    unwireGuard({ keepDeny: false });
+    fs.rmSync(path.join(project, 'CLAUDE.md'));
+
+    const lines = await statusText(project);
+    const row = hookRow(lines);
+    const verdict = verdictLine(lines);
+
+    expect(row).toMatch(/^⚠ /);
+    expect(row).not.toContain('hook installed');
+    expect(row).toContain('.claude/settings.json does not run it');
+    expect(row.split('→')[1]?.trim()).toBe('secretless-ai init');
+    expect(verdict).not.toMatch(/protected/i);
+    expect(verdict).toMatch(/^Not enforced: /);
+  });
+
+  it('an unwired guard beside the CLAUDE.md block reads as advisory', async () => {
+    unwireGuard({ keepDeny: false });
+
+    const doc = await statusJson(project);
+    const verdict = verdictLine(await statusText(project));
+
+    expect(doc.configuredTools).toEqual(['claude-code']);
+    expect(doc.enforcement).toBe('advisory');
+    expect(verdict).toMatch(/^Advisory only: instructions for Claude Code/);
+  });
+
+  it('deny patterns Claude Code applies still count as enforced when the guard is not run', async () => {
+    unwireGuard({ keepDeny: true });
+
+    const doc = await statusJson(project);
+    const lines = await statusText(project);
+
+    expect(doc.hookWired).toBe(false);
+    expect(doc.denyRuleCount).toBeGreaterThan(0);
+    expect(doc.enforcement).toBe('hook');
+    expect(hookRow(lines)).toMatch(/^⚠ .*deny patterns apply/);
+    expect(verdictLine(lines)).toMatch(/^Protected/);
+  });
+
+  it('user-level settings that run this project\'s guard script count as wired', async () => {
+    init(home); // wires "$CLAUDE_PROJECT_DIR"/.claude/hooks/secretless-guard.sh at user level
+    unwireGuard({ keepDeny: false });
+
+    const doc = await statusJson(project);
+    const lines = await statusText(project);
+
+    expect(doc.hookWired).toBe(false);
+    expect(doc.userSettings.guardReachable).toBe(true);
+    expect(doc.enforcement).toBe('hook');
+    expect(hookRow(lines)).toMatch(/^✓ Claude Code hook installed at user level/);
+  });
+
+  it('running init again wires the guard, so the named fix changes the row', async () => {
+    unwireGuard({ keepDeny: false });
+    expect((await statusJson(project)).hookWired).toBe(false);
+
+    init(project);
+
+    const doc = await statusJson(project);
+    expect(doc.hookWired).toBe(true);
+    expect(doc.enforcement).toBe('hook');
+    expect(hookRow(await statusText(project))).toMatch(/^✓ Claude Code hook installed \(/);
   });
 });
 

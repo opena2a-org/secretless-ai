@@ -114,12 +114,32 @@ Code applies a guard hook or deny patterns, from the project's settings or
 from user-level settings that reach the project.
 
 `status --json` gains `enforcement`, one of `hook`, `ignore-file`, `advisory`
-or `none`: the strongest mechanism `isProtected` rests on, and `none` exactly
-when `isProtected` is false. `isProtected` and `summary.verdict` keep their
-meaning, so a CI job that gates on them behaves as before: a project with
-instruction files alone still reports `isProtected: true` and
-`protected-warnings`. To require an enforced control, gate on `enforcement`
-being `hook`.
+or `none`: the strongest mechanism `isProtected` rests on. It is `none`
+whenever `isProtected` is false, and also for the case in the next entry.
+`isProtected` and `summary.verdict` keep their meaning, so a CI job that gates
+on them behaves as before: a project with instruction files alone still
+reports `isProtected: true` and `protected-warnings`. To require an enforced
+control, gate on `enforcement` being `hook`.
+
+**`status` no longer reports a guard script that nothing runs as the Claude
+Code hook, and `status --json` adds `hookWired`.** `status` treated
+`.claude/hooks/secretless-guard.sh` existing on disk as the hook being in
+place. Claude Code runs the guard only when a settings file wires it into
+PreToolUse, so a project whose `.claude/settings.json` lost that entry (another
+tool rewrote the file, or it was edited by hand), or whose settings file is
+gone, printed `✓ Claude Code hook installed`, `enforcement: hook` and
+`Protected` while nothing ran the guard. The hook row now reads
+`Claude Code guard script not run: .claude/settings.json does not run it` as a
+warning that names `secretless-ai init`, which adds the entry back. `enforcement`
+is `hook` only where a settings file that reaches the project runs the guard
+or carries deny patterns; with neither, it is `advisory` when the `CLAUDE.md`
+block is present and `none` otherwise, and the verdict line reads
+`Not enforced: the guard script is on disk and no settings file runs it`
+instead of `Protected`. `hookInstalled` keeps its meaning, the script is on
+disk, and the new `hookWired` is true when `.claude/settings.json` runs it.
+`isProtected` is unchanged for these projects. The new warning row means such a
+project reports `protected-warnings` where every other row was clean, which is
+the value it should have reported.
 
 **`init` and `status` agree about an Aider project.** `init` configures Aider
 by writing patterns to `.aiderignore` and printed `Configured: Aider`. `status`

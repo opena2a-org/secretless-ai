@@ -77,7 +77,9 @@ export interface StatusResult {
    * this field carries the difference they do not. `hook` means Claude Code
    * applies a guard hook or deny patterns from this project's settings or from
    * user-level settings that reach it. `ignore-file` and `advisory` mean
-   * nothing of that kind is in place: see `Enforcement`.
+   * nothing of that kind is in place: see `Enforcement`. `none` is also
+   * reported while `isProtected` is true when that rests on a guard script no
+   * settings file runs, and no tool is configured.
    */
   enforcement: Enforcement;
   /** AI tools found in the project, configured or not. */
@@ -88,7 +90,15 @@ export interface StatusResult {
    * than an instruction file.
    */
   ignoreFileTools: AITool[];
+  /** The guard script `init` writes exists in `.claude/hooks/`. */
   hookInstalled: boolean;
+  /**
+   * `.claude/settings.json` runs a `secretless-guard` command from PreToolUse,
+   * and the script it names exists when it runs from this project. Claude Code
+   * runs only what a settings file wires, so a script on disk with no entry
+   * here enforces nothing: `hookInstalled` alone is not the hook.
+   */
+  hookWired: boolean;
   /**
    * Deny patterns in effect, or NULL when the count was not measured.
    *
@@ -289,6 +299,19 @@ function isFile(p: string): boolean {
   }
 }
 
+/**
+ * Whether a settings object wires the guard into PreToolUse, and whether a
+ * command it wires names a script that exists when it runs from this project.
+ */
+function guardWiring(settings: any, projectDir: string, homeDir: string): { wired: boolean; reachable: boolean } {
+  const commands = hookCommands(settings, 'PreToolUse').filter(c => c.includes('secretless-guard'));
+  const reachable = commands.some(c => {
+    const script = hookScriptPath(c, 'secretless-guard', projectDir, homeDir);
+    return script !== null && isFile(script);
+  });
+  return { wired: commands.length > 0, reachable };
+}
+
 /** True when `filePath` is a regular file whose text holds one of `markers`. */
 function fileCarries(filePath: string, markers: string[]): boolean {
   try {
@@ -325,6 +348,7 @@ export async function status(projectDir: string, options?: { homeDir?: string })
     configuredTools: [],
     ignoreFileTools: [],
     hookInstalled: false,
+    hookWired: false,
     denyRuleCount: 0,
     secretsFound: 0,
     scanIncomplete: false,
@@ -351,6 +375,7 @@ export async function status(projectDir: string, options?: { homeDir?: string })
     if (read.unreadable) result.settingsUnreadable = read.unreadable;
     if (read.ambiguous) result.settingsAmbiguous = read.ambiguous;
     result.denyRuleCount = read.denyRuleCount;
+    result.hookWired = guardWiring(read.settings, projectDir, homeDir).reachable;
 
     // Check for Stop hook
     if (hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'))) {
@@ -368,17 +393,14 @@ export async function status(projectDir: string, options?: { homeDir?: string })
   if (fs.existsSync(userSettingsPath)
     && !(projectSettingsExists && sameFile(settingsPath, userSettingsPath))) {
     const read = await readClaudeSettings(userSettingsPath, USER_SETTINGS_PATH);
-    const guardCommands = hookCommands(read.settings, 'PreToolUse').filter(c => c.includes('secretless-guard'));
-    const guardReachable = guardCommands.some(c => {
-      const script = hookScriptPath(c, 'secretless-guard', projectDir, homeDir);
-      return script !== null && isFile(script);
-    });
+    const guard = guardWiring(read.settings, projectDir, homeDir);
+    const guardReachable = guard.reachable;
     const stopHookInstalled = hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'));
-    const secretlessInstalled = guardCommands.length > 0 || stopHookInstalled;
+    const secretlessInstalled = guard.wired || stopHookInstalled;
     const user: UserSettingsStatus = {
       path: USER_SETTINGS_PATH,
       secretlessInstalled,
-      guardWired: guardCommands.length > 0,
+      guardWired: guard.wired,
       guardReachable,
       denyRuleCount: read.denyRuleCount,
       stopHookInstalled,
@@ -487,14 +509,23 @@ export async function status(projectDir: string, options?: { homeDir?: string })
   // Which of the terms above made `isProtected` true, strongest first. An
   // instruction file and a guard hook both set that boolean, and reporting
   // them as one state called advice a control.
+  //
+  // `hookInstalled` is one of those terms, and it only says the script is on
+  // disk. That install enforces something when the settings run the guard or
+  // carry deny patterns Claude Code applies; a script nothing runs is neither,
+  // and with no tool configured beside it nothing is enforced at all.
+  const projectEnforces = result.hookWired
+    || (result.hookInstalled && (result.denyRuleCount ?? 0) > 0);
   if (!result.isProtected) {
     result.enforcement = 'none';
-  } else if (result.hookInstalled || userProtects) {
+  } else if (projectEnforces || userProtects) {
     result.enforcement = 'hook';
   } else if (result.ignoreFileTools.length > 0) {
     result.enforcement = 'ignore-file';
-  } else {
+  } else if (result.configuredTools.length > 0) {
     result.enforcement = 'advisory';
+  } else {
+    result.enforcement = 'none';
   }
 
   return result;

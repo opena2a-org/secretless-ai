@@ -1243,12 +1243,21 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // a grep and a diff review. Re-running status is what actually re-checks.
       action: 'delete the repeated key, then re-run: secretless-ai status',
     });
-  } else if (s.hookInstalled) {
+  } else if (s.hookWired) {
     const denyText = (s.denyRuleCount ?? 0) > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
     addRow({ glyph: '✓', label: `Claude Code hook installed (.claude/settings.json${denyText})` });
   } else if (user?.coversProject && user.guardReachable) {
     const denyText = (user.denyRuleCount ?? 0) > 0 ? ` — ${user.denyRuleCount} deny pattern${user.denyRuleCount === 1 ? '' : 's'}` : '';
     addRow({ glyph: '✓', label: `Claude Code hook installed at user level (${user.path}${denyText})` });
+  } else if (s.hookInstalled) {
+    // The script is on disk and no settings file runs it, so Claude Code never
+    // calls it. `init` adds the PreToolUse entry back to the file it reads.
+    const denyText = (s.denyRuleCount ?? 0) > 0 ? `; ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'} apply` : '';
+    addRow({
+      glyph: '⚠',
+      label: `Claude Code guard script not run: .claude/settings.json does not run it${denyText}`,
+      action: claudeCodeInit,
+    });
   } else if (user?.guardWired && !user.guardReachable) {
     // `init` run from the home directory wires the guard as
     // "$CLAUDE_PROJECT_DIR"/.claude/hooks/secretless-guard.sh, which from the
@@ -1265,7 +1274,7 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   // User-level settings, when this project has no guard of its own. Claude
   // Code applies their deny patterns in every project, so they are what is
   // enforced here; a file that cannot be read as written gets no green row.
-  if (user && !s.hookInstalled && !s.settingsUnreadable) {
+  if (user && !s.hookWired && !s.settingsUnreadable) {
     if (user.unreadable) {
       addRow({
         glyph: '⚠',
@@ -1413,9 +1422,13 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       protectionScope: s.protectionScope,
       // `hook`, `ignore-file`, `advisory` or `none`: the strongest mechanism
       // `isProtected` rests on. `isProtected` is true on an instruction file
-      // alone, and only this field says that nothing enforces one.
+      // alone, and on a guard script no settings file runs, and only this
+      // field says that nothing enforces either.
       enforcement: s.enforcement,
+      // `hookInstalled`: the guard script is on disk. `hookWired`: this
+      // project's settings run it. Claude Code runs only the second.
       hookInstalled: s.hookInstalled,
+      hookWired: s.hookWired,
       denyRuleCount: s.denyRuleCount,
       configuredTools: s.configuredTools,
       secretsFound: s.secretsFound,
@@ -1510,6 +1523,10 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       console.log(`  Advisory only: instructions for ${instructionTools.map(toolDisplayName).join(', ')}, which nothing enforces${attention}`);
     } else if (s.enforcement === 'ignore-file') {
       console.log(`  Ignore file only: ${AIDER_IGNORE_FILE.path} for ${s.ignoreFileTools.map(toolDisplayName).join(', ')}, which no hook enforces${attention}`);
+    } else if (s.enforcement === 'none') {
+      // `isProtected` rests on the guard script being on disk, and no settings
+      // file runs it. This line used to print `Protected` for that.
+      console.log(`  Not enforced: the guard script is on disk and no settings file runs it. Run \`${claudeCodeInit}\` to wire it${attention}`);
     } else {
       // Say when the protection comes from the user-level file, so a project
       // covered only by it does not read as having an install of its own.
