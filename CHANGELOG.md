@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**The `Fix:` under a refused `secret push --as` name no longer keeps two given
+names the store would merge (#294).** Given names the store accepts were kept
+as they were, so `secret push A,B,C --to vault --as x,x,c.d` printed
+`--as x,x,c_d`, and running that line was refused with `A and B would both be
+pushed as "x"`. An accepted name that the store would push as the same name
+as an earlier one is now left as `<name>` for the user to fill in, so that
+line prints `--as x,<name>,c_d`; for Azure Key Vault, which does not tell
+names apart by case, `--as x,X,c.d` gives `--as x,<name>,c-d`.
+
 **The `Fix:` under a refused `secret push --as` name no longer offers two
 secrets the same name (#289).** Each refused name was replaced on its own, so
 `secret push A,B --to vault --as a.b,a_b` printed `--as a_b,a_b`, and running
