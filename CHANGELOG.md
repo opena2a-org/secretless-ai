@@ -29,10 +29,15 @@ given in the list under "Not configured" and in the `Verify:` and `Fix:` lines
 under that list, so a line feed in a directory name started a new line; the
 list now prints each control character as an escape such as `\n`, and those
 commands name `<path>` in place of a path that cannot be printed as itself.
-`scan` given two paths, and `init` or `status` given an argument that starts
-with `-`, printed the arguments as given; they are now escaped the same way,
-and the `scan` command that message suggests quotes the first path for
-pasting, or names `<path>`. On Windows, the "Directory not found" and "Not a
+`scan` given two paths, `init` or `status` given an argument that starts with
+`-`, a command given an option it refuses or warns about, such as `--bogus`
+or `--json=` with a value, and an unknown command or `telemetry` action
+printed the argument as given; it is now escaped the same way, and the `scan`
+command the two-path message suggests quotes the first path for pasting, or
+names `<path>`. A command's own message for a subcommand or value it does not
+accept, such as `secret` given an unknown subcommand or `diff` given a ref it
+refuses, still prints it as given.
+On Windows, the "Directory not found" and "Not a
 directory" messages of `init`, `scan`, `status` and `verify` print a path with
 `/` between its parts, as a finding's path is printed, while the `Verify:` and
 `Fix:` commands under them kept `\`; the commands now spell the path with `/`
