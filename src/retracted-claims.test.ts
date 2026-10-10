@@ -93,7 +93,9 @@ function isThenable(value: unknown): boolean {
  * RegExp method given the content converts it, so even a linear `exec` loop
  * is named. A counting string is an object, so a character never `===` the
  * character it is: compare it by its code. `characters` counts the single
- * characters handed out, so a wrong line can be put down to such a compare.
+ * characters handed out, those `String.fromCharCode` and
+ * `String.fromCodePoint` make among them, so a wrong line can be put down to
+ * such a compare.
  *
  * `read` counts a scan until it returns: from then on the two `String`
  * functions make plain strings again. A copy a scan that returns a promise
@@ -251,15 +253,18 @@ function expectNoPlainStrings(plainStrings: string[]): void {
 
 /**
  * Fails when `lines` is not 1, 2, 3 and on, naming the first hit on another
- * line. When the scan read single characters, each a counting string that
- * never `===` the character it is, the failure says to compare their codes.
+ * line. When the scan was handed single characters, each a counting string
+ * that never `===` the character it is, the failure says how many and to
+ * compare their codes. Those `String.fromCharCode` and `String.fromCodePoint`
+ * make are among them, so the figure is not what the scan read from the
+ * content.
  */
 function expectEveryLine(lines: number[], characters: number): void {
   const wrong = lines.findIndex((line, i) => line !== i + 1);
   const compare =
     characters === 0
       ? ""
-      : `: the scan read ${characters} single characters from the content, each a counting ` +
+      : `: the scan was handed ${characters} single characters, each a counting ` +
         "string, an object that never === the character it is, so compare its code " +
         '(content.charCodeAt(pos) === 10, not content[pos] === "\\n")';
   expect(wrong, `hit ${wrong + 1} is on line ${lines[wrong]}, not ${wrong + 1}${compare}`).toBe(-1);
@@ -597,7 +602,7 @@ describe("the counting string counts a copy's reads and names a plain string it 
     expect(plainStrings).toEqual([]);
     expect(characters).toBeGreaterThan(0);
     expect(() => expectEveryLine(lines, characters)).toThrow(
-      /^hit 2 is on line 1, not 2: the scan read \d+ single characters from the content, each a counting string, an object that never === the character it is, so compare its code \(content\.charCodeAt\(pos\) === 10, not content\[pos\] === "\\n"\)/,
+      /^hit 2 is on line 1, not 2: the scan was handed \d+ single characters, each a counting string, an object that never === the character it is, so compare its code \(content\.charCodeAt\(pos\) === 10, not content\[pos\] === "\\n"\)/,
     );
   });
 
@@ -614,7 +619,20 @@ describe("the counting string counts a copy's reads and names a plain string it 
     expect(passes).toBeLessThanOrEqual(2);
   });
 
-  it("control: a wrong line from a scan that read no single character says only which hit", () => {
+  it("says how many single characters the scan was handed, not that it read from the content the ones String.fromCharCode makes", () => {
+    const content = countingString(file);
+    const made = content.read(() => Array.from({ length: 5 }, () => String.fromCharCode(10)));
+    // Nothing was read from the content, yet each of the five is a counting
+    // string that never === "\n".
+    expect(made.some((character) => character === "\n")).toBe(false);
+    expect(content.charsRead()).toBe(0);
+    expect(content.characters()).toBe(5);
+    expect(() => expectEveryLine([1, 1], content.characters())).toThrow(
+      /^hit 2 is on line 1, not 2: the scan was handed 5 single characters, each a counting string, an object that never === the character it is/,
+    );
+  });
+
+  it("control: a wrong line from a scan handed no single character says only which hit", () => {
     expect(() => expectEveryLine([1, 1, 3], 0)).toThrow(/^hit 2 is on line 1, not 2: expected 1 to be -1/);
   });
 
