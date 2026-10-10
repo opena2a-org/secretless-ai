@@ -37,10 +37,11 @@ exports that exist for this package's own tests and help text:
 **The Claude Code guard hook refuses a command that prints the environment
 through `set`, `env`, `printenv`, `export`, `declare`, `compgen`, an
 interpreter one-liner, `docker`, `kubectl`, `tmux`, `launchctl`, `systemctl`
-or `npm`, wherever the shell runs it, and a command it cannot parse.** The
+or `npm`, and a command it cannot parse.** The
 hook refused a few spellings of an environment dump by matching command text
-(a bare `printenv`, a bare `env`, a process listing, a `node -e` one-liner
-naming `process.env`) and let the other shapes through: a bare `set`,
+(a bare `printenv`, a bare `env`, a process listing that shows environments
+or full command lines, a `node -e` one-liner naming `process.env`) and let
+the other shapes through: a bare `set`,
 `set -x`, `export -p`, `declare -p`, `typeset`, `compgen -v`,
 `printenv NAME`, a python, ruby or perl one-liner printing `os.environ`,
 `ENV` or `%ENV`, `node -p process.env`, `docker inspect`,
@@ -70,7 +71,11 @@ stopped, and that is nothing when the parser stopped at the end of the command
 (an unclosed double quote, `(`, `$(`, `[[`, `case`, `$'` or array assignment).
 A process substitution in an argument, as in `diff <(sort a) <(sort b)`, is
 read like the rest of the command and judged by what runs inside it, so
-`cat <(env)` is refused.
+`cat <(env)` is refused. The hook does not read the command after `eval --`
+or `sudo -k`, a process substitution inside `[[ ]]`, a script that bash reads
+from a process substitution (`bash <(echo env)`), a named coprocess or
+`${ cmd; }`, so an environment print there is not refused unless an older
+text rule matches it, as for a bare `env`.
 Without `python3` nothing parses the command and the hook matches its text
 instead. A command is refused when `set`, `env`, `printenv`, `export`,
 `declare`, `typeset`, `local`, `readonly`, `compgen`, `ps`, `pgrep`, `tmux` or
@@ -80,8 +85,9 @@ a backquote or `!`, after `eval` or a shell's `-c`, or behind `sudo`, `doas`,
 the reason says to install `python3` unless an older rule refuses the command
 first with its own reason, as for a bare `env`, a bare `printenv` or `ps e`.
 The name is not matched after `then`, `do` or `else`, after an assignment or a
-redirection, in a `case` arm, behind `timeout` or a wrapper option that takes
-a value, or when it is quoted or backslash-escaped: `if true; then set; fi`,
+redirection, in a `case` arm, behind `timeout` or a wrapper option whose
+value is a separate word (`sudo -uroot set` is refused, `sudo -u root set`
+is not), or when it is quoted or backslash-escaped: `if true; then set; fi`,
 `X=1 env`, `sudo -u root set` and `"printenv"` are allowed. Deny
 reasons that named `printenv NAME` as the safe path now name
 `[ -n "$NAME" ]`. Re-run `secretless-ai init` to refresh an installed hook.
