@@ -172,17 +172,23 @@ async function main(): Promise<number> {
 
   const startedAt = Date.now();
   let exitCode = 0;
+  // The event's `name` is a command name. A first argument that is not a
+  // command (a path, a mistyped verb, a pasted value) was sent there as typed;
+  // it is sent as `unknown`, and that run, which printed "Unknown command" and
+  // did nothing, is not a success.
+  const known = command !== undefined && Object.prototype.hasOwnProperty.call(VERBS, command);
+  const eventName = known && command ? command : 'unknown';
   try {
     exitCode = await dispatch(args, command, prepared);
   } catch (err) {
     exitCode = 1;
-    if (command) tele.error(command, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
+    if (command) tele.error(eventName, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
     throw err;
   } finally {
     if (command && !isUntrackedCall(command, prepared)) {
       // Exit 1 = scanner found credentials (the tool's job); >=2 = real error.
       // npm audit / eslint convention. Matches @opena2a/telemetry.successFromExitCode.
-      await tele.track(command, { success: exitCode <= 1, durationMs: Date.now() - startedAt });
+      await tele.track(eventName, { success: known && exitCode <= 1, durationMs: Date.now() - startedAt });
     }
     await tele.flush();
   }
