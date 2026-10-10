@@ -3,17 +3,23 @@
 ## [Unreleased]
 
 **`scan`, `status` and `verify` name the file a path runs through, `init`
-prints its path argument escaped, and `scan --help` names the ignore file
+escapes the path in its "Directory not found" and "Not a directory" messages,
+and `scan --help` names the ignore file
 (#273).** `scan notes.txt/sub`, where `notes.txt` is a file, said "Directory not
 found" and "Check the path and try again"; `scan`, `status` and `verify` now say
 "Not a directory", name the file, and print a `Verify:` line and a `Fix:` line:
 `scan` on the file, `status` and `verify` on the directory that holds it.
 `scan --json` prints the same lines to stderr and no document. `init` printed
-its path argument as given, so a line feed in a directory name started a new
-line that read like one of its own; it now prints each control character in
-the path as an escape such as `\n` or `\e`, as `scan` does for a file name, and
-a `Verify:` or `Fix:` command names `<path>` when the path cannot be printed as
-itself. `init` on a symbolic link whose target does not exist, or on a path
+a path in its messages as given, so a line feed in a directory name started a
+new line that read like one of its own. Its "Directory not found" and "Not a
+directory" messages, and those of `scan`, `status` and `verify`, now print
+each control character in a path as an escape such as `\n` or `\e`, as `scan`
+does for a file name, and a `Verify:` or `Fix:` command under them names
+`<path>` in place of a path that cannot be printed as itself. `init` still
+prints a path as given in the list under "Not configured", in the `Verify:`
+and `Fix:` lines under that list, and in an error from the file system, such
+as `EACCES: permission denied`. `init` on a symbolic link whose target does
+not exist, or on a path
 under one, suggested a `mkdir -p` that fails on that link; it now names the
 link and leaves that suggestion out. For a caller of `runInit`, a path with
 `..` after a symbolic link named a file in the link's own parent directory; it
