@@ -964,16 +964,20 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    it('echo/printenv of a non-secret, and a secret handed to a program, stay allowed', () => {
+    it('echo of a non-secret, and a secret handed to a program, stay allowed', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+
+      // printenv is refused in every form now, whatever it names and wherever
+      // its output goes (see guard-env-print.test.ts); these were allowed here.
+      for (const c of ['printenv PATH', 'printenv HOME', 'printenv | wc -l', 'printenv "PATH"']) {
+        expect(runHookCmd(hookPath, c), `expected hook to BLOCK: ${c}`).toBe(true);
+      }
 
       const mustAllow = [
         'echo $HOME',
         'echo $PATH',
         'echo "building the api"',
-        'printenv PATH',
-        'printenv HOME',
         // Passing a secret to a program is the intended way to use one. An echo
         // earlier in the same line must not condemn a later, unrelated command.
         'echo "starting"; curl -H "Authorization: Bearer $ANTHROPIC_API_KEY" https://api.anthropic.com/v1/models',
@@ -983,13 +987,10 @@ describe('init', { timeout: 30_000 }, () => {
         // bare-printenv arm.
         'env -u GITHUB_TOKEN git push',
         'npm run build',
-        // A pipe hands printenv's output to the next program.
-        'printenv | wc -l',
         'echo -n "$HOME"',
         'echo\t$PATH',
         "printf 'a\\tb\\n' | cut -f2",
-        // A quote after a space opens an argument; a search names the word.
-        'printenv "PATH"',
+        // A search names the word.
         "grep -n 'printenv' src",
         'grep -rn "printenv" src',
       ];
@@ -1120,13 +1121,23 @@ describe('init', { timeout: 30_000 }, () => {
       const mustAllow = [
         "cat > notes.md <<'EOF'\nThe guard refused the ledger line because it named .env in prose.\nEOF",
         'git commit -m "the hook refused a heredoc that named server.key"',
-        "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
+        "git log -1 | head -1 | xargs echo '{{.Config.Env}}'",
         'grep -c "{{.Config.Env}}" templates/deploy.yaml',
-        // Admitted before the change too, and must stay admitted.
-        "docker inspect x --format '{{.Config.Env}}' | grep -c A",
       ];
       for (const c of mustAllow) {
         expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${JSON.stringify(c)}`).toBe(false);
+      }
+      // docker inspect of the Env field prints a container's environment, so the
+      // environment-print arm refuses it; the template field is still not taken
+      // for a secret file.
+      for (const c of [
+        "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
+        "docker inspect x --format '{{.Config.Env}}' | grep -c A",
+      ]) {
+        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: c } });
+        const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+        expect(out, `expected hook to BLOCK: ${JSON.stringify(c)}`).toContain('"permissionDecision":"deny"');
+        expect(out, `deny reason must not name a secret file for: ${JSON.stringify(c)}`).not.toMatch(/secret file/);
       }
 
       // A real read stays refused wherever the shell runs the verb from: at the
@@ -1434,11 +1445,15 @@ describe('init', { timeout: 30_000 }, () => {
       const mustAllow = [
         'npm test',
         'echo hello\nnpm test',
-        "docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'",
       ];
       for (const c of mustAllow) {
         expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
       }
+      // Without python3 nothing parses the command, so docker inspect is refused
+      // on its name (see guard-env-print.test.ts), and not as a secret-file read.
+      const inspect = decide("docker ps -q | head -1 | xargs docker inspect --format '{{.Config.Env}}'");
+      expect(inspect.decision).toBe('deny');
+      expect(inspect.reason).toContain('python3 is missing');
 
       // The reason quotes the text from the verb on, and a line break in it
       // stays the escape the hook read.
@@ -1564,10 +1579,13 @@ describe('init', { timeout: 30_000 }, () => {
         expect(d.reason, `deny reason without python3 for: ${JSON.stringify(c)}`).toContain(reason);
       }
 
+      // printenv of any name is refused now; without python3 on its name.
+      for (const c of ['printenv\tPATH', 'printenv | wc -l']) {
+        expect(decide(c).decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
+      }
+
       const mustAllow = [
         'echo\t$HOME',
-        'printenv\tPATH',
-        'printenv | wc -l',
         'secretless-ai\tenvironment',
         'secretless-ai run --\tenvsubst tpl.conf',
         "printf 'a\\tb\\n' | cut -f2",
@@ -1635,12 +1653,13 @@ describe('init', { timeout: 30_000 }, () => {
         'git commit -m "the hook refused a heredoc that named server.key"',
         'curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user',
         'python3 -c "import json; print(json.dumps({\\"a\\": 1}))"',
-        'printenv "PATH"',
         'grep -rn "printenv" src',
       ];
       for (const c of mustAllow) {
         expect(decide(c).decision, `expected hook without python3 to ALLOW: ${JSON.stringify(c)}`).toBe('allow');
       }
+      // printenv of any name is refused now; without python3 on its name.
+      expect(decide('printenv "PATH"').decision).toBe('deny');
 
       // The reason quotes the text as the payload carries it, a quote as `\"`.
       expect(decide('sudo cat "/srv/app/.env"').reason).toContain('Matched `cat \\"/srv/app/.env\\"`');
@@ -1650,8 +1669,9 @@ describe('init', { timeout: 30_000 }, () => {
     // for a python or node one-liner that names a secret file refused a one-liner
     // reading a variable as a secret-file read: `node -e` printing GITHUB_TOKEN
     // was told it named a secret file, where the same read in python was told it
-    // read a secret variable. Every command below was refused and still is; the
-    // reason now names what it matched, with python3 and without it.
+    // read a secret variable. Every command below was refused and still is,
+    // except a read of one variable by property name where python3 parses the
+    // one-liner; the reason now names what it matched, with python3 and without.
     it('a one-liner reading process.env is refused for reading the environment, not a secret file', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
@@ -1672,17 +1692,21 @@ describe('init', { timeout: 30_000 }, () => {
       const secretVariable = 'reads secret environment variables';
       const environment = 'reads environment variables';
       const secretFile = 'reads secret files';
+      // A read of one variable by property name: refused without python3, where
+      // nothing parses the one-liner, and allowed with it, where the parse has
+      // already refused a one-liner that names the whole environment.
+      const propertyRead = 'reads environment variables without a parse';
       // [command, the class its reason names]. The commands hold no double quote,
       // so the matched text reads the same with python3 and without it.
       const cells: Array<[string, string]> = [
         ["node -e 'console.log(process.env.GITHUB_TOKEN)'", secretVariable],
         ["node -e 'console.log(process.env[process.argv[1]])' API_KEY", secretVariable],
         ["python3 -c 'import os,sys; print(os.environ[sys.argv[1]])' GITHUB_TOKEN", secretVariable],
-        ["node -e 'console.log(process.env.HOME)'", environment],
+        ["node -e 'console.log(process.env.HOME)'", propertyRead],
         ["node -e 'console.log(process.env)'", environment],
         ["node -e 'console.log(JSON.stringify(process.env))'", environment],
         ["node -e 'for (const k in process.env) console.log(k, process.env[k])'", environment],
-        ["node -e 'console.log(process?.env.HOME)'", environment],
+        ["node -e 'console.log(process?.env.HOME)'", propertyRead],
         // A secret-file name left once process.env is set aside is still a file.
         ["node -e 'require(`fs`).readFileSync(`.env`)'", secretFile],
         ["node -e 'console.log(process.env.HOME); require(`fs`).readFileSync(`server.key`)'", secretFile],
@@ -1691,9 +1715,14 @@ describe('init', { timeout: 30_000 }, () => {
         ["python3 -c 'print(open(`.env`).read())'", secretFile],
       ];
       for (const [host, env] of hosts) {
-        for (const [c, reasonClass] of cells) {
+        for (const [c, cellClass] of cells) {
           const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: c } });
           const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
+          if (cellClass === propertyRead && host === 'with python3') {
+            expect(out.trim(), `expected hook ${host} to ALLOW: ${JSON.stringify(c)}`).toBe('');
+            continue;
+          }
+          const reasonClass = cellClass === propertyRead ? environment : cellClass;
           expect(out.trim(), `expected hook ${host} to BLOCK: ${JSON.stringify(c)}`).not.toBe('');
           const hso = JSON.parse(out).hookSpecificOutput;
           expect(hso.permissionDecision, `expected hook ${host} to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
@@ -1935,7 +1964,6 @@ describe('init', { timeout: 30_000 }, () => {
         'python3 -m venv env',
         'source env/bin/activate',
         'cd app && env/bin/python main.py',
-        'printenv PATH',
       ]) {
         expect(runHookCmd(hookPath, c), `expected hook to ALLOW: ${c}`).toBe(false);
       }
@@ -1949,9 +1977,13 @@ describe('init', { timeout: 30_000 }, () => {
         const reason = JSON.parse(out).hookSpecificOutput.permissionDecisionReason as string;
         expect(reason, c).toContain('pgrep -f <pattern>');
       }
+      // printenv NAME is refused too now, so the env reason names the prefix
+      // form and a test that prints no value.
       const out = runHookCmdRaw(hookPath, 'env');
       const reason = JSON.parse(out).hookSpecificOutput.permissionDecisionReason as string;
-      expect(reason).toContain('printenv NAME');
+      expect(reason).toContain('env -u NAME cmd');
+      expect(reason).toContain('[ -n "$NAME" ]');
+      expect(reason).not.toContain('printenv NAME');
     });
   });
 
