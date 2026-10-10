@@ -70,30 +70,29 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
  * The count follows the content where a method takes it: a string a method
  * returns or an index read gives, alone or held by an array, a match or an
  * iterator, is a counting string on the same counter, charged by its own
- * length. A single character is one too, so a copy put together from the
- * characters an iteration, a split or reads one at a time hand out is put
+ * length, and so is a string `String.fromCharCode` or `String.fromCodePoint`
+ * makes while `read` runs a scan. A single character is one too, so a copy
+ * put together from the characters a scan reads, or from their codes, is put
  * together from counting strings. Reads of a plain string cannot be counted,
  * so `plainStrings` names what handed one out: a conversion to a primitive
  * string, which putting such a copy together makes, and a function given to
- * a method, which the method calls with plain strings. The scan must therefore
- * read its input through String.prototype methods called on it, or by index: a
- * RegExp method given the content converts it, so the one-pass test fails a
- * `pattern.exec(content)` loop even when the loop reads the content once. A
- * counting string is an object, so a character never `===` the character it
- * is: compare it by its code. A number stays a number, so a copy put together
- * from character codes is read uncounted.
- *
- * A scan must therefore read the content through String.prototype methods,
- * `content.matchAll(pattern)` and not `pattern.exec(content)`: a RegExp
- * method given the content converts it to a primitive string first, so even
- * a linear `exec` loop is named.
+ * a method, which the method calls with plain strings. A scan must therefore
+ * read the content through String.prototype methods called on it, or by
+ * index, `content.matchAll(pattern)` and not `pattern.exec(content)`: a
+ * RegExp method given the content converts it, so even a linear `exec` loop
+ * is named. A counting string is an object, so a character never `===` the
+ * character it is: compare it by its code. `characters` counts the single
+ * characters handed out, so a wrong line can be put down to such a compare.
  */
 function countingString(content: string): {
   text: string;
+  read: <T>(scan: (text: string) => T) => T;
   charsRead: () => number;
+  characters: () => number;
   plainStrings: () => string[];
 } {
   let charsRead = 0;
+  let characters = 0;
   const plainStrings = new Set<string>();
   const charge = (length: number, method: string, args: unknown[], result: unknown): number => {
     switch (method) {
@@ -120,7 +119,10 @@ function countingString(content: string): {
   // An array or a match wraps a string when it is read from it, so taking
   // only its length wraps none.
   const counted = (value: unknown): unknown => {
-    if (typeof value === "string") return value.length > 0 ? counting(value) : value;
+    if (typeof value === "string") {
+      if (value.length === 1) characters += 1;
+      return value.length > 0 ? counting(value) : value;
+    }
     if (typeof value !== "object" || value === null) return value;
     if (!Array.isArray(value) && Symbol.iterator in value) {
       const items = value as Iterable<unknown>;
@@ -166,23 +168,71 @@ function countingString(content: string): {
     });
     return text as unknown as string;
   };
+  const text = counting(content);
+  // A number stays a number, so a string made from the codes a scan reads is
+  // a counting string only because these two make one while the scan runs.
+  const read = <T>(scan: (text: string) => T): T => {
+    const { fromCharCode, fromCodePoint } = String;
+    String.fromCharCode = (...codes: number[]) => counted(fromCharCode(...codes)) as string;
+    String.fromCodePoint = (...codes: number[]) => counted(fromCodePoint(...codes)) as string;
+    try {
+      return scan(text);
+    } finally {
+      String.fromCharCode = fromCharCode;
+      String.fromCodePoint = fromCodePoint;
+    }
+  };
   return {
-    text: counting(content),
+    text,
+    read,
     charsRead: () => charsRead,
+    characters: () => characters,
     plainStrings: () => [...plainStrings],
   };
 }
 
+/** What makes each thing `plainStrings` names hand out a plain string, and what a scan does instead. */
+function becauseOf(handedOut: string): string {
+  if (handedOut === "a conversion to a primitive string") {
+    return (
+      "which a RegExp method given the content (pattern.exec(content)), String(content), a template " +
+      "literal, a concatenation and a copy put together from its characters or their codes each make: " +
+      "call String.prototype methods on the content instead (content.matchAll(pattern))"
+    );
+  }
+  return (
+    "which the method calls with plain strings: read each match from content.matchAll(pattern) " +
+    "instead of giving a method a function"
+  );
+}
+
 /**
  * Fails when a counting string handed out a plain string, whose reads are
- * in no count, and says how a scan reads the content instead.
+ * in no count, naming what handed it out and how a scan reads the content
+ * instead.
  */
 function expectNoPlainStrings(plainStrings: string[]): void {
   expect(
     plainStrings,
-    "the scan read the content as a plain string, which no count sees: read it through " +
-      "String.prototype methods (content.matchAll(pattern), not pattern.exec(content))",
+    "the scan read the content as a plain string, which no count sees, handed out by " +
+      plainStrings.map((handedOut) => `${handedOut}, ${becauseOf(handedOut)}`).join("; and by "),
   ).toEqual([]);
+}
+
+/**
+ * Fails when `lines` is not 1, 2, 3 and on, naming the first hit on another
+ * line. When the scan read single characters, each a counting string that
+ * never `===` the character it is, the failure says to compare their codes.
+ */
+function expectEveryLine(lines: number[], characters: number): void {
+  const wrong = lines.findIndex((line, i) => line !== i + 1);
+  const compare =
+    characters === 0
+      ? ""
+      : `: the scan read ${characters} single characters from the content, each a counting ` +
+        "string, an object that never === the character it is, so compare its code " +
+        '(content.charCodeAt(pos) === 10, not content[pos] === "\\n")';
+  expect(wrong, `hit ${wrong + 1} is on line ${lines[wrong]}, not ${wrong + 1}${compare}`).toBe(-1);
 }
 
 /** The documentation 0.23.0 shipped on a GrantPolicy field, carrying `claim`. */
@@ -244,10 +294,13 @@ describe("the retracted-claims list finds each sentence where a shipped file car
     const count = 25_000;
     const content = countingString(`${text}\n`.repeat(count));
 
-    const hits = mod.retractedClaimsIn(content.text);
+    const hits = content.read((text) => mod.retractedClaimsIn(text));
 
     expect(hits.length).toBe(count);
-    expect(hits.every((hit, i) => hit.line === i + 1)).toBe(true);
+    expectEveryLine(
+      hits.map((hit) => hit.line),
+      content.characters(),
+    );
     // Reads of a plain string are in no count, so none may be handed out.
     expectNoPlainStrings(content.plainStrings());
     // Counting each hit's line from the start of the file read it about
@@ -284,13 +337,34 @@ describe("the counting string counts a copy's reads and names a plain string it 
    */
   const readsOf = (scan: (content: string) => number[]) => {
     const content = countingString(file);
-    const lines = scan(content.text);
+    const lines = content.read(scan);
     return {
       lines,
       passes: content.charsRead() / file.length,
+      characters: content.characters(),
       plainStrings: content.plainStrings(),
     };
   };
+
+  /**
+   * The line of each hit in `content`, from a count of the newlines before it
+   * made one character at a time, each looked at with `isNewline`.
+   */
+  const linesCountedByCharacter =
+    (isNewline: (content: string, pos: number) => boolean) =>
+    (content: string): number[] => {
+      const lines: number[] = [];
+      let line = 1;
+      let pos = 0;
+      for (const match of content.matchAll(/hit/g)) {
+        while (pos < (match.index ?? 0)) {
+          if (isNewline(content, pos)) line += 1;
+          pos += 1;
+        }
+        lines.push(line);
+      }
+      return lines;
+    };
 
   it.each<[string, (content: string) => string]>([
     ["replace", (content) => content.replace(/\r\n/g, "\n")],
@@ -347,6 +421,55 @@ describe("the counting string counts a copy's reads and names a plain string it 
     },
   );
 
+  it.each<[string, (content: string) => string]>([
+    [
+      "String.fromCharCode",
+      (content) => {
+        let copy = "";
+        for (let i = 0; i < content.length; i += 1) copy += String.fromCharCode(content.charCodeAt(i));
+        return copy;
+      },
+    ],
+    [
+      "String.fromCodePoint",
+      (content) => {
+        let copy = "";
+        for (let i = 0; i < content.length; i += 1) {
+          copy += String.fromCodePoint(content.codePointAt(i) ?? 0);
+        }
+        return copy;
+      },
+    ],
+  ])(
+    "names a copy put together from the strings %s makes of the character codes, which a line count made once per hit reads",
+    (_how, copyOf) => {
+      const { lines, plainStrings } = readsOf((content) => linesCountedPerHit(copyOf(content)));
+      expect(lines).toEqual(everyLine);
+      expect(plainStrings).toEqual(["a conversion to a primitive string"]);
+      expect(() => expectNoPlainStrings(plainStrings)).toThrow(
+        /a copy put together from its characters or their codes/,
+      );
+    },
+  );
+
+  it("counts a line count made once per hit on the copy String.fromCharCode makes of every character code at once", () => {
+    const { lines, passes, plainStrings } = readsOf((content) => {
+      const codes: number[] = [];
+      for (let i = 0; i < content.length; i += 1) codes.push(content.charCodeAt(i));
+      return linesCountedPerHit(String.fromCharCode(...codes));
+    });
+    expect(lines).toEqual(everyLine);
+    expect(plainStrings).toEqual([]);
+    expect(passes).toBeGreaterThan(count / 2);
+  });
+
+  it("control: String.fromCharCode makes a plain string again once the scan is over", () => {
+    const content = countingString(file);
+    expect(content.read(() => typeof String.fromCharCode(104))).toBe("object");
+    expect(String.fromCharCode(104)).toBe("h");
+    expect(String.fromCodePoint(104)).toBe("h");
+  });
+
   it("names a regular expression run on the content, which converts it", () => {
     const { lines, plainStrings } = readsOf((content) => {
       const lines: number[] = [];
@@ -360,24 +483,7 @@ describe("the counting string counts a copy's reads and names a plain string it 
     expect(plainStrings).toEqual(["a conversion to a primitive string"]);
   });
 
-  it("names a regular expression loop that reads the content once all the same", () => {
-    const { lines, passes, plainStrings } = readsOf((content) => {
-      const lines: number[] = [];
-      const pattern = /hit|\n/g;
-      let line = 1;
-      for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
-        if (match[0] === "\n") line += 1;
-        else lines.push(line);
-      }
-      return lines;
-    });
-    expect(lines).toEqual(everyLine);
-    expect(plainStrings).toEqual(["a conversion to a primitive string"]);
-    // The pattern read the plain string, so its one pass is in no count.
-    expect(passes).toBe(0);
-  });
-
-  it("fails a linear exec loop, saying to read the content through String.prototype methods", () => {
+  it("fails a linear exec loop, naming the conversion and saying to call String.prototype methods on the content", () => {
     const { lines, passes, plainStrings } = readsOf((content) => {
       const lines: number[] = [];
       const pattern = /hit/g;
@@ -393,12 +499,71 @@ describe("the counting string counts a copy's reads and names a plain string it 
       return lines;
     });
     expect(lines).toEqual(everyLine);
-    // The loop is linear, and its own reads are counted as one pass, but the
-    // regular expression read a plain string no count sees.
-    expect(passes).toBeLessThanOrEqual(1);
+    // The loop's own reads, its indexOf calls, are the one pass counted: the
+    // regular expression read a plain string, so its pass is in no count.
+    expect(passes).toBe(1);
+    expect(plainStrings).toEqual(["a conversion to a primitive string"]);
     expect(() => expectNoPlainStrings(plainStrings)).toThrow(
-      /read it through String\.prototype methods \(content\.matchAll\(pattern\), not pattern\.exec\(content\)\)/,
+      /handed out by a conversion to a primitive string, which a RegExp method given the content \(pattern\.exec\(content\)\).*: call String\.prototype methods on the content instead \(content\.matchAll\(pattern\)\)/,
     );
+  });
+
+  it.each<[string, (content: string) => unknown, string]>([
+    [
+      "a copy put together from Array.from",
+      (content) => Array.from(content).join(""),
+      "handed out by a conversion to a primitive string, which a RegExp method given the content " +
+        "(pattern.exec(content)), String(content), a template literal, a concatenation and a copy " +
+        "put together from its characters or their codes each make",
+    ],
+    [
+      "replace given a function",
+      (content) => content.replace(/(?!)/g, () => ""),
+      "handed out by replace given a function, which the method calls with plain strings: read " +
+        "each match from content.matchAll(pattern) instead of giving a method a function",
+    ],
+  ])("fails a scan that reads %s, naming what handed out the plain string", (_how, scan, says) => {
+    const { plainStrings } = readsOf((content) => {
+      scan(content);
+      return [];
+    });
+    let failure = "";
+    try {
+      expectNoPlainStrings(plainStrings);
+    } catch (error) {
+      failure = (error as Error).message;
+    }
+    expect(failure).toContain(says);
+    // Only the conversion is put down to a RegExp method.
+    if (!says.includes("conversion")) expect(failure).not.toContain("pattern.exec(content)");
+  });
+
+  it("fails a linear scan that compares the characters it reads with ===, saying to compare their codes", () => {
+    const { lines, characters, plainStrings } = readsOf(
+      linesCountedByCharacter((content, pos) => content[pos] === "\n"),
+    );
+    expect(plainStrings).toEqual([]);
+    expect(characters).toBeGreaterThan(0);
+    expect(() => expectEveryLine(lines, characters)).toThrow(
+      /^hit 2 is on line 1, not 2: the scan read \d+ single characters from the content, each a counting string, an object that never === the character it is, so compare its code \(content\.charCodeAt\(pos\) === 10, not content\[pos\] === "\\n"\)/,
+    );
+  });
+
+  it("control: the same scan comparing the codes of the characters it reads passes, in about two passes", () => {
+    const { lines, passes, characters, plainStrings } = readsOf(
+      linesCountedByCharacter((content, pos) => content.charCodeAt(pos) === 10),
+    );
+    expect(characters).toBe(0);
+    expectEveryLine(lines, characters);
+    expectNoPlainStrings(plainStrings);
+    // The match iteration is a pass, and the codes read up to the last hit
+    // nearly another.
+    expect(passes).toBeGreaterThan(1);
+    expect(passes).toBeLessThanOrEqual(2);
+  });
+
+  it("control: a wrong line from a scan that read no single character says only which hit", () => {
+    expect(() => expectEveryLine([1, 1, 3], 0)).toThrow(/^hit 2 is on line 1, not 2: expected 1 to be -1/);
   });
 
   it("counts a line count made once per hit on the input a match carries", () => {
@@ -450,12 +615,40 @@ describe("the counting string counts a copy's reads and names a plain string it 
     expect(content.plainStrings()).toEqual([]);
   });
 
+  it("control: the counting string has each of its indexes and its own length, as a String object does", () => {
+    const content = countingString(file);
+    const text = content.text as unknown as object;
+    expect(3 in text).toBe(true);
+    expect(file.length in text).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(text, "length")).toEqual(
+      Object.getOwnPropertyDescriptor(new String(file), "length"),
+    );
+    // An array method given the string visits each index it has, reading each once.
+    let newlines = 0;
+    const visited = Array.prototype.map.call(text, (character: string) => {
+      if (character.charCodeAt(0) === 10) newlines += 1;
+      return character;
+    });
+    expect(Object.keys(visited).length).toBe(file.length);
+    expect(newlines).toBe(count);
+    expect(content.plainStrings()).toEqual([]);
+  });
+
+  it("control: an empty string a method returns is the plain empty string, false as a condition", () => {
+    const content = countingString(file);
+    const pieces = content.text.split("\n");
+    expect(pieces[count]).toBe("");
+    expect(content.text.slice(0, 0)).toBe("");
+    expect(pieces.filter((piece) => piece).length).toBe(count);
+    expect(content.plainStrings()).toEqual([]);
+  });
+
   it("control: the scan of a copy with other line endings stays within a few passes", async () => {
     const mod = await loadRetractedClaims();
     const { text } = mod.RETRACTED_CLAIMS[0];
     const content = countingString(`${text}\r\n`.repeat(count));
 
-    const hits = mod.retractedClaimsIn(content.text.replace(/\r\n/g, "\n"));
+    const hits = content.read((crlf) => mod.retractedClaimsIn(crlf.replace(/\r\n/g, "\n")));
 
     expect(hits.map((hit) => hit.line)).toEqual(everyLine);
     expect(content.plainStrings()).toEqual([]);
