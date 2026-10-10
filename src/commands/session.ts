@@ -3,6 +3,7 @@ import { warm } from '../session/warm';
 import { getSessionStatus } from '../session/session-state';
 import { installDaemon, uninstallDaemon, isDaemonInstalled } from '../session/install';
 import { formatRemainingTime } from './utils';
+import { escapeForDisplay } from '../display-safe';
 
 export async function runWarm(args: string[]): Promise<number> {
   // Parse --ttl flag (accepts seconds or duration strings like 5m, 1h, 1d)
@@ -14,7 +15,7 @@ export async function runWarm(args: string[]): Promise<number> {
       if (parsed > 0) {
         ttlSeconds = parsed;
       } else {
-        console.error(`\n  Invalid TTL: ${raw}. Examples: 300, 5m, 1h, 1d\n`);
+        console.error(`\n  Invalid TTL: ${escapeForDisplay(raw)}. Examples: 300, 5m, 1h, 1d\n`);
         return 1;
       }
     }
@@ -92,7 +93,7 @@ export function runInstall(args: string[]): number {
 
   // Reject unknown subcommands
   if (subcommand && subcommand !== 'install') {
-    console.error(`\n  Unknown install command: ${subcommand}`);
+    console.error(`\n  Unknown install command: ${escapeForDisplay(subcommand)}`);
     console.log('  Usage:');
     console.log('    secretless-ai install              Install broker as login daemon');
     console.log('    secretless-ai install uninstall     Remove login daemon');

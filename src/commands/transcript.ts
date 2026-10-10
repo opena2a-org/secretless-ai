@@ -4,6 +4,7 @@ import { startWatch, stopWatch, isWatchRunning, installLaunchAgent, uninstallLau
 import { scanHistory, cleanHistory } from '../history';
 import { shellQuote } from './core';
 import { CLI_BARE } from './utils';
+import { escapeForDisplay } from '../display-safe';
 import { SecretStore } from '../secret-store';
 import { markRedactedSecretsExposed } from '../secret-exposure';
 import type { ExposureMarks, RedactedSpan } from '../secret-exposure';
@@ -199,7 +200,7 @@ export async function runWatch(args: string[]): Promise<number> {
     default: {
       const isUnknown = !!action && action !== '--help' && action !== '-h';
       if (isUnknown) {
-        console.error(`\n  Unknown watch action: ${action}`);
+        console.error(`\n  Unknown watch action: ${escapeForDisplay(action)}`);
       }
       console.log('\n  Usage: secretless-ai watch <start|stop|status|install|uninstall>\n');
       console.log('  Commands:');

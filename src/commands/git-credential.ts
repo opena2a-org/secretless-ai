@@ -14,6 +14,7 @@ import { SecretStore } from '../secret-store';
 import { EXIT_USAGE } from '../argv';
 import { nearestMatch } from '../near-miss';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
+import { escapeForDisplay } from '../display-safe';
 import {
   GIT_PROTOCOL_ACTIONS,
   DEFAULT_GIT_USERNAME,
@@ -150,14 +151,14 @@ export async function runGitCredential(args: string[], deps: GitCredentialDeps =
   }
   if (!ACTIONS.includes(action)) {
     const near = nearestMatch(action, ACTIONS);
-    console.error(`\n  Unknown git-credential action: ${action}${near ? ` (did you mean \`${near}\`?)` : ''}`);
+    console.error(`\n  Unknown git-credential action: ${escapeForDisplay(action)}${near ? ` (did you mean \`${near}\`?)` : ''}`);
     console.error('  Nothing was changed.');
     usage();
     console.error();
     return EXIT_USAGE;
   }
   if (parsed.errors.length > 0) {
-    for (const e of parsed.errors) console.error(`  ${e}`);
+    for (const e of parsed.errors) console.error(`  ${escapeForDisplay(e)}`);
     console.error(`  \`git-credential ${action}\` was not run. Nothing was changed.`);
     return EXIT_USAGE;
   }

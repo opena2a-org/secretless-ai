@@ -8,6 +8,7 @@ import { resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import type { SelectableBackendType } from '../backends/config';
 import { listedName } from '../secret-value';
+import { escapeForDisplay } from '../display-safe';
 
 function getWrapperPath(): string {
   return path.resolve(__dirname, '..', 'mcp-wrapper.js');
@@ -45,7 +46,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     if (val === 'local' || val === 'keychain' || val === '1password' || val === 'vault' || val === 'gcp-sm') {
       backendType = val;
     } else {
-      console.error(`  Unknown backend type: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
+      console.error(`  Unknown backend type: ${escapeForDisplay(val)}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
       return 1;
     }
   }

@@ -38,7 +38,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { init } from './init';
-import { runInit } from './commands/core';
+import { runInit, shellQuote } from './commands/core';
 
 const race = vi.hoisted(() => ({
   /** Directory whose `mkdirSync` call triggers `swap`, once. */
@@ -113,6 +113,14 @@ function printedLine(out: string, label: 'Verify' | 'Fix'): string {
   return m![1].trim();
 }
 
+/**
+ * How a Fix line ends: re-running `init` on the same project, named as its
+ * paths are. A bare `init` would set up the working directory instead.
+ */
+function rerun(dir: string): string {
+  return `then re-run: npx secretless-ai init ${shellQuote(path.relative(process.cwd(), dir))}`;
+}
+
 /** How `init` names a project path: relative to the working directory. */
 function shownPath(dir: string, rel: string): string {
   return path.relative(process.cwd(), path.join(dir, rel));
@@ -142,7 +150,7 @@ describe('runInit reports every instruction path it refused', () => {
 
     const fix = printedLine(out, 'Fix');
     expect(fix).toContain('replace the link');
-    expect(fix).toContain('then re-run: secretless-ai init');
+    expect(fix.endsWith(rerun(dir)), fix).toBe(true);
   });
 
   it('a .windsurfrules directory: the reason says it is not a regular file, and the Fix says what to put there', () => {
@@ -154,7 +162,7 @@ describe('runInit reports every instruction path it refused', () => {
 
     expect(out).toMatch(/^\s*Not configured: Windsurf$/m);
     expect(out).toContain(`    ${shownPath(dir, '.windsurfrules')} is not a regular file (Windsurf)`);
-    expect(printedLine(out, 'Fix')).toContain('replace it with a regular file, then re-run: secretless-ai init');
+    expect(printedLine(out, 'Fix').endsWith(`replace it with a regular file, ${rerun(dir)}`)).toBe(true);
     expect(out).not.toContain('Already up to date');
   });
 
@@ -325,7 +333,7 @@ describe('init and a rule file with more than one hard link', () => {
     expect(verify.stdout.trim().split(/\s+/)[1]).toBe('2');
 
     const fix = printedLine(first.out, 'Fix');
-    expect(fix).toContain('then re-run: secretless-ai init');
+    expect(fix.endsWith(rerun(dir)), fix).toBe(true);
     const copy = fix.match(/copy of itself \((.+)\), or remove it/);
     expect(copy, 'the Fix line carries no copy command').not.toBeNull();
     const ran = spawnSync('bash', ['-c', copy![1]], { encoding: 'utf-8' });

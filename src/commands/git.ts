@@ -1,6 +1,7 @@
 import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from '../git-hook';
 import { scanStagedFiles } from '../scan-staged';
 import { runHookCheck } from '../session/hook';
+import { escapeForDisplay } from '../display-safe';
 
 export function runHook(args: string[]): number {
   const subcommand = args[0];
@@ -38,7 +39,7 @@ export function runHook(args: string[]): number {
     }
 
     default:
-      console.error(`\n  Unknown hook command: ${subcommand ?? '(none)'}`);
+      console.error(`\n  Unknown hook command: ${subcommand === undefined ? '(none)' : escapeForDisplay(subcommand)}`);
       console.log('  Usage:');
       console.log('    secretless-ai hook install       Install pre-commit hook');
       console.log('    secretless-ai hook uninstall     Remove pre-commit hook');

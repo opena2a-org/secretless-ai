@@ -10,6 +10,7 @@ import {
   globToShellRegex,
   RULES_FILENAME,
 } from '../custom-rules';
+import { escapeForDisplay } from '../display-safe';
 
 export function runRules(args: string[], projectDir: string = process.cwd()): number {
   const subcommand = args[0] ?? 'list';
@@ -104,7 +105,7 @@ export function runRules(args: string[], projectDir: string = process.cwd()): nu
       }
 
       if (!validatePattern(pattern)) {
-        console.error(`\n  Invalid pattern: ${pattern}`);
+        console.error(`\n  Invalid pattern: ${escapeForDisplay(pattern)}`);
         console.error('  Only alphanumeric, *, ., -, _, / characters allowed.\n');
         return 1;
       }
@@ -153,7 +154,7 @@ export function runRules(args: string[], projectDir: string = process.cwd()): nu
     }
 
     default:
-      console.error(`\n  Unknown rules subcommand: ${subcommand}`);
+      console.error(`\n  Unknown rules subcommand: ${escapeForDisplay(subcommand)}`);
       console.error('  Usage: secretless-ai rules <list|init|test>\n');
       return 1;
   }

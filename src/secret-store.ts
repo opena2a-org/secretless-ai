@@ -12,6 +12,7 @@ import type { WritableSecretBackend } from './backends/types';
 import type { SelectableBackendType } from './backends/config';
 import { findSecretValueProblem, unstorableSecretError } from './secret-value';
 import { editDistance, NEAR_MISS_MAX } from './near-miss';
+import { escapeForDisplay } from './display-safe';
 import { SecretAnnotations, checkAnnotation, defaultAnnotationsPath, isEmptyUpdate } from './secret-annotations';
 import type { AnnotationMap, AnnotationUpdate, SecretAnnotation } from './secret-annotations';
 import { exposureUpdate, openExposure, rotationUpdate } from './secret-exposure';
@@ -368,8 +369,10 @@ export function isValidSecretName(name: string): boolean {
 
 function validateSecretName(name: string): void {
   if (!SAFE_NAME.test(name)) {
+    // Escaped: a command prints this message, and a line feed in the refused
+    // name started a line of its own under it.
     throw new Error(
-      `Invalid secret name: "${name}". Only alphanumeric, dash, and underscore allowed.`,
+      `Invalid secret name: "${escapeForDisplay(name)}". Only alphanumeric, dash, and underscore allowed.`,
     );
   }
 }

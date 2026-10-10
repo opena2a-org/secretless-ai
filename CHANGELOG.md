@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+**A command's own refusal of a subcommand or value prints the value escaped,
+and the Fix under `init`'s "Not configured" block re-runs `init` on the
+directory it was given (#280).** `backend`, `cache`, `secret`, `scope`,
+`broker`, `vault`, `install`, `watch`, `hook`, `rules` and `git-credential`
+given a subcommand or action they do not know, `diff` given a ref it refuses,
+and a value refused by `backend set`, `backend purge --prefix`, `cache ttl`,
+`rules test`, `secret show`, `secret rm`, `secret list`, `secret sync`,
+`secret push`, `scope discover`, `scope check`, `broker start --port`,
+`warm --ttl` or `protect-mcp --backend` printed that value as given, and so
+did `scope reset`; a line feed in it started a new line that read like one of
+the tool's own. Each is now printed with its control characters escaped, such
+as `\n`, as the command line's own refusals are. Text that holds none prints as
+before. The `Fix:` under `init`'s "Not configured" block ended with `re-run:
+secretless-ai init`, which sets up the working directory, not the one given to
+`init`; it now ends with `npx secretless-ai init` and that directory, as the
+`Fix:` under `init`'s "Not a directory" message spells the command. The README
+and docs/scanning.md say that exit code 1 also covers a `scan`, `status` or
+`verify` target that is missing or cannot be opened, docs/scanning.md names
+`mcp-status` with `feedback` and `diff` as the commands that warn about an
+unrecognised flag, and the README's telemetry section gives `scan` and `init`
+as example command names and says a first argument that is not a command is
+sent as `unknown`. Detection, exit codes and the `--json` document are
+unchanged.
+
 **The usage event sends `unknown` in place of a first argument that is not a
 command, and records that run as a failure.** The event's `name` field carries
 the command that ran. `secretless-ai ./some/dir`, a mistyped command such as
@@ -81,7 +105,8 @@ each control character in a path as an escape such as `\n` or `\e`, as `scan`
 does for a file name, and a `Verify:` or `Fix:` command under them names
 `<path>` in place of a path that cannot be printed as itself. `init` still
 prints a path as given in an error from the file system, such as `EACCES:
-permission denied`. `init` on a symbolic link whose target does not exist, or
+permission denied`, and in its "Created:" and "Modified:" lists. `init` on a
+symbolic link whose target does not exist, or
 on a path under one, suggested a `mkdir -p` that fails on that link; it now
 names the link and leaves that suggestion out. For a caller of `runInit`, a
 path with `..` after a symbolic link named a file in the link's own parent

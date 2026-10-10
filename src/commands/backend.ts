@@ -6,6 +6,7 @@ import { clearCacheFile } from '../backends/cache';
 import { migrateSecrets } from '../backends/migrate';
 import type { SelectableBackendType } from '../backends/config';
 import { nearestMatch } from '../near-miss';
+import { escapeForDisplay } from '../display-safe';
 import { CLI_BARE } from './utils';
 
 /**
@@ -33,10 +34,13 @@ const CACHE_SUBCOMMANDS = ['clear', 'ttl'];
  * status page at exit 0, exactly as it does today. Six of the eight siblings
  * behave the same way, so this matches the tree rather than inventing a third
  * convention.
+ *
+ * The token is printed escaped, as every value a command refuses is: a line
+ * feed in it started a line of its own under this message.
  */
 function refuseUnknownSubcommand(verb: string, token: string, known: string[]): number {
   const near = nearestMatch(token, known);
-  console.error(`\n  Unknown ${verb} command: ${token}${near ? ` (did you mean \`${near}\`?)` : ''}`);
+  console.error(`\n  Unknown ${verb} command: ${escapeForDisplay(token)}${near ? ` (did you mean \`${near}\`?)` : ''}`);
   console.log(`  Usage: ${CLI_BARE} ${verb} <${known.join('|')}>`);
   console.log(`  Run \`${CLI_BARE} ${verb}\` with no arguments to see current status.\n`);
   return 1;
@@ -96,7 +100,7 @@ export async function runBackend(args: string[]): Promise<number> {
     if (prefixIdx !== -1 && args[prefixIdx + 1]) {
       const val = args[prefixIdx + 1];
       if (val !== 'mcp' && val !== 'secret') {
-        console.error(`\n  Unknown prefix: ${val}. Use 'mcp' or 'secret'.\n`);
+        console.error(`\n  Unknown prefix: ${escapeForDisplay(val)}. Use 'mcp' or 'secret'.\n`);
         return 1;
       }
       prefixFilter = val;
@@ -162,7 +166,7 @@ export async function runBackend(args: string[]): Promise<number> {
   if (subcommand === 'set') {
     const type = args[1];
     if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault' && type !== 'gcp-sm') {
-      console.error(`\n  Unknown backend type: ${type ?? '(none)'}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
+      console.error(`\n  Unknown backend type: ${type === undefined ? '(none)' : escapeForDisplay(type)}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
       return 1;
     }
 
@@ -267,7 +271,7 @@ export async function runMigrate(args: string[]): Promise<number> {
       if (validBackends.includes(val)) {
         fromType = val as SelectableBackendType;
       } else {
-        console.error(`\n  Unknown backend type: ${val}. Valid: ${validBackends.join(', ')}\n`);
+        console.error(`\n  Unknown backend type: ${escapeForDisplay(val)}. Valid: ${validBackends.join(', ')}\n`);
         return 1;
       }
     }
@@ -276,7 +280,7 @@ export async function runMigrate(args: string[]): Promise<number> {
       if (validBackends.includes(val)) {
         toType = val as SelectableBackendType;
       } else {
-        console.error(`\n  Unknown backend type: ${val}. Valid: ${validBackends.join(', ')}\n`);
+        console.error(`\n  Unknown backend type: ${escapeForDisplay(val)}. Valid: ${validBackends.join(', ')}\n`);
         return 1;
       }
     }
@@ -386,7 +390,7 @@ export function runCache(args: string[]): number {
 
     const seconds = parseDuration(value);
     if (seconds < 0) {
-      console.error(`\n  Invalid duration: "${value}". Use: 5m, 1h, 1d, 300, or off\n`);
+      console.error(`\n  Invalid duration: "${escapeForDisplay(value)}". Use: 5m, 1h, 1d, 300, or off\n`);
       return 1;
     }
 
