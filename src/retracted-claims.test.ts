@@ -82,6 +82,11 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
  * counting string is an object, so a character never `===` the character it
  * is: compare it by its code. A number stays a number, so a copy put together
  * from character codes is read uncounted.
+ *
+ * A scan must therefore read the content through String.prototype methods,
+ * `content.matchAll(pattern)` and not `pattern.exec(content)`: a RegExp
+ * method given the content converts it to a primitive string first, so even
+ * a linear `exec` loop is named.
  */
 function countingString(content: string): {
   text: string;
@@ -168,6 +173,18 @@ function countingString(content: string): {
   };
 }
 
+/**
+ * Fails when a counting string handed out a plain string, whose reads are
+ * in no count, and says how a scan reads the content instead.
+ */
+function expectNoPlainStrings(plainStrings: string[]): void {
+  expect(
+    plainStrings,
+    "the scan read the content as a plain string, which no count sees: read it through " +
+      "String.prototype methods (content.matchAll(pattern), not pattern.exec(content))",
+  ).toEqual([]);
+}
+
 /** The documentation 0.23.0 shipped on a GrantPolicy field, carrying `claim`. */
 function grantPolicyDts(claim: string): string {
   return [
@@ -232,7 +249,7 @@ describe("the retracted-claims list finds each sentence where a shipped file car
     expect(hits.length).toBe(count);
     expect(hits.every((hit, i) => hit.line === i + 1)).toBe(true);
     // Reads of a plain string are in no count, so none may be handed out.
-    expect(content.plainStrings()).toEqual([]);
+    expectNoPlainStrings(content.plainStrings());
     // Counting each hit's line from the start of the file read it about
     // count / 2 times over; one pass per listed claim, plus one to count
     // lines, reads it a few times.
@@ -358,6 +375,30 @@ describe("the counting string counts a copy's reads and names a plain string it 
     expect(plainStrings).toEqual(["a conversion to a primitive string"]);
     // The pattern read the plain string, so its one pass is in no count.
     expect(passes).toBe(0);
+  });
+
+  it("fails a linear exec loop, saying to read the content through String.prototype methods", () => {
+    const { lines, passes, plainStrings } = readsOf((content) => {
+      const lines: number[] = [];
+      const pattern = /hit/g;
+      let line = 1;
+      let newline = content.indexOf("\n");
+      for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
+        while (newline !== -1 && newline < match.index) {
+          line += 1;
+          newline = content.indexOf("\n", newline + 1);
+        }
+        lines.push(line);
+      }
+      return lines;
+    });
+    expect(lines).toEqual(everyLine);
+    // The loop is linear, and its own reads are counted as one pass, but the
+    // regular expression read a plain string no count sees.
+    expect(passes).toBeLessThanOrEqual(1);
+    expect(() => expectNoPlainStrings(plainStrings)).toThrow(
+      /read it through String\.prototype methods \(content\.matchAll\(pattern\), not pattern\.exec\(content\)\)/,
+    );
   });
 
   it("counts a line count made once per hit on the input a match carries", () => {
