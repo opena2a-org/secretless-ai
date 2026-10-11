@@ -155,12 +155,12 @@ describe('vitest.config.ts and SECRETLESS_CLI_PREFIX', () => {
     });
   });
 
-  it('loading the config removes a prefix set in the process that loads it, and keeps the keychain switch', async () => {
+  it('loading the config removes a prefix set in the process that loads it, and keeps the keychain and telemetry switches', async () => {
     process.env.SECRETLESS_CLI_PREFIX = 'host secrets';
 
     const { default: config } = (await import(CONFIG)) as ConfigModule;
 
     expect(process.env.SECRETLESS_CLI_PREFIX).toBeUndefined();
-    expect(config.test?.env).toEqual({ SECRETLESS_OS_KEYCHAIN: 'off' });
+    expect(config.test?.env).toEqual({ SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' });
   });
 });

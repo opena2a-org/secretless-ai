@@ -34,7 +34,7 @@ function runCli(args: string[], extraEnv: NodeJS.ProcessEnv = {}): string {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: project,
-    env: { PATH: process.env.PATH, HOME: home, SECRETLESS_OS_KEYCHAIN: 'off', ...extraEnv },
+    env: { PATH: process.env.PATH, HOME: home, SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off', ...extraEnv },
   });
 }
 

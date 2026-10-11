@@ -33,6 +33,7 @@ import { printHelp, OWN_HELP } from './commands/help';
 import { printCommandHelp } from './command-help';
 import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } from './argv';
 import { nearestMatch } from './near-miss';
+import { automatedRunVariable } from './telemetry-gate';
 
 /**
  * The stderr block for a refused command.
@@ -105,6 +106,11 @@ async function main(): Promise<number> {
   const tele = await import('@opena2a/telemetry');
   const { versionLine, runTelemetryCommand } = await import('@opena2a/cli-ui');
   await tele.init({ tool: TOOL, version: VERSION });
+  // Nothing is sent from CI or a test runner (#320): each starts in a fresh
+  // home and was counted as a new user. The status says so, rather than
+  // reporting `on` for a run that sends nothing. See src/telemetry-gate.ts.
+  const automated = automatedRunVariable(process.env);
+  const telemetryStatus = () => (automated ? { ...tele.status(), enabled: false } : tele.status());
 
   // Intercept `--help` / `-h` anywhere in the args BEFORE dispatching. Most
   // subcommand runners do not parse per-subcommand help, so without this guard
@@ -128,7 +134,7 @@ async function main(): Promise<number> {
   // `-V` too: it is the version flag in commander-based CLIs, and refusing it
   // as an unknown command while `-v` works was a surprise with no upside.
   if (command === '--version' || command === '-v' || command === '-V') {
-    console.log(versionLine({ tool: TOOL, version: VERSION, telemetry: tele.status() }));
+    console.log(versionLine({ tool: TOOL, version: VERSION, telemetry: telemetryStatus() }));
     return 0;
   }
 
@@ -164,9 +170,14 @@ async function main(): Promise<number> {
     }
     console.log(runTelemetryCommand(action as TelemetryAction, {
       tool: TOOL,
-      getStatus: tele.status,
+      getStatus: telemetryStatus,
       setOptOut: tele.setOptOut,
     }));
+    // `telemetry on` saves the setting and still prints `state: off` here, so
+    // the line says why.
+    if (automated) {
+      console.log(`\n  Off for this run: ${automated} is set, and no usage event is sent from CI or a test runner.`);
+    }
     return 0;
   }
 
@@ -182,10 +193,10 @@ async function main(): Promise<number> {
     exitCode = await dispatch(args, command, prepared);
   } catch (err) {
     exitCode = 1;
-    if (command) tele.error(eventName, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
+    if (command && !automated) tele.error(eventName, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
     throw err;
   } finally {
-    if (command && !isUntrackedCall(command, prepared)) {
+    if (command && !automated && !isUntrackedCall(command, prepared)) {
       // Exit 1 = scanner found credentials (the tool's job); >=2 = real error.
       // npm audit / eslint convention. Matches @opena2a/telemetry.successFromExitCode.
       await tele.track(eventName, { success: known && exitCode <= 1, durationMs: Date.now() - startedAt });

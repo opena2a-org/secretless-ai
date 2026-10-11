@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { AUTOMATED_RUN_VARIABLES } from './telemetry-gate';
 
 /**
  * The usage event names the command that ran, and nothing typed in its place.
@@ -39,8 +40,9 @@ function run(args: string[]): { status: number | null; events: Array<Record<stri
     OPENA2A_TELEMETRY_DEBUG: 'print',
     OPENA2A_TELEMETRY_URL: 'http://127.0.0.1:9/',
   };
-  // Telemetry has to be on for an event to be built at all.
-  for (const name of ['OPENA2A_TELEMETRY', 'XDG_CONFIG_HOME', 'NODE_USE_ENV_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
+  // Telemetry has to be on for an event to be built at all, and nothing is
+  // sent while a CI or test-runner variable is set.
+  for (const name of ['OPENA2A_TELEMETRY', ...AUTOMATED_RUN_VARIABLES, 'XDG_CONFIG_HOME', 'NODE_USE_ENV_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
     delete env[name];
   }
   const res = spawnSync(process.execPath, [CLI_PATH, ...args], {

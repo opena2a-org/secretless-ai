@@ -260,6 +260,17 @@ under.``, and the `Fix:` names the first missing name `secret set` takes. When
 no missing name is one it takes, the `Verify: npx secretless-ai secret list`
 line stands alone and no `Fix:` is printed.
 
+**No usage event is sent from CI or a test runner (#320).** A CI job or a
+test run starts in a fresh home directory, and each fresh home was given a new
+install id, so every job and every test run that started the CLI was counted
+as a new user. Nothing is sent now while `CI`, a CI service's own variable
+(`GITHUB_ACTIONS`, `GITLAB_CI`, `JENKINS_URL`, `TF_BUILD` and others),
+`VITEST`, `JEST_WORKER_ID` or `NODE_TEST_CONTEXT` is set to anything but
+`false` or `0`. `--version` shows `Telemetry: off` for such a run, and
+`telemetry status` shows `state: off` with a line naming the variable. This
+repository's test suite runs with `OPENA2A_TELEMETRY=off`, and a test that
+starts the CLI with telemetry on fails before the CLI starts.
+
 **`secret push` refuses a first name, or a first `--as` name, that starts
 with `-` behind whitespace (#316).** `secret push A,B --to vault --as ' -x,a.b'`
 printed `Fix: npx secretless-ai secret push A,B --to vault --as -x,a_b`, and
