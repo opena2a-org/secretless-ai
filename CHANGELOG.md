@@ -151,6 +151,17 @@ each tier "works against any supported backend" and the guide showed
 `vault exec` reads the Identity Vault only, and show
 `run --only NAME -- <command>` for a secret in the backend.
 
+**The README says when Secretless reads a stored value and where it sends one
+(#339).** It said Secretless "never reads or transmits credential values it
+manages" and that values "never enter AI context, transcripts, or shell
+history". `run`, `env` and the shell hook read values to inject them, `clean`
+and `watch` read them to find them in transcripts, `secret set` compares them,
+and `secret push` sends them in an HTTPS request body to Azure Key Vault,
+HashiCorp Vault or GCP Secret Manager; `secret set NAME=VALUE` puts a value in
+shell history. The README now says no value is sent to OpenA2A, names the
+commands that read a value and why, and names the two ways a value still
+reaches shell history or AI context.
+
 **The README and SECURITY.md give one response time for security reports
 (#345).** The README promised a response within 24 hours; SECURITY.md says
 receipt is acknowledged within 48 hours. The README now states the 48-hour
