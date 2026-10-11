@@ -13,6 +13,8 @@ import {
   expectSingleFailure,
   fixturePackageJson,
   healthyFiles,
+  notMeasuredReason,
+  preconditionsOf,
   relocatedScript,
   runReview,
   tmpRoot,
@@ -39,7 +41,11 @@ import {
  * Deliberately absent here: any read of `CI` or `GITHUB_ACTIONS`. The tag
  * push that publishes is made on a machine where those variables are unset,
  * so a tolerance conditioned on them would exempt the publish path itself. A
- * precondition on the own-tarball run is a test failure in every environment.
+ * precondition on the own-tarball run is a test failure in every environment,
+ * with one exception conditioned on GH_TOKEN instead: consumer-closure's
+ * advisories read refused (HTTP 403 or 429) on a run that sends no token is
+ * reported as not measured. That exempts no release: the script's verdict is
+ * unchanged, and the release `review` job runs it with GH_TOKEN set.
  */
 
 /** The checks whose verdict needs no network reading. */
@@ -493,17 +499,20 @@ describe("each blocking class is caught by name, and the delivered tree passes",
 
       // A check that could not run here is a test failure: the publish path
       // itself runs outside CI, so an unrunnable check must surface loudly.
-      for (const check of CHECKS) {
-        if (run.census[check] === "precondition") {
-          const detail =
-            new RegExp(`^check ${check}: precondition: (.*)$`, "m").exec(
-              run.stdout,
-            )?.[1] ?? "<no detail>";
-          expect.fail(
-            `check ${check} hit a precondition on the delivered tarball: ${detail}. ` +
-              `Satisfy it with: ${PRECONDITION_REMEDY[check] ?? "see the check output above"}`,
-          );
+      // The one exception is an advisories read refused with no GH_TOKEN,
+      // reported as not measured (see notMeasuredReason).
+      let closureNotMeasured = false;
+      for (const { check, detail } of preconditionsOf(run)) {
+        const reason = notMeasuredReason({ check, detail }, process.env);
+        if (reason !== null) {
+          console.log(`check ${check}: not measured: ${reason}`);
+          closureNotMeasured = true;
+          continue;
         }
+        expect.fail(
+          `check ${check} hit a precondition on the delivered tarball: ${detail}. ` +
+            `Satisfy it with: ${PRECONDITION_REMEDY[check] ?? "see the check output above"}`,
+        );
       }
 
       for (const check of NO_NETWORK_CHECKS) {
@@ -515,10 +524,12 @@ describe("each blocking class is caught by name, and the delivered tree passes",
       // consumer-closure may pass or fail — a fail names a nested own copy that
       // blocks the release job until it is replaced; it is not a defect of this
       // script.
-      expect(
-        ["pass", "fail"],
-        `consumer-closure is ${run.census["consumer-closure"]}`,
-      ).toContain(run.census["consumer-closure"]);
+      if (!closureNotMeasured) {
+        expect(
+          ["pass", "fail"],
+          `consumer-closure is ${run.census["consumer-closure"]}`,
+        ).toContain(run.census["consumer-closure"]);
+      }
       expect(
         ["pass", "fail"],
         `npm-audit is ${run.census["npm-audit"]}`,
