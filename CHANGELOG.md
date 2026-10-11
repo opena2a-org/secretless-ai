@@ -106,6 +106,16 @@ starts empty. Verify with `npx secretless-ai backend` (`Current: local`) and
 `npx secretless-ai secret list`; move the stored secrets with
 `npx secretless-ai migrate --from keychain --to local`.
 
+**The Team Setup guide's `.secretless` example now parses (#331).** Step 4
+showed lines such as `STRIPE_KEY        required    Stripe API key for payments`,
+and the parser refuses any text after a name other than `optional` and a `#`
+comment, so a manifest copied from the guide made `setup --check` print
+`.secretless could not be parsed` and `Nothing was checked`, and exit 1. The
+example now reads `STRIPE_KEY  # Stripe API key for payments` and
+`SENTRY_DSN  optional  # Error tracking DSN`, and the guide states the line
+format. The parser is unchanged: refusing other trailing text keeps a value
+from sitting in a description column.
+
 **The README and the bring-your-own-vault guide no longer say `vault exec`
 reads the configured storage backend (#328).** `vault exec` resolves only from
 the Identity Vault (`~/.aim/vault`) that `vault register` fills, so a secret

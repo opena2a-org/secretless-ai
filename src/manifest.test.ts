@@ -402,3 +402,29 @@ describe('parseManifestDetailed — gcp.projectId names the repository\'s GCP pr
     });
   });
 });
+
+describe('the Team Setup guide\'s .secretless example parses (#331)', () => {
+  // A team copies Step 4's manifest into its repository verbatim. It used to
+  // show a `required` column and a bare description, which the parser refuses
+  // on every line, so `setup --check` failed with "Nothing was checked".
+  const doc = fs.readFileSync(path.join(__dirname, '..', 'docs', 'use-cases', 'team-setup.md'), 'utf-8');
+  const step4 = doc.slice(doc.indexOf('## Step 4'), doc.indexOf('## Step 5'));
+  // The untagged fences before the ```bash setup command are manifest content.
+  const manifest = [...step4.slice(0, step4.indexOf('```bash')).matchAll(/^```\n([\s\S]*?)^```$/gm)]
+    .map((m) => m[1])
+    .join('');
+
+  it('has no parse errors', () => {
+    expect(manifest).not.toBe('');
+    expect(parseManifestDetailed(manifest).errors).toEqual([]);
+  });
+
+  it('declares the names, required and optional, that the guide\'s expected setup output shows', () => {
+    const output = step4.slice(step4.indexOf('Expected output:'));
+    const shown = [...output.matchAll(/^\s+([A-Za-z0-9_-]+)\s+missing \((required|optional)\)$/gm)]
+      .map((m) => ({ name: m[1], required: m[2] === 'required' }));
+    expect(shown.length).toBeGreaterThan(0);
+    expect(parseManifestDetailed(manifest).entries.map(({ name, required }) => ({ name, required })))
+      .toEqual(shown);
+  });
+});
