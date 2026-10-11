@@ -5,8 +5,8 @@
  *
  * Every tracked `.md` and `.mdx` file is checked, except the release history
  * (CHANGELOG.md, changelog.d/), license text, vendored or built output, and
- * test-data directories, whose text is compared byte for byte by a test. A
- * finding is one of:
+ * test-data directories, whose text is input to other tests rather than prose
+ * for a reader. A finding is one of:
  *
  *   - a double hyphen used as a dash: `--` with whitespace or a line boundary
  *     on both sides, so a dash wrapped onto the start or end of a line counts;
@@ -55,9 +55,9 @@ const HEADING = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
 const BOLD_LABEL = /^\s*(\*\*|__)\s*why this (exists|matters)\b/i;
 const WHY_THIS = /^why this (exists|matters)\b/i;
 
-// A run of N backticks closes on the next run of exactly N, and a code span may
-// wrap onto the next line but does not cross a blank line.
-const CODE_SPAN = /(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\1(?!`)/g;
+// A code span may wrap onto the next line but does not cross a blank line.
+const PARAGRAPH_BREAK = /(\n[ \t]*\n)/;
+const BACKTICK_RUN = /`+/g;
 const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
 
 const RULES = [
@@ -68,6 +68,41 @@ const RULES = [
 
 /** The line breaks in a removed span, so the lines after it keep their numbers. */
 const lineBreaksOf = s => s.replace(/[^\n]/g, '');
+
+/**
+ * One paragraph with each inline code span replaced by `replace(span)`. A run of
+ * N backticks closes on the next run of exactly N; a run with no such partner
+ * is text. Each run's partner is found in one pass from the end, so a paragraph
+ * of many unmatched runs takes time linear in its length.
+ */
+function replaceCodeSpansInParagraph(paragraph, replace) {
+  const runs = [...paragraph.matchAll(BACKTICK_RUN)];
+  const partner = new Array(runs.length);
+  const nextOfLength = new Map();
+  for (let i = runs.length - 1; i >= 0; i--) {
+    partner[i] = nextOfLength.get(runs[i][0].length);
+    nextOfLength.set(runs[i][0].length, i);
+  }
+  let out = '';
+  let at = 0;
+  for (let i = 0; i < runs.length; i++) {
+    const close = partner[i];
+    if (close === undefined) continue;
+    const end = runs[close].index + runs[close][0].length;
+    out += paragraph.slice(at, runs[i].index) + replace(paragraph.slice(runs[i].index, end));
+    at = end;
+    i = close;
+  }
+  return out + paragraph.slice(at);
+}
+
+/** A text with each inline code span replaced by `replace(span)`. */
+function replaceCodeSpans(text, replace) {
+  return text
+    .split(PARAGRAPH_BREAK)
+    .map((part, i) => (i % 2 === 0 ? replaceCodeSpansInParagraph(part, replace) : part))
+    .join('');
+}
 
 /**
  * The prose lines of a Markdown text, numbered as in the file: front matter and
@@ -97,9 +132,7 @@ function proseLines(text) {
     }
     return line;
   });
-  return kept
-    .join('\n')
-    .replace(CODE_SPAN, span => 'code' + lineBreaksOf(span))
+  return replaceCodeSpans(kept.join('\n'), span => 'code' + lineBreaksOf(span))
     .replace(HTML_COMMENT, comment => lineBreaksOf(comment))
     .split('\n');
 }
@@ -137,9 +170,12 @@ function main() {
     return 2;
   }
   let count = 0;
+  let checked = 0;
   for (const file of files) {
     const full = path.join(REPO_ROOT, file);
+    // A tracked file deleted from the working tree has no text to check.
     if (!fs.existsSync(full)) continue;
+    checked++;
     for (const f of findProseIssues(fs.readFileSync(full, 'utf8'))) {
       console.log(`${file}:${f.line}: ${f.message}`);
       count++;
@@ -147,12 +183,12 @@ function main() {
   }
   if (count > 0) {
     console.error(
-      `check-docs-prose: ${count} finding(s) in ${files.length} file(s). ` +
+      `check-docs-prose: ${count} finding(s) in ${checked} file(s). ` +
         'Rewrite each dash as a period, comma, colon or parentheses; fold a "Why this exists" section into the prose above it.',
     );
     return 1;
   }
-  console.log(`check-docs-prose: ${files.length} file(s) checked, no findings.`);
+  console.log(`check-docs-prose: ${checked} file(s) checked, no findings.`);
   return 0;
 }
 

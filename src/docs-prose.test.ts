@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 
@@ -112,6 +113,38 @@ describe('check-docs-prose findings', () => {
     ).toEqual([]);
   });
 
+  it('closes a run of backticks only on a run of the same length, and reads an unmatched run as text', async () => {
+    expect(
+      await findings(
+        'A span ``with a ` and -- inside`` is code.',
+        '',
+        'An unmatched ``` run, then `a -- b` as code.',
+        '',
+        'A lone ` backtick, then -- as prose.',
+        '',
+        'A `span that does not',
+        '',
+        '-- cross` a blank line.',
+      ),
+    ).toEqual(['5: double hyphen used as a dash', '9: double hyphen used as a dash']);
+  });
+
+  it('checks a paragraph of growing unmatched backtick runs in time linear in its length', async () => {
+    const { findProseIssues } = await load();
+    let text = '';
+    for (let n = 1; text.length < 2 * 1024 * 1024; n++) text += '`'.repeat(n) + ' a ';
+    text += ' -- ';
+
+    const started = Date.now();
+    const found = findProseIssues(text);
+    const elapsed = Date.now() - started;
+
+    // Each run used to search to the end of the paragraph for its partner:
+    // about 6 s for this 2 MB paragraph, against a few milliseconds now.
+    expect(elapsed).toBeLessThan(1000);
+    expect(found).toEqual([{ line: 1, message: 'double hyphen used as a dash' }]);
+  });
+
   it('keeps line numbers after the skipped blocks', async () => {
     expect(
       await findings(
@@ -162,5 +195,77 @@ describe('check-docs-prose file set', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
     expect(pkg.scripts['check:docs']).toBe('node scripts/check-docs-prose.mjs');
     expect(pkg.scripts.test).toContain('npm run check:docs');
+  });
+});
+
+describe('check-docs-prose run on a repository', () => {
+  const made: string[] = [];
+  afterEach(() => {
+    while (made.length) fs.rmSync(made.pop()!, { recursive: true, force: true });
+  });
+
+  // The script checks the repository it sits in, so each test copies it into a
+  // fresh one. GIT_* variables set by a calling hook would point git elsewhere.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
+
+  function git(root: string, ...args: string[]): void {
+    const run = spawnSync('git', args, { cwd: root, env, encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+  }
+
+  /** A git repository holding the script and `files`, every file tracked. */
+  function repoWith(files: Record<string, string>): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-prose-'));
+    made.push(root);
+    fs.mkdirSync(path.join(root, 'scripts'));
+    fs.copyFileSync(SCRIPT, path.join(root, 'scripts', 'check-docs-prose.mjs'));
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), text);
+    }
+    git(root, 'init', '-q');
+    git(root, 'add', '--', ...Object.keys(files));
+    return root;
+  }
+
+  const check = (root: string) =>
+    spawnSync(process.execPath, [path.join(root, 'scripts', 'check-docs-prose.mjs')], {
+      cwd: root,
+      env,
+      encoding: 'utf8',
+    });
+
+  it('names file:line for each finding and exits 1', () => {
+    const root = repoWith({
+      'README.md': '# Readme\n\nPlain prose.\n',
+      'docs/guide.md': `# Guide\n\nOne ${EM} two.\n`,
+    });
+
+    const run = check(root);
+
+    expect(run.stdout).toBe('docs/guide.md:3: em dash\n');
+    expect(run.stderr).toBe(
+      'check-docs-prose: 1 finding(s) in 2 file(s). ' +
+        'Rewrite each dash as a period, comma, colon or parentheses; fold a "Why this exists" section into the prose above it.\n',
+    );
+    expect(run.status).toBe(1);
+  });
+
+  it('counts only the files it read: a tracked file deleted from the working tree is not counted as checked', () => {
+    const root = repoWith({
+      'README.md': '# Readme\n\nPlain prose.\n',
+      'docs/gone.md': '# Gone\n',
+      'docs/guide.md': `# Guide\n\nOne ${EM} two.\n`,
+    });
+    fs.rmSync(path.join(root, 'docs', 'gone.md'));
+
+    const failing = check(root);
+    expect(failing.stderr).toContain('check-docs-prose: 1 finding(s) in 2 file(s).');
+    expect(failing.status).toBe(1);
+
+    fs.writeFileSync(path.join(root, 'docs', 'guide.md'), '# Guide\n\nOne, two.\n');
+    const passing = check(root);
+    expect(passing.stdout).toBe('check-docs-prose: 2 file(s) checked, no findings.\n');
+    expect(passing.status).toBe(0);
   });
 });
