@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+**`secret push` refuses a first name, or a first `--as` name, that starts
+with `-` behind whitespace (#316).** `secret push A,B --to vault --as ' -x,a.b'`
+printed `Fix: npx secretless-ai secret push A,B --to vault --as -x,a_b`, and
+running that line was refused with `--as needs a value, but none was given.`;
+`secret push ' -x' --to vault --as a.b` printed a `Fix:` that began
+`secret push -x`, refused with `-x is not read by secret push`. Whitespace
+around a name is dropped, so ` -x` is read as `-x` is: the push now stops
+before anything is read with `"-x" cannot be the first --as name: ...
+Choose another name for A.` or `"-x" cannot be the first name: ... Give
+another name before it.` An empty name before it (`,-x`) is dropped as well
+and refused the same way. A name that starts with `-` later in the list is
+read as before, and a `Fix:` gives it back where it stands.
+
+**The `<name>` a `secret push` refusal leaves in its `Fix:` is quoted
+(#316).** `secret push A,B --to vault --as '<2fa>,a.b'` printed
+`Fix: ... --as <name>,a_b`, which a shell, pasted unedited, read as input from
+a file `name` and output to a file `,a_b`, creating or truncating that file
+when `name` existed. It now prints `--as '<name>',a_b`; run unedited, the
+line is refused for naming a placeholder and nothing is written or created.
+A placeholder given in `--as`, such as `<names>`, is quoted the same way.
+
 **`secret push --to azure-kv` no longer offers an `--as` name that starts
 with `-` (#314).** Key Vault names allow letters, digits and `-`, so a refused
 name was offered with `-` in place of each other character:
@@ -39,7 +60,8 @@ Vault when run as printed. The `Fix:` now keeps `--dry-run`, and so does
 the one for two secrets that would be pushed as one name. `--dry-run` stands
 before `--as` (#314): a `Fix:` that ended `--as <name> --dry-run` was read by
 a shell, pasted unedited, as input from a file `name` and output to a file
-`--dry-run`. Ending with `--as <name>`, it stops as a syntax error and runs
+`--dry-run`. It now ends with `--as '<name>'` (#316), which a shell passes
+as given; run unedited, it is refused for naming a placeholder and writes
 nothing.
 
 **A `secret push` refusal says which secret needs another name for each
@@ -70,11 +92,11 @@ word starts with a letter a-z or A-Z and holds only those letters, digits,
 **`secret push` prints a `Fix:` when two secrets would be pushed as one name
 (#303).** `secret push A,B --to vault --as x,x` printed
 `A and B would both be pushed as "x".` and the usage line, with no command to
-run next. It now prints `Fix: ... --as x,<name>`: the first secret keeps the
+run next. It now prints `Fix: ... --as x,'<name>'`: the first secret keeps the
 name, and each later secret the store would push as the same name is left as
 `<name>` and named in its own line. This covers Azure Key Vault, which does not
 tell names apart by case, so `secret push ab,AB --to azure-kv --vault kv-demo`
-offers `--as ab,<name>`.
+offers `--as ab,'<name>'`.
 
 **A `secret push` run with the `<name>` of an earlier `Fix:` left unfilled
 says `<name>` is a placeholder to replace (#302).** `secret push A,B --to
@@ -106,8 +128,8 @@ as they were, so `secret push A,B,C --to vault --as x,x,c.d` printed
 `--as x,x,c_d`, and running that line was refused with `A and B would both be
 pushed as "x"`. An accepted name that the store would push as the same name
 as an earlier one is now left as `<name>` for the user to fill in, so that
-line prints `--as x,<name>,c_d`; for Azure Key Vault, which does not tell
-names apart by case, `--as x,X,c.d` gives `--as x,<name>,c-d`.
+line prints `--as x,'<name>',c_d`; for Azure Key Vault, which does not tell
+names apart by case, `--as x,X,c.d` gives `--as x,'<name>',c-d`.
 
 **The `Fix:` under a refused `secret push --as` name no longer offers two
 secrets the same name (#289).** Each refused name was replaced on its own, so
@@ -116,7 +138,7 @@ that line was refused with `A and B would both be pushed as "a_b"`. A
 replacement that would push as the same name as another `--as` name, one
 given or one offered earlier in the line, is now left as `<name>` for the
 user to fill in; for Azure Key Vault, which does not tell names apart by case,
-`--as A.B,a-b` gives `--as <name>,a-b`. Replacements that stay distinct are
+`--as A.B,a-b` gives `--as '<name>',a-b`. Replacements that stay distinct are
 offered as before.
 
 **The `Fix:` under a refused `secret push --as` name offers a name the store

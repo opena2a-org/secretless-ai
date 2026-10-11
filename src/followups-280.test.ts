@@ -107,7 +107,7 @@ describe('a command\'s own refusal of a subcommand or value prints the value esc
 
     expect(res.status).toBe(2);
     expect(lines.filter((l) => l.startsWith(FORGED))).toEqual([]);
-    expect(lines).toContain('  Fix:     npx secretless-ai secret push A --to vault --as <name>');
+    expect(lines).toContain(`  Fix:     npx secretless-ai secret push A --to vault --as '<name>'`);
   });
 
   // Not a refusal, and it exits 0, but it names the value the same way.
