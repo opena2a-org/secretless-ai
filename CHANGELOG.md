@@ -106,6 +106,15 @@ starts empty. Verify with `npx secretless-ai backend` (`Current: local`) and
 `npx secretless-ai secret list`; move the stored secrets with
 `npx secretless-ai migrate --from keychain --to local`.
 
+**`run` now refuses a stored value on the command line in any URL encoding
+(#334).** It compared arguments with the value and with its
+`encodeURIComponent` form only, so with `FAKE/pa ss@word+1` stored,
+`run -- echo "x?p=FAKE%2fpa%20ss%40word%2b1"` (lowercase hex) and
+`run -- echo "x?p=FAKE%2Fpa+ss%40word%2B1"` (`+` for a space) started the
+command with the value readable in `ps`. Each argument is now also compared
+percent-decoded, with upper- or lowercase hex and with and without `+` read as
+a space, so those forms and a partly encoded value are refused as well.
+
 **The Team Setup guide's `.secretless` example now parses (#331).** Step 4
 showed lines such as `STRIPE_KEY        required    Stripe API key for payments`,
 and the parser refuses any text after a name other than `optional` and a `#`

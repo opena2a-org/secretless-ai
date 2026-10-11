@@ -344,6 +344,35 @@ describe('run refuses a resolved value on the child command line', () => {
     expect(written).not.toContain(encodeURIComponent(raw));
   });
 
+  it('catches lowercase, form-style and partial URL encodings of the value', async () => {
+    const raw = 'FAKE/pa ss@word+1';
+    await new SecretStore({ backend }).setSecret('PGPASSWORD', raw);
+
+    const encodings = [
+      'x?p=FAKE%2fpa%20ss%40word%2b1',
+      'x?p=FAKE%2Fpa+ss%40word%2B1',
+      'x?p=FAKE%2fpa+ss%40word%2b1',
+      'x?p=FAKE/pa%20ss@word%2B1',
+      'x?p=FAKE%2F%70%61%20ss%40word%2B1',
+    ];
+    for (const arg of encodings) {
+      const code = await runWithSecrets('node', [...MARK(), arg], { backend });
+      expect(code, arg).toBe(1);
+    }
+
+    expect(fs.existsSync(marker), 'child started with an encoded value on its command line').toBe(false);
+    expect(written).toContain('PGPASSWORD');
+    for (const arg of encodings) expect(written).not.toContain(arg.slice(4));
+  });
+
+  it('does not refuse an argument that only decodes to something else', async () => {
+    await new SecretStore({ backend }).setSecret('PGPASSWORD', 'FAKE/pa ss@word+1');
+
+    const code = await runWithSecrets('node', [...MARK(), 'x?p=%zz%2FFAKE%2fpa%20ss%40word%2b2%'], { backend });
+    expect(code).toBe(0);
+    expect(fs.existsSync(marker)).toBe(true);
+  });
+
   it('checks the command position too, without echoing it', async () => {
     await new SecretStore({ backend }).setSecret('TOKEN', 'sk-live-QQ7ZX9WKPV4RJT2MHB6FAKEFGC3L');
 
