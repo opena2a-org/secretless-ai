@@ -294,9 +294,11 @@ For Cursor, GitHub Copilot, Windsurf and Cline, Secretless writes an instruction
 | `gcp-sm` | GCP Secret Manager | GCP-native workloads |
 
 ```bash
-npx secretless-ai backend set 1password               # switch backend
-npx secretless-ai migrate --from local --to 1password # migrate existing secrets
+npx secretless-ai backend set 1password                  # switch backend
+npx secretless-ai migrate --from keychain --to 1password # migrate existing secrets
 ```
+
+`--from` takes the store the secrets are in before the switch: the backend `npx secretless-ai backend` prints as `Current:`, with `keychain` for `keychain-macos` or `keychain-linux`. With no backend configured, secrets go to the OS keychain where one is available (macOS Keychain, or Linux Secret Service when `secret-tool` is installed), as in the example, and otherwise to the encrypted file (`--from local`). Once any backend is configured, `--from local` reads the encrypted file, not the keychain.
 
 Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS Keychain and Linux Secret Service CLIs; reads and writes through those backends then fail with an error instead of prompting, and nothing is read from or written to another store. The value is exactly `off`, in lowercase: `OFF`, `0` or `false` leave the OS keychain reachable.
 

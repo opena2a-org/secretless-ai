@@ -105,7 +105,12 @@ machine that ran `backend set local` with a platform keychain available stored
 its secrets in that keychain, and now reads the encrypted file instead, which
 starts empty. Verify with `npx secretless-ai backend` (`Current: local`) and
 `npx secretless-ai secret list`; move the stored secrets with
-`npx secretless-ai migrate --from keychain --to local`.
+`npx secretless-ai migrate --from keychain --to local`. A machine that never
+ran `backend set` keeps its secrets in the platform keychain where one is
+available: after `backend set <name>`, `migrate --from local` reads the
+encrypted file and does not move them, and `migrate --from keychain --to
+<name>` does. The README's backend example showed `--from local` and now shows
+`--from keychain`.
 
 **The sample outputs in the guides and the README now show what the commands
 print (#337).** The blocks showed lines the tool no longer prints: `status` as
