@@ -7,6 +7,8 @@ import { generateEnvExports, detectAgentRuntime } from '../env';
 import { formatCommandError } from './utils';
 import { isBundleFile } from '../bundle';
 import { EXIT_USAGE } from '../argv';
+import { escapeForDisplay } from '../display-safe';
+import type { SelectableBackendType } from '../backends/config';
 import { runBundleImport, type BundleCommandDeps } from './bundle';
 
 export async function runRun(args: string[]): Promise<number> {
@@ -199,11 +201,25 @@ export async function runImport(args: string[], deps?: BundleCommandDeps): Promi
   }
 }
 
+/** Backends `setup --backend` accepts: the ones `backend set` can select. */
+const SETUP_BACKENDS = ['local', 'keychain', '1password', 'vault', 'gcp-sm'] as const satisfies readonly SelectableBackendType[];
+
+/** A heading and one indented line per name; nothing for an empty list. */
+function printSetupNames(heading: string, names: string[]): void {
+  if (names.length === 0) return;
+  console.log(`  ${heading}`);
+  for (const name of names) console.log(`    - ${name}`);
+  console.log();
+}
+
 export async function runSetupCommand(args: string[]): Promise<number> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('\n  Usage: secretless-ai setup [--check]');
+    console.log('\n  Usage: secretless-ai setup [--check] [--backend <type>]');
     console.log('\n  Read .secretless and prompt for any declared secret not yet stored.');
-    console.log('  --check verifies without prompting, for CI.\n');
+    console.log('  A name set in the environment counts as present, as CI provides it.');
+    console.log('  --check verifies without prompting, for CI. Without a terminal, setup');
+    console.log('  does not prompt either, and exits 1 if a required secret is missing.');
+    console.log(`  --backend <type> checks or stores in that backend instead of the configured one (${SETUP_BACKENDS.join(', ')}).\n`);
     console.log('  ' + MANIFEST_FORMAT_HINT.split('\n').join('\n  ') + '\n');
     return 0;
   }
@@ -211,10 +227,22 @@ export async function runSetupCommand(args: string[]): Promise<number> {
   const checkOnly = args.includes('--check');
   const dir = process.cwd();
 
+  let backendType: SelectableBackendType | undefined;
+  const backendIdx = args.indexOf('--backend');
+  if (backendIdx !== -1) {
+    const val = args[backendIdx + 1];
+    if (!(SETUP_BACKENDS as readonly string[]).includes(val)) {
+      console.error(`  Unknown backend type: ${val === undefined ? '(none)' : escapeForDisplay(val)}. Use ${SETUP_BACKENDS.map(b => `'${b}'`).join(', ')}.`);
+      console.error('  `setup` was not run. Nothing was changed.\n');
+      return EXIT_USAGE;
+    }
+    backendType = val as SelectableBackendType;
+  }
+
   console.log('\n  Secretless Setup\n');
 
   try {
-    const result = await runSetup(dir, { check: checkOnly });
+    const result = await runSetup(dir, { check: checkOnly, backendType });
 
     // An unparseable manifest is not a store that is missing things. runSetup
     // already printed the offending lines and the expected format; a tally here
@@ -225,7 +253,7 @@ export async function runSetupCommand(args: string[]): Promise<number> {
       return 1;
     }
 
-    if (checkOnly) {
+    if (checkOnly || result.promptsSkipped) {
       // No manifest: runSetup already printed the create-a-manifest hint.
       // Rendering the satisfied/missing tally here would contradict it
       // ("Missing: 0 required" followed by FAIL — issue #97).
@@ -233,17 +261,22 @@ export async function runSetupCommand(args: string[]): Promise<number> {
         console.log('  FAIL: No .secretless manifest to check against.\n');
         return 1;
       }
-      console.log(`  Satisfied: ${result.existing} secret(s)`);
+      const fromEnv = result.fromEnvironmentNames.length;
+      if (result.store) console.log(`  Store:     ${escapeForDisplay(result.store)}`);
+      console.log(`  Satisfied: ${result.existing + fromEnv} secret(s)${fromEnv > 0 ? ` (${fromEnv} from environment)` : ''}`);
       console.log(`  Missing:   ${result.missing} required`);
       console.log(`  Optional:  ${result.skipped} not set\n`);
+      printSetupNames('From environment (not stored):', result.fromEnvironmentNames);
 
       if (!result.complete) {
-        console.log('  Missing secrets:');
-        for (const name of result.missingNames) {
-          console.log(`    - ${name}`);
+        printSetupNames('Missing secrets:', result.missingNames);
+        if (result.promptsSkipped) {
+          console.log('  FAIL: Standard input is not a terminal, so setup did not prompt for them.');
+          console.log('        Run `secretless-ai setup` in a terminal, or set them in the environment.\n');
+          return 1;
         }
-        console.log();
         console.log('  FAIL: Run `secretless-ai setup` to configure missing secrets.');
+        console.log('        Or set them in the environment, as CI does.');
         console.log('        Or copy them from a shared backend: `secretless-ai secret sync --from <1password|vault|gcp-sm>`\n');
         return 1;
       }
@@ -251,10 +284,19 @@ export async function runSetupCommand(args: string[]): Promise<number> {
       return 0;
     }
 
-    if (result.set > 0 || result.existing > 0) {
+    const fromEnv = result.fromEnvironmentNames.length;
+    const tally = result.set > 0 || result.existing > 0 || fromEnv > 0;
+    if (tally) {
       console.log(`\n  Set:      ${result.set} secret(s)`);
       console.log(`  Existing: ${result.existing}`);
+      if (fromEnv > 0) console.log(`  From environment: ${fromEnv} (not stored)`);
       console.log(`  Skipped:  ${result.skipped} (optional)\n`);
+    }
+    if (!result.complete) {
+      if (!tally) console.log();
+      printSetupNames('Still missing (required):', result.missingNames);
+      console.log('  FAIL: Run `secretless-ai setup` again and enter a value for each.\n');
+      return 1;
     }
     return 0;
   } catch (err) {

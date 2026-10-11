@@ -161,7 +161,12 @@ Expected output:
 
 ## Step 5: Set up CI/CD
 
-In CI/CD, secrets come from environment variables. Secretless detects the CI environment and skips interactive prompts.
+In CI/CD, secrets come from environment variables. `setup --check` counts a name
+from `.secretless` as present when it is in the configured store or set to a
+non-empty value in the environment, and lists the names that came from the
+environment. It never prompts and never stores those values. Plain `setup` does
+not prompt when standard input is not a terminal either: it prints the same
+report and exits 1 if a required secret is missing.
 
 ### GitHub Actions
 
@@ -182,20 +187,28 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 ```
 
-The `--check` flag fails the build if any required secret from the `.secretless` manifest is missing.
+The step passes, with `Satisfied: 2 secret(s) (2 from environment)`, when both
+values are provided. It fails the build (exit 1) if any required secret from the
+`.secretless` manifest is neither stored nor set in the environment. A secret
+that is not defined in the repository settings reaches the job as an empty
+string, and an empty value counts as missing.
 
 ### 1Password in CI/CD
 
-If your team uses 1Password, CI/CD can pull secrets directly using a service account:
+If your team keeps these secrets in 1Password, check 1Password instead of the
+store configured on the runner with `--backend 1password`. The job needs the `op`
+CLI installed; it authenticates with a service account token:
 
 ```yaml
     steps:
-      - run: npx secretless-ai setup --check
+      - run: npx secretless-ai setup --check --backend 1password
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 ```
 
-The `op` CLI authenticates via the service account token. Same secrets, no manual env var mapping.
+The report's `Store:` line reads `1password`, so the log shows which store was
+checked. A name set in the job's environment still counts, so the two recipes
+can be combined.
 
 ## Step 6: Verify team setup
 

@@ -310,8 +310,11 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
   },
   setup: {
     summary: 'Set up secrets from the .secretless manifest.',
-    usage: ['[--check]'],
-    flags: { '--check': 'Check for missing required secrets without prompting (CI)' },
+    usage: ['[--check] [--backend <type>]'],
+    flags: {
+      '--check': 'Check for missing required secrets without prompting (CI); a name set in the environment counts',
+      '--backend': ['<type>', `Check or store in this backend instead of the configured one (${BACKENDS})`],
+    },
   },
   secret: {
     summary: 'Store, list, describe, retrieve, remove, sync or push secrets, and track exposed ones until rotated.',

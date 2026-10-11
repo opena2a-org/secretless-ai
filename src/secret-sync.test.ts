@@ -120,14 +120,16 @@ function printed(): string {
 describe('secret sync seeds an empty store from a shared backend (#176)', () => {
   it('after `sync --manifest .secretless`, `setup --check` reports no missing names', async () => {
     fs.writeFileSync(path.join(projectDir, '.secretless'), 'API_KEY\nDATABASE_URL\nSTRIPE_KEY  optional\n');
-    const before = await runSetup(projectDir, { backend, check: true });
+    // An empty environment: setup counts a name set there as present (#330),
+    // and this test is about the store.
+    const before = await runSetup(projectDir, { backend, check: true, env: {} });
     expect(before.missingNames).toEqual(['API_KEY', 'DATABASE_URL']);
 
     const source = shared();
     const code = await sync(['--from', '1password', '--manifest', '.secretless'], source);
 
     expect(code).toBe(0);
-    const after = await runSetup(projectDir, { backend, check: true });
+    const after = await runSetup(projectDir, { backend, check: true, env: {} });
     expect(after.complete).toBe(true);
     expect(after.missingNames).toEqual([]);
     expect(await store.getSecret('API_KEY')).toBe(VALUES.API_KEY);

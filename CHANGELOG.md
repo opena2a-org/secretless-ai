@@ -107,6 +107,24 @@ user wrote is left alone. Verify with
 `env -i HOME="$HOME" PATH=/usr/bin:/bin zsh -c '[ -n "$DEMO_KEY" ] && echo set || echo unset'`
 (`set`; on Linux use `bash -c '. ~/.bashrc; ...'`).
 
+**`setup --check` counts secrets passed as environment variables, and `setup`
+without a terminal no longer reports success (#330).** The CI recipes in
+`docs/use-cases/team-setup.md` pass secrets to the job as `env:` and run
+`setup --check`, which counted only names in the configured store, so the step
+failed with every value present. A name set to a non-empty value in the
+environment now counts as present and is listed under `From environment (not
+stored):`; an empty value, which is what an undefined GitHub Actions secret
+becomes, still counts as missing. `setup --backend <type>` checks or stores in
+the named backend instead of the configured one, so the 1Password recipe runs
+`setup --check --backend 1password`, and the report names the store it checked.
+Plain `setup` with standard input that is not a terminal printed one prompt and
+exited 0 with nothing stored; it now prompts for nothing, prints the same report
+as `--check`, and exits 1 when a required secret is missing. In a terminal, a
+required secret left blank, or input ended with Ctrl-D, is reported as still
+missing with exit 1 instead of a successful summary. Verify with
+`printf 'STRIPE_KEY\n' > .secretless; STRIPE_KEY=x npx secretless-ai setup --check`
+(`PASS`, exit 0) and `npx secretless-ai setup </dev/null` (exit 1).
+
 **`backend set local` stores secrets in the AES-256-GCM encrypted file
 (#327).** On macOS, and on Linux with `secret-tool` installed, `local` was
 replaced by the OS keychain even when the user chose it, so `backend set

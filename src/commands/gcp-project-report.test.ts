@@ -296,7 +296,9 @@ describe('every write to a project the repository named prints that project firs
     const original = Object.getOwnPropertyDescriptor(process, 'stdin')!;
     Object.defineProperty(process, 'stdin', { value: input, configurable: true });
     try {
-      const pending = runSetup(repoDir);
+      // A terminal, as only a terminal is prompted (#330), and an environment
+      // that does not hold the manifest's name.
+      const pending = runSetup(repoDir, { interactive: true, env: {} });
       input.end('placeholder-value\n');
       const result = await pending;
       expect(result.set).toBe(1);
