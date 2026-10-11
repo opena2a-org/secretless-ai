@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**`secret push --to azure-kv` no longer offers an `--as` name that starts
+with `-` (#314).** Key Vault names allow letters, digits and `-`, so a refused
+name was offered with `-` in place of each other character:
+`secret push A --to azure-kv --vault kv-demo --as .x` printed
+`Fix: ... --as -x`, and running that line was refused with
+`--as needs a value, but none was given.` (`_x` gave `-x` too, and `.` gave
+`-`). The `Fix:` now leaves such a name as `<name>`, and its
+"cannot name a secret" line ends with `; choose another name for A.`
+
 **`secret push` quotes both names when two `--as` names differ only in case
 (#312).** `secret push A,B --to azure-kv --vault kv-demo --as a-b,A-B`
 printed `A and B would both be pushed as "A-B".`, which reads as if A had been
@@ -26,8 +35,12 @@ in the `Fix:` as given.
 **The `Fix:` of a `secret push --dry-run` refusal keeps `--dry-run` (#312).**
 `secret push A --to vault --as a.b --dry-run` printed
 `Fix: npx secretless-ai secret push A --to vault --as a_b`, which writes to
-Vault when run as printed. The `Fix:` now ends with `--dry-run`, and so does
-the one for two secrets that would be pushed as one name.
+Vault when run as printed. The `Fix:` now keeps `--dry-run`, and so does
+the one for two secrets that would be pushed as one name. `--dry-run` stands
+before `--as` (#314): a `Fix:` that ended `--as <name> --dry-run` was read by
+a shell, pasted unedited, as input from a file `name` and output to a file
+`--dry-run`. Ending with `--as <name>`, it stops as a syntax error and runs
+nothing.
 
 **A `secret push` refusal says which secret needs another name for each
 refused `--as` name its `Fix:` cannot spell as a command word (#307).** A
@@ -41,8 +54,8 @@ given for: `; choose another name for B.` This holds for one that is the
 first or the only refused name too; its line did not name the secret. A
 refused name with no such character gets the line only when it is the first
 refused name other than a placeholder, as before, unless it is a value in
-angle brackets that is not a placeholder (#312), which gets the line wherever
-it stands.
+angle brackets that is not a placeholder (#312) or one whose replacement would
+start with `-` (#314), which gets the line wherever it stands.
 
 **A `secret push` refusal names every secret its `Fix:` leaves as `<name>`
 (#307).** `secret push A,B --to vault --as '<name>,<name>'` said only that
@@ -70,10 +83,12 @@ offered `--as _name_,a_b` as its `Fix:` (`-name-` for Azure Key Vault), a
 name made from the placeholder's letters. It now prints `"<name>" in --as is
 a placeholder: replace it with the name A should have in` the store, with the
 characters that store allows, and the `Fix:` keeps `<name>` where it stands.
-Any refused `--as` name in the same line that is not a placeholder is still
-reported and replaced as before, unless it holds a character the refusal
-prints escaped or is in angle brackets: the `Fix:` leaves each of those as
-`<name>`, and each gets its own line (#307, #312).
+Each refused `--as` name in the same line that is not a placeholder is still
+replaced as before, and the first of them gets the "cannot name a secret"
+line. The `Fix:` leaves a name as `<name>` instead when it holds a character
+the refusal prints escaped, is in angle brackets, or would be replaced by a
+name that starts with `-`, and each of those gets its own line wherever it
+stands (#307, #312, #314).
 
 **A refused `secret push --as` name says why its `Fix:` leaves `<name>` when
 the replacement is already taken (#295).** `secret push A,B --to vault --as
