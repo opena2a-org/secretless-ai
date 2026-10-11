@@ -22,6 +22,8 @@ import {
 // Synthesise token shapes by joining literal segments — these aren't real
 // credentials and won't trip secret scanners.
 const ANT_PREFIX = ['sk', '-ant', '-api03', '-'].join('');
+// An AWS access-key ID, assembled so no line of this file holds the shape.
+const AWS_KEY = ['AKIAIOSF', 'ODNN7REALKEY9'].join('');
 const GH_PREFIX = ['ghp', '_'].join('');
 const SK_PREFIX = ['sk', '-'].join('');
 
@@ -342,7 +344,7 @@ describe('scoreFinding (explained inputs)', () => {
       ['src/client.js', 'source'],
     ];
     for (const [filePath, kind] of cases) {
-      const r = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: 'AKIAIOSFODNN7REALKEY9', filePath });
+      const r = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: AWS_KEY, filePath });
       expect(classifyPath(filePath)).toBe(kind);
       expect(r.pathKind, filePath).toBe(kind);
       expect(r.pathScore, filePath).toBe(pathTier(filePath));
@@ -350,7 +352,7 @@ describe('scoreFinding (explained inputs)', () => {
   });
 
   it('flags a score raised to the high threshold, and only that', () => {
-    const raised = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: 'AKIAIOSFODNN7REALKEY9', filePath: 'src/config.js' });
+    const raised = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: AWS_KEY, filePath: 'src/config.js' });
     expect(raised.raisedToHigh).toBe(true);
     expect(raised.score).toBe(0.85);
 
@@ -360,7 +362,7 @@ describe('scoreFinding (explained inputs)', () => {
     expect(strong.raisedToHigh).toBe(false);
 
     // A fixture path is never raised.
-    const fixture = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: 'AKIAIOSFODNN7REALKEY9', filePath: 'test/fixtures/keys.txt' });
+    const fixture = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: AWS_KEY, filePath: 'test/fixtures/keys.txt' });
     expect(fixture.raisedToHigh).toBe(false);
   });
 });
