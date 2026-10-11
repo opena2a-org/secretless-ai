@@ -114,7 +114,8 @@ If none of that matches your use case, stick with the local Tier 1 / Tier 2 flow
 
 ## Caveats
 
-- The first time you run `secretless-ai backend` on a machine where 1Password Desktop integration is enabled, `op` triggers a biometric / unlock prompt (used to check 1Password availability). Cancel or unlock: both are safe. Not triggered when 1Password is not installed or the `op` CLI isn't on `$PATH`.
+- When you run `secretless-ai backend set 1password` on a machine where 1Password Desktop integration is enabled, `op` triggers a biometric / unlock prompt (the command runs `op account get` to confirm you are signed in). Cancel or unlock: both are safe. Cancelling exits with `Cannot use 1Password backend` and leaves your current backend as it was. Not triggered when 1Password is not installed or the `op` CLI isn't on `$PATH`.
+  Running `secretless-ai backend` on its own only checks whether `op` is on `$PATH`; it does not run `op`.
 - Vault tokens on the command line are visible in `ps aux`. Prefer env vars (as shown above) or a token file sourced from a `.envrc`.
 
 ## Next steps

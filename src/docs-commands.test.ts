@@ -472,3 +472,60 @@ describe('documented child commands receive the injected value', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * The commands a doc line names as the one that raises the 1Password unlock
+ * prompt: backticked `secretless-ai` references on a line that talks about a
+ * biometric, unlock or master-password prompt. Returned without the package
+ * name, so `npx secretless-ai backend set 1password` reads `backend set 1password`.
+ */
+function unlockPromptCommands(line: string): string[] {
+  if (!/\b(biometric|unlock|master-password)\b/i.test(line) || !/\bprompt\b/i.test(line)) return [];
+  return [...line.matchAll(/`(?:npx\s+)?secretless-ai\s+([^`]+)`/g)].map(m => m[1].trim());
+}
+
+describe('the 1Password unlock caveat names the command that raises the prompt', () => {
+  // Only `backend set 1password` runs `op account get`, the call that makes the
+  // 1Password desktop app ask for Touch ID or the master password. Bare
+  // `backend` checks PATH for `op` without running it and prints "auth not
+  // probed"; backend.silence.test.ts pins that. Two use-case pages told readers
+  // the prompt came from the first `secretless-ai backend` run, so a reader
+  // who wanted to avoid it, or to unlock once ahead of time, ran the wrong
+  // command (#338).
+  const files = docFiles();
+  const status = /^backend(\s+--?[a-z][\w-]*)*$/;
+
+  it('reads which command a caveat line names, and ignores lines about something else', () => {
+    expect(unlockPromptCommands(
+      'the first `secretless-ai backend` run triggers a biometric / master-password prompt',
+    )).toEqual(['backend']);
+    expect(unlockPromptCommands(
+      '`npx secretless-ai backend set 1password` triggers a biometric / unlock prompt',
+    )).toEqual(['backend set 1password']);
+    expect(unlockPromptCommands('Run `npx secretless-ai backend` to list the available backends.')).toEqual([]);
+    expect(status.test('backend')).toBe(true);
+    expect(status.test('backend set 1password')).toBe(false);
+  });
+
+  it('never says bare `backend` raises the 1Password unlock prompt', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      fs.readFileSync(file, 'utf-8').split('\n').forEach((line, i) => {
+        if (unlockPromptCommands(line).some(cmd => status.test(cmd))) {
+          offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: ${line.trim()}`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps the caveat on `backend set 1password` in both pages that carry it', () => {
+    // Moved, not deleted: a reader on a Mac with the 1Password app still needs
+    // to know the prompt is coming and that cancelling it is safe.
+    for (const page of ['docs/use-cases/bring-your-own-vault.md', 'docs/use-cases/team-setup.md']) {
+      const lines = fs.readFileSync(path.join(REPO_ROOT, page), 'utf-8').split('\n');
+      const named = lines.flatMap(unlockPromptCommands);
+      expect(named, page).toContain('backend set 1password');
+    }
+  });
+});
