@@ -32,10 +32,12 @@ afterEach(() => {
   while (made.length) fs.rmSync(made.pop()!, { recursive: true, force: true });
 });
 
+/** A fresh home, telemetry off, colour off, and the embedding prefix UNSET: the lines below spell the default CLI name. */
 function childEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env, HOME: tmp('followups-home-'), OPENA2A_TELEMETRY: 'off', NO_COLOR: '1',
   };
+  delete env.SECRETLESS_CLI_PREFIX;
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name];
   return env;
 }
@@ -177,5 +179,20 @@ describe('the Fix under `init`\'s "Not configured" block re-runs `init` on the d
     const fix = fixLine(cli(['init'], dir).stdout);
 
     expect(fix).toMatch(/, then re-run: npx secretless-ai init \.$/);
+  });
+
+  // An embedding host sets the prefix; a suite run under one still reads the default name (#321).
+  itIfBuiltPosix('a CLI prefix set where the suite runs does not reach the CLI it starts', () => {
+    const parent = tmp('followups-');
+    const dir = refusedProject(parent, 'p');
+    const before = process.env.SECRETLESS_CLI_PREFIX;
+
+    process.env.SECRETLESS_CLI_PREFIX = 'host secrets';
+    try {
+      expect(fixLine(cli(['init'], dir).stdout)).toMatch(/, then re-run: npx secretless-ai init \.$/);
+    } finally {
+      if (before === undefined) delete process.env.SECRETLESS_CLI_PREFIX;
+      else process.env.SECRETLESS_CLI_PREFIX = before;
+    }
   });
 });
