@@ -79,6 +79,13 @@ const SECRET_SUBCOMMANDS = new Set(['set', 'list', 'show', 'get', 'rm', 'remove'
 const SCOPED_FLAGS = new Set(['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--long', '--json', '--app', '--needs-rotation', '--where', '--at']);
 const VALUE_FLAGS = new Set(['--description', '--meta', '--app', '--where', '--at']);
 
+/**
+ * The names `secret set` stores. The store holds names that start with a
+ * digit, '_' or '-' as well (a sync or a bundle import can write them), so a command that offers
+ * `secret set NAME` as its Fix checks NAME against this first.
+ */
+const SECRET_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+
 interface ParsedSecretArgs {
   /** Every token that is not one of SCOPED_FLAGS, in order (`--force` stays here). */
   rest: string[];
@@ -321,9 +328,6 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         console.error('\n  --keep-clipboard applies with --from-clipboard only. Nothing was stored.\n');
         return 2;
       }
-
-      // Validate secret name format
-      const SECRET_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
       let name: string;
       let value: string | null;
@@ -1233,10 +1237,21 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
   } catch (err) {
     console.log();
     if (err instanceof MissingLocalNamesError) {
+      // `secret push` reads a later name that starts with '-', a digit or '_',
+      // and `secret set` refuses each of those, so `secret set -x` is no Fix.
+      // Such a name gets a line saying so, and the Fix names the first missing
+      // name `secret set` takes; with none, there is no Fix line (#323). Every
+      // name here passed `isValidSecretName`, so each prints as given.
       console.error(`  ${err.message}`);
+      for (const name of err.names) {
+        if (SECRET_NAME_RE.test(name)) continue;
+        console.error(`  "${name}" cannot be stored by \`secret set\`, which takes a name that starts with a letter; give the name the secret is stored under.`);
+      }
       console.error('  Nothing was pushed.\n');
       console.error(`  Verify:  ${CLI} secret list`);
-      console.error(`  Fix:     ${CLI} secret set ${err.names[0]}\n`);
+      const settable = err.names.find((name) => SECRET_NAME_RE.test(name));
+      if (settable !== undefined) console.error(`  Fix:     ${CLI} secret set ${settable}`);
+      console.error();
       return 1;
     }
     const failure = err instanceof PushError ? err : new PushError(err instanceof Error ? err.message : String(err));

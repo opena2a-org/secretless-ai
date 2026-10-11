@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**`secret push` no longer offers `secret set` for a name `secret set`
+refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
+`-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line
+was refused with `Invalid secret name. ... Must start with a letter.`; a later
+name that starts with a digit or `_` got the same unusable `Fix:`. Each such
+name now gets its own line, ``"-x" cannot be stored by `secret set`, which
+takes a name that starts with a letter; give the name the secret is stored
+under.``, and the `Fix:` names the first missing name `secret set` takes. When
+no missing name is one it takes, the `Verify: npx secretless-ai secret list`
+line stands alone and no `Fix:` is printed.
+
 **`secret push` refuses a first name, or a first `--as` name, that starts
 with `-` behind whitespace (#316).** `secret push A,B --to vault --as ' -x,a.b'`
 printed `Fix: npx secretless-ai secret push A,B --to vault --as -x,a_b`, and
