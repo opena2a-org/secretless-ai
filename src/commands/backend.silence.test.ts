@@ -116,6 +116,26 @@ describe('read-only commands stay silent (no biometric / 1P prompts)', () => {
 // so on a default machine it said "Not needed (local backend has no auth
 // prompts)" while secrets were going to the Keychain, which does prompt.
 describe('cache reports the effective backend', () => {
+  let originalHome: string | undefined;
+  let fakeHome: string;
+
+  // An empty home of its own: with the runner's real HOME, a `backend set
+  // keychain` or `backend set 1password` on their machine decided the result.
+  beforeEach(() => {
+    fakeHome = makeFakeHome();
+    originalHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+  });
+
+  afterEach(() => {
+    if (originalHome !== undefined) {
+      process.env.HOME = originalHome;
+    } else {
+      delete process.env.HOME;
+    }
+    cleanup(fakeHome);
+  });
+
   it('names the same backend `backend` and SecretStore report', async () => {
     const { runCache } = await import('./backend.js');
     const { resolveBackendType } = await import('../backends/config.js');
