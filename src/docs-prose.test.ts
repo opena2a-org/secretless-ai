@@ -268,4 +268,23 @@ describe('check-docs-prose run on a repository', () => {
     expect(passing.stdout).toBe('check-docs-prose: 2 file(s) checked, no findings.\n');
     expect(passing.status).toBe(0);
   });
+
+  it('checks the repository when started through a symbolic link to it', () => {
+    const root = repoWith({
+      'README.md': '# Readme\n\nPlain prose.\n',
+      'docs/guide.md': `# Guide\n\nOne ${EM} two.\n`,
+    });
+    const link = `${root}-link`;
+    fs.symlinkSync(root, link, 'dir');
+    made.push(link);
+
+    // Node resolves the link in the path of the script it runs. Started this
+    // way, as it is from the macOS temporary directory, the script took itself
+    // for an imported module and exited 0 with no output and nothing checked.
+    const run = check(link);
+
+    expect(run.stdout).toBe('docs/guide.md:3: em dash\n');
+    expect(run.stderr).toContain('check-docs-prose: 1 finding(s) in 2 file(s).');
+    expect(run.status).toBe(1);
+  });
 });
