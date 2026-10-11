@@ -45,6 +45,8 @@ npx secretless-ai protect-mcp
 Expected output:
 
 ```
+  Secretless MCP Protection
+
   Scanned 1 client(s)
 
   + claude-desktop/browserbase
@@ -55,7 +57,10 @@ Expected output:
       STRIPE_SECRET_KEY (encrypted)
 
   3 secret(s) encrypted across 3 server(s).
-  MCP servers start normally -- no workflow changes needed.
+
+  MCP servers will start normally — no workflow changes needed.
+  Run `npx secretless-ai mcp-status` to check status anytime.
+  Run `npx secretless-ai mcp-unprotect` to restore originals.
 ```
 
 Secretless moves each secret value into your configured storage backend and replaces the plaintext value in the JSON config with a reference. The MCP server still starts normally because secretless injects the real value at launch time.
@@ -92,14 +97,19 @@ npx secretless-ai mcp-status
 Expected output:
 
 ```
-  claude-desktop
-    browserbase     protected (1 secret)
-    github          protected (1 secret)
-    stripe          protected (1 secret)
+  Secretless MCP Status
 
-  cursor
-    (no MCP servers configured)
+  Backend: keychain-macos
+
+  claude-desktop (/Users/you/Library/Application Support/Claude/claude_desktop_config.json)
+    + browserbase: protected
+    + github: protected
+    + stripe: protected
+
+  All protected servers use the keychain-macos backend for secret storage.
 ```
+
+`Backend:` names where the secrets are stored. A server that still has a plaintext secret is listed as `! <name>: EXPOSED (1 plaintext secret(s))`, and a server with no secret in its `env` as `* <name>: clean (no secrets in env)`.
 
 ## Using a different storage backend
 

@@ -420,9 +420,11 @@ describe('the Team Setup guide\'s .secretless example parses (#331)', () => {
   });
 
   it('declares the names, required and optional, that the guide\'s expected setup output shows', () => {
+    // One prompt per name, `  NAME (description): `, with the optional ones
+    // marked as `setup` marks them.
     const output = step4.slice(step4.indexOf('Expected output:'));
-    const shown = [...output.matchAll(/^\s+([A-Za-z0-9_-]+)\s+missing \((required|optional)\)$/gm)]
-      .map((m) => ({ name: m[1], required: m[2] === 'required' }));
+    const shown = [...output.matchAll(/^ {2}([A-Za-z0-9_-]+) \([^)\n]*\)( \[optional, press Enter to skip\])?:/gm)]
+      .map((m) => ({ name: m[1], required: m[2] === undefined }));
     expect(shown.length).toBeGreaterThan(0);
     expect(parseManifestDetailed(manifest).entries.map(({ name, required }) => ({ name, required })))
       .toEqual(shown);

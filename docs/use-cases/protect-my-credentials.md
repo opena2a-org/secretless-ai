@@ -71,15 +71,25 @@ To see a summary of what is protected:
 npx secretless-ai status
 ```
 
-Expected output:
+Expected output in the project from Step 1:
 
 ```
-  Backend:     local (AES-256-GCM)
-  AI tools:    Claude Code, Cursor
-  File rules:  21 patterns blocked
-  Cred rules:  49 patterns blocked
-  Secrets:     3 stored
+  Secretless Status
+
+  ── Observations ────────────────────────────────────────────
+  ✓ Claude Code hook installed (.claude/settings.json — 99 deny patterns)
+  ✓ Stop hook installed (transcript redaction)
+  ✓ Tool instructions: Claude Code, Cursor (advisory, not enforced)
+  ✓ No credentials detected in scanned files
+  ⚠ Biometric session not initialized                                      → secretless-ai warm
+  ⚠ Transcript watcher not running                                         → secretless-ai watch
+  ⚠ Broker daemon not installed                                            → secretless-ai install
+
+  ── Verdict ─────────────────────────────────────────────────
+  Protected (3 observations need attention)
 ```
+
+Each `⚠` row names the command that addresses it. The `Biometric session` row appears only when secrets are stored in the OS keychain (the default on macOS) or 1Password.
 
 ## What happened
 

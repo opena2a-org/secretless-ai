@@ -106,6 +106,22 @@ starts empty. Verify with `npx secretless-ai backend` (`Current: local`) and
 `npx secretless-ai secret list`; move the stored secrets with
 `npx secretless-ai migrate --from keychain --to local`.
 
+**The sample outputs in the guides and the README now show what the commands
+print (#337).** The blocks showed lines the tool no longer prints: `status` as
+`Backend:`, `File rules:` and `Secrets:` rows instead of its Observations and
+Verdict, `mcp-status` with secret counts and a line for a client with no
+servers, `protect-mcp` without its header and closing lines,
+`backend set 1password` with `Vault: Secretless (created)` and `Ready.`,
+`setup` with `Enter value: ****` and `Skip? [Y/n]` prompts, `scan` with
+per-file counts, `import --detect` with a line per name, and `broker start`
+and `broker status` without the auth token path and start time. Each block is
+now the command's output on a fixture, and a test runs those commands and
+compares what they print with the blocks, so a change to the output fails it
+until the guide shows the change. The MCP and `.env` guides also say that
+secrets go to the OS keychain by default where one is available, not to the
+local encrypted file, and the Team Setup guide says `setup` shows a value as it
+is typed.
+
 **`run` now refuses a stored value on the command line in any URL encoding
 (#334).** It compared arguments with the value and with its
 `encodeURIComponent` form only, so with `FAKE/pa ss@word+1` stored,

@@ -190,6 +190,8 @@ npx secretless-ai protect-mcp
 ```
 
 ```
+  Secretless MCP Protection
+
   Scanned 1 client(s)
 
   + claude-desktop/browserbase
@@ -200,7 +202,10 @@ npx secretless-ai protect-mcp
       STRIPE_SECRET_KEY (encrypted)
 
   3 secret(s) encrypted across 3 server(s).
-  MCP servers start normally. No workflow changes needed.
+
+  MCP servers will start normally — no workflow changes needed.
+  Run `npx secretless-ai mcp-status` to check status anytime.
+  Run `npx secretless-ai mcp-unprotect` to restore originals.
 ```
 
 Scans configs across Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf. Secrets move to your configured backend. Non-secret env vars (URLs, regions) stay untouched.
