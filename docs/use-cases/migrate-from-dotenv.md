@@ -7,26 +7,52 @@
 
 ## Step 1: Scan for .env files
 
-See what `.env` files exist in your project:
+See which credentials your project's files hold:
 
 ```bash
 npx secretless-ai scan
 ```
 
-Expected output:
+Expected output for a project whose `.env` holds a Stripe key, a database URL and an OpenAI key, and whose `.env.local` holds a Sentry DSN and a Redis URL:
 
 ```
-  Scanning for credentials...
+  Secretless Scanner
 
-  .env                          3 secrets found
-  .env.local                    2 secrets found
-  config/.env.production        5 secrets found
+  4 critical credentials exposed
 
-  10 credentials found in 3 files.
-  Run: npx secretless-ai import --detect
+  ── Findings ────────────────────────────────────────────────
+  4 critical
+
+  │ CRITICAL  OpenAI Project Key
+  │ .env:3
+  │ OPENAI_API_KEY=[OpenAI Project Key REDACTED]
+  │ Confidence: high (0.98)
+  │ Fix: Move to env var OPENAI_API_KEY. Rotate at platform.openai.com > API Keys.
+
+  │ CRITICAL  PostgreSQL Connection String
+  │ .env:2
+  │ DATABASE_URL=[PostgreSQL Connection String REDACTED]
+  │ Confidence: high (0.97)
+  │ Fix: Move to env var DATABASE_URL. Rotate the database password.
+
+  │ CRITICAL  Redis Connection String
+  │ .env.local:2
+  │ REDIS_URL=[Redis Connection String REDACTED]
+  │ Confidence: high (0.96)
+  │ Fix: Move to env var REDIS_URL. Rotate the Redis password (requirepass or ACL user).
+
+  │ CRITICAL  Stripe Live Key
+  │ .env:1
+  │ STRIPE_KEY=[Stripe Live Key REDACTED]
+  │ Confidence: high (0.95)
+  │ Fix: Move to env var STRIPE_SECRET_KEY. Rotate at dashboard.stripe.com > Developers > API Keys.
+
+  ── Next Steps ──────────────────────────────────────────────
+  Protect now:        npx secretless-ai init
+  Full security scan: npx hackmyagent secure
 ```
 
-The scan identifies files containing credentials but does not modify anything.
+The scan names each credential's file and line, never its value, and does not modify anything. Findings are listed most severe first, then by confidence, which depends on the value, so the numbers on your project can differ. The Sentry DSN is not reported.
 
 ## Step 2: Import secrets into secure storage
 
@@ -39,17 +65,15 @@ npx secretless-ai import --detect
 Expected output:
 
 ```
-  Importing from .env...
-    STRIPE_KEY               stored
-    DATABASE_URL             stored
-    OPENAI_API_KEY           stored
+  Secretless Import
 
-  Importing from .env.local...
-    SENTRY_DSN               stored
-    REDIS_URL                stored
+  .env: 3 imported
+  .env.local: 2 imported
 
-  5 secrets imported into local backend.
+  Total: 5 secret(s) imported.
 ```
+
+`import --detect` reads the `.env` files in the current directory and stores every entry, the Sentry DSN included. An entry whose name cannot be stored is counted as skipped.
 
 To import a specific file instead:
 

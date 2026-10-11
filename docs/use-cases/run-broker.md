@@ -35,6 +35,7 @@ npx secretless-ai broker start
   Secretless Broker
 
   Starting credential broker daemon...
+Broker auth token: /Users/you/.secretless-ai/broker.token
   Broker is running.
 
   PID:          12345
@@ -58,12 +59,15 @@ npx secretless-ai broker status
   Status:       running
   PID:          12345
   Uptime:       5s
+  Started at:   2026-10-11T09:30:00.000Z
   HTTP port:    19421
   Socket:       /Users/you/.secretless-ai/broker.sock
   AIM:          not configured
   Policies:     0
-  Requests:     0
+  Requests:     1
 ```
+
+`Requests` counts every request the broker has received, this status query included.
 
 Stop the daemon:
 

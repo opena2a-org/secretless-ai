@@ -38,8 +38,9 @@ Expected output:
 
 ```
   Backend set to: 1password
-  Vault: Secretless (created)
-  Ready.
+
+  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.
+  Or use `npx secretless-ai migrate` to migrate existing secrets.
 ```
 
 ### HashiCorp Vault
@@ -144,21 +145,18 @@ npx secretless-ai setup
 Expected output:
 
 ```
-  Reading .secretless manifest...
+  Secretless Setup
 
-  STRIPE_KEY       missing (required)
-    Enter value: ****
-    Stored in 1password.
+  STRIPE_KEY (Stripe API key for payments): sk_live_...
+  DATABASE_URL (PostgreSQL connection string): postgres://...
+  SENTRY_DSN (Error tracking DSN) [optional, press Enter to skip]:
 
-  DATABASE_URL     missing (required)
-    Enter value: ****
-    Stored in 1password.
-
-  SENTRY_DSN       missing (optional)
-    Skip? [Y/n]: Y
-
-  2 secrets stored. 1 skipped (optional).
+  Set:      2 secret(s)
+  Existing: 0
+  Skipped:  1 (optional)
 ```
+
+`setup` prompts only for names not yet stored, with the description from the manifest. The prompt does not mask input: a value is shown as you type or paste it.
 
 ## Step 5: Set up CI/CD
 
