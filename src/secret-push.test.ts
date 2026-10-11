@@ -22,7 +22,7 @@ import type { AzureDeps } from './backends/azure-kv';
 import type { BoundedChildResult } from './backends/bounded-child';
 import { VaultBackend } from './backends/vault';
 import { GCPSecretManagerBackend } from './backends/gcp-sm';
-import { VaultPushTarget, GcpPushTarget } from './secret-push';
+import { VaultPushTarget, GcpPushTarget, PUSH_TARGETS } from './secret-push';
 import type { PushTarget, PushTargetType } from './secret-push';
 import { runSecret, runSecretPush } from './commands/secrets';
 import { hasDisplayHazard } from './display-safe';
@@ -171,6 +171,22 @@ function keyVault(existing: string[] = []): Handler {
 
 function push(args: string[], deps: AzureDeps): Promise<number> {
   return runSecretPush(args, { store, createTarget: azure(deps) });
+}
+
+/**
+ * One of each push target. A `Record` over `PushTargetType`, so a target added
+ * to the type without an entry here is a compile error rather than a target
+ * the name rules below are never checked against.
+ */
+const TARGETS: Record<PushTargetType, () => PushTarget> = {
+  'azure-kv': () => new AzureKeyVaultTarget('kv-demo', { env: NO_ENV, runChild: azSignedIn() }),
+  vault: () => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN })),
+  'gcp-sm': () => new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' })),
+};
+
+/** The arguments that select `type`, as a Fix prints them. */
+function toArgs(type: PushTargetType): string[] {
+  return ['--to', type, ...(type === 'azure-kv' ? ['--vault', 'kv-demo'] : [])];
 }
 
 describe('secret push --to azure-kv (#235)', () => {
@@ -521,15 +537,9 @@ describe('the --as name a refusal offers (#285)', () => {
   // length over what Key Vault and Secret Manager hold.
   const REFUSED = ['a.b', 'api key', 'a/b', '.', `${'k'.repeat(300)}.v`];
 
-  const targets: Array<[string, () => PushTarget]> = [
-    ['vault', () => new VaultPushTarget(new VaultBackend({ addr: 'https://vault.example.test', token: VAULT_TOKEN }))],
-    ['gcp-sm', () => new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' }))],
-    ['azure-kv', () => new AzureKeyVaultTarget('kv-demo', { env: NO_ENV })],
-  ];
-
-  for (const [type, make] of targets) {
+  for (const type of PUSH_TARGETS) {
     it(`--to ${type}: is a name the target accepts, for every name it refuses`, () => {
-      const target = make();
+      const target = TARGETS[type]();
       for (const name of REFUSED) {
         expect(target.nameProblem(name), name).toBeDefined();
         expect(target.nameProblem(target.suggestName(name)), `${name} -> ${target.suggestName(name)}`).toBeUndefined();
@@ -753,7 +763,7 @@ describe('two secrets the store would push as one name get a Fix (#303)', () => 
     expect(code).toBe(2);
     expect(calls).toEqual([]);
     expect(children).toEqual([]);
-    expect(clashLines()).toEqual(['  ab and AB would both be pushed as "AB".']);
+    expect(clashLines()).toEqual(['  ab and AB would both be pushed as "ab", since "AB" differs from it only in case.']);
     expect(fixCommand()).toEqual(['ab,AB', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'ab,<name>']);
   });
 
@@ -812,7 +822,7 @@ describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
     expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', '<name>,<name>']);
   });
 
-  it('the <names> the usage line prints, and other <word> spellings, are placeholders; <> is not', async () => {
+  it("a <word> whose word starts with a letter a-z or A-Z and holds only those letters, digits, '-' and '_' after it is a placeholder, as the usage line's <names> is", async () => {
     await runSecretPush([], { store, createTarget: vault });
     const fromUsage = /\[--as (<[a-z]+>)\]/.exec(printed())?.[1];
     expect(fromUsage).toBe('<names>');
@@ -827,11 +837,6 @@ describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
       expect(lines.some((l) => l.includes('cannot name a secret')), printed()).toBe(false);
       expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', placeholder]);
     }
-
-    out.length = 0;
-    await runSecretPush(['API_KEY', '--to', 'vault', '--as', '<>'], { store, createTarget: vault });
-    expect(printed()).toContain('  "<>" cannot name a secret in Vault');
-    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', '__']);
   });
 
   it('beside a refused name, an accepted name the store would merge with an earlier one is named with the secret that holds it', async () => {
@@ -840,9 +845,12 @@ describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
 
     expect(code).toBe(2);
     expect(fixCommand()).toEqual(['A,B,C', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,<name>,<name>']);
-    const merged = lines.indexOf('  A and B would both be pushed as "A-B".');
+    // The line that gives the rule comes first, then the lines that name a secret (#312).
+    const cannot = lines.findIndex((l) => l.startsWith('  "a.b" cannot name a secret in '));
+    const merged = lines.indexOf('  A and B would both be pushed as "a-b", since "A-B" differs from it only in case.');
     const taken = lines.indexOf('  "a-b" is taken by A; choose another name for C.');
-    expect(merged, printed()).toBeGreaterThan(-1);
+    expect(cannot, printed()).toBeGreaterThan(-1);
+    expect(merged, printed()).toBeGreaterThan(cannot);
     expect(taken).toBeGreaterThan(merged);
     expect(taken).toBeLessThan(lines.findIndex((l) => l.startsWith('  Fix:')));
 
@@ -854,11 +862,9 @@ describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
   });
 
   it('every target refuses each character escapeForDisplay rewrites, so a refusal prints an accepted name as given', () => {
-    const targets = [
-      vault(),
-      new GcpPushTarget(new GCPSecretManagerBackend({ projectId: 'demo-project' })),
-      new AzureKeyVaultTarget('kv-demo', { env: NO_ENV }),
-    ];
+    // Every target `--to` takes, so one added to `PUSH_TARGETS` is checked here too.
+    const targets = PUSH_TARGETS.map((type) => TARGETS[type]());
+    expect(targets.map((t) => t.type)).toEqual(PUSH_TARGETS);
     let hazards = 0;
     for (let code = 0; code <= 0x10ffff; code++) {
       if (code >= 0xd800 && code <= 0xdfff) continue;
@@ -968,6 +974,89 @@ describe('a refusal names every secret the Fix leaves as <name> (#307)', () => {
     expect(calls).toEqual([]);
     expect(children).toEqual([]);
     for (const [kind, count] of Object.entries(seen)) expect(count, kind).toBeGreaterThan(0);
+  });
+});
+
+describe('a refusal quotes each name as given, and its Fix is the command to run next (#312)', () => {
+  const clashLines = (): string[] => printed().split('\n').filter((l) => l.includes(' would both be pushed as '));
+  const cannotLines = (): string[] => printed().split('\n').filter((l) => l.includes(' cannot name a secret in '));
+  const VAULT_RULE = 'Vault https://vault.example.test, KV v2 mount "secret": names allow letters, digits, \'-\' and \'_\'';
+
+  it('Key Vault: two --as names that differ only in case are both quoted, so neither reads as the other secret\'s', async () => {
+    const code = await push(['A,B', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,A-B'], { env: NO_ENV, runChild: azSignedIn() });
+
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+    expect(clashLines()).toEqual(['  A and B would both be pushed as "a-b", since "A-B" differs from it only in case.']);
+    expect(fixCommand()).toEqual(['A,B', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,<name>']);
+
+    // Two equal names need only the one.
+    out.length = 0;
+    await push(['A,B', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,a-b'], { env: NO_ENV, runChild: azSignedIn() });
+    expect(clashLines()).toEqual(['  A and B would both be pushed as "a-b".']);
+  });
+
+  it('an --as value in angle brackets that is not a placeholder leaves <name> in the Fix, not a name made from its characters', async () => {
+    for (const type of PUSH_TARGETS) {
+      for (const given of ['<2fa>', '<_name>', '<a.b>', '<>']) {
+        out.length = 0;
+        const code = await runSecretPush(['API_KEY', ...toArgs(type), '--as', given], { store, createTarget: TARGETS[type] });
+        const said = `--to ${type} --as ${given}\n${printed()}`;
+
+        expect(code, said).toBe(2);
+        expect(cannotLines(), said).toHaveLength(1);
+        expect(cannotLines()[0].startsWith(`  "${given}" cannot name a secret in `), said).toBe(true);
+        expect(cannotLines()[0].endsWith('; choose another name for API_KEY.'), said).toBe(true);
+        expect(printed(), said).not.toContain(' in --as is a placeholder: ');
+        expect(fixCommand(), said).toEqual(['API_KEY', ...toArgs(type), '--as', '<name>']);
+      }
+    }
+
+    // Run as printed, the Fix is refused for its <name>, not pushed.
+    const rerun = await runSecretPush(fixCommand(), { store, createTarget: TARGETS['azure-kv'] });
+    expect(rerun).toBe(2);
+    expect(printed()).toContain('  "<name>" in --as is a placeholder: replace it with the name API_KEY should have in ');
+
+    // Beside a refused name the Fix replaces, only that one is replaced.
+    out.length = 0;
+    await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,<2fa>'], { store, createTarget: TARGETS.vault });
+    expect(cannotLines()).toEqual([
+      `  "a.b" cannot name a secret in ${VAULT_RULE}.`,
+      `  "<2fa>" cannot name a secret in ${VAULT_RULE}; choose another name for DB_PASSWORD.`,
+    ]);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a_b,<name>']);
+    expect(calls).toEqual([]);
+    expect(children).toEqual([]);
+  });
+
+  it('the Fix of a --dry-run refusal keeps --dry-run, so run as printed it writes nothing', async () => {
+    handler = (call) => {
+      const u = new URL(call.url);
+      if (u.pathname === '/v1/sys/health') return json(200, { initialized: true, sealed: false });
+      if (call.method === 'GET' && u.pathname.startsWith('/v1/secret/metadata/')) return json(404, { errors: [] });
+      if (call.method === 'POST') return json(200, { data: { version: 1 } });
+      return json(400, {});
+    };
+    const code = await runSecretPush(['API_KEY', '--to', 'vault', '--as', 'a.b', '--dry-run'], { store, createTarget: TARGETS.vault });
+
+    expect(code).toBe(2);
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', 'a_b', '--dry-run']);
+
+    const rerun = await runSecretPush(fixCommand(), { store, createTarget: TARGETS.vault });
+    expect(rerun).toBe(0);
+    expect(printed()).toContain('  Dry run: nothing is written.');
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+
+    // The refusal for two secrets pushed as one name keeps it too.
+    out.length = 0;
+    await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--dry-run', '--as', 'x,x'], { store, createTarget: TARGETS.vault });
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'x,<name>', '--dry-run']);
+
+    // A refusal without --dry-run prints a Fix without it.
+    out.length = 0;
+    await runSecretPush(['API_KEY', '--to', 'vault', '--as', 'a.b'], { store, createTarget: TARGETS.vault });
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', 'a_b']);
+    expectNoLeak();
   });
 });
 

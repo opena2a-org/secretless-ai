@@ -981,6 +981,13 @@ function createPushTarget(type: PushTargetType, vaultName: string | undefined): 
  */
 const PLACEHOLDER_NAME = /^<[A-Za-z][A-Za-z0-9_-]*>$/;
 
+/**
+ * An `--as` name in angle brackets that is not a placeholder, such as `<2fa>`,
+ * `<_name>` or `<>`. It is still a name to fill in, not one to make a name
+ * from: `_2fa_` is not a name anyone chose.
+ */
+const BRACKETED_NAME = /^<.*>$/s;
+
 /** A `Verify:` or `Fix:` block; a second line continues under the first. */
 function labelled(label: string, lines: readonly string[]): string[] {
   return lines.map((line, i) => `  ${i === 0 ? `${label}:`.padEnd(9) : ' '.repeat(9)}${line}`);
@@ -1084,18 +1091,28 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
   }
 
   const tail = [`--to ${toType}`, ...(vaultName !== undefined ? [`--vault ${vaultName}`] : [])];
+  // The Fix of a dry run is a dry run too, so running it as printed writes nothing.
+  const fixLine = (operands: readonly string[]): string =>
+    `  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}${dryRun ? ' --dry-run' : ''}\n`;
   const problems = remotes.map((r) => target.nameProblem(r));
-  // Every given name passed `isValidSecretName` and the --as name passed the
+  // Every given name passed `isValidSecretName` and the --as names passed the
   // target's `nameProblem`, so none holds a character `escapeForDisplay`
-  // rewrites, and the line prints them as given.
-  const mergeLine = (holder: number, i: number): string => `  ${names[holder]} and ${names[i]} would both be pushed as "${remotes[i]}".`;
+  // rewrites, and the line prints them as given. It quotes the earlier
+  // secret's name, and a later one that differs from it only in case as
+  // well, so neither reads as the other secret's.
+  const mergeLine = (holder: number, i: number): string => {
+    const also = remotes[i] === remotes[holder] ? '' : `, since "${remotes[i]}" differs from it only in case`;
+    return `  ${names[holder]} and ${names[i]} would both be pushed as "${remotes[holder]}"${also}.`;
+  };
   const first = problems.findIndex((p) => p !== undefined);
   if (first !== -1) {
     // A name with a control character prints escaped, so a line feed in it
     // starts no line; the Fix cannot spell such a name as a command word, so
-    // it leaves `<name>` for the user to fill in. Any other refused name is
-    // replaced by one the target accepts, so the Fix is not the command that
-    // was just refused. A replacement that would push as the same name as
+    // it leaves `<name>` for the user to fill in, as it does for a name in
+    // angle brackets that is not a placeholder, rather than offer a name
+    // made from its characters. Any other refused name is replaced by one
+    // the target accepts, so the Fix is not the command that was just
+    // refused. A replacement that would push as the same name as
     // another --as name, given or offered, leaves `<name>` too, and so does
     // an accepted name the store would merge with an earlier accepted one, so
     // the Fix is not refused for two secrets sharing one name; either way a
@@ -1122,7 +1139,7 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
         return r;
       }
       if (isPlaceholder(r)) return r;
-      if (hasDisplayHazard(r)) {
+      if (hasDisplayHazard(r) || BRACKETED_NAME.test(r)) {
         unspelled.add(i);
         return '<name>';
       }
@@ -1145,8 +1162,9 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
       }
     });
     // The first refused name gets the line that gives the rule. A name the
-    // Fix cannot spell has no name offered in its place, so each one gets the
-    // line too, wherever it stands, ending with the secret it was given for.
+    // Fix leaves as `<name>` has no name offered in its place, so each one
+    // gets the line too, wherever it stands, ending with the secret it was
+    // given for.
     remotes.forEach((r, i) => {
       if (i !== refused && !unspelled.has(i)) return;
       const whose = unspelled.has(i) ? `; choose another name for ${names[i]}` : '';
@@ -1154,7 +1172,7 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     });
     for (const line of holderLines) console.error(line);
     console.error('  Nothing was read or pushed.\n');
-    console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
+    console.error(fixLine(operands));
     return 2;
   }
   // Every name is accepted, but the store would merge two of them. Each
@@ -1167,7 +1185,7 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     console.error(`\n${lines.join('\n')}`);
     console.error('  Nothing was read or pushed.\n');
     const operands = remotes.map((r, i) => (clashes.includes(i) ? '<name>' : r));
-    console.error(`  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}\n`);
+    console.error(fixLine(operands));
     return 2;
   }
 

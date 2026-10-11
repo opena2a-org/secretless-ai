@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+**`secret push` quotes both names when two `--as` names differ only in case
+(#312).** `secret push A,B --to azure-kv --vault kv-demo --as a-b,A-B`
+printed `A and B would both be pushed as "A-B".`, which reads as if A had been
+given `A-B`. It now prints
+`A and B would both be pushed as "a-b", since "A-B" differs from it only in case.`
+The earlier secret's name comes first, as in the "is taken by" line. Two
+equal names print one name, as before.
+
+**A `secret push --as` value in angle brackets that is not a placeholder is
+left as `<name>` in the `Fix:` (#312).** `secret push A --to vault --as
+'<2fa>'` offered `Fix: ... --as _2fa_`, a name made from the characters of a
+value meant to be filled in; `'<_name>'` gave `__name_` and `'<>'` gave `__`.
+Vault accepts each of these if the `Fix:` is run as printed. The `Fix:` now
+leaves `<name>`, and the line for the value ends with
+`; choose another name for A.` A `<word>` whose word starts with a letter a-z
+or A-Z and holds only those letters, digits, `-` and `_` after it is still a
+placeholder and stays in the `Fix:` as given.
+
+**The `Fix:` of a `secret push --dry-run` refusal keeps `--dry-run` (#312).**
+`secret push A --to vault --as a.b --dry-run` printed
+`Fix: npx secretless-ai secret push A --to vault --as a_b`, which writes to
+Vault when run as printed. The `Fix:` now ends with `--dry-run`, and so does
+the one for two secrets that would be pushed as one name.
+
 **A `secret push` refusal says which secret needs another name for each
 refused `--as` name its `Fix:` cannot spell as a command word (#307).** A
 refused name that holds a character the refusal prints escaped, such as a tab
@@ -20,8 +44,8 @@ refused name, as before.
 A's `<name>` was a placeholder; it now prints one placeholder line per
 secret. `secret push A,B,C --to azure-kv --vault kv-demo --as a-b,A-B,a.b`
 left B as `<name>` with no line saying why; it now prints
-`A and B would both be pushed as "A-B".` beside the line for C, as it already
-did when no name was refused. A `<word>` counts as a placeholder when the
+`A and B would both be pushed as "a-b", since "A-B" differs from it only in case.`
+beside the line for C, as it already did when no name was refused. A `<word>` counts as a placeholder when the
 word starts with a letter a-z or A-Z and holds only those letters, digits,
 `-` and `_` after it; the `<names>` the usage line prints is one.
 
