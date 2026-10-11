@@ -345,3 +345,130 @@ describe('documented commands exist', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/** One quoted or unquoted run of characters inside a shell word. */
+interface WordPart { text: string; quote: '' | "'" | '"' }
+
+/** Shells whose `-c` script reads the injected value at run time. */
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
+
+/** Builtins that hand a value on without a new command line (`printf ... | curl -H @-`). */
+const BUILTINS = new Set(['printf', 'echo', 'test', '[']);
+
+/**
+ * The child command of a documented `run` or `vault exec` invocation, split
+ * into shell words that keep each part's quoting: everything after `--`, up to
+ * an unquoted operator or comment. Null when the snippet documents neither.
+ * A backslash-escaped character is literal, so it is kept as single-quoted.
+ */
+function childCommand(snippet: string): WordPart[][] | null {
+  const m = snippet.match(/(?:^|[$\s(])(?:npx\s+)?secretless-ai\s+(?:run|vault\s+exec)\b.*?\s--\s+(.*)$/);
+  if (!m) return null;
+  const src = m[1];
+  const words: WordPart[][] = [];
+  let word: WordPart[] | null = null;
+  let quote: WordPart['quote'] = '';
+  const append = (c: string, q: WordPart['quote']): void => {
+    const last = word![word!.length - 1];
+    if (last && last.quote === q) last.text += c;
+    else word!.push({ text: c, quote: q });
+  };
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === quote) quote = '';
+      else if (quote === '"' && c === '\\' && /[$`"\\]/.test(src[i + 1] ?? '')) append(src[++i], "'");
+      else append(c, quote);
+      continue;
+    }
+    if (/\s/.test(c)) { word = null; continue; }
+    if (/[|;&]/.test(c) || (c === '#' && word === null)) break;
+    if (!word) { word = []; words.push(word); }
+    if (c === "'" || c === '"') { quote = c; word.push({ text: '', quote: c }); }
+    else if (c === '\\') append(src[++i] ?? '', "'");
+    else append(c, '');
+  }
+  return words;
+}
+
+/**
+ * How a documented `run` or `vault exec` child command would fail to receive an
+ * injected variable it names. The child is started without a shell, so a
+ * reference only works inside a single-quoted `sh -c` script; unquoted or in
+ * double quotes the calling shell expands it first, and single-quoted anywhere
+ * else the child gets the literal text. Inside the script, the value must not be
+ * an argument to another program, where `ps` shows it.
+ */
+function childReferenceDefects(snippet: string): string[] {
+  const words = childCommand(snippet);
+  if (!words) return [];
+  const text = (w: WordPart[] | undefined): string => (w ?? []).map(p => p.text).join('');
+  const isScript = words.length >= 3 && SHELLS.has(path.basename(text(words[0]))) && text(words[1]) === '-c';
+  const defects: string[] = [];
+  words.forEach((word, w) => {
+    for (const part of word) {
+      for (const ref of part.text.matchAll(/\$\{?([A-Za-z_]\w*)/g)) {
+        const name = `$${ref[1]}`;
+        if (part.quote !== "'") {
+          defects.push(`${name}: the calling shell expands it before secretless-ai sets it`);
+        } else if (!(isScript && w === 2)) {
+          defects.push(`${name}: the child is started without a shell, so it receives the literal text`);
+        }
+      }
+    }
+  });
+  if (isScript) {
+    for (const segment of text(words[2]).split(/\|\|?|&&|;/)) {
+      const ref = segment.match(/\$\{?([A-Za-z_]\w*)/);
+      const program = segment.trim().split(/\s+/)[0];
+      if (ref && !BUILTINS.has(program)) {
+        defects.push(`$${ref[1]}: \`${program}\` receives it on its command line, where \`ps\` shows it`);
+      }
+    }
+  }
+  return defects;
+}
+
+describe('documented child commands receive the injected value', () => {
+  it('reads a documented child command the way the calling shell does', () => {
+    // #329: the guide showed this, and the request went out with an empty token.
+    expect(childReferenceDefects(
+      'npx secretless-ai vault exec github -- curl -H "Authorization: Bearer $GITHUB" https://api.github.com/user',
+    )).toEqual(['$GITHUB: the calling shell expands it before secretless-ai sets it']);
+    expect(childReferenceDefects("npx secretless-ai vault exec github -- /bin/echo 'Authorization: Bearer $GITHUB'"))
+      .toEqual(['$GITHUB: the child is started without a shell, so it receives the literal text']);
+    expect(childReferenceDefects(
+      `npx secretless-ai vault exec github -- sh -c 'curl -H "Authorization: Bearer $GITHUB" https://api.github.com/user'`,
+    )).toEqual(['$GITHUB: `curl` receives it on its command line, where `ps` shows it']);
+
+    // The shapes the guide documents, and a command that names no variable.
+    expect(childReferenceDefects(
+      `npx secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'`,
+    )).toEqual([]);
+    expect(childReferenceDefects(
+      `npx secretless-ai run --only GITHUB_TOKEN -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB_TOKEN" | curl -s -H @- https://api.github.com/user'`,
+    )).toEqual([]);
+    expect(childReferenceDefects('npx secretless-ai vault exec github -- curl https://api.github.com/user')).toEqual([]);
+  });
+
+  it('documents no child command that misses the value or puts it on a command line', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    for (const file of docFiles()) {
+      let inFence = false;
+      fs.readFileSync(file, 'utf-8').split('\n').forEach((line, i) => {
+        if (FENCE.test(line)) { inFence = !inFence; return; }
+        const snippets = inFence ? [line] : [...line.matchAll(/`([^`]+)`/g)].map(m => m[1]);
+        for (const snippet of snippets) {
+          if (childCommand(snippet)) checked++;
+          for (const defect of childReferenceDefects(snippet)) {
+            offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: ${defect} — ${line.trim()}`);
+          }
+        }
+      });
+    }
+    // The guide's `run` and `vault exec` examples are read, so a green run is not vacuous.
+    expect(checked).toBeGreaterThan(1);
+    expect(offenders).toEqual([]);
+  });
+});
