@@ -64,6 +64,23 @@ and `vault exec` child command and fails on a variable the calling shell
 expands, one the child receives as literal text, or one a script passes to
 another program as an argument.
 
+**`backend set local` stores secrets in the AES-256-GCM encrypted file
+(#327).** On macOS, and on Linux with `secret-tool` installed, `local` was
+replaced by the OS keychain even when the user chose it, so `backend set
+local` was followed by `Current: keychain-macos (configured: local, upgraded
+because a platform keychain is available)` and there was no way to select the
+encrypted file the docs describe. Only the unconfigured default upgrades now:
+with no backend configured, secrets still go to the platform keychain where
+one is available, and `backend` prints ``Current: keychain-macos (default,
+because a platform keychain is available; `secretless-ai backend set local`
+selects the encrypted file)``. Once any backend is configured, `local` is the
+file, including as the source of `migrate --from local`. Who is affected: a
+machine that ran `backend set local` with a platform keychain available stored
+its secrets in that keychain, and now reads the encrypted file instead, which
+starts empty. Verify with `npx secretless-ai backend` (`Current: local`) and
+`npx secretless-ai secret list`; move the stored secrets with
+`npx secretless-ai migrate --from keychain --to local`.
+
 **`secret push` no longer offers `secret set` for a name `secret set`
 refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
 `-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line

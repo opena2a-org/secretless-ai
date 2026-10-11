@@ -103,7 +103,7 @@ Expected output:
 
 ## Using a different storage backend
 
-By default, secrets are stored in an AES-256-GCM encrypted local file. To use a team-friendly backend:
+With no backend configured, secrets are stored in the OS keychain where one is available (macOS Keychain, or Linux Secret Service when `secret-tool` is installed), and otherwise in an AES-256-GCM encrypted local file. `npx secretless-ai backend set local` selects the encrypted file on any platform. To use a team-friendly backend:
 
 ```bash
 npx secretless-ai protect-mcp --backend 1password

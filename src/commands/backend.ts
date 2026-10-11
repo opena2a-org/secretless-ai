@@ -232,12 +232,14 @@ export async function runBackend(args: string[]): Promise<number> {
   // configured value. `local` upgrades to the platform keychain where one
   // exists, and those two stores differ in ways a user acts on: the keychain is
   // shared across every project on the machine and can prompt for
-  // authorization, the local encrypted file does neither (#111).
+  // authorization, the local encrypted file does neither (#111). Only the
+  // unconfigured default is upgraded; `backend set local` is honoured (#327),
+  // so this line names the command that selects the file.
   const effective = effectiveBackendName(current);
 
   console.log('\n  Secretless Backend\n');
   if (effective !== current) {
-    console.log(`  Current:      ${effective}  (configured: ${current}, upgraded because a platform keychain is available)`);
+    console.log(`  Current:      ${effective}  (default, because a platform keychain is available; \`${CLI_BARE} backend set local\` selects the encrypted file)`);
   } else {
     console.log(`  Current:      ${effective}${configFile ? '' : ' (default)'}`);
   }
