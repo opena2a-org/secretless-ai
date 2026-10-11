@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createBackend, effectiveBackendName } from './factory';
 import { writeBackendConfig } from './config';
+import type { SelectableBackendType } from './config';
 import { LocalBackend } from './local';
 import { SecretStore } from '../secret-store';
 import { runBackend } from '../commands/backend';
@@ -81,6 +82,21 @@ describe.skipIf(!hasKeychainPath)('an explicit `backend set local` is honoured (
   it('builds the encrypted file for `migrate --from local` beside another configured backend', () => {
     writeBackendConfig('keychain');
     expect(createBackend('local')).toBeInstanceOf(LocalBackend);
+  });
+
+  it("the README's backend switch migrates from the store the unconfigured default wrote to", () => {
+    // README.md shows `backend set <target>` and then `migrate --from <source>
+    // --to <target>`. Secrets stored before the switch went to the default
+    // store, so once the switch is configured the source has to name that store.
+    const readme = fs.readFileSync(path.resolve(__dirname, '..', '..', 'README.md'), 'utf-8');
+    const set = /^npx secretless-ai backend set (\S+)/m.exec(readme);
+    const migrate = /^npx secretless-ai migrate --from (\S+) --to (\S+)/m.exec(readme);
+    if (!set || !migrate) throw new Error('README.md shows no `backend set` and `migrate --from` pair');
+    expect(migrate[2]).toBe(set[1]);
+
+    const writtenTo = createBackend('local').name;
+    writeBackendConfig(set[1] as SelectableBackendType);
+    expect(createBackend(migrate[1] as SelectableBackendType).name).toBe(writtenTo);
   });
 
   it('`backend` prints local as current once local is configured', async () => {
