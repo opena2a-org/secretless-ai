@@ -61,8 +61,8 @@ function claimsUnder(mod: RetractedClaimsModule, dir: string, label: string): st
 }
 
 /**
- * What a scan returns when `read` can count all of it: `T`, but no promise
- * or other thenable, whose scan goes on after it has returned.
+ * What a scan returns when `read` can count all of it: `T`, but no promise,
+ * whose scan goes on after it has returned.
  */
 type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 
