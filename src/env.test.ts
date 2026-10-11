@@ -106,9 +106,17 @@ describe('isValidShellIdentifier', () => {
 });
 
 describe('getShellHookLine', () => {
-  it('returns eval statement for secretless-ai env', () => {
+  it('runs `env` through node and the CLI script by their full paths, not through PATH (#333)', () => {
+    expect(getShellHookLine(['/usr/local/bin/node', '/opt/sl/dist/cli.js']))
+      .toBe(`eval "$('/usr/local/bin/node' '/opt/sl/dist/cli.js' env 2>/dev/null)"`);
     const line = getShellHookLine();
-    expect(line).toBe('eval "$(secretless-ai env 2>/dev/null)"');
+    expect(line).not.toBe('eval "$(secretless-ai env 2>/dev/null)"');
+    expect(line).toMatch(/^eval "\$\('\/[^']+' '\/[^']+cli\.js' env 2>\/dev\/null\)"$/);
+  });
+
+  it('quotes a path that contains a single quote', () => {
+    expect(getShellHookLine(["/it's/node", '/x/cli.js']))
+      .toBe(`eval "$('/it'\\''s/node' '/x/cli.js' env 2>/dev/null)"`);
   });
 });
 

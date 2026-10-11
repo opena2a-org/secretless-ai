@@ -64,6 +64,21 @@ and `vault exec` child command and fails on a variable the calling shell
 expands, one the child receives as literal text, or one a script passes to
 another program as an argument.
 
+**The shell hook `secret set` installs exports secrets without a global
+install (#333).** The hook ran the bare `secretless-ai env` and discarded
+errors, so after `npx secretless-ai secret set` new terminals exported nothing
+unless `secretless-ai` was on PATH, which a copy run through npx never is, and
+which a new macOS terminal has not set up yet when it reads `~/.zshenv`. The
+hook now runs node and the CLI script by their full paths, using a `node` on
+PATH that resolves to the same binary so a Homebrew upgrade does not break it.
+When `secretless-ai` is not on PATH, `secret set` prints the path the hook runs
+and how to keep that copy installed. A hook line this tool wrote earlier whose
+command is no longer found is replaced on the next `secret set`; a line the
+user wrote is left alone. Verify with
+`npx secretless-ai secret set DEMO_KEY`, then
+`env -i HOME="$HOME" PATH=/usr/bin:/bin zsh -c '[ -n "$DEMO_KEY" ] && echo set || echo unset'`
+(`set`; on Linux use `bash -c '. ~/.bashrc; ...'`).
+
 **`backend set local` stores secrets in the AES-256-GCM encrypted file
 (#327).** On macOS, and on Linux with `secret-tool` installed, `local` was
 replaced by the OS keychain even when the user chose it, so `backend set

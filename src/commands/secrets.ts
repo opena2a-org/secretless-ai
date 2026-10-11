@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretStore, isSettableSecretName, isValidSecretName, notSettableReason } from '../secret-store';
-import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
+import { installShellHook } from '../env';
+import type { InstallShellHookOptions } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
 import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard } from '../display-safe';
 import { describeSecretShape } from '../secret-value';
@@ -30,41 +31,22 @@ import type { RotationOutcome } from '../secret-store';
  * Ensure the shell profile has the eval hook for auto-loading secrets.
  * Called after `secret set` to make stored secrets available as env vars.
  */
-function ensureShellHook(): void {
-  const os = require('os');
-  const fs = require('fs');
+export function ensureShellHook(options: InstallShellHookOptions = {}): void {
+  const change = installShellHook(options);
+  if (change === null) return;
 
-  const home = os.homedir();
-  const shell = process.env.SHELL ?? '';
-  const platform = os.platform();
-
-  // Determine the right profile to modify
-  let profilePath: string;
-  if (platform === 'darwin' || shell.endsWith('/zsh')) {
-    profilePath = path.join(home, '.zshenv');
-  } else {
-    profilePath = path.join(home, '.bashrc');
+  const profileName = path.basename(change.profilePath);
+  console.log(change.action === 'installed'
+    ? `  Shell hook installed in ~/${profileName}`
+    : `  Shell hook in ~/${profileName} updated: the command it ran was not found`);
+  if (!change.cliOnPath) {
+    // The hook runs this copy by its path, so it works without a global
+    // install, but only while this copy stays where it is (#333).
+    console.log('  secretless-ai is not on PATH, so the hook runs this copy by its full path:');
+    console.log(`    ${escapePathForDisplay(change.command[change.command.length - 1])}`);
+    console.log('  If that copy is removed (clearing the npm cache removes an npx copy), new terminals');
+    console.log(`  receive no secrets until \`${CLI} secret set\` runs again. To keep a copy: npm install -g secretless-ai`);
   }
-
-  // Check if hook already exists
-  let existing = '';
-  try {
-    existing = fs.readFileSync(profilePath, 'utf-8');
-  } catch {
-    // File doesn't exist — will create it
-  }
-
-  if (existing.includes(SHELL_HOOK_MARKER) || existing.includes('secretless-ai env')) {
-    return; // Already installed
-  }
-
-  // Append the hook
-  const hookLine = getShellHookLine();
-  const block = `\n${SHELL_HOOK_MARKER}\n${hookLine}\n`;
-  fs.writeFileSync(profilePath, existing + block);
-
-  const profileName = path.basename(profilePath);
-  console.log(`  Shell hook installed in ~/${profileName}`);
   console.log(`  Run: source ~/${profileName}   (or open a new terminal)`);
 }
 

@@ -15,6 +15,9 @@
  *   - The eval pattern means secrets never touch disk as plaintext
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { SecretStore } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
 
@@ -111,15 +114,136 @@ export async function generateEnvExports(options?: EnvOptions): Promise<string> 
   return lines.join('\n');
 }
 
+/** The hook line written before #333. It finds the CLI on PATH. */
+const BARE_HOOK_LINE = 'eval "$(secretless-ai env 2>/dev/null)"';
+
+/** A hook line written by getShellHookLine: two single-quoted paths, then `env`. */
+const PATH_HOOK_LINE = /^eval "\$\('((?:[^']|'\\'')*)' '((?:[^']|'\\'')*)' env 2>\/dev\/null\)"$/;
+
+function shellQuote(word: string): string {
+  return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+function realpathOrNull(p: string): string | null {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/** The first executable file `name` in the directories of `pathEnv`, or null. */
+export function findOnPath(name: string, pathEnv: string = process.env.PATH ?? ''): string | null {
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!path.isAbsolute(dir)) continue;
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Not in this directory.
+    }
+  }
+  return null;
+}
+
+/**
+ * The command the shell hook runs: a node binary and this package's CLI
+ * script, as absolute paths. A profile cannot count on PATH to find
+ * `secretless-ai`: a copy run through npx is never on PATH, and a new macOS
+ * terminal reads ~/.zshenv before Homebrew or nvm add their directories to
+ * PATH (#333). `process.execPath` is the resolved binary, which under
+ * Homebrew is a versioned path that an upgrade removes, so a `node` on PATH
+ * that resolves to the same binary is written instead.
+ */
+export function shellHookCommand(
+  execPath: string = process.execPath,
+  pathEnv: string = process.env.PATH ?? '',
+  script: string = path.join(__dirname, 'cli.js'),
+): string[] {
+  const node = findOnPath('node', pathEnv);
+  const real = realpathOrNull(execPath);
+  const sameBinary = node !== null && real !== null && realpathOrNull(node) === real;
+  return [sameBinary ? node : execPath, script];
+}
+
 /**
  * Generate the shell profile hook line for auto-loading secrets.
  * Returns the eval line to add to ~/.zshenv or ~/.bashrc.
  */
-export function getShellHookLine(): string {
-  return 'eval "$(secretless-ai env 2>/dev/null)"';
+export function getShellHookLine(command: readonly string[] = shellHookCommand()): string {
+  return `eval "$(${command.map(shellQuote).join(' ')} env 2>/dev/null)"`;
+}
+
+/**
+ * Whether a hook line this tool wrote still reaches a CLI: the bare line
+ * needs `secretless-ai` on PATH, a line with paths needs both files. A line
+ * in any other form is the user's own and counts as working.
+ */
+export function hookLineRuns(line: string, pathEnv: string = process.env.PATH ?? ''): boolean {
+  if (line === BARE_HOOK_LINE) return findOnPath('secretless-ai', pathEnv) !== null;
+  const m = PATH_HOOK_LINE.exec(line);
+  if (m === null) return true;
+  return [m[1], m[2]].every((p) => fs.existsSync(p.replace(/'\\''/g, "'")));
 }
 
 /**
  * Marker comment used to identify secretless-managed lines in shell profiles.
  */
 export const SHELL_HOOK_MARKER = '# secretless-ai: auto-load secrets from vault';
+
+export interface InstallShellHookOptions {
+  home?: string;
+  shell?: string;
+  platform?: NodeJS.Platform;
+  /** The command the hook runs; defaults to shellHookCommand(). */
+  command?: string[];
+  pathEnv?: string;
+}
+
+export interface ShellHookChange {
+  profilePath: string;
+  /** `repaired`: the hook line this tool wrote earlier no longer reached a CLI and was replaced. */
+  action: 'installed' | 'repaired';
+  command: string[];
+  /** Whether `secretless-ai` is on PATH, so the hook does not depend on `command` alone. */
+  cliOnPath: boolean;
+}
+
+/**
+ * Add the hook to ~/.zshenv (macOS or zsh) or ~/.bashrc, or replace the hook
+ * line this tool wrote earlier when it no longer reaches a CLI. Returns null
+ * when the profile already has a working hook.
+ */
+export function installShellHook(options: InstallShellHookOptions = {}): ShellHookChange | null {
+  const home = options.home ?? os.homedir();
+  const shell = options.shell ?? process.env.SHELL ?? '';
+  const platform = options.platform ?? os.platform();
+  const pathEnv = options.pathEnv ?? process.env.PATH ?? '';
+  const command = options.command ?? shellHookCommand(process.execPath, pathEnv);
+
+  const profilePath = path.join(home, platform === 'darwin' || shell.endsWith('/zsh') ? '.zshenv' : '.bashrc');
+  let existing = '';
+  try {
+    existing = fs.readFileSync(profilePath, 'utf-8');
+  } catch {
+    // File doesn't exist — will create it
+  }
+
+  const hookLine = getShellHookLine(command);
+  const cliOnPath = findOnPath('secretless-ai', pathEnv) !== null;
+  const lines = existing.split('\n');
+  const at = lines.indexOf(SHELL_HOOK_MARKER);
+  if (at !== -1) {
+    const current = lines[at + 1] ?? '';
+    if (current === hookLine || hookLineRuns(current, pathEnv)) return null;
+    lines[at + 1] = hookLine;
+    fs.writeFileSync(profilePath, lines.join('\n'));
+    return { profilePath, action: 'repaired', command, cliOnPath };
+  }
+  // A marker this split did not find on a line of its own, or the user's own line.
+  if (existing.includes(SHELL_HOOK_MARKER) || existing.includes('secretless-ai env')) return null;
+
+  fs.writeFileSync(profilePath, `${existing}\n${SHELL_HOOK_MARKER}\n${hookLine}\n`);
+  return { profilePath, action: 'installed', command, cliOnPath };
+}
