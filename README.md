@@ -336,7 +336,7 @@ Both features gracefully degrade when NanoMind packages are not installed.
 
 ## Using with opena2a-cli
 
-[`opena2a-cli`](https://github.com/opena2a-org/opena2a) is the unified CLI for the OpenA2A security toolchain. Secretless powers `opena2a secrets`.
+[`opena2a-cli`](https://github.com/opena2a-org/opena2a) is the unified CLI for the OpenA2A security toolchain. `opena2a secrets` runs the secretless-ai release opena2a-cli depends on, which can be older than the one this README describes: opena2a-cli 0.10.13 depends on `secretless-ai@^0.14.1`, so `opena2a secrets` runs 0.14.x, which has no `secret push`, `secret sync`, `git-credential` or `telemetry` command. For those, run `npx secretless-ai` directly. `npm view opena2a-cli dependencies.secretless-ai` prints the range the latest opena2a-cli depends on.
 
 ```bash
 npm install -g opena2a-cli

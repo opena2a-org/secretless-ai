@@ -175,6 +175,15 @@ one row for each that ends in `→ secretless-ai doctor`; `doctor` prints the
 Verify and Fix lines, and `status --json` carries them in
 `gitCredentials.findings`. The README now says so.
 
+**The README says which secretless-ai release `opena2a secrets` runs
+(#346).** It said only that Secretless powers `opena2a secrets`, while
+opena2a-cli 0.10.13 depends on `secretless-ai@^0.14.1`, a release with no
+`secret push`, `secret sync`, `git-credential` or `telemetry` command. The
+"Using with opena2a-cli" section now names that range and those commands, says
+to run them through `npx secretless-ai`, and gives
+`npm view opena2a-cli dependencies.secretless-ai` to print the range the latest
+opena2a-cli depends on.
+
 **The "I already have a vault" guide no longer says Azure Key Vault is not
 part of the CLI (#343).** It said AWS Secrets Manager and Azure Key Vault were
 both missing, while `secret push --to azure-kv` writes to Azure Key Vault. The
