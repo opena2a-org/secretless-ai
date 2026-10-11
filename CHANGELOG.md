@@ -16,9 +16,12 @@ left as `<name>` in the `Fix:` (#312).** `secret push A --to vault --as
 value meant to be filled in; `'<_name>'` gave `__name_` and `'<>'` gave `__`.
 Vault accepts each of these if the `Fix:` is run as printed. The `Fix:` now
 leaves `<name>`, and the line for the value ends with
-`; choose another name for A.` A `<word>` whose word starts with a letter a-z
-or A-Z and holds only those letters, digits, `-` and `_` after it is still a
-placeholder and stays in the `Fix:` as given.
+`; choose another name for A.` The value gets that line wherever it stands in
+`--as`: `secret push A,B --to vault --as 'a.b,<2fa>'` printed a
+"cannot name a secret" line for `a.b` only, and now prints one for `<2fa>`
+too. A `<word>` whose word starts with a letter a-z or A-Z and holds only
+those letters, digits, `-` and `_` after it is still a placeholder and stays
+in the `Fix:` as given.
 
 **The `Fix:` of a `secret push --dry-run` refusal keeps `--dry-run` (#312).**
 `secret push A --to vault --as a.b --dry-run` printed
@@ -37,7 +40,9 @@ name now gets the line, and the line ends by naming the secret the name was
 given for: `; choose another name for B.` This holds for one that is the
 first or the only refused name too; its line did not name the secret. A
 refused name with no such character gets the line only when it is the first
-refused name, as before.
+refused name other than a placeholder, as before, unless it is a value in
+angle brackets that is not a placeholder (#312), which gets the line wherever
+it stands.
 
 **A `secret push` refusal names every secret its `Fix:` leaves as `<name>`
 (#307).** `secret push A,B --to vault --as '<name>,<name>'` said only that
@@ -65,8 +70,10 @@ offered `--as _name_,a_b` as its `Fix:` (`-name-` for Azure Key Vault), a
 name made from the placeholder's letters. It now prints `"<name>" in --as is
 a placeholder: replace it with the name A should have in` the store, with the
 characters that store allows, and the `Fix:` keeps `<name>` where it stands.
-Any other refused `--as` name in the same line is still reported and replaced
-as before.
+Any refused `--as` name in the same line that is not a placeholder is still
+reported and replaced as before, unless it holds a character the refusal
+prints escaped or is in angle brackets: the `Fix:` leaves each of those as
+`<name>`, and each gets its own line (#307, #312).
 
 **A refused `secret push --as` name says why its `Fix:` leaves `<name>` when
 the replacement is already taken (#295).** `secret push A,B --to vault --as
