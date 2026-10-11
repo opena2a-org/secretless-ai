@@ -3,7 +3,7 @@
 **Time:** 3 minutes
 **Prerequisites:** Node.js 20.19+, at least one MCP client configured
 
-MCP (Model Context Protocol) servers are configured through JSON files that contain plaintext API keys. These configuration files are readable by the AI tool that uses them, which means your credentials are visible in the LLM context window.
+MCP (Model Context Protocol) client configs often hold API keys in plaintext JSON. The client application reads the config to start each server. The model sees a key only if an assistant reads the file, and any assistant that can read files on your machine can read it.
 
 ## Where MCP credentials live
 
@@ -34,7 +34,7 @@ A typical MCP config looks like this:
 }
 ```
 
-The `BROWSERBASE_API_KEY` value is stored in plaintext. When the AI tool reads this config to start the MCP server, it sees the key.
+The `BROWSERBASE_API_KEY` value is stored in plaintext. The client application reads this config to start the MCP server and passes the key to it as an environment variable. Any assistant that can read files on your machine can read the key from the same file.
 
 ## Step 1: Encrypt MCP credentials
 

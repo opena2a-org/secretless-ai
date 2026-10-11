@@ -183,7 +183,7 @@ In Claude Code, `init` also installs a PostToolUse hook (`.claude/hooks/secretle
 
 ## MCP server protection
 
-Every MCP server config has plaintext API keys in JSON files on your machine. The LLM sees them. Secretless encrypts them.
+MCP client configs often hold API keys in plaintext JSON. Any assistant that can read files on your machine can read them. Secretless encrypts them.
 
 ```bash
 npx secretless-ai protect-mcp

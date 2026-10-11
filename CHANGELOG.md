@@ -175,6 +175,16 @@ one row for each that ends in `→ secretless-ai doctor`; `doctor` prints the
 Verify and Fix lines, and `status --json` carries them in
 `gitCredentials.findings`. The README now says so.
 
+**The MCP docs no longer say every config holds plaintext keys that the model
+sees (#340).** The README's "MCP server protection" section, the MCP guide and
+the use-case index said every MCP server config has plaintext API keys and
+that the LLM sees them. Many configs hold no key (`protect-mcp` reports
+`No plaintext secrets found in MCP configs. Already clean.` for them), and the
+client application reads a config to start its servers; the model sees a key
+only when an assistant reads the file. The pages now say MCP client configs
+often hold API keys in plaintext JSON, and that any assistant that can read
+files on your machine can read them.
+
 **The README says which secretless-ai release `opena2a secrets` runs
 (#346).** It said only that Secretless powers `opena2a secrets`, while
 opena2a-cli 0.10.13 depends on `secretless-ai@^0.14.1`, a release with no
