@@ -1518,9 +1518,18 @@ function walkSourceFiles(
       || (name.startsWith('.') && !(ignore && ignore.matches(rel + '/.')) && SOURCE_SKIP_REASONS.hiddenDir)
       || (!includeTests && TEST_DIRS.has(name) && SOURCE_SKIP_REASONS.testDir)
       || (!!(ignore && ignore.matches(rel + '/.')) && SOURCE_SKIP_REASONS.ignoreRule),
-    // The config walk reads these (it applies the ignore rule itself).
-    coveredElsewhere: (name, rel) =>
-      matchesConfigName(name, rel, configMatcher) && !(ignore && ignore.matches(rel)),
+    // The config walk reads these (it applies the ignore rule itself). So does
+    // the key walk, under the test-file and ignore rules this walk applies,
+    // in every directory this walk enters: a `.secretless-bundle` it reported
+    // as a finding was also listed as "not opened: unsupported file type",
+    // with a `Scan one:` line that reported it again (#341).
+    coveredElsewhere: (name, rel) => {
+      if (ignore && ignore.matches(rel)) return false;
+      if (matchesConfigName(name, rel, configMatcher)) return true;
+      const ext = path.extname(name).toLowerCase();
+      return KEY_FILE_EXTENSIONS.has(ext) && !SOURCE_FILE_EXTENSIONS.has(ext)
+        && (includeTests || !isTestFile(name));
+    },
     rejectFile: (name, rel, listedRel) => {
       // #124 — a config-format file off the CONFIG_FILES list was "unsupported
       // file type" to this walk and unknown to the config walk: read by
@@ -1533,10 +1542,10 @@ function walkSourceFiles(
       const supported = SOURCE_FILE_EXTENSIONS.has(ext);
       const configShaped = !supported && isConfigShaped(name);
       if (!supported && !configShaped) {
-        // The key walk reads a key file this walk does not, under the same
-        // test-file and ignore rules. When one of those rules stops it there
-        // too, that rule is why no walk opened it, and its flag is the one
-        // that does: "unsupported file type" named a type the key walk reads.
+        // A key file reaches here only when the test-file or ignore rule
+        // stopped the key walk too (otherwise it is covered elsewhere). That
+        // rule is why no walk opened it, and its flag is the one that does:
+        // "unsupported file type" named a type the key walk reads.
         if (KEY_FILE_EXTENSIONS.has(ext)) {
           if (!(includeTests || !isTestFile(name))) return SOURCE_SKIP_REASONS.testFile;
           if (ignore && ignore.matches(rel)) return SOURCE_SKIP_REASONS.ignoreRule;

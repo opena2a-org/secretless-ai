@@ -202,6 +202,17 @@ guide now says Azure Key Vault is a push target, not a storage backend
 to a cloud secret store" heading; AWS Secrets Manager is still the one it names
 as missing.
 
+**`scan` no longer lists a key file it opened as a file it did not open
+(#341).** In a directory holding `t.secretless-bundle`, `scan --json` reported
+the bundle as a high finding and also counted it in `skippedUnsupported`, and
+the human report listed it under `1 file not opened: ... unsupported file
+type` with a `Scan one:` line that reported it again. A `.pem`, `.key`,
+`.crt`, `.p12` or `.pfx` file got the same listing, though the scan reads each
+of them for a private key or flags it by its presence. A key file is now
+listed as not opened only when a test-file or ignore rule kept the scan from
+reading it, with that rule as the reason; the same directory now reports
+`"high": 1` and `"skippedUnsupported": 0`.
+
 **The team setup guide no longer lists `keychain` as a shared team backend
 (#344).** The table under "Choose a storage backend" in
 `docs/use-cases/team-setup.md` offered `keychain` for "Small teams,
