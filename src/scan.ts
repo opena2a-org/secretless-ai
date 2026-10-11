@@ -8,7 +8,7 @@ import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, isConfigShaped, type CredentialPattern } from './patterns';
 import { redactMatches } from './redact';
 import { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
-import { scoreFinding, type ConfidenceTier } from './confidence';
+import { scoreFinding, type ConfidenceBreakdown, type ConfidenceTier } from './confidence';
 import { BUNDLE_EXTENSION } from './bundle';
 import { withSlashSeparators } from './display-safe';
 
@@ -37,6 +37,12 @@ export interface ScanFinding {
    * consumers can rely on the field being present).
    */
   looksLikeFixture: boolean;
+  /**
+   * The sub-scores and path rule behind `confidence`. Present only when
+   * `ScanOptions.confidenceFactors` is set, and absent on findings whose
+   * confidence is fixed because the file's presence is the finding.
+   */
+  confidenceFactors?: ConfidenceBreakdown;
 }
 
 /** Per-pattern fix guidance. Tells users exactly how to fix each finding. */
@@ -142,6 +148,11 @@ export interface ScanOptions {
    * has a way to scan it rather than only a way to learn it was missed.
    */
   maxFileSizeBytes?: number;
+  /**
+   * Attach each finding's confidence breakdown as `confidenceFactors`. Off by
+   * default, so `scan --json` output keeps its shape. Backs `scan --explain`.
+   */
+  confidenceFactors?: boolean;
 }
 
 /** Optional out-param: counters the scan populates as a side channel. */
@@ -477,6 +488,7 @@ function scanSingleFile(
               confidence: breakdown.score,
               confidenceTier: breakdown.tier,
               looksLikeFixture: false,
+              ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
             });
           }
           break;
@@ -586,6 +598,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       confidence: breakdown.score,
       confidenceTier: breakdown.tier,
       looksLikeFixture,
+      ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
     };
   }
 

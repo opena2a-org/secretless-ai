@@ -14,6 +14,7 @@ import {
   valueEntropy,
   lengthTier,
   pathTier,
+  classifyPath,
   scoreFinding,
   formatConfidence,
 } from './confidence';
@@ -327,6 +328,40 @@ describe('scoreFinding (composite)', () => {
     // Path tier 0.4 alone is enough to keep this off "high" — protects against
     // the "documentation example" FP class.
     expect(r.tier).not.toBe('high');
+  });
+});
+
+// `scan --explain` prints these fields to say why a score is what it is, so
+// they have to be the ones the score was computed from.
+describe('scoreFinding (explained inputs)', () => {
+  it('reports the path rule that set pathScore', () => {
+    const cases: Array<[string, string]> = [
+      ['test/fixtures/keys.txt', 'fixture'],
+      ['README.md', 'docs'],
+      ['app/.env.production', 'config'],
+      ['src/client.js', 'source'],
+    ];
+    for (const [filePath, kind] of cases) {
+      const r = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: 'AKIAIOSFODNN7REALKEY9', filePath });
+      expect(classifyPath(filePath)).toBe(kind);
+      expect(r.pathKind, filePath).toBe(kind);
+      expect(r.pathScore, filePath).toBe(pathTier(filePath));
+    }
+  });
+
+  it('flags a score raised to the high threshold, and only that', () => {
+    const raised = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: 'AKIAIOSFODNN7REALKEY9', filePath: 'src/config.js' });
+    expect(raised.raisedToHigh).toBe(true);
+    expect(raised.score).toBe(0.85);
+
+    // High on its own inputs: nothing was raised.
+    const strong = scoreFinding({ pattern: { id: 'anthropic', regex: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/ }, value: ANT_PREFIX + 'aB3kP9xQ2mZvW7nY4tL6rJ8sH1cF5gD0eA', filePath: '.env' });
+    expect(strong.tier).toBe('high');
+    expect(strong.raisedToHigh).toBe(false);
+
+    // A fixture path is never raised.
+    const fixture = scoreFinding({ pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ }, value: 'AKIAIOSFODNN7REALKEY9', filePath: 'test/fixtures/keys.txt' });
+    expect(fixture.raisedToHigh).toBe(false);
   });
 });
 

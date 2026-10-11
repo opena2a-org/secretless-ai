@@ -18,6 +18,19 @@ ends with what to do instead, and a `Fix:` names the first name `secret set`
 takes. When no name is one it takes, no `secret set` line is printed. A name
 `secret set` takes is offered as before.
 
+**`scan --explain` prints a detailed view of each finding (#332).**
+Without a ready NanoMind engine, `--explain` printed the plain `scan` view and
+said to install `@nanomind/engine`, a package that installs as an optional
+dependency but reports ready only when its model file and runtime exist. Each
+finding now shows the pattern that matched, the confidence score's inputs
+(pattern, entropy, length and path, and whether a fixed-structure pattern
+raised it to high), the path rule that applied, the Fix, and a Verify command
+that re-scans the file from the current directory (`ls -l` for a file flagged
+for existing). None of it uses the engine. With
+`SECRETLESS_NANOMIND_EXPLAIN=1` and no ready engine, the notice now says
+whether the package or its model is missing and names the model files it did
+not find. `scan --json` output is unchanged.
+
 **The vault guide's `vault exec` example sends the stored token (#329).**
 `docs/use-cases/bring-your-own-vault.md` showed `vault exec github -- curl -H
 "Authorization: Bearer $GITHUB" ...`. The calling shell expands `$GITHUB`

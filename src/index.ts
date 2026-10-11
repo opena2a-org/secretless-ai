@@ -3,7 +3,7 @@ export { scan, type ScanFinding, type ScanOptions } from './scan';
 export {
   scoreFinding, formatConfidence,
   patternSpecificity, valueEntropy, lengthTier, pathTier,
-  type ConfidenceTier, type ConfidenceBreakdown, type ScoreFindingInput,
+  type ConfidenceTier, type ConfidenceBreakdown, type ScoreFindingInput, type PathKind,
 } from './confidence';
 export { status, type StatusResult } from './status';
 export { verify, type VerifyResult } from './verify';

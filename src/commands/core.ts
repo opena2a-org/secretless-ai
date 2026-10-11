@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips, SOURCE_SKIP_REASONS } from '../scan';
+import { scan, emptySkips, SOURCE_SKIP_REASONS, type ScanFinding } from '../scan';
 import { status, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
@@ -16,7 +16,9 @@ import { getSessionStatus } from '../session/session-state';
 import { isDaemonInstalled } from '../session/install';
 import { VERSION, CLI, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime } from './utils';
 import { findGitCredentialExposure, describeExposure } from '../git-credential-files';
-import { explainFinding, isEngineAvailable } from '../nanomind';
+import { explainFinding, isEngineAvailable, engineUnavailableReason, type EngineUnavailableReason } from '../nanomind';
+import { CREDENTIAL_PATTERNS } from '../patterns';
+import { CONFIDENCE_WEIGHTS, type PathKind } from '../confidence';
 import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard, quotePathForDisplay, withSlashSeparators } from '../display-safe';
 import { c, divider } from './colors';
 
@@ -720,6 +722,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     showPlaceholders: options?.showPlaceholders,
     maxSourceFiles: options?.maxFiles,
     maxFileSizeBytes: options?.maxFileSizeBytes,
+    // The detailed view prints what the score was made of. Never with --json,
+    // whose findings keep their shape.
+    confidenceFactors: options?.explain === true && !options?.json,
   };
   const capUsed = options?.maxFiles ?? 5000;
 
@@ -1065,10 +1070,26 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return 0;
   }
 
-  // If --explain requested, use NanoMind engine for rich context
+  // --explain: the detailed per-finding view. Built from the scan alone, so it
+  // does not depend on the NanoMind engine or its model.
   if (options?.explain) {
-    const code = await runScanWithExplanations(findings);
+    // The path a `Verify:` command re-scans, runnable from the shell's cwd.
+    // A file target's findings are all in that file, and a home-directory
+    // config file is reported by its `~/` label, which the shell expands.
+    const targetIsFile = (() => {
+      try { return nodeFs.statSync(projectDir).isFile(); } catch { return false; }
+    })();
+    const verifyOperand = (file: string): string => {
+      if (targetIsFile) return operand(['.']);
+      if (file.startsWith('~/')) {
+        const rest = file.slice(2);
+        return hasDisplayHazard(rest) ? '<path>' : `~/${shellQuote(rest)}`;
+      }
+      return operand([file]);
+    };
+    const code = await runScanWithExplanations(findings, verifyOperand);
     coverageWarnings();
+    placeholderHint();
     confidenceHint();
     return code;
   }
@@ -1131,25 +1152,92 @@ function printFindings(findings: ReturnType<typeof scan>): void {
   console.log();
 }
 
-async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promise<number> {
-  const engineReady = await isEngineAvailable();
+/** Findings whose file's presence is the finding: no pattern, no score inputs. */
+const PRESENCE_FINDINGS = new Set(['secretless-bundle', 'pkcs12-keystore']);
 
-  if (!engineReady) {
-    console.log('  NanoMind engine not available. Install @nanomind/engine for rich explanations.');
-    console.log('  Falling back to standard output.\n');
-    printFindings(findings);
-    return findings.length > 0 ? 1 : 0;
+/** Why a path scored what it did, by the rule `classifyPath` matched. */
+const PATH_KIND_REASONS: Record<PathKind, { label: string; reason: string }> = {
+  fixture: { label: 'test, fixture or example path', reason: 'a credential here is usually a demo value' },
+  docs: { label: 'documentation file', reason: 'a credential here is usually an example' },
+  config: { label: 'env or config file', reason: 'live credentials are usually kept here' },
+  source: { label: 'source file', reason: 'no test, fixture, docs or config marker in its path' },
+};
+
+const REGEX_DISPLAY_MAX = 72;
+
+function explainPattern(finding: ScanFinding): string {
+  if (PRESENCE_FINDINGS.has(finding.patternId)) {
+    return `${finding.patternId}, matched by file type, not content`;
+  }
+  const pattern = CREDENTIAL_PATTERNS.find(p => p.id === finding.patternId);
+  if (!pattern) return finding.patternId;
+  const src = pattern.regex.source;
+  const shown = src.length > REGEX_DISPLAY_MAX ? `/${src.slice(0, REGEX_DISPLAY_MAX)}…` : `/${src}/`;
+  return `${pattern.id}, matching ${shown}`;
+}
+
+function explainConfidence(finding: ScanFinding): string {
+  const head = `${finding.confidenceTier} (${finding.confidence.toFixed(2)})`;
+  const f = finding.confidenceFactors;
+  if (!f) {
+    return PRESENCE_FINDINGS.has(finding.patternId)
+      ? `${head}, fixed: the file's presence is the finding`
+      : head;
+  }
+  const parts = `pattern ${f.patternScore.toFixed(2)}, entropy ${f.entropyScore.toFixed(2)}, length ${f.lengthScore.toFixed(2)}, path ${f.pathScore.toFixed(2)}`;
+  return f.raisedToHigh
+    ? `${head} from ${parts}; raised to high: the pattern's fixed structure is conclusive`
+    : `${head} from ${parts}`;
+}
+
+/** The engine notice for `SECRETLESS_NANOMIND_EXPLAIN=1`, naming what is missing. */
+function engineUnavailableLines(reason: EngineUnavailableReason | null): string[] {
+  const head = '  Generated context (SECRETLESS_NANOMIND_EXPLAIN=1) is not shown:';
+  const tail = '  The detailed view below does not use the engine.\n';
+  if (reason?.kind === 'not-installed') {
+    return [`${head} @nanomind/engine is not installed.`, '  Install: npm install @nanomind/engine', tail];
+  }
+  const missing = reason?.kind === 'no-model' ? reason.missing : [];
+  return [
+    `${head} @nanomind/engine is installed, but its local model is missing.`,
+    ...missing.map(p => `    Not found: ${escapePathForDisplay(p)}`),
+    tail,
+  ];
+}
+
+async function runScanWithExplanations(
+  findings: ReturnType<typeof scan>,
+  verifyOperand: (file: string) => string,
+): Promise<number> {
+  // Generated context is opt-in (see below), so the engine is consulted only
+  // when it was asked for. Not finding it costs that note, never the view.
+  const generate = process.env.SECRETLESS_NANOMIND_EXPLAIN === '1';
+  const engineReady = generate && await isEngineAvailable();
+  if (generate && !engineReady) {
+    for (const line of engineUnavailableLines(engineUnavailableReason())) console.log(line);
   }
 
   console.log(`  Found ${findings.length} credential(s):\n`);
   console.log('  AI coding tools (Claude Code, Cursor, Copilot) can read .env files in their');
   console.log('  context window, exposing credentials to the LLM provider.\n');
+  const pct = (w: number) => `${Math.round(w * 100)}%`;
+  const w = CONFIDENCE_WEIGHTS;
+  console.log(`  Confidence weighs the pattern ${pct(w.pattern)}, the value's entropy ${pct(w.entropy)},`);
+  console.log(`  its length ${pct(w.length)} and the file's path ${pct(w.path)}.\n`);
 
   for (const finding of findings) {
     const severity = finding.severity === 'critical' ? 'CRIT' : 'HIGH';
+    const fixtureSuffix = finding.looksLikeFixture ? ' (looks like a test fixture)' : '';
     console.log(`  [${severity}] ${finding.patternName}`);
-    console.log(`         ${escapePathForDisplay(finding.file)}:${finding.line}`);
+    console.log(`         ${escapePathForDisplay(finding.file)}:${finding.line}${fixtureSuffix}`);
     console.log(`         ${escapeForDisplay(finding.preview)}`);
+    console.log(`         Pattern: ${explainPattern(finding)}`);
+    console.log(`         Confidence: ${explainConfidence(finding)}`);
+    if (finding.confidenceFactors?.pathKind) {
+      const { pathScore, pathKind } = finding.confidenceFactors;
+      const { label, reason } = PATH_KIND_REASONS[pathKind];
+      console.log(`         Path: ${label} (${pathScore.toFixed(2)}): ${reason}`);
+    }
 
     // The deterministic fix ALWAYS prints. Generated text may only appear
     // alongside it, explicitly labelled, never in place of it — substituting
@@ -1158,6 +1246,12 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
     if (finding.fix) {
       console.log(`         Fix: ${finding.fix}`);
     }
+    // Re-run after the fix: the finding is gone when the value is. A file
+    // flagged for existing is checked by listing it.
+    const target = verifyOperand(finding.file);
+    console.log(PRESENCE_FINDINGS.has(finding.patternId)
+      ? `         Verify: ls -l ${target}`
+      : `         Verify: npx secretless-ai scan ${target}`);
     // Generated context is OFF by default. Measured over 30 runs against the
     // local engine (2026-08-06): 30/30 produced text, 0/30 produced a usable
     // explanation. What survived validation was instruction-tuning noise
@@ -1169,7 +1263,7 @@ async function runScanWithExplanations(findings: ReturnType<typeof scan>): Promi
     // A wrong security claim from a security tool is worse than no claim, and a
     // label does not make it true. Kept behind an opt-in so the path stays
     // exercised and can be re-enabled when a model earns it.
-    if (process.env.SECRETLESS_NANOMIND_EXPLAIN === '1') {
+    if (engineReady) {
       const explanation = await explainFinding(finding.patternName, finding.patternId, finding.file);
       // Generated from the finding's file name, so it can carry that name's
       // bytes. Printed line by line under this block's own indent.
