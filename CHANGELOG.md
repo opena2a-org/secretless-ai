@@ -151,6 +151,13 @@ each tier "works against any supported backend" and the guide showed
 `vault exec` reads the Identity Vault only, and show
 `run --only NAME -- <command>` for a secret in the backend.
 
+**The README says `status` points to `doctor` for plaintext git credentials
+(#342).** It said `doctor` and `status` each print Verify and Fix lines for a
+`~/.git-credentials` or `~/.netrc` file and a `store` helper. `status` prints
+one row for each that ends in `→ secretless-ai doctor`; `doctor` prints the
+Verify and Fix lines, and `status --json` carries them in
+`gitCredentials.findings`. The README now says so.
+
 **`secret push` no longer offers `secret set` for a name `secret set`
 refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
 `-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line
