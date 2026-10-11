@@ -18,6 +18,18 @@ ends with what to do instead, and a `Fix:` names the first name `secret set`
 takes. When no name is one it takes, no `secret set` line is printed. A name
 `secret set` takes is offered as before.
 
+**The vault guide's `vault exec` example sends the stored token (#329).**
+`docs/use-cases/bring-your-own-vault.md` showed `vault exec github -- curl -H
+"Authorization: Bearer $GITHUB" ...`. The calling shell expands `$GITHUB`
+before `vault exec` starts, and `vault exec` starts its command without a
+shell, so the request went out with an empty bearer token; the same line would
+also have put the token on curl's command line. The example now reads the
+value inside a single-quoted `sh -c` script and passes the header to curl on
+stdin, as the guide's `run` example does. A test reads every documented `run`
+and `vault exec` child command and fails on a variable the calling shell
+expands, one the child receives as literal text, or one a script passes to
+another program as an argument.
+
 **`secret push` no longer offers `secret set` for a name `secret set`
 refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
 `-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line

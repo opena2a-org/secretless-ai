@@ -97,10 +97,10 @@ npx secretless-ai run --only MY_KEY -- <command>
 Once your backend is connected, use `vault exec` (Tier 2) to run commands without ever exposing the secret to your parent shell or the AI tool watching it:
 
 ```bash
-npx secretless-ai vault exec github -- curl -H "Authorization: Bearer $GITHUB" https://api.github.com/user
+npx secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'
 ```
 
-The child process gets `$GITHUB`. The parent shell does not. The AI assistant reading your terminal output sees the command but never the secret.
+The value is set as `$GITHUB` in the environment of `sh`; the parent shell does not get it. `vault exec` starts its command without a shell, so the reference has to sit inside the single-quoted `sh -c` script: written as `-H "Authorization: Bearer $GITHUB"`, the calling shell expands it to an empty string before `vault exec` starts, and in single quotes outside a script curl receives the literal text `$GITHUB`. As in the `run` example above, `printf` is a shell builtin, so the value reaches curl on stdin rather than on its command line. `vault exec` does not mask the child's output: a command that prints the value shows it to whoever ran it, including an AI assistant.
 
 ## When would I add AIM?
 
