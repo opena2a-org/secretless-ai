@@ -163,6 +163,132 @@ jobs:
           # rounds, and it was paying for that by feeding attacker-influenced
           # text to the only merge gate. Each review now stands alone.
 
+      - name: Collect definitions the changed files import
+        # A changed file that calls a function defined in an UNCHANGED file
+        # shows the call in the diff and the import in its full source, but
+        # never the definition: the file that holds it is in neither section.
+        # On #275 the review read that absence as "called but not defined or
+        # imported" and raised a CRITICAL on two functions exported from
+        # src/display-safe.ts, which did not change. This step follows every
+        # relative import of a changed file to the module it resolves to and
+        # lists that module's export declarations, line-numbered, so a symbol
+        # that resolves in the checkout is seen to resolve.
+        #
+        # Every file is read from the HEAD commit with `git cat-file`, never
+        # through the filesystem. The import paths are authored by the pull
+        # request: a path is normalised without touching the disk and dropped
+        # if it climbs above the repository root, and a tracked symlink's blob
+        # is the NAME of its target, not the target's contents, so nothing on
+        # the runner outside the commit can reach the prompt. The step has no
+        # token in its environment and no workflow expressions, so it can be
+        # executed verbatim outside Actions when verifying this logic.
+        run: |
+          : > /tmp/imported_defs.txt
+          : > /tmp/imported_paths.txt
+          : > /tmp/imported_bases.txt
+          DEFS_SIZE=0
+          MAX_DEFS_SIZE=60000
+
+          # A repository-relative path with '.' and empty segments dropped and
+          # each '..' removing one segment. Fails when the path climbs above
+          # the repository root.
+          normalize_path() {
+            local IFS=/ part i n=0 joined
+            local -a parts out
+            read -r -a parts <<< "$1"
+            for part in "${parts[@]}"; do
+              case "$part" in
+                '' | .) ;;
+                ..) [ "$n" -gt 0 ] || return 1; n=$((n - 1)) ;;
+                *) out[n]="$part"; n=$((n + 1)) ;;
+              esac
+            done
+            [ "$n" -gt 0 ] || return 1
+            joined="${out[0]}"
+            for ((i = 1; i < n; i++)); do joined="$joined/${out[i]}"; done
+            printf '%s\n' "$joined"
+          }
+
+          # The first module file a specifier names that is a blob in HEAD,
+          # in TypeScript's order: the path as written (a `.js` specifier also
+          # as its `.ts` source), then with an extension, then as a directory
+          # index. One `git cat-file --batch-check` answers every candidate.
+          resolve_module() {
+            local base="$1" type i=0
+            local -a cands
+            case "$base" in
+              *.js) cands=("$base" "${base%.js}.ts" "${base%.js}.tsx") ;;
+              *.mjs) cands=("$base" "${base%.mjs}.mts") ;;
+              *.cjs) cands=("$base" "${base%.cjs}.cts") ;;
+              *.ts | *.tsx | *.mts | *.cts | *.jsx) cands=("$base") ;;
+              *) cands=() ;;
+            esac
+            cands+=("$base.ts" "$base.tsx" "$base.d.ts" "$base.js" "$base.jsx" "$base.mjs" "$base.cjs" "$base/index.ts" "$base/index.tsx" "$base/index.js")
+            while IFS= read -r type; do
+              if [ "$type" = blob ]; then printf '%s\n' "${cands[i]}"; return 0; fi
+              i=$((i + 1))
+            done < <(printf 'HEAD:%s\n' "${cands[@]}" | git cat-file --batch-check='%(objecttype)')
+            return 1
+          }
+
+          # The relative module specifiers on standard input, one per line:
+          # `from '...'`, `import '...'`, `require('...')` and `import('...')`.
+          # Package imports are not repository files and are not followed.
+          import_specs() {
+            { grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"]\.{1,2}/[^'\"]+['\"]" || true; } \
+              | sed -E "s/^[^'\"]*['\"]//; s/['\"]\$//"
+          }
+
+          # The export declarations on standard input, numbered as `nl -ba`
+          # numbers the full source files: `export ...` lines, an `export {`
+          # list through its closing brace, and the CommonJS `exports.x =` and
+          # `module.exports = {` forms.
+          export_lines() {
+            awk '
+              open { printf "%6d\t%s\n", NR, $0; if (index($0, "}") > 0) open = 0; next }
+              /^[ \t]*export([ \t]|[{*=]|$)/ || /^[ \t]*(module\.)?exports[ \t]*[=.]/ {
+                printf "%6d\t%s\n", NR, $0
+                if (($0 ~ /^[ \t]*export[ \t]*(type[ \t]*)?[{]/ || $0 ~ /^[ \t]*module\.exports[ \t]*=[ \t]*[{]/) && index($0, "}") == 0) open = 1
+              }
+            '
+          }
+
+          # fd 3 and fd 4 for the same reason as the full-file loop above: no
+          # command in the body may consume the list it is iterating. The body
+          # greps that list, which only reads it.
+          # shellcheck disable=SC2094
+          while IFS= read -r file <&3; do
+            case "$file" in
+              *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs) ;;
+              *) continue ;;
+            esac
+            # A deleted file has no blob in HEAD and imports nothing any more.
+            [ "$(git cat-file -t "HEAD:$file" 2>/dev/null)" = blob ] || continue
+            dir=$(dirname -- "$file")
+            git cat-file blob "HEAD:$file" | import_specs > /tmp/import_specs.txt
+            while IFS= read -r spec <&4; do
+              base=$(normalize_path "$dir/$spec") || continue
+              if grep -Fxq -- "$base" /tmp/imported_bases.txt; then continue; fi
+              printf '%s\n' "$base" >> /tmp/imported_bases.txt
+              target=$(resolve_module "$base") || continue
+              # A changed module's full source is already in FULL SOURCE FILES.
+              if grep -Fxq -- "$target" /tmp/changed_files.txt; then continue; fi
+              if grep -Fxq -- "$target" /tmp/imported_paths.txt; then continue; fi
+              printf '%s\n' "$target" >> /tmp/imported_paths.txt
+              git cat-file blob "HEAD:$target" | export_lines > /tmp/module_defs.txt
+              [ -s /tmp/module_defs.txt ] || continue
+              SIZE=$(wc -c < /tmp/module_defs.txt | tr -d ' ')
+              if [ $((DEFS_SIZE + SIZE)) -gt "$MAX_DEFS_SIZE" ]; then
+                printf '\n[IMPORTED DEFINITIONS TRUNCATED at %s bytes — remaining modules omitted]\n' "$DEFS_SIZE" >> /tmp/imported_defs.txt
+                break 2
+              fi
+              DEFS_SIZE=$((DEFS_SIZE + SIZE))
+              printf '\n=== %s (unchanged; imported by %s) ===\n' "$target" "$file" >> /tmp/imported_defs.txt
+              cat /tmp/module_defs.txt >> /tmp/imported_defs.txt
+            done 4< /tmp/import_specs.txt
+          done 3< /tmp/changed_files.txt
+          echo "Resolved $(wc -l < /tmp/imported_paths.txt | tr -d ' ') unchanged imported modules; listed $DEFS_SIZE bytes of export declarations."
+
       - name: Build review prompt
         # Kept local on purpose: Secretless's tech stack and review focus are its
         # own, and only the model call drifted. This step deliberately contains
@@ -183,9 +309,10 @@ jobs:
 
           Tech stack: TypeScript/Node.js, CommonJS, vitest for testing.
 
-          You have TWO sources of information:
+          You have THREE sources of information:
           1. FULL SOURCE FILES — complete line-numbered source code of changed files (use this to VERIFY mitigations)
-          2. DIFF — the actual changes introduced in this PR
+          2. DEFINITIONS IMPORTED FROM UNCHANGED FILES — for each relative import in a changed file, the line-numbered export declarations of the module it resolves to in this checkout. Those modules did not change, so their code is not in the diff; a symbol declared there is defined.
+          3. DIFF — the actual changes introduced in this PR
 
           Review focus (in priority order):
           1. SECURITY: Secret leakage paths (the tool protects secrets — any bypass is critical), command injection (child_process, exec, spawn with unsanitized input), prototype pollution, path traversal, unsafe eval/Function constructors, regex DoS
@@ -208,6 +335,10 @@ jobs:
           - ReDoS when patterns are demonstrably linear-time (no nested quantifiers like (a+)+ or (a|b+)+)
           - SSRF when URLs are validated against an allowlist before fetch
           - Unhandled rejections when .catch() or try/catch wraps the async call
+          - A symbol reported as undefined, missing or not imported when a changed file imports it and DEFINITIONS IMPORTED FROM UNCHANGED FILES lists its declaration. A file absent from the diff is unchanged, not deleted.
+
+          === CODE YOU WERE NOT SHOWN ===
+          You are shown the changed files, the export declarations of the modules they import, and the diff, not the rest of the repository. A finding that rests on code you were not shown (a symbol you believe is undefined or not imported, the body of a function defined in a file you cannot read) cannot be confirmed from this input. Report it as MEDIUM at most and say what you could not see. Never report CRITICAL or HIGH on code you were not shown.
 
           === LINE NUMBERS ===
           Use line numbers from the FULL SOURCE FILES section (these are accurate). Do NOT estimate line numbers from diff hunk headers.
@@ -250,6 +381,8 @@ jobs:
             cat /tmp/changed_files.txt
             printf '\n\nFULL SOURCE FILES (line-numbered — use for verifying mitigations):\n'
             cat /tmp/full_files.txt
+            printf '\n\nDEFINITIONS IMPORTED FROM UNCHANGED FILES (export declarations, line-numbered, of the modules the changed files import):\n'
+            if [ -s /tmp/imported_defs.txt ]; then cat /tmp/imported_defs.txt; else printf '(none)\n'; fi
             printf '\n\nDIFF (changes introduced in this PR):\n'
             cat /tmp/pr_diff.txt
           } > /tmp/user_msg.txt
