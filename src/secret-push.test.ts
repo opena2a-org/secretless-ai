@@ -1163,6 +1163,23 @@ describe('secret push prints no Fix that a shell, or the push itself, reads as s
     expectNoLeak();
   });
 
+  it('a secret name that starts with \'-\' later in the name list is still read, and the Apply line gives it back where it stands (#322)', async () => {
+    await store.setSecret('-x', VALUES.DB_PASSWORD);
+    handler = (call) => {
+      const u = new URL(call.url);
+      if (u.pathname === '/v1/sys/health') return json(200, { initialized: true, sealed: false });
+      if (call.method === 'GET' && u.pathname.startsWith('/v1/secret/metadata/')) return json(404, { errors: [] });
+      return json(400, {});
+    };
+    const code = await runSecretPush(['API_KEY,-x', '--to', 'vault', '--dry-run'], { store, createTarget: TARGETS.vault });
+    expect(code, printed()).toBe(0);
+    expect(printed()).not.toContain('cannot be the first name');
+    expect(printed()).toContain('  Names:  2');
+    expect(printed()).toContain(`  Apply:   ${CLI} secret push API_KEY,-x --to vault\n`);
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+    expectNoLeak();
+  });
+
   it('each <name> in a Fix is quoted, and run as printed the Fix is refused for naming a placeholder', async () => {
     const code = await runSecretPush(['A,B', '--to', 'vault', '--as', '<2fa>,a.b'], { store, createTarget: TARGETS.vault });
     expect(code).toBe(2);
