@@ -289,12 +289,14 @@ or `--dry-run` modifies the history file (compare mtime).
 ## 7. MCP protection (1 min)
 
 **Read-only during smoke.** Do NOT round-trip `protect-mcp` by hand, and do
-NOT try to sandbox it with an isolated `$HOME`: `createBackend('local')`
-silently upgrades to the OS keychain when the platform supports it
-(`src/backends/factory.ts`), and macOS `security` resolves the default
-keychain via `$HOME`, so an isolated `$HOME` pops a blocking "Keychain Not
-Found" GUI dialog and hangs an unattended smoke (verified 2026-07-16). There
-is no CLI flag that forces the pure file backend on macOS.
+NOT try to sandbox it with an isolated `$HOME`: with no backend configured,
+`createBackend('local')` silently upgrades to the OS keychain when the
+platform supports it (`src/backends/factory.ts`), and macOS `security`
+resolves the default keychain via `$HOME`, so an isolated `$HOME` pops a
+blocking "Keychain Not Found" GUI dialog and hangs an unattended smoke
+(verified 2026-07-16). Running `backend set local` in that `$HOME` first
+selects the pure file backend (#327); the round-trip still belongs to the
+unit suite below.
 
 The protect → wrapper-injection → unprotect round-trip (including
 byte-identical config restore and non-secret env vars staying untouched) is

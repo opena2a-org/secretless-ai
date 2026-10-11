@@ -57,7 +57,7 @@ To import a specific file instead:
 npx secretless-ai import .env
 ```
 
-Secrets are now stored in your configured backend (local AES-256-GCM by default, or 1Password/Vault/GCP if configured).
+Secrets are now stored in your configured backend: `local` (the AES-256-GCM encrypted file), `keychain`, 1Password, Vault or GCP. With no backend configured, they go to the OS keychain where one is available (macOS Keychain, or Linux Secret Service when `secret-tool` is installed), and otherwise to the encrypted file. `npx secretless-ai backend` names the store in use.
 
 ## Step 3: Update .gitignore
 
@@ -136,7 +136,7 @@ Keep `.env` files around during the transition period until your team is confide
 The migration did three things:
 
 1. **Scanned** your project for `.env` files and identified credentials
-2. **Imported** credential values into encrypted storage (AES-256-GCM locally, or your configured backend)
+2. **Imported** credential values into your configured backend (with none configured, the OS keychain where one is available, otherwise an AES-256-GCM encrypted file)
 3. **Blocked** AI tools from reading `.env` files via deny rules
 
 Your code still reads `process.env.*` variables. The difference is that the values come from encrypted storage instead of a plaintext file.

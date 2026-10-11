@@ -16,16 +16,18 @@ import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
 import { GCPSecretManagerBackend, isGCPAvailable } from './gcp-sm';
 import { CachedBackend } from './cache';
-import { readCacheTtl } from './config';
+import { readBackendConfig, readCacheTtl } from './config';
 import type { WritableSecretBackend } from './types';
 import type { SelectableBackendType } from './config';
 
 /**
  * Create a WritableSecretBackend instance for the given type.
  *
- * When type is 'local', attempts to upgrade to 'keychain' if the OS keychain
- * is available (macOS Keychain, Linux Secret Service, or Windows Credential
- * Manager). Falls back to 'local' only when keychain initialization fails.
+ * When type is 'local' and no backend has been configured, attempts to upgrade
+ * to 'keychain' if the OS keychain is available (macOS Keychain, Linux Secret
+ * Service, or Windows Credential Manager). Falls back to 'local' only when
+ * keychain initialization fails. A configured backend is never upgraded: after
+ * `backend set local`, 'local' is the encrypted file (#327).
  *
  * When the caller explicitly configured a non-local backend and that backend is
  * unavailable, this THROWS rather than substituting a different store.
@@ -57,11 +59,11 @@ export function createBackend(
   const role: BackendRole = options?.role ?? 'configured';
   const cacheTtl = (): number => (role === 'source' ? 0 : readCacheTtl());
 
-  // When callers request 'local', prefer keychain if the platform supports it.
-  // Use the prompt-free Likely check here — this path runs from MCP wrappers,
-  // brokers, and resolvers that must not trigger Touch ID. Real auth happens
-  // lazily on the first secret read/write.
-  if (type === 'local' && !config?.key) {
+  // When callers request the default 'local', prefer keychain if the platform
+  // supports it. Use the prompt-free Likely check here — this path runs from
+  // MCP wrappers, brokers, and resolvers that must not trigger Touch ID. Real
+  // auth happens lazily on the first secret read/write.
+  if (upgradesToKeychain(type, config)) {
     const keychainStatus = isKeychainLikely();
     if (keychainStatus.available) {
       try {
@@ -396,12 +398,28 @@ export function isOnePasswordAvailable(
 }
 
 /**
+ * Whether a request for `local` is the unconfigured default, the one case that
+ * upgrades to the platform keychain (#34).
+ *
+ * A config file that names any backend is a choice the user made. Upgrading an
+ * explicit `backend set local` sent every secret to the keychain while the docs
+ * and `backend set` both described `local` as the AES-256-GCM encrypted file,
+ * and left no way to select that file on macOS (#327). With a backend
+ * configured, `local` therefore means the file: whether it is the configured
+ * backend, or the source of `migrate --from local` beside another one.
+ */
+function upgradesToKeychain(type: SelectableBackendType, config?: Record<string, unknown>): boolean {
+  return type === 'local' && !config?.key && readBackendConfig() === undefined;
+}
+
+/**
  * Name of the backend `createBackend` would actually construct for `type`.
  *
- * `local` is the only type that gets remapped: it upgrades to the platform
- * keychain when one is available (#34). `backend` reported the CONFIGURED value
- * while `secret list` reported the CONSTRUCTED one, so on a default machine the
- * two commands disagreed about where secrets physically go (#111).
+ * `local` is the only type that gets remapped: while no backend is configured,
+ * it upgrades to the platform keychain when one is available (#34, #327).
+ * `backend` reported the CONFIGURED value while `secret list` reported the
+ * CONSTRUCTED one, so on a default machine the two commands disagreed about
+ * where secrets physically go (#111).
  *
  * Reuses `createKeychainBackend` rather than restating the platform-to-name
  * mapping, so this cannot drift out of agreement with the thing it describes.
@@ -410,7 +428,7 @@ export function isOnePasswordAvailable(
  * write.
  */
 export function effectiveBackendName(type: SelectableBackendType): string {
-  if (type !== 'local') return type;
+  if (!upgradesToKeychain(type)) return type;
   if (process.platform !== 'darwin' && process.platform !== 'linux') return 'local';
   if (!isKeychainLikely().available) return 'local';
   try {
