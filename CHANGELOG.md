@@ -202,6 +202,19 @@ guide now says Azure Key Vault is a push target, not a storage backend
 to a cloud secret store" heading; AWS Secrets Manager is still the one it names
 as missing.
 
+**The team setup guide no longer lists `keychain` as a shared team backend
+(#344).** The table under "Choose a storage backend" in
+`docs/use-cases/team-setup.md` offered `keychain` for "Small teams,
+macOS-only", on a page whose premise is a backend every team member resolves
+from. The OS keychain keeps its store on one machine, on macOS Keychain and on
+Linux Secret Service alike, as the table in
+`docs/use-cases/bring-your-own-vault.md` already said ("Shared across
+machines? No"). The team table now lists `1password`, `vault` and `gcp-sm`
+only, and a line under it says `keychain` and `local` are per machine and
+points to the encrypted `export`/`import` bundle for moving such a store to
+another machine. A test fails when the team table lists a backend the other
+table says is not shared across machines.
+
 **`secret push` no longer offers `secret set` for a name `secret set`
 refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
 `-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line
