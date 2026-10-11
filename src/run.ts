@@ -155,10 +155,16 @@ export async function runWithSecrets(
 /**
  * Names of the secrets whose value appears in the command or its arguments,
  * verbatim or URL-encoded — a password inside a connection URL is carried
- * percent-encoded, so the stored form never matches it.
+ * percent-encoded, so the stored form never matches it. Each argument is also
+ * compared percent-decoded, with and without `+` read as a space, so a
+ * lowercase, form-style or partial encoding is caught as well.
  */
 function secretsOnArgv(command: string, args: string[], secrets: Record<string, string>): string[] {
-  const argv = [command, ...args];
+  const argv = [command, ...args].flatMap((arg) => [
+    arg,
+    percentDecode(arg),
+    percentDecode(arg.replace(/\+/g, ' ')),
+  ]);
   return Object.keys(secrets).filter((name) => {
     const value = secrets[name];
     if (value.length < MIN_ARGV_VALUE) return false;
@@ -171,6 +177,17 @@ function secretsOnArgv(command: string, args: string[], secrets: Record<string, 
     }
     return argv.some((arg) => forms.some((form) => arg.includes(form)));
   });
+}
+
+/**
+ * The argument with every `%XX` escape decoded, upper- or lowercase hex. A run
+ * of escapes is read as UTF-8 bytes; unlike decodeURIComponent, a malformed
+ * escape or byte sequence does not throw — a `%` without two hex digits stays
+ * as it is and an invalid sequence becomes U+FFFD.
+ */
+function percentDecode(arg: string): string {
+  return arg.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) =>
+    Buffer.from(run.replace(/%/g, ''), 'hex').toString('utf8'));
 }
 
 /** The program's base name, or null when printing it would show a stored value. */
