@@ -92,15 +92,17 @@ npx secretless-ai secret set MY_KEY=<value>
 npx secretless-ai run --only MY_KEY -- <command>
 ```
 
-## Vault Exec: isolating credentials from AI context
+## Run one command with a secret from your backend
 
-Once your backend is connected, use `vault exec` (Tier 2) to run commands without ever exposing the secret to your parent shell or the AI tool watching it:
+Once your backend is connected, `run --only` runs one command with the named secret set in that command's environment, without exporting it to your parent shell. It is the command from Step 3:
 
 ```bash
-npx secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'
+npx secretless-ai run --only GITHUB_TOKEN -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB_TOKEN" | curl -s -H @- https://api.github.com/user'
 ```
 
-The value is set as `$GITHUB` in the environment of `sh`; the parent shell does not get it. `vault exec` starts its command without a shell, so the reference has to sit inside the single-quoted `sh -c` script: written as `-H "Authorization: Bearer $GITHUB"`, the calling shell expands it to an empty string before `vault exec` starts, and in single quotes outside a script curl receives the literal text `$GITHUB`. As in the `run` example above, `printf` is a shell builtin, so the value reaches curl on stdin rather than on its command line. `vault exec` does not mask the child's output: a command that prints the value shows it to whoever ran it, including an AI assistant.
+The child process gets `$GITHUB_TOKEN`. The parent shell does not. The child's output is not masked: a command that prints the secret shows it to whoever ran it, an AI assistant included.
+
+`vault exec` (Tier 2) does not read this backend. It reads the separate Identity Vault (`~/.aim/vault`), which `vault register` fills, so a secret stored with `secret set` gives `Vault resolution denied: Namespace "<name>" not found` there. [Two separate stores](run-broker.md#storage-two-separate-stores) says which command reads which store.
 
 ## When would I add AIM?
 
@@ -110,7 +112,7 @@ You don't need AIM to use any of the above. AIM unlocks:
 - **Shared policy** across a team: one AIM instance enforces the same rules for every developer's broker
 - **Cross-team audit**: AIM-side logs of which agent requested which credential from which host
 
-If none of that matches your use case, stick with the local Tier 1 / Tier 2 flow against your existing vault. You can always add AIM later without re-configuring your backend.
+If none of that matches your use case, stick with `secret set` and `run --only` against your existing vault. You can always add AIM later without re-configuring your backend.
 
 ## Caveats
 
