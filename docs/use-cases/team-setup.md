@@ -119,10 +119,14 @@ behavior this check exists to remove.
 Create a `.secretless` manifest at the project root listing what secrets the project needs:
 
 ```
-STRIPE_KEY        required    Stripe API key for payments
-DATABASE_URL      required    PostgreSQL connection string
-SENTRY_DSN        optional    Error tracking DSN
+STRIPE_KEY                  # Stripe API key for payments
+DATABASE_URL                # PostgreSQL connection string
+SENTRY_DSN        optional  # Error tracking DSN
 ```
+
+Each line is one secret name. A name is required unless `optional` follows it, and
+text after `#` is its description. Any other text after a name is a parse error: the
+file lists names only, never values.
 
 On the `gcp-sm` backend, one more line names the GCP project this repository's
 secrets live in. It applies to commands run anywhere inside the repository:
