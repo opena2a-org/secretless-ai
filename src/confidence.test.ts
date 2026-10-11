@@ -22,7 +22,7 @@ import {
 // Synthesise token shapes by joining literal segments — these aren't real
 // credentials and won't trip secret scanners.
 const ANT_PREFIX = ['sk', '-ant', '-api03', '-'].join('');
-// An AWS access-key ID, assembled so no line of this file holds the shape.
+// An AWS access-key ID for the explained-inputs tests, assembled from two parts.
 const AWS_KEY = ['AKIAIOSF', 'ODNN7REALKEY9'].join('');
 const GH_PREFIX = ['ghp', '_'].join('');
 const SK_PREFIX = ['sk', '-'].join('');
