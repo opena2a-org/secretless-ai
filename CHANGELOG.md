@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**`run`, `env`, `secret sync`, `secret show` and `secret exposed` no longer
+offer `secret set` for a name `secret set` refuses (#325).** The store holds
+names that start with a digit, `_` or `-` (a sync or an import writes them),
+and `secret set` takes a name that starts with a letter. On a store without
+`9z`, `run --only 9z -- <command>` printed `Fix: secretless-ai secret set 9Z`,
+and running that line was refused with `Invalid secret name. ... Must start
+with a letter.` The same unusable line was printed by `env --only`, by
+`secret sync` for a name in neither store, by `secret exposed` as its `Fix:`
+for a name that is not stored and as its `Next:` step for one that is, by
+`secret show` as `Record one:`, and by `run` for a stored value that holds a
+null byte. Each such name now gets a line that begins ``"9Z" cannot be stored
+by `secret set`, which takes a letter, then letters, digits, '_' or '-'`` and
+ends with what to do instead, and a `Fix:` names the first name `secret set`
+takes. When no name is one it takes, no `secret set` line is printed. A name
+`secret set` takes is offered as before.
+
 **`secret push` no longer offers `secret set` for a name `secret set`
 refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
 `-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line

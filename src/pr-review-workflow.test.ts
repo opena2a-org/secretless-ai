@@ -14,11 +14,11 @@ import * as path from 'path';
  * src/display-safe.ts, and neither the definitions nor the import were in the
  * request. The definitions were absent because src/display-safe.ts did not
  * change. The import was absent because the full source section, the one
- * place an unchanged import line is shown, held only its own notice that it
- * was "truncated at 0 bytes": CHANGELOG.md, listed before every src/ path,
- * was larger than that section's whole budget. The review raised a CRITICAL
- * saying both functions were "called but not defined or imported". The gate
- * failed on a symbol that resolves in the checkout.
+ * section that shows every line of a changed file, held only its own notice
+ * that it was "truncated at 0 bytes": CHANGELOG.md, listed before every src/
+ * path, was larger than that section's whole budget. The review raised a
+ * CRITICAL saying both functions were "called but not defined or imported".
+ * The gate failed on a symbol that resolves in the checkout.
  *
  * Under test: a step that follows the relative imports of a changed file
  * whose keyword and quoted specifier stand on one line (`from '...'`,
@@ -173,12 +173,38 @@ function commitAll(repo: string): void {
     'commit', '--quiet', '--no-verify', '-m', 'fixture'], repo);
 }
 
-function collect(s: Scratch, changed: string[], flags?: string[]) {
+function collect(s: Scratch, changed: string[], flags?: string[], extra: NodeJS.ProcessEnv = {}) {
   fs.writeFileSync(path.join(s.tmp, 'changed_files.txt'), changed.map((f) => `${f}\n`).join(''));
-  const run = bash(inScratch(runScript(COLLECT_STEP), s.tmp), s.repo, {}, flags);
+  const run = bash(inScratch(runScript(COLLECT_STEP), s.tmp), s.repo, extra, flags);
   const defsFile = path.join(s.tmp, 'imported_defs.txt');
   const defs = fs.existsSync(defsFile) ? fs.readFileSync(defsFile, 'utf-8') : '';
   return { run, defs };
+}
+
+/**
+ * An environment whose `git` records the arguments of each call, one call per
+ * line, and then runs the real one. The step resolves a module with one
+ * `git cat-file --batch-check`, so those lines count its lookups.
+ */
+function recordingGit(s: Scratch): { env: NodeJS.ProcessEnv; lookups: () => number; reset: () => void } {
+  const real = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf-8', env: withoutGitDiscovery() }).stdout.trim();
+  expect(real, 'no git on PATH').not.toBe('');
+  const bin = path.join(s.root, 'bin');
+  const calls = path.join(s.root, 'git-calls.txt');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), [
+    '#!/bin/sh',
+    'printf \'%s\\n\' "$*" >> "$RECORDED_GIT_CALLS"',
+    'exec "$REAL_GIT" "$@"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  return {
+    env: { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, RECORDED_GIT_CALLS: calls, REAL_GIT: real },
+    lookups: () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf-8') : '')
+      .split('\n')
+      .filter((line) => line.startsWith('cat-file --batch-check')).length,
+    reset: () => fs.rmSync(calls, { force: true }),
+  };
 }
 
 /** src/display-safe.ts as it stood at the #275 head, cut to the two exports the review called undefined. */
@@ -424,6 +450,35 @@ describe('the review is shown the definitions a changed file imports from unchan
       expect(run.status, run.stderr).toBe(0);
       expect(defs.match(/^=== src\/util\.ts /gm)).toHaveLength(1);
       expect(defs).toContain('=== src/util.ts (unchanged; imported by src/a.ts) ===');
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
+  // The step drops a repeat twice: an import path it has already looked up,
+  // and a module it has already listed. The second alone gives the same
+  // list, so the list cannot tell whether the first is there. It only saves
+  // the lookup, and the lookups are what is counted here.
+  it('looks a module up once per import path: once when two changed files spell it the same way, once more for another spelling', () => {
+    const s = scratchRepo({
+      'src/a.ts': "import { helper } from './util';\n",
+      'src/b.ts': "import { helper } from './util';\n",
+      'src/sub/c.ts': "import { helper } from '../util.js';\n",
+      'src/util.ts': 'export function helper(): number {\n  return 1;\n}\n',
+    });
+    try {
+      commitAll(s.repo);
+      const recorded = recordingGit(s);
+      const same = collect(s, ['src/a.ts', 'src/b.ts'], undefined, recorded.env);
+      expect(same.run.status, same.run.stderr).toBe(0);
+      expect(same.defs.match(/^=== src\/util\.ts /gm)).toHaveLength(1);
+      expect(recorded.lookups()).toBe(1);
+
+      recorded.reset();
+      const another = collect(s, ['src/a.ts', 'src/b.ts', 'src/sub/c.ts'], undefined, recorded.env);
+      expect(another.run.status, another.run.stderr).toBe(0);
+      expect(another.defs.match(/^=== src\/util\.ts /gm)).toHaveLength(1);
+      expect(recorded.lookups()).toBe(2);
     } finally {
       fs.rmSync(s.root, { recursive: true, force: true });
     }

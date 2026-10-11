@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { SecretStore, isValidSecretName } from '../secret-store';
+import { SecretStore, isSettableSecretName, isValidSecretName, notSettableReason } from '../secret-store';
 import { getShellHookLine, SHELL_HOOK_MARKER } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
 import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard } from '../display-safe';
@@ -78,13 +78,6 @@ const SECRET_SUBCOMMAND_FLAGS: Readonly<Record<string, readonly string[]>> = {
 const SECRET_SUBCOMMANDS = new Set(['set', 'list', 'show', 'get', 'rm', 'remove', 'delete', 'exposed']);
 const SCOPED_FLAGS = new Set(['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--long', '--json', '--app', '--needs-rotation', '--where', '--at']);
 const VALUE_FLAGS = new Set(['--description', '--meta', '--app', '--where', '--at']);
-
-/**
- * The names `secret set` stores. The store holds names that start with a
- * digit, '_' or '-' as well (a sync or a bundle import can write them), so a command that offers
- * `secret set NAME` as its Fix checks NAME against this first.
- */
-const SECRET_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
 interface ParsedSecretArgs {
   /** Every token that is not one of SCOPED_FLAGS, in order (`--force` stays here). */
@@ -202,7 +195,8 @@ function annotationJson(name: string, annotation: SecretAnnotation | undefined):
 
 /**
  * What `secret set` says about an open exposure (#236). Never the value.
- * `setCommand` is the form the user ran, so the Fix line repeats it.
+ * `setCommand` is the form the user ran, so the Fix line repeats it. Both
+ * callers are `secret set` itself, after it checked `name`.
  */
 function reportRotation(name: string, rotation: RotationOutcome, setCommand = `${CLI_BARE} secret set ${name}`): void {
   switch (rotation.kind) {
@@ -346,7 +340,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           return 2;
         }
         name = nameArg;
-        if (!SECRET_NAME_RE.test(name)) {
+        if (!isSettableSecretName(name)) {
           console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
           return 1;
         }
@@ -360,14 +354,14 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           console.error(`  Usage: ${CLI_BARE} secret set NAME=VALUE\n`);
           return 1;
         }
-        if (!SECRET_NAME_RE.test(name)) {
+        if (!isSettableSecretName(name)) {
           console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
           return 1;
         }
       } else {
         // Read value from stdin
         name = nameArg;
-        if (!SECRET_NAME_RE.test(name)) {
+        if (!isSettableSecretName(name)) {
           console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
           return 1;
         }
@@ -537,8 +531,12 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         console.log(stored
           ? `    Value        stored (${store.backendName} backend), never printed by this command`
           : `    Value        NOT in the ${store.backendName} store`);
-        if (!annotation) {
+        // A description is recorded by `secret set`, and the store holds names
+        // it refuses, so `Record one:` is offered only for a name it takes.
+        if (!annotation && isSettableSecretName(name)) {
           console.log(`\n  Record one:  ${CLI} secret set ${name} --description "what it is for" --meta app=<name>`);
+        } else if (!annotation) {
+          console.log(`\n  ${notSettableReason(name)}; no description can be recorded for it.`);
         }
         console.log();
         return stored ? 0 : 1;
@@ -575,7 +573,14 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           console.log(`  Replaces: the open exposure recorded ${printable(previous.exposedAt)}${previous.exposedWhere ? ` (${printable(previous.exposedWhere)})` : ''}`);
         }
         console.log('  The value stays valid until it is replaced at its provider.');
-        console.log(`  Next:     rotate it at the provider, then  ${CLI_BARE} secret set ${name}`);
+        // A new value stored under the name closes the exposure, whichever
+        // command stores it; `secret set` is offered only for a name it takes.
+        if (isSettableSecretName(name)) {
+          console.log(`  Next:     rotate it at the provider, then  ${CLI_BARE} secret set ${name}`);
+        } else {
+          console.log('  Next:     rotate it at the provider, then store the new value the way this one was first stored');
+          console.log(`            ${notSettableReason(name)}.`);
+        }
         console.log(`  Open:     ${CLI_BARE} secret list --needs-rotation\n`);
         return 0;
       } catch (err) {
@@ -913,9 +918,18 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
   }
   if (missing.length > 0) {
     console.log(`  Not in ${fromName} and not stored on this machine: ${missing.join(', ')}`);
+    // `--only` and `.secretless` take a name that starts with a digit, '_' or
+    // '-', and `secret set` refuses each of those. Such a name gets a line with
+    // the half of the Fix that still applies, and the Fix names the first
+    // missing name `secret set` takes; with none, there is no Fix line.
+    for (const name of missing) {
+      if (isSettableSecretName(name)) continue;
+      console.log(`  ${notSettableReason(name)}; add it to ${fromName} and sync again.`);
+    }
     const verify = SOURCE_VERIFY[fromType];
     if (verify) console.log(`  Verify:  ${verify}`);
-    console.log(`  Fix:     ${CLI} secret set ${missing[0]}   (or add it to ${fromName} and sync again)\n`);
+    const settable = missing.find((name) => isSettableSecretName(name));
+    console.log(settable === undefined ? '' : `  Fix:     ${CLI} secret set ${settable}   (or add it to ${fromName} and sync again)\n`);
   }
   if (result.dryRun && writes > 0) {
     console.log(`  Apply:   ${CLI} secret sync ${[...rerun, ...(force ? ['--force'] : [])].join(' ')}\n`);
@@ -1244,12 +1258,12 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
       // name here passed `isValidSecretName`, so each prints as given.
       console.error(`  ${err.message}`);
       for (const name of err.names) {
-        if (SECRET_NAME_RE.test(name)) continue;
+        if (isSettableSecretName(name)) continue;
         console.error(`  "${name}" cannot be stored by \`secret set\`, which takes a name that starts with a letter; give the name the secret is stored under.`);
       }
       console.error('  Nothing was pushed.\n');
       console.error(`  Verify:  ${CLI} secret list`);
-      const settable = err.names.find((name) => SECRET_NAME_RE.test(name));
+      const settable = err.names.find((name) => isSettableSecretName(name));
       if (settable !== undefined) console.error(`  Fix:     ${CLI} secret set ${settable}`);
       console.error();
       return 1;
