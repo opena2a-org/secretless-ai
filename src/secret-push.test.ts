@@ -15,6 +15,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { PassThrough } from 'stream';
 import { LocalBackend } from './backends/local';
 import { SecretStore } from './secret-store';
 import { AzureKeyVaultTarget } from './backends/azure-kv';
@@ -27,6 +28,7 @@ import type { PushTarget, PushTargetType } from './secret-push';
 import { runSecret, runSecretPush } from './commands/secrets';
 import { CLI } from './commands/utils';
 import { hasDisplayHazard } from './display-safe';
+import type { TtyInput } from './hidden-line';
 import { isValidSecretName } from './secret-store';
 
 const VALUES = {
@@ -1222,6 +1224,58 @@ describe('secret push prints no Fix that a shell, or the push itself, reads as s
     expect(rule, lines.join('\n')).toBeGreaterThan(-1);
     expect(taken, lines.join('\n')).toBeGreaterThan(rule);
     expect(fixCommand()).toEqual(['A,B', '--to', 'vault', '--as', 'a_b,<name>']);
+  });
+});
+
+describe('secret push offers `secret set` only for a missing name `secret set` stores (#323)', () => {
+  const cannotSet = (name: string): string =>
+    `  "${name}" cannot be stored by \`secret set\`, which takes a name that starts with a letter; give the name the secret is stored under.`;
+
+  function setFix(): string[] | undefined {
+    const line = printed().split('\n').find((l) => l.startsWith('  Fix:'));
+    const command = /secret set (.+)$/.exec(line ?? '');
+    return command === null ? undefined : command[1].split(' ');
+  }
+
+  it('a later name that starts with \'-\' and is not stored gets no `secret set` Fix, and a line says why', async () => {
+    const code = await runSecretPush(['API_KEY,-x', '--to', 'vault', '--dry-run'], { store, createTarget: TARGETS.vault });
+    expect(code).toBe(1);
+    const lines = printed().split('\n');
+    expect(lines).toContain('  Not stored on this machine: -x');
+    expect(lines).toContain(cannotSet('-x'));
+    expect(lines).toContain(`  Verify:  ${CLI} secret list`);
+    expect(lines.filter((l) => l.startsWith('  Fix:'))).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('beside names `secret set` cannot take, the Fix names the first it can, and run as printed it stores that one', async () => {
+    const code = await runSecretPush(['API_KEY,-x,_y,9z,NOT_STORED', '--to', 'vault'], { store, createTarget: TARGETS.vault });
+    expect(code).toBe(1);
+    const lines = printed().split('\n');
+    expect(lines).toContain('  Not stored on this machine: -x, _y, 9z, NOT_STORED');
+    for (const name of ['-x', '_y', '9z']) expect(lines).toContain(cannotSet(name));
+    expect(lines).not.toContain(cannotSet('NOT_STORED'));
+    const fix = setFix();
+    expect(fix).toEqual(['NOT_STORED']);
+
+    out.length = 0;
+    const stdin = new PassThrough();
+    stdin.end('FAKE-push-later-value-6d2a\n');
+    const set = await runSecret(['set', ...(fix ?? [])], {
+      createStore: () => store,
+      afterSet: () => {},
+      stdin: stdin as TtyInput,
+      stdinIsPiped: () => true,
+    });
+    expect(set, printed()).toBe(0);
+    expect(await store.listSecrets()).toContain('NOT_STORED');
+  });
+
+  it('a name `secret set` takes is offered as before, with no line about the names it cannot take', async () => {
+    const code = await runSecretPush(['API_KEY,NOT_STORED', '--to', 'vault'], { store, createTarget: TARGETS.vault });
+    expect(code).toBe(1);
+    expect(printed()).not.toContain('cannot be stored by `secret set`');
+    expect(setFix()).toEqual(['NOT_STORED']);
   });
 });
 
