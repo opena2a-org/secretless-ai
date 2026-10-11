@@ -78,6 +78,8 @@ vi.mock('readline', async (importOriginal) => {
       opts.output.write(`${prompt}${typed}\n`);
       answer(typed);
     },
+    // `setup` listens for the input closing (Ctrl-D); typed answers never close it.
+    on() { return this; },
     close() {},
   });
   return { ...actual, default: { ...actual, createInterface }, createInterface };
@@ -394,12 +396,31 @@ describe('team-setup.md', () => {
 
   it('`setup` with the guide\'s .secretless manifest, typing two values and skipping the optional one', async () => {
     const { cwd } = inProcessFixture();
-    fs.writeFileSync(path.join(cwd, '.secretless'), blockAfterText(TEAM_GUIDE, 'Create a `.secretless` manifest') + '\n');
+    const manifest = blockAfterText(TEAM_GUIDE, 'Create a `.secretless` manifest');
+    fs.writeFileSync(path.join(cwd, '.secretless'), manifest + '\n');
     fixture.answers = ['sk_live_...', 'postgres://...', ''];
 
-    const res = await inProcess(() => runSetupCommand([]));
-    expect(res.code).toBe(0);
-    expect(normalize(res.output)).toBe(sampleAfter(TEAM_GUIDE, 'setup'));
+    // The guide's reader types at a terminal, with none of the manifest's
+    // names set in the environment. Without a terminal setup does not prompt,
+    // and a name set in the environment is announced in its prompt (#330), so
+    // neither may depend on how this test runs.
+    const names = manifest.split('\n').map((line) => line.trim().split(/\s/)[0]).filter(Boolean);
+    const savedEnv = names.map((name) => [name, process.env[name]] as const);
+    for (const name of names) delete process.env[name];
+    const savedIsTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    try {
+      const res = await inProcess(() => runSetupCommand([]));
+      expect(res.code).toBe(0);
+      expect(normalize(res.output)).toBe(sampleAfter(TEAM_GUIDE, 'setup'));
+    } finally {
+      if (savedIsTTY) Object.defineProperty(process.stdin, 'isTTY', savedIsTTY);
+      else delete (process.stdin as { isTTY?: boolean }).isTTY;
+      for (const [name, value] of savedEnv) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 });
 
