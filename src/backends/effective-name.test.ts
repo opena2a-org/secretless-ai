@@ -7,14 +7,39 @@
  * SecretStore actually built — asserted here against the real factory, not a
  * restated platform mapping.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { effectiveBackendName, createBackend } from './factory';
+import { writeBackendConfig } from './config';
 import { SecretStore } from '../secret-store';
 
 const unwrap = (n: string) => n.replace(/^cached\((.*)\)$/, '$1');
 
 describe('effectiveBackendName agrees with the constructed backend', () => {
+  let home: string;
+  let originalHome: string | undefined;
+
+  // Only the unconfigured default upgrades `local` to a keychain (#327), so
+  // every test starts from an empty home of its own: the result must not depend
+  // on whether the person running the suite has run `backend set`.
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-effective-name-'));
+    originalHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    if (originalHome !== undefined) {
+      process.env.HOME = originalHome;
+    } else {
+      delete process.env.HOME;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
   it('matches what createBackend builds for local', () => {
     // The reported case: `backend` said local, `secret list` said keychain-macos.
     expect(effectiveBackendName('local')).toBe(unwrap(createBackend('local').name));
@@ -59,6 +84,14 @@ describe('effectiveBackendName agrees with the constructed backend', () => {
     }
 
     expect(name).toBe('local');
+  });
+
+  it('names the encrypted file once a backend is configured', () => {
+    // After `backend set local`, `local` is the encrypted file on every
+    // platform, and `backend` must say so as `secret list` does (#327).
+    writeBackendConfig('local');
+    expect(effectiveBackendName('local')).toBe('local');
+    expect(unwrap(createBackend('local').name)).toBe('local');
   });
 
   it('leaves every non-local type alone', () => {
