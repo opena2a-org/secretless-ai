@@ -151,6 +151,12 @@ each tier "works against any supported backend" and the guide showed
 `vault exec` reads the Identity Vault only, and show
 `run --only NAME -- <command>` for a secret in the backend.
 
+**The README and SECURITY.md give one response time for security reports
+(#345).** The README promised a response within 24 hours; SECURITY.md says
+receipt is acknowledged within 48 hours. The README now states the 48-hour
+acknowledgement, names GitHub private vulnerability reporting beside
+`info@opena2a.org`, and points to SECURITY.md.
+
 **The README says `status` points to `doctor` for plaintext git credentials
 (#342).** It said `doctor` and `status` each print Verify and Fix lines for a
 `~/.git-credentials` or `~/.netrc` file and a `store` helper. `status` prints
