@@ -175,6 +175,14 @@ one row for each that ends in `→ secretless-ai doctor`; `doctor` prints the
 Verify and Fix lines, and `status --json` carries them in
 `gitCredentials.findings`. The README now says so.
 
+**The "I already have a vault" guide no longer says Azure Key Vault is not
+part of the CLI (#343).** It said AWS Secrets Manager and Azure Key Vault were
+both missing, while `secret push --to azure-kv` writes to Azure Key Vault. The
+guide now says Azure Key Vault is a push target, not a storage backend
+(`backend set` does not accept it), and links the README's new "Push secrets
+to a cloud secret store" heading; AWS Secrets Manager is still the one it names
+as missing.
+
 **`secret push` no longer offers `secret set` for a name `secret set`
 refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
 `-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line

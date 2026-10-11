@@ -1319,3 +1319,42 @@ describe('secret push is a subcommand, and its flags belong to it', () => {
     expect(printed()).toContain('--force is not read by `secret push`');
   });
 });
+
+// --- What the vault guide says about push targets ----------------------------
+
+describe('the vault guide never says a push target is missing from the CLI (#343)', () => {
+  const REPO_ROOT = path.resolve(__dirname, '..');
+  const guide = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'use-cases', 'bring-your-own-vault.md'), 'utf-8');
+  const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf-8');
+  const SERVICE: Record<PushTargetType, string> = {
+    'azure-kv': 'Azure Key Vault',
+    vault: 'HashiCorp Vault',
+    'gcp-sm': 'GCP Secret Manager',
+  };
+
+  it('names no push target in a line that says the CLI does not have it', () => {
+    const denials = guide.split('\n').filter((line) => /\b(?:isn't|aren't|not) part of this CLI\b/i.test(line));
+    for (const target of PUSH_TARGETS) {
+      for (const line of denials) expect(line).not.toContain(SERVICE[target]);
+    }
+  });
+
+  it('calls Azure Key Vault a push target and links the README section on `secret push --to azure-kv`', () => {
+    expect(guide).toContain('push target, not as a storage backend');
+    expect(guide).toContain('`secret push --to azure-kv`');
+
+    const anchor = guide.match(/\]\(\.\.\/\.\.\/README\.md#([a-z0-9-]+)\)/)?.[1];
+    expect(anchor).toBeDefined();
+    const lines = readme.split('\n');
+    const start = lines.findIndex((line) => {
+      const h = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+      return h !== null && h[2].toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s/g, '-') === anchor;
+    });
+    expect(start).toBeGreaterThan(-1);
+    const level = lines[start].match(/^#+/)![0].length;
+    const end = lines.findIndex((line, i) => i > start && new RegExp(`^#{1,${level}}\\s`).test(line));
+    const section = lines.slice(start, end === -1 ? undefined : end).join('\n');
+    expect(section).toContain('`secret push`');
+    expect(section).toContain('--to azure-kv');
+  });
+});

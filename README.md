@@ -298,6 +298,8 @@ npx secretless-ai backend set 1password               # switch backend
 npx secretless-ai migrate --from local --to 1password # migrate existing secrets
 ```
 
+Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS Keychain and Linux Secret Service CLIs; reads and writes through those backends then fail with an error instead of prompting, and nothing is read from or written to another store. The value is exactly `off`, in lowercase: `OFF`, `0` or `false` leave the OS keychain reachable.
+
 To seed a new machine from a team's shared backend, `secret sync` copies the names a project's `.secretless` manifest requires (or the names given with `--only K1,K2`) into this machine's store. It prints names only, and leaves a local value that differs as it is unless `--force` is given:
 
 ```bash
@@ -305,6 +307,8 @@ npx secretless-ai secret sync --from 1password --dry-run  # created / updated / 
 npx secretless-ai secret sync --from 1password            # copy the required names of ./.secretless
 npx secretless-ai setup --check                           # confirm nothing required is missing
 ```
+
+### Push secrets to a cloud secret store
 
 To put a stored secret into a deployment, `secret push` writes it to a cloud secret store. Each value goes from this machine's store into an HTTPS request body, never onto a command line, and the output carries names, identifiers and versions only. Key Vault secret names allow letters, digits and `-`, so `--as` gives the name to use there:
 
@@ -316,8 +320,6 @@ az containerapp secret set -n <app> -g <rg> \
 ```
 
 The Key Vault token comes from the standard Azure credential chain: `AZURE_TENANT_ID` and `AZURE_CLIENT_ID` with `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`, then a managed identity, then the signed-in Azure CLI. Pushing needs the Key Vault Secrets Officer role on the vault (or `set` in its access policy); the container app's identity needs Key Vault Secrets User to read the reference. `--to vault` and `--to gcp-sm` push to HashiCorp Vault and GCP Secret Manager the same way, at the names `secret sync --from` reads. A name that is not stored on this machine stops the push before anything is written, and the first write that fails stops the rest. `--dry-run` reads metadata only, so a write the target would refuse is found by the real run.
-
-Set `SECRETLESS_OS_KEYCHAIN=off` to refuse every call to the macOS Keychain and Linux Secret Service CLIs; reads and writes through those backends then fail with an error instead of prompting, and nothing is read from or written to another store. The value is exactly `off`, in lowercase: `OFF`, `0` or `false` leave the OS keychain reachable.
 
 ## NanoMind integration
 

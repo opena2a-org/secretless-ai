@@ -19,7 +19,9 @@ Five backends are wired into the CLI today:
 | `vault` | Yes | A reachable HashiCorp Vault with a token |
 | `gcp-sm` | Yes | GCP Application Default Credentials |
 
-For AWS Secrets Manager and Azure Key Vault, use the Go AIM backend instead. Those aren't part of this CLI today. Track status on the AIM repo.
+Azure Key Vault is supported as a push target, not as a storage backend: `backend set` does not accept it, and `secret push --to azure-kv` writes secrets stored in one of the backends above into a Key Vault for a deployment to read. See [Push secrets to a cloud secret store](../../README.md#push-secrets-to-a-cloud-secret-store).
+
+For AWS Secrets Manager, use the Go AIM backend instead. It isn't part of this CLI today. Track status on the AIM repo.
 
 ## Step 2: Connect to HashiCorp Vault (canonical walk-through)
 
