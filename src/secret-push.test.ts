@@ -555,6 +555,54 @@ describe('the --as name a refusal offers (#285)', () => {
     expect(printed().split('\n').filter((l) => l.startsWith('  Fix:    curl'))).toEqual([]);
     expect(fixCommand()).toEqual(['API_KEY', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', '<name>']);
   });
+
+  for (const type of PUSH_TARGETS) {
+    it(`--to ${type}: the Fix carries its --as value as a value, so --as does not read it as missing (#314)`, async () => {
+      for (const name of [...REFUSED, '.x']) {
+        out.length = 0;
+        const code = await runSecretPush(['API_KEY', ...toArgs(type), '--as', name], { store, createTarget: TARGETS[type] });
+        const said = `--to ${type} --as ${name}\n${printed()}`;
+        const fix = fixCommand();
+
+        expect(code, said).toBe(2);
+        expect(fix.slice(0, -1), said).toEqual(['API_KEY', ...toArgs(type), '--as']);
+        const offered = fix[fix.length - 1];
+        expect(offered.startsWith('-'), said).toBe(false);
+        if (offered !== '<name>') expect(TARGETS[type]().nameProblem(offered), said).toBeUndefined();
+
+        // Run as printed, the Fix gets past its arguments to the target.
+        let reached = false;
+        await runSecretPush(fix, { store, createTarget: () => { reached = true; throw new Error('stopped at the target'); } });
+        expect(printed(), said).not.toContain('--as needs a value');
+        expect(reached, said).toBe(true);
+      }
+    });
+  }
+
+  it('Key Vault: a refused name whose replacement would start with \'-\' leaves <name> in the Fix and names the secret (#314)', async () => {
+    const cannotLines = (): string[] => printed().split('\n').filter((l) => l.includes(' cannot name a secret in '));
+    for (const given of ['.x', '_x', '.']) {
+      out.length = 0;
+      const code = await push(['API_KEY', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', given], { env: NO_ENV, runChild: azSignedIn() });
+      const said = `--as ${given}\n${printed()}`;
+
+      expect(code, said).toBe(2);
+      expect(cannotLines(), said).toEqual([
+        `  "${given}" cannot name a secret in Azure Key Vault kv-demo (${KV}): Key Vault secret names allow letters, digits and '-' only, up to 127 characters; choose another name for API_KEY.`,
+      ]);
+      expect(fixCommand(), said).toEqual(['API_KEY', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', '<name>']);
+    }
+
+    // Wherever it stands in --as, a name given there in its own place is
+    // kept, and only the one with no name to offer is left as <name>.
+    out.length = 0;
+    await push(['API_KEY,DB_PASSWORD', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a.b,.x'], { env: NO_ENV, runChild: azSignedIn() });
+    expect(cannotLines()).toHaveLength(2);
+    expect(cannotLines()[1].startsWith('  ".x" cannot name a secret in ')).toBe(true);
+    expect(cannotLines()[1].endsWith('; choose another name for DB_PASSWORD.')).toBe(true);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'a-b,<name>']);
+    expect(calls).toEqual([]);
+  });
 });
 
 describe('the --as names a refusal offers are distinct (#289)', () => {
@@ -1010,12 +1058,13 @@ describe('a refusal quotes each name as given, and its Fix is the command to run
         expect(printed(), said).not.toContain(' in --as is a placeholder: ');
         expect(fixCommand(), said).toEqual(['API_KEY', ...toArgs(type), '--as', '<name>']);
       }
-    }
 
-    // Run as printed, the Fix is refused for its <name>, not pushed.
-    const rerun = await runSecretPush(fixCommand(), { store, createTarget: TARGETS['azure-kv'] });
-    expect(rerun).toBe(2);
-    expect(printed()).toContain('  "<name>" in --as is a placeholder: replace it with the name API_KEY should have in ');
+      // Run as printed, against the target its --to names, the Fix is
+      // refused for its <name>, not pushed.
+      const rerun = await runSecretPush(fixCommand(), { store, createTarget: (to) => TARGETS[to]() });
+      expect(rerun, type).toBe(2);
+      expect(printed(), type).toContain(`  "<name>" in --as is a placeholder: replace it with the name API_KEY should have in ${TARGETS[type]().label}; `);
+    }
 
     // Beside a refused name the Fix replaces, only that one is replaced.
     out.length = 0;
@@ -1040,7 +1089,7 @@ describe('a refusal quotes each name as given, and its Fix is the command to run
     const code = await runSecretPush(['API_KEY', '--to', 'vault', '--as', 'a.b', '--dry-run'], { store, createTarget: TARGETS.vault });
 
     expect(code).toBe(2);
-    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', 'a_b', '--dry-run']);
+    expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--dry-run', '--as', 'a_b']);
 
     const rerun = await runSecretPush(fixCommand(), { store, createTarget: TARGETS.vault });
     expect(rerun).toBe(0);
@@ -1050,7 +1099,14 @@ describe('a refusal quotes each name as given, and its Fix is the command to run
     // The refusal for two secrets pushed as one name keeps it too.
     out.length = 0;
     await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--dry-run', '--as', 'x,x'], { store, createTarget: TARGETS.vault });
-    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'x,<name>', '--dry-run']);
+    expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--dry-run', '--as', 'x,<name>']);
+
+    // --dry-run stands before --as, so an unfilled <name> ends the line and
+    // no word after it is one a shell would take as a file to write (#314).
+    out.length = 0;
+    await runSecretPush(['API_KEY', '--to', 'vault', '--as', '<2fa>', '--dry-run'], { store, createTarget: TARGETS.vault });
+    const fixLine = printed().split('\n').find((l) => l.startsWith('  Fix:'));
+    expect(fixLine).toBe('  Fix:     npx secretless-ai secret push API_KEY --to vault --dry-run --as <name>');
 
     // A refusal without --dry-run prints a Fix without it.
     out.length = 0;

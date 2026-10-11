@@ -1091,9 +1091,12 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
   }
 
   const tail = [`--to ${toType}`, ...(vaultName !== undefined ? [`--vault ${vaultName}`] : [])];
-  // The Fix of a dry run is a dry run too, so running it as printed writes nothing.
+  // The Fix of a dry run is a dry run too, so running it as printed writes
+  // nothing. `--dry-run` comes before `--as`, so a `<name>` left unfilled at
+  // the end of the line is not followed by a word a shell would take as a
+  // file to write: pasted unedited, the line stops as a syntax error.
   const fixLine = (operands: readonly string[]): string =>
-    `  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')} --as ${operands.join(',')}${dryRun ? ' --dry-run' : ''}\n`;
+    `  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')}${dryRun ? ' --dry-run' : ''} --as ${operands.join(',')}\n`;
   const problems = remotes.map((r) => target.nameProblem(r));
   // Every given name passed `isValidSecretName` and the --as names passed the
   // target's `nameProblem`, so none holds a character `escapeForDisplay`
@@ -1110,7 +1113,9 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     // starts no line; the Fix cannot spell such a name as a command word, so
     // it leaves `<name>` for the user to fill in, as it does for a name in
     // angle brackets that is not a placeholder, rather than offer a name
-    // made from its characters. Any other refused name is replaced by one
+    // made from its characters. `--as` reads a value that starts with '-' as
+    // a missing value, so a replacement that would start with '-' leaves
+    // `<name>` as well. Any other refused name is replaced by one
     // the target accepts, so the Fix is not the command that was just
     // refused. A replacement that would push as the same name as
     // another --as name, given or offered, leaves `<name>` too, and so does
@@ -1144,6 +1149,10 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
         return '<name>';
       }
       const suggested = target.suggestName(r);
+      if (suggested.startsWith('-')) {
+        unspelled.add(i);
+        return '<name>';
+      }
       const folded = target.foldName(suggested);
       const holder = holders.get(folded);
       if (holder !== undefined) {
@@ -1161,10 +1170,16 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
         console.error(`  "${remotes[i]}" in --as is a placeholder: replace it with the name ${names[i]} should have in ${target.label}; ${p}.`);
       }
     });
-    // The first refused name gets the line that gives the rule. A name the
-    // Fix leaves as `<name>` has no name offered in its place, so each one
-    // gets the line too, wherever it stands, ending with the secret it was
-    // given for.
+    // The first refused name other than a placeholder gets the line that
+    // gives the rule. So does each name the Fix leaves as `<name>` because it
+    // cannot offer a name made from it: one in angle brackets that is not a
+    // placeholder, one that holds
+    // a character printed escaped, and one whose replacement would start
+    // with '-'. Each of those gets the line wherever it stands, ending with
+    // the secret it was given for. A name left as `<name>` because its
+    // replacement is taken, or because the store would merge it with an
+    // earlier name, gets the "is taken by" or "would both be pushed as" line
+    // below instead.
     remotes.forEach((r, i) => {
       if (i !== refused && !unspelled.has(i)) return;
       const whose = unspelled.has(i) ? `; choose another name for ${names[i]}` : '';
