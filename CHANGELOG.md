@@ -52,17 +52,18 @@ for existing). None of it uses the engine. With
 whether the package or its model is missing and names the model files it did
 not find. `scan --json` output is unchanged.
 
-**The vault guide's `vault exec` example sends the stored token (#329).**
-`docs/use-cases/bring-your-own-vault.md` showed `vault exec github -- curl -H
-"Authorization: Bearer $GITHUB" ...`. The calling shell expands `$GITHUB`
-before `vault exec` starts, and `vault exec` starts its command without a
-shell, so the request went out with an empty bearer token; the same line would
-also have put the token on curl's command line. The example now reads the
-value inside a single-quoted `sh -c` script and passes the header to curl on
-stdin, as the guide's `run` example does. A test reads every documented `run`
-and `vault exec` child command and fails on a variable the calling shell
-expands, one the child receives as literal text, or one a script passes to
-another program as an argument.
+**The vault guide no longer shows a `vault exec` example that sends an empty
+bearer header (#329).** `docs/use-cases/bring-your-own-vault.md` showed
+`vault exec github -- curl -H "Authorization: Bearer $GITHUB" ...`. The
+calling shell expands `$GITHUB` before `vault exec` starts, and `vault exec`
+starts its command without a shell, so the request went out with an empty
+bearer token; the same line would also have put the token on curl's command
+line. That example is gone: the guide's `run --only` example (#328) stands in
+its place, and it reads the value inside a single-quoted `sh -c` script and
+passes the header to curl on stdin. A test reads every documented `run` and
+`vault exec` child command and fails on a variable the calling shell expands,
+one the child receives as literal text, or one a script passes to another
+program as an argument.
 
 **The 1Password caveat in the team setup and bring-your-own-vault guides names
 `backend set 1password` as the command that raises the unlock prompt (#338).**
