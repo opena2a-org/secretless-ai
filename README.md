@@ -77,7 +77,7 @@ npm view secretless-ai dist.attestations --json
 # Expects non-empty result with predicateType "https://slsa.dev/provenance/v1"
 ```
 
-Secretless never reads or transmits credential values it manages. Backends (OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, AES-256-GCM encrypted file) decrypt on demand at subprocess spawn time. `secretless-ai verify` runs an integrity check of your local install.
+Secretless sends no credential value to OpenA2A: [telemetry](#telemetry) carries no values. It reads a value it manages when a command you run needs it: to give it to a process (`run`, the `env` shell hook, an MCP server set up by `protect-mcp`, git through `git-credential`, a process that asks the `broker`), to compare it with one you are storing (`secret set`), to find and redact it in transcripts (`clean`, `watch`), to print it in an interactive terminal (`secret get`), to ask the service it belongs to what it can reach (`scope discover`), or to write it to a store or file you name (`migrate`, `secret sync`, `export`, and `secret push`, which sends it in an HTTPS request body to Azure Key Vault, HashiCorp Vault or GCP Secret Manager). Backends (OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, AES-256-GCM encrypted file) decrypt a value when one of these commands asks for it. `secretless-ai verify` runs an integrity check of your local install.
 
 ## How it works
 
@@ -88,7 +88,7 @@ Secretless never reads or transmits credential values it manages. Backends (OS k
 
 ## Store secrets and use them in AI sessions
 
-Move keys out of files and into a storage backend, then use them by name. Values never enter AI context, transcripts, or shell history.
+Move keys out of files and into a storage backend, then use them by name: commands and AI tools see the name, and the value goes to the process that uses it. Two ways a value still gets out are described below: `secret set NAME=VALUE` puts it in shell history, and a command whose own output is a credential puts it in AI context (see [What the guard cannot see](#what-the-guard-cannot-see)).
 
 ```bash
 npx secretless-ai secret set STRIPE_SECRET_KEY --from-clipboard   # key copied from a web page
