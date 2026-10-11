@@ -2,6 +2,7 @@ import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from '.
 import { scanStagedFiles } from '../scan-staged';
 import { runHookCheck } from '../session/hook';
 import { escapeForDisplay } from '../display-safe';
+import { EXIT_USAGE } from '../argv';
 
 export function runHook(args: string[]): number {
   const subcommand = args[0];
@@ -45,7 +46,7 @@ export function runHook(args: string[]): number {
       console.log('    secretless-ai hook uninstall     Remove pre-commit hook');
       console.log('    secretless-ai hook status        Check hook status');
       console.log('    secretless-ai hook --check-only  Session gate for Claude Code hooks (silent, fast)\n');
-      return 1;
+      return EXIT_USAGE;
   }
 }
 

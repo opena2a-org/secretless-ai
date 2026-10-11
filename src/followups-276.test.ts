@@ -270,7 +270,7 @@ describe('an argument the command line refuses is printed escaped', () => {
   itIfBuiltPosix('an unknown command: a line feed in it starts no line', () => {
     const res = cli([`x\n${FORGED}`]);
 
-    expect(res.status).toBe(1);
+    expect(res.status).toBe(2);
     expect(errorLines(res.stderr)[0]).toBe(`Unknown command: x\\n${FORGED}`);
     expect(forgedLines(res.stderr)).toEqual([]);
     expect(forgedLines(res.stdout)).toEqual([]);

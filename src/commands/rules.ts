@@ -11,6 +11,7 @@ import {
   RULES_FILENAME,
 } from '../custom-rules';
 import { escapeForDisplay } from '../display-safe';
+import { EXIT_USAGE } from '../argv';
 
 export function runRules(args: string[], projectDir: string = process.cwd()): number {
   const subcommand = args[0] ?? 'list';
@@ -156,6 +157,6 @@ export function runRules(args: string[], projectDir: string = process.cwd()): nu
     default:
       console.error(`\n  Unknown rules subcommand: ${escapeForDisplay(subcommand)}`);
       console.error('  Usage: secretless-ai rules <list|init|test>\n');
-      return 1;
+      return EXIT_USAGE;
   }
 }

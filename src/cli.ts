@@ -406,9 +406,11 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       printHelp();
       return 0;
     default:
+      // A command we do not know is a refused command line, not a finding:
+      // exit 1 would read as "credentials found" to a CI gate.
       console.error(`Unknown command: ${escapeForDisplay(command)}`);
       printHelp();
-      return 1;
+      return EXIT_USAGE;
   }
 }
 

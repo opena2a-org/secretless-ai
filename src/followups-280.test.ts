@@ -124,7 +124,7 @@ describe('a command\'s own refusal of a subcommand or value prints the value esc
   itIfBuilt('CONTROL: a value that holds no control character prints as before', () => {
     const res = cli(['backend', 'lst']);
 
-    expect(res.status).toBe(1);
+    expect(res.status).toBe(2);
     expect(res.stderr).toContain('  Unknown backend command: lst (did you mean `list`?)');
   });
 });

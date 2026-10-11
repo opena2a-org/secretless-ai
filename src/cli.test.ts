@@ -431,11 +431,11 @@ describe('scan warns on unknown flags / secret usage (regression: #80, #81)', ()
     }
   });
 
-  itIfBuilt('`secret bogus` (real unknown subcommand) still errors, exit 1 (#80)', () => {
+  itIfBuilt('`secret bogus` (real unknown subcommand) still errors, exit 2 (#80, #335)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-secret-bad-'));
     try {
       const res = runCliSpawn(['secret', 'bogus'], tmp);
-      expect(res.status).toBe(1);
+      expect(res.status).toBe(2);
       expect(res.stderr).toMatch(/Unknown secret command: bogus/);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -454,11 +454,11 @@ describe('scan warns on unknown flags / secret usage (regression: #80, #81)', ()
     }
   });
 
-  itIfBuilt('`scope bogus` (real unknown subcommand) still errors, exit 1', () => {
+  itIfBuilt('`scope bogus` (real unknown subcommand) still errors, exit 2 (#335)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scope-bad-'));
     try {
       const res = runCliSpawn(['scope', 'bogus'], tmp);
-      expect(res.status).toBe(1);
+      expect(res.status).toBe(2);
       expect(res.stderr).toMatch(/Unknown scope command: bogus/);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -735,20 +735,20 @@ describe('an unknown subcommand is refused rather than answered', () => {
 
   itIfBuilt('`cache zzz` is refused instead of showing the cache status', () => {
     const res = run(['cache', 'zzz']);
-    expect(res.status).toBe(1);
+    expect(res.status).toBe(2);
     expect(res.stderr).toMatch(/Unknown cache command: zzz/);
     expect(res.stdout).not.toMatch(/Secret Cache/);
   });
 
   itIfBuilt('`cache clea` names the command it nearly matched', () => {
     const res = run(['cache', 'clea']);
-    expect(res.status).toBe(1);
+    expect(res.status).toBe(2);
     expect(res.stderr).toMatch(/did you mean `clear`/);
   });
 
   itIfBuilt('`backend purg` — a near miss of a DESTRUCTIVE verb — is refused and named', () => {
     const res = run(['backend', 'purg']);
-    expect(res.status).toBe(1);
+    expect(res.status).toBe(2);
     expect(res.stderr).toMatch(/did you mean `purge`/);
     expect(res.stdout).not.toMatch(/Secretless Backend/);
   });
@@ -769,13 +769,75 @@ describe('an unknown subcommand is refused rather than answered', () => {
    * Every verb below is safe to invoke with an unrecognised token precisely
    * BECAUSE it refuses first — that is the property under test. None is ever
    * invoked bare, which for `install` would install a launch agent.
+   *
+   * The refusal exits 2, the refused-command-line code, and not 1: 1 is
+   * "credentials found", and all but the last two exited 1 until #335, so a CI
+   * gate read `backend purg` as a finding.
    */
   itIfBuilt.each([
     'secret', 'broker', 'vault', 'scope', 'hook', 'rules', 'watch', 'install', 'cache', 'backend',
-  ])('%s refuses an unrecognised subcommand and does not act on it', (verb) => {
+    'git-credential', 'telemetry',
+  ])('%s refuses an unrecognised subcommand with exit 2 and does not act on it', (verb) => {
     const res = run([verb, 'zzz-not-a-subcommand']);
-    expect(res.status, `${verb} answered an unknown subcommand with success`).not.toBe(0);
+    expect(res.status, `${verb} did not answer an unknown subcommand with exit 2`).toBe(2);
     expect(`${res.stdout}${res.stderr}`).toMatch(/Unknown/);
+  });
+
+  itIfBuilt('an unknown command exits 2, not the "credentials found" code (#335)', () => {
+    const res = run(['scna']);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toMatch(/Unknown command: scna/);
+  });
+});
+
+/**
+ * `verify` exits 1 when no API key is set in the environment: there is then
+ * nothing to verify. That is not "credentials found", so the exit-code table and
+ * `verify --help` say it in so many words (#335).
+ */
+describe('verify with no API key in the environment', () => {
+  const CLI_PATH_VERIFY = path.resolve(__dirname, '..', 'dist', 'cli.js');
+  const itIfBuilt = fs.existsSync(CLI_PATH_VERIFY) ? it : it.skip;
+  const EXIT_LINE = 'or a `verify` that found no API key in the environment to check';
+
+  function run(args: string[], cwd: string, home: string) {
+    // Built from nothing rather than from process.env, so no API key the
+    // caller's shell holds can turn this run into a PASS.
+    return spawnSync(process.execPath, [CLI_PATH_VERIFY, ...args], {
+      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], cwd,
+      env: {
+        PATH: process.env.PATH ?? '', HOME: home, NO_COLOR: '1',
+        OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off',
+      },
+    });
+  }
+
+  itIfBuilt('exits 1 on a clean project, and the exit-code table and --help say why', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-verify-nokey-'));
+    try {
+      const project = path.join(tmp, 'empty');
+      const home = path.join(tmp, 'home');
+      fs.mkdirSync(project);
+      fs.mkdirSync(home);
+
+      const res = run(['verify'], project, home);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toMatch(/AI context: clean/);
+      expect(res.stdout).toMatch(/No API keys found in env vars/);
+
+      for (const doc of ['README.md', path.join('docs', 'scanning.md')]) {
+        const text = fs.readFileSync(path.resolve(__dirname, '..', doc), 'utf-8');
+        const line = text.split('\n').find((l) => l.startsWith('Exit codes: '));
+        expect(line, doc).toContain(EXIT_LINE);
+        expect(line, doc).toContain('such as an unknown command or subcommand');
+      }
+
+      const help = run(['verify', '--help'], project, home);
+      expect(help.status).toBe(0);
+      expect(help.stdout.replace(/\s+/g, ' ')).toContain('no API key is set in the environment (there is then nothing to verify)');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

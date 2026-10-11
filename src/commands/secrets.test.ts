@@ -213,7 +213,7 @@ describe('a flag given to the wrong subcommand is refused, not ignored', () => {
 
   it('CONTROL: an unknown subcommand is reported as one, whatever flag follows it', async () => {
     const res = await run(['describe', 'API_KEY', '--json']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(2);
     expect(res.err).toContain('Unknown secret command: describe');
   });
 

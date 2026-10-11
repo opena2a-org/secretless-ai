@@ -59,7 +59,7 @@ describe('the usage event names the command that ran, not what was typed in its 
 
     const res = run([dir]);
 
-    expect(res.status).toBe(1);
+    expect(res.status).toBe(2);
     expect(res.events).toHaveLength(1);
     expect(res.events[0]).toMatchObject({ event: 'command', name: 'unknown', success: false });
     expect(JSON.stringify(res.events)).not.toContain('private-proj');
@@ -68,7 +68,7 @@ describe('the usage event names the command that ran, not what was typed in its 
   itIfBuilt('a mistyped command is sent as `unknown`', () => {
     const res = run(['scna', '.']);
 
-    expect(res.status).toBe(1);
+    expect(res.status).toBe(2);
     expect(res.events).toHaveLength(1);
     expect(res.events[0]).toMatchObject({ event: 'command', name: 'unknown', success: false });
   });
