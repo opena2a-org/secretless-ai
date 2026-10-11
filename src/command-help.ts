@@ -203,6 +203,12 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     summary: 'Verify keys are usable but hidden from AI.',
     usage: ['[dir] [--all]'],
     flags: { '--all': 'List every known env var, not only the summary' },
+    notes: [
+      'Exits 0 when an API key is set in the environment and no credential is',
+      'found in AI context or a transcript. Exits 1 when one is found there, when',
+      'no API key is set in the environment (there is then nothing to verify), or',
+      'when [dir] is missing or cannot be opened. A refused command line exits 2.',
+    ],
   },
   'scan-staged': {
     summary: 'Scan the files staged for commit (the pre-commit hook body).',

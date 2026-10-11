@@ -2,6 +2,7 @@ import { SecretStore } from '../secret-store';
 import { resolveBackendType } from '../backends/config';
 import { discoverScope, listBaselines, resetBaseline, loadBaseline, detectProvider } from '../scope';
 import { escapeForDisplay } from '../display-safe';
+import { EXIT_USAGE } from '../argv';
 import { CLI_BARE } from './utils';
 
 export async function runScope(args: string[]): Promise<number> {
@@ -204,7 +205,7 @@ export async function runScope(args: string[]): Promise<number> {
       }
       console.error(`\n  Unknown scope command: ${escapeForDisplay(subcommand)}`);
       usage();
-      return 1;
+      return EXIT_USAGE;
     }
   }
 }

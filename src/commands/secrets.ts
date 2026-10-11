@@ -674,7 +674,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       console.log(`         ${CLI_BARE} secret list --needs-rotation [--json]`);
       console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]`);
       console.log(`         ${CLI_BARE} secret push NAME[,NAME2] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>]\n`);
-      return 1;
+      return 2;
   }
 }
 

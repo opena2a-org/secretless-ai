@@ -7,6 +7,7 @@ import { migrateSecrets } from '../backends/migrate';
 import type { SelectableBackendType } from '../backends/config';
 import { nearestMatch } from '../near-miss';
 import { escapeForDisplay } from '../display-safe';
+import { EXIT_USAGE } from '../argv';
 import { CLI_BARE } from './utils';
 
 /**
@@ -37,13 +38,15 @@ const CACHE_SUBCOMMANDS = ['clear', 'ttl'];
  *
  * The token is printed escaped, as those eight siblings print the token they
  * refuse: a line feed in it started a line of its own under this message.
+ *
+ * Exit 2, the refused-command-line code, not 1: 1 is "credentials found".
  */
 function refuseUnknownSubcommand(verb: string, token: string, known: string[]): number {
   const near = nearestMatch(token, known);
   console.error(`\n  Unknown ${verb} command: ${escapeForDisplay(token)}${near ? ` (did you mean \`${near}\`?)` : ''}`);
   console.log(`  Usage: ${CLI_BARE} ${verb} <${known.join('|')}>`);
   console.log(`  Run \`${CLI_BARE} ${verb}\` with no arguments to see current status.\n`);
-  return 1;
+  return EXIT_USAGE;
 }
 
 export async function runBackend(args: string[]): Promise<number> {

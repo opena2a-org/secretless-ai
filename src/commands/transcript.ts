@@ -5,6 +5,7 @@ import { scanHistory, cleanHistory } from '../history';
 import { shellQuote } from './core';
 import { CLI_BARE } from './utils';
 import { escapeForDisplay } from '../display-safe';
+import { EXIT_USAGE } from '../argv';
 import { SecretStore } from '../secret-store';
 import { markRedactedSecretsExposed } from '../secret-exposure';
 import type { ExposureMarks, RedactedSpan } from '../secret-exposure';
@@ -209,7 +210,7 @@ export async function runWatch(args: string[]): Promise<number> {
       console.log('    status     Show watcher status');
       console.log('    install    Install as macOS LaunchAgent');
       console.log('    uninstall  Remove LaunchAgent\n');
-      return isUnknown ? 1 : 0;
+      return isUnknown ? EXIT_USAGE : 0;
     }
   }
 }

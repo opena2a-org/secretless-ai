@@ -18,6 +18,18 @@ ends with what to do instead, and a `Fix:` names the first name `secret set`
 takes. When no name is one it takes, no `secret set` line is printed. A name
 `secret set` takes is offered as before.
 
+**An unknown command or subcommand exits 2 (#335).**
+`secretless-ai scna`, `backend purg`, `cache bogus`, and an unrecognised
+subcommand of `secret`, `scope`, `broker`, `vault`, `install`, `watch`, `hook`
+or `rules` exited 1, the code that also means credentials were found, so a CI
+gate read a mistyped command as a finding. They now exit 2, the code for a
+command line that was refused before anything ran, as `telemetry` and
+`git-credential` already did; a bare `hook` exits 2 as well. A bare `cache` or
+`backend` still prints its status at exit 0. `verify` still exits 1 when no
+API key is set in the environment, since there is then nothing to verify; the
+exit-code table in the README and `docs/scanning.md`, and `verify --help`, now
+say so.
+
 **`scan --explain` prints a detailed view of each finding (#332).**
 Without a ready NanoMind engine, `--explain` printed the plain `scan` view and
 said to install `@nanomind/engine`, a package that installs as an optional

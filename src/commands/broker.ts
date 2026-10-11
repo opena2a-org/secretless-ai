@@ -2,6 +2,7 @@ import * as path from 'path';
 import { startDaemon, stopDaemon, getLiveDaemonStatus } from '../broker/daemon';
 import { formatUptime } from './utils';
 import { escapeForDisplay } from '../display-safe';
+import { EXIT_USAGE } from '../argv';
 
 export async function runBroker(args: string[]): Promise<number> {
   const subcommand = args[0];
@@ -107,7 +108,7 @@ export async function runBroker(args: string[]): Promise<number> {
       console.log('    --aim-token <token>    Bearer token for AIM auth (or env SECRETLESS_AIM_TOKEN)');
       console.log('    --port <port>          HTTP port (default: 19421)');
       console.log('    --policy-file <path>   Policy file path\n');
-      return isUnknown ? 1 : 0;
+      return isUnknown ? EXIT_USAGE : 0;
     }
   }
 }

@@ -178,7 +178,7 @@ describe('runVault CLI dispatch', () => {
   });
 
   it('shows error and help for unknown subcommand', async () => {
-    expect(await runVault(['unknown-cmd'])).toBe(1);
+    expect(await runVault(['unknown-cmd'])).toBe(2);
     const errorOutput = consoleErrorSpy.mock.calls.flat().join(' ');
     expect(errorOutput).toContain('Unknown vault command: unknown-cmd');
   });

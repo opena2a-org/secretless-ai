@@ -4,6 +4,7 @@ import { getSessionStatus } from '../session/session-state';
 import { installDaemon, uninstallDaemon, isDaemonInstalled } from '../session/install';
 import { formatRemainingTime } from './utils';
 import { escapeForDisplay } from '../display-safe';
+import { EXIT_USAGE } from '../argv';
 
 export async function runWarm(args: string[]): Promise<number> {
   // Parse --ttl flag (accepts seconds or duration strings like 5m, 1h, 1d)
@@ -98,7 +99,7 @@ export function runInstall(args: string[]): number {
     console.log('    secretless-ai install              Install broker as login daemon');
     console.log('    secretless-ai install uninstall     Remove login daemon');
     console.log('    secretless-ai install status        Check installation status\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   // Default: install
