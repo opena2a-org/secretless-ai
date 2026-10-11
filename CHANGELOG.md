@@ -18,6 +18,15 @@ ends with what to do instead, and a `Fix:` names the first name `secret set`
 takes. When no name is one it takes, no `secret set` line is printed. A name
 `secret set` takes is offered as before.
 
+**`diff` ignores an unknown flag instead of reading it as the git ref (#336).**
+`secretless-ai diff --bogusflag` printed `Warning: ignoring unknown flag
+--bogusflag.` and then `Invalid git ref: "--bogusflag"` at exit 1, because the
+flag it had just warned about was the first argument it read. The flag is now
+dropped before the ref is chosen, so `diff --bogusflag` runs against `HEAD` and
+`diff --bogusflag main` runs against `main`, as the README and
+`docs/scanning.md` already said. A ref that starts with a single `-` is still
+refused as an invalid ref.
+
 **An unknown command or subcommand exits 2 (#335).**
 `secretless-ai scna`, `backend purg`, `cache bogus`, and an unrecognised
 subcommand of `secret`, `scope`, `broker`, `vault`, `install`, `watch`, `hook`
