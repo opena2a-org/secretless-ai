@@ -25,6 +25,7 @@ import { GCPSecretManagerBackend } from './backends/gcp-sm';
 import { VaultPushTarget, GcpPushTarget, PUSH_TARGETS } from './secret-push';
 import type { PushTarget, PushTargetType } from './secret-push';
 import { runSecret, runSecretPush } from './commands/secrets';
+import { CLI } from './commands/utils';
 import { hasDisplayHazard } from './display-safe';
 import { isValidSecretName } from './secret-store';
 
@@ -99,12 +100,16 @@ function printed(): string {
   return out.join('\n');
 }
 
-/** The arguments of the `secret push` command on the printed Fix line, as a shell would split them. */
+/**
+ * The arguments of the `secret push` command on the printed Fix line, as a
+ * shell would split them: no quoted part of the line holds a space, and each
+ * pair of single quotes is removed.
+ */
 function fixCommand(): string[] {
   const line = printed().split('\n').find((l) => l.startsWith('  Fix:'));
   const command = /secret push (.+)$/.exec(line ?? '');
   expect(command, `no \`secret push\` Fix line in:\n${printed()}`).not.toBeNull();
-  return command![1].split(' ');
+  return command![1].split(' ').map((word) => word.replace(/'([^']*)'/g, '$1'));
 }
 
 /** Every place a value or credential could leak to, except the request bodies that must carry them. */
@@ -230,7 +235,7 @@ describe('secret push --to azure-kv (#235)', () => {
     expect(printed()).toContain('Dry run: nothing is written.');
     expect(printed()).toMatch(/would add a version\s+API_KEY\s+as API-KEY/);
     expect(printed()).toMatch(/would create\s+DB_PASSWORD\s+as DB-PASSWORD/);
-    expect(printed()).toContain('Apply:   npx secretless-ai secret push API_KEY,DB_PASSWORD --to azure-kv --vault kv-demo --as API-KEY,DB-PASSWORD');
+    expect(printed()).toContain(`Apply:   ${CLI} secret push API_KEY,DB_PASSWORD --to azure-kv --vault kv-demo --as API-KEY,DB-PASSWORD`);
     expectNoLeak();
   });
 
@@ -246,7 +251,7 @@ describe('secret push --to azure-kv (#235)', () => {
     expect(children).toEqual([]);
     expect(printed()).toContain('Not stored on this machine: NOT_STORED');
     expect(printed()).toContain('Nothing was pushed.');
-    expect(printed()).toContain('Fix:     npx secretless-ai secret set NOT_STORED');
+    expect(printed()).toContain(`Fix:     ${CLI} secret set NOT_STORED`);
     expectNoLeak();
   });
 
@@ -341,7 +346,7 @@ describe('secret push --to azure-kv (#235)', () => {
     expect(calls).toEqual([]);
     expect(children).toEqual([]);
     expect(printed()).toContain('"API_KEY" cannot name a secret in Azure Key Vault kv-demo');
-    expect(printed()).toContain('Fix:     npx secretless-ai secret push API_KEY,DB_PASSWORD --to azure-kv --vault kv-demo --as API-KEY,DB-PASSWORD');
+    expect(printed()).toContain(`Fix:     ${CLI} secret push API_KEY,DB_PASSWORD --to azure-kv --vault kv-demo --as API-KEY,DB-PASSWORD`);
   });
 
   it('refuses NAME=VALUE without printing the value it was given', async () => {
@@ -396,7 +401,7 @@ describe('secret push --to vault (#235)', () => {
     expect(post?.url).toBe(`${ADDR}/v1/secret/data/secret/API_KEY`);
     expect(JSON.parse(post?.body ?? '')).toEqual({ data: { value: VALUES.API_KEY } });
     expect(printed()).toMatch(/pushed\s+API_KEY\s+version 3\s+secret\/data\/secret\/API_KEY/);
-    expect(printed()).toContain('npx secretless-ai secret sync --from vault --only API_KEY');
+    expect(printed()).toContain(`${CLI} secret sync --from vault --only API_KEY`);
     expectNoLeak();
   });
 
@@ -429,7 +434,7 @@ describe('secret push --to vault (#235)', () => {
     expect(code).toBe(2);
     expect(calls).toEqual([]);
     expect(printed()).toContain('"api.key" cannot name a secret in Vault');
-    expect(printed()).toContain('Fix:     npx secretless-ai secret push API_KEY --to vault --as api_key');
+    expect(printed()).toContain(`Fix:     ${CLI} secret push API_KEY --to vault --as api_key`);
 
     const rerun = await runSecretPush(fixCommand(), { store, createTarget: vaultTarget() });
 
@@ -514,7 +519,7 @@ describe('secret push --to gcp-sm (#235)', () => {
     expect(code).toBe(2);
     expect(calls).toEqual([]);
     expect(printed()).toContain('"api.key" cannot name a secret in GCP Secret Manager');
-    expect(printed()).toContain('Fix:     npx secretless-ai secret push API_KEY --to gcp-sm --as api_key');
+    expect(printed()).toContain(`Fix:     ${CLI} secret push API_KEY --to gcp-sm --as api_key`);
 
     const rerun = await runSecretPush(fixCommand(), { store, createTarget });
 
@@ -1101,18 +1106,105 @@ describe('a refusal quotes each name as given, and its Fix is the command to run
     await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--dry-run', '--as', 'x,x'], { store, createTarget: TARGETS.vault });
     expect(fixCommand()).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--dry-run', '--as', 'x,<name>']);
 
-    // --dry-run stands before --as, so an unfilled <name> ends the line and
-    // no word after it is one a shell would take as a file to write (#314).
+    // --dry-run stands before --as, so an unfilled <name> ends the line
+    // (#314), and the <name> is quoted, so a shell does not read it as a
+    // redirection (#316).
     out.length = 0;
     await runSecretPush(['API_KEY', '--to', 'vault', '--as', '<2fa>', '--dry-run'], { store, createTarget: TARGETS.vault });
     const fixLine = printed().split('\n').find((l) => l.startsWith('  Fix:'));
-    expect(fixLine).toBe('  Fix:     npx secretless-ai secret push API_KEY --to vault --dry-run --as <name>');
+    expect(fixLine).toBe(`  Fix:     ${CLI} secret push API_KEY --to vault --dry-run --as '<name>'`);
 
     // A refusal without --dry-run prints a Fix without it.
     out.length = 0;
     await runSecretPush(['API_KEY', '--to', 'vault', '--as', 'a.b'], { store, createTarget: TARGETS.vault });
     expect(fixCommand()).toEqual(['API_KEY', '--to', 'vault', '--as', 'a_b']);
     expectNoLeak();
+  });
+});
+
+describe('secret push prints no Fix that a shell, or the push itself, reads as something else (#316)', () => {
+  const FIRST_NAME_LINE = `  "-x" cannot be the first name: \`secret push\` reads a word that starts with '-' as an option. Give another name before it.`;
+  const FIRST_AS_LINE = `  "-x" cannot be the first --as name: \`secret push\` reads an --as value that starts with '-' as no value. Choose another name for A.`;
+
+  it('a first name or first --as name that starts with \'-\' behind whitespace or a comma is refused, not offered back as an option', async () => {
+    const cases: Array<{ args: string[]; line: string }> = [
+      { args: ['A,B', '--to', 'vault', '--as', ' -x,a.b'], line: FIRST_AS_LINE },
+      { args: ['A', '--to', 'vault', '--as', '\t-x'], line: FIRST_AS_LINE },
+      { args: [' -x', '--to', 'vault', '--as', 'a.b'], line: FIRST_NAME_LINE },
+      { args: [',-x,A', '--to', 'vault'], line: FIRST_NAME_LINE },
+    ];
+    for (const { args, line } of cases) {
+      out.length = 0;
+      const said = JSON.stringify(args);
+      expect(await runSecretPush(args, { store, createTarget: TARGETS.vault }), said).toBe(2);
+      expect(printed().split('\n'), said).toContain(line);
+      expect(printed(), said).toContain('  Nothing was read or pushed.');
+      expect(printed().split('\n').filter((l) => l.startsWith('  Fix:')), said).toEqual([]);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('a name that starts with \'-\' later in a list is still read, and the Fix and Apply lines give it back where it stands', async () => {
+    handler = (call) => {
+      const u = new URL(call.url);
+      if (u.pathname === '/v1/sys/health') return json(200, { initialized: true, sealed: false });
+      if (call.method === 'GET' && u.pathname.startsWith('/v1/secret/metadata/')) return json(404, { errors: [] });
+      return json(400, {});
+    };
+    const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'vault', '--as', 'a.b,-x', '--dry-run'], { store, createTarget: TARGETS.vault });
+    expect(code).toBe(2);
+    const fix = fixCommand();
+    expect(fix).toEqual(['API_KEY,DB_PASSWORD', '--to', 'vault', '--dry-run', '--as', 'a_b,-x']);
+
+    out.length = 0;
+    expect(await runSecretPush(fix, { store, createTarget: TARGETS.vault })).toBe(0);
+    expect(printed()).toContain(`  Apply:   ${CLI} secret push API_KEY,DB_PASSWORD --to vault --as a_b,-x`);
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+    expectNoLeak();
+  });
+
+  it('each <name> in a Fix is quoted, and run as printed the Fix is refused for naming a placeholder', async () => {
+    const code = await runSecretPush(['A,B', '--to', 'vault', '--as', '<2fa>,a.b'], { store, createTarget: TARGETS.vault });
+    expect(code).toBe(2);
+    expect(printed().split('\n')).toContain(`  Fix:     ${CLI} secret push A,B --to vault --as '<name>',a_b`);
+    const fix = fixCommand();
+    expect(fix).toEqual(['A,B', '--to', 'vault', '--as', '<name>,a_b']);
+
+    out.length = 0;
+    expect(await runSecretPush(fix, { store, createTarget: TARGETS.vault })).toBe(2);
+    expect(printed()).toContain('  "<name>" in --as is a placeholder: replace it with the name A should have in ');
+    expect(calls).toEqual([]);
+  });
+
+  it('no Fix holds an angle bracket outside quotes, so a shell reads none of it as a redirection', async () => {
+    const cases: string[][] = [
+      ['A,B', '--to', 'vault', '--as', 'x,x'],
+      ['A,B', '--to', 'vault', '--as', 'a_b,a.b'],
+      ['A,B', '--to', 'vault', '--as', '<names>,a.b'],
+      ['A,B', '--to', 'vault', '--as', '<name>,<name>'],
+      ['A,B', '--to', 'vault', '--dry-run', '--as', 'a.b,<2fa>'],
+      ['A,B', '--to', 'azure-kv', '--vault', 'kv-demo', '--as', 'ab,AB'],
+      ['A,B', '--to', 'gcp-sm', '--as', 'x\ny,a.b'],
+    ];
+    for (const args of cases) {
+      out.length = 0;
+      const said = JSON.stringify(args);
+      expect(await runSecretPush(args, { store, createTarget: (to) => TARGETS[to]() }), said).toBe(2);
+      const fixLines = printed().split('\n').filter((l) => l.startsWith('  Fix:'));
+      expect(fixLines, said).toHaveLength(1);
+      expect(fixLines[0], said).toContain('<');
+      expect(fixLines[0].replace(/'[^']*'/g, ''), said).not.toMatch(/[<>]/);
+    }
+  });
+
+  it('the first refused name whose replacement is taken gets the line that gives the rule and the "is taken by" line', async () => {
+    expect(await runSecretPush(['A,B', '--to', 'vault', '--as', 'a_b,a.b'], { store, createTarget: TARGETS.vault })).toBe(2);
+    const lines = printed().split('\n');
+    const rule = lines.findIndex((l) => l.startsWith('  "a.b" cannot name a secret in ') && l.endsWith("names allow letters, digits, '-' and '_'."));
+    const taken = lines.indexOf('  "a_b" is taken by A; choose another name for B.');
+    expect(rule, lines.join('\n')).toBeGreaterThan(-1);
+    expect(taken, lines.join('\n')).toBeGreaterThan(rule);
+    expect(fixCommand()).toEqual(['A,B', '--to', 'vault', '--as', 'a_b,<name>']);
   });
 });
 

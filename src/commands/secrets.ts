@@ -977,7 +977,8 @@ function createPushTarget(type: PushTargetType, vaultName: string | undefined): 
  * An `--as` name still in the `<name>` form a Fix prints for the user to fill
  * in, or in another `<word>` spelling of it, such as the `<names>` the usage
  * line prints. No push target accepts '<' or '>' in a name, and the form
- * prints as given, so it needs no escaping.
+ * prints as given, so it needs no escaping. A Fix quotes it, so a shell does
+ * not read its brackets as redirections.
  */
 const PLACEHOLDER_NAME = /^<[A-Za-z][A-Za-z0-9_-]*>$/;
 
@@ -1054,6 +1055,13 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
   if (badName !== undefined) {
     return usageError(`"${badName}" is not a secret name. Names allow letters, digits, '-' and '_'.`);
   }
+  // The names are read with whitespace and empty names dropped, so ` -x` and
+  // `,-x` are read as `-x` is, which this command reads as an option. A Fix
+  // or Apply line prints the names as one word, and one that starts with '-'
+  // would be refused that way.
+  if (names[0].startsWith('-')) {
+    return usageError(`"${names[0]}" cannot be the first name: \`secret push\` reads a word that starts with '-' as an option. Give another name before it.`);
+  }
   if (to === undefined) return usageError('--to is required: name the store to push to.');
   if (!(PUSH_TARGETS as readonly string[]).includes(to)) {
     return usageError(`Unknown target "${to}". Valid: ${PUSH_TARGETS.join(', ')}.`);
@@ -1076,6 +1084,11 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     if (remotes.length !== names.length || remotes.some((r) => r === '')) {
       return usageError(`--as gives ${remotes.length} name(s) for ${names.length} secret(s); give one per secret, in the same order.`);
     }
+    // ` -x,a.b` is read as `-x,a.b` is, and `--as -x,a.b` is refused for
+    // giving no value, so a Fix or Apply line could not give this one back.
+    if (remotes[0].startsWith('-')) {
+      return usageError(`"${remotes[0]}" cannot be the first --as name: \`secret push\` reads an --as value that starts with '-' as no value. Choose another name for ${names[0]}.`);
+    }
   } else {
     remotes = [...names];
   }
@@ -1092,11 +1105,13 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
 
   const tail = [`--to ${toType}`, ...(vaultName !== undefined ? [`--vault ${vaultName}`] : [])];
   // The Fix of a dry run is a dry run too, so running it as printed writes
-  // nothing. `--dry-run` comes before `--as`, so a `<name>` left unfilled at
-  // the end of the line is not followed by a word a shell would take as a
-  // file to write: pasted unedited, the line stops as a syntax error.
+  // nothing. `--dry-run` comes before `--as`, so the names to fill in end the
+  // line. Each `<name>` is quoted: unquoted, a shell reads `<name>,a_b` as
+  // input from a file `name` and output to a file `,a_b`. Pasted unedited,
+  // the line is refused for naming a placeholder, and nothing is written.
+  const asOperand = (r: string): string => (PLACEHOLDER_NAME.test(r) ? `'${r}'` : r);
   const fixLine = (operands: readonly string[]): string =>
-    `  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')}${dryRun ? ' --dry-run' : ''} --as ${operands.join(',')}\n`;
+    `  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')}${dryRun ? ' --dry-run' : ''} --as ${operands.map(asOperand).join(',')}\n`;
   const problems = remotes.map((r) => target.nameProblem(r));
   // Every given name passed `isValidSecretName` and the --as names passed the
   // target's `nameProblem`, so none holds a character `escapeForDisplay`
@@ -1177,9 +1192,10 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     // a character printed escaped, and one whose replacement would start
     // with '-'. Each of those gets the line wherever it stands, ending with
     // the secret it was given for. A name left as `<name>` because its
-    // replacement is taken, or because the store would merge it with an
-    // earlier name, gets the "is taken by" or "would both be pushed as" line
-    // below instead.
+    // replacement is taken gets the "is taken by" line below; when it is the
+    // first refused name, it gets the line that gives the rule as well. One
+    // left as `<name>` because the store would merge it with an earlier name
+    // is accepted, so it gets only the "would both be pushed as" line below.
     remotes.forEach((r, i) => {
       if (i !== refused && !unspelled.has(i)) return;
       const whose = unspelled.has(i) ? `; choose another name for ${names[i]}` : '';
