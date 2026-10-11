@@ -158,6 +158,31 @@ describe('the summary discloses what was not looked at', () => {
     expect(hits).toHaveLength(1);
     expect(doc.summary.notEntered).toBe(1);
   });
+
+  it('does not count a file the key walk opened as enumerated but not opened (#341)', async () => {
+    // The bundle was a finding and also one of `skippedUnsupported`; the
+    // certificate was read for a private key and listed as unopened too.
+    const dir = tree({
+      't.secretless-bundle': 'x\n',
+      'cert.pem': '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    });
+    const { doc, code } = await scanned(dir);
+    expect(doc.summary.high).toBe(1);
+    expect(doc.findings.map((f: { file: string }) => f.file)).toEqual(['t.secretless-bundle']);
+    expect(doc.summary.skippedUnsupported).toBe(0);
+    expect(doc.skippedUnsupportedFiles).toEqual([]);
+    expect(code).toBe(1);
+  });
+
+  it('CONTROL: a key file the test-file rule keeps from the key walk is still counted', async () => {
+    const dir = tree({ 'backup.test.secretless-bundle': 'x\n' });
+    const { doc } = await scanned(dir);
+    expect(doc.summary.high).toBe(0);
+    expect(doc.summary.skippedUnsupported).toBe(1);
+    expect(doc.skippedUnsupportedFiles).toEqual([
+      { path: 'backup.test.secretless-bundle', reason: 'test file (--include-tests)' },
+    ]);
+  });
 });
 
 describe('coverage-warning paths are printed so they run where they are pasted (#120)', () => {
@@ -317,9 +342,10 @@ describe('the human report names a file it did not open', () => {
   });
 
   it('does not call a key file uncovered while reporting a finding from it', async () => {
-    // The source walk lists a `.crt` and an export bundle as unsupported file
-    // types; the key walk checks both and reports what they hold. Generated at
-    // run time so the committed source never carries a private key.
+    // The source walk does not read a `.crt` or an export bundle; the key walk
+    // checks both and reports what they hold, so neither is listed as not
+    // opened (#341). Generated at run time so the committed source never
+    // carries a private key.
     const { privateKey } = crypto.generateKeyPairSync('ec', {
       namedCurve: 'prime256v1',
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
@@ -337,9 +363,9 @@ describe('the human report names a file it did not open', () => {
     expect(text).toContain('Secretless Encrypted Bundle');
     expect(text).toMatch(/backup\.secretless-bundle:1$/m);
     expect(code).toBe(1);
-    expect(text).toMatch(/2 files not opened: declared boundaries, not findings\./);
-    expect(text).toMatch(/server\.crt: unsupported file type$/m);
-    expect(text).toMatch(/backup\.secretless-bundle: unsupported file type$/m);
+    expect(text).not.toMatch(/not opened/);
+    expect(text).not.toMatch(/unsupported file type/);
+    expect(text).not.toContain('Scan one:');
     expect(text).not.toMatch(/not covered by the scan result/);
   });
 
@@ -368,7 +394,7 @@ describe('the human report names a file it did not open', () => {
     expect(text).not.toMatch(/ignored\.pem:1$/m);
     expect(code).toBe(1);
     expect(text).toMatch(/ignored\.pem: ignore rule \(--no-ignore\)$/m);
-    expect(text).toMatch(/kept\.pem: unsupported file type$/m);
+    expect(text).not.toMatch(/kept\.pem: /m);
   });
 
   it('CONTROL: --no-ignore, the flag that reason names, reads that key file', async () => {
