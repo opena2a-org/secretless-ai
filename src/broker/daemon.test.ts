@@ -1,10 +1,67 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as http from 'http';
 import { startDaemon, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning } from './daemon';
 import { TOKEN_FILE } from './server';
+
+/**
+ * daemon.ts and server.ts fix their default paths under ~/.secretless-ai when
+ * they load, and startDaemon builds a server whose resolver opens the store
+ * configured there. Run against the HOME of whoever runs the suite, these tests
+ * wrote that user's broker.pid, broker.sock, broker.token and audit log, and a
+ * long HOME pushed broker.sock past the Unix socket path limit (104 bytes on
+ * macOS), so `listen` failed with EINVAL. Hoisted above the imports, this sets
+ * a short temporary HOME before either module loads.
+ */
+const testHome = vi.hoisted(() => {
+  const fs = require('fs') as typeof import('fs');
+  const os = require('os') as typeof import('os');
+  const path = require('path') as typeof import('path');
+  const original = process.env.HOME;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-home-'));
+  process.env.HOME = dir;
+  return { dir, original };
+});
+
+// startDaemon adds SIGTERM and SIGINT handlers that stop the server, and stop()
+// writes a shutdown entry to the audit log under HOME. Left in place, the
+// worker's own SIGTERM at the end of the run writes one per daemon started
+// here, after the temporary HOME is gone.
+const signalListeners = {
+  SIGTERM: process.listeners('SIGTERM'),
+  SIGINT: process.listeners('SIGINT'),
+};
+
+afterAll(() => {
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    for (const listener of process.listeners(signal)) {
+      if (!signalListeners[signal].includes(listener)) process.removeListener(signal, listener);
+    }
+  }
+  if (testHome.original === undefined) delete process.env.HOME;
+  else process.env.HOME = testHome.original;
+  fs.rmSync(testHome.dir, { recursive: true, force: true });
+});
+
+describe('daemon test HOME', () => {
+  it('runs the daemon under a temporary HOME the socket path fits in', async () => {
+    const dir = path.join(testHome.dir, '.secretless-ai');
+    expect(TOKEN_FILE).toBe(path.join(dir, 'broker.token'));
+
+    const server = await startDaemon({ httpPort: 23000 + Math.floor(Math.random() * 1000) });
+    try {
+      const socketPath = getDaemonStatus()?.socketPath;
+      expect(socketPath).toBe(path.join(dir, 'broker.sock'));
+      // sun_path holds 104 bytes on macOS and 108 on Linux, the NUL included.
+      expect(Buffer.byteLength(socketPath!)).toBeLessThan(104);
+    } finally {
+      await server.stop();
+      fs.rmSync(path.join(dir, 'broker.pid'), { force: true });
+    }
+  });
+});
 
 /**
  * Integration tests for `getLiveDaemonStatus`.

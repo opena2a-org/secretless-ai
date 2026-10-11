@@ -20,6 +20,10 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { BrokerServer } from './server';
+import { CredentialResolver } from './resolver';
+import { SecretStore } from '../secret-store';
+import { McpVault } from '../mcp/vault';
+import { LocalBackend } from '../backends/local';
 import { GrantResolver } from './grant-resolver';
 import type { Atx, AtxTrustAnchors } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import { GrantPolicy, type GrantBinding } from './grant-policy';
@@ -183,6 +187,8 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
   let socketPath: string;
   let auditPath: string;
   let tokenPath: string;
+  let homeDir: string;
+  let originalHome: string | undefined;
   let idp: FakeIdp;
   let ordersApi: FakeOrdersApi;
   let brokerToken: string;
@@ -206,6 +212,13 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     // Isolated token file: never touch the machine-wide ~/.secretless-ai/broker.token,
     // which a real broker may own and which would otherwise race across test instances.
     tokenPath = path.join(tmpDir, 'broker.token');
+    // An empty HOME of the suite's own, so anything that still falls back to
+    // ~/.secretless-ai lands here, where the last test looks for it, and never
+    // in the store of whoever runs the suite.
+    originalHome = process.env.HOME;
+    homeDir = path.join(tmpDir, 'home');
+    fs.mkdirSync(homeDir);
+    process.env.HOME = homeDir;
 
     const { atx, pubHex, keypair } = makeSignedAtx();
     // Stash a valid ATX the "agent" will present. (In production the agent carries its own.)
@@ -230,6 +243,16 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
       audit: new AuditLogger(auditPath),
     });
 
+    // The credential store is the suite's own as well. Omitted, the resolver
+    // opens the default SecretStore and McpVault: the store configured under
+    // HOME, which after `backend set local` is the encrypted store of whoever
+    // runs the suite.
+    const store = new LocalBackend({ storeDir: path.join(tmpDir, 'store'), key: 'aap-conformance' });
+    const resolver = new CredentialResolver({
+      secretStore: new SecretStore({ backend: store }),
+      mcpVault: new McpVault({ backend: store }),
+    });
+
     server = new BrokerServer(
       // policyFile is pinned into the test's own tmpdir. Omitted, PolicyEngine
       // falls back to ~/.secretless-ai/broker-policies.json, so this suite's
@@ -238,7 +261,7 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
       // policy validation got stricter. A conformance suite must not read
       // developer state.
       { socketPath, httpPort: 0, auditLog: auditPath, tokenFile: tokenPath, policyFile: path.join(tmpDir, 'broker-policies.json') },
-      { aimClient: null, grantResolver },
+      { aimClient: null, grantResolver, resolver },
     );
     await server.start();
     brokerToken = fs.readFileSync(tokenPath, 'utf-8');
@@ -246,6 +269,8 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
 
   afterEach(async () => {
     await server.stop();
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -437,5 +462,18 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
       operation: { method: 'GET', path: '/' },
     });
     expect(res.status).toBe(401);
+  });
+
+  it('opens no credential store under HOME', async () => {
+    // The default resolver creates the local store and its cache, with their
+    // salt files, under ~/.secretless-ai as soon as the server is built.
+    const res = await brokerPost(socketPath, '/grant', brokerToken, {
+      agentId: 'aim_orders_reader',
+      atx: (globalThis as any).__aapTestAtx,
+      grant: 'grant://orders-db',
+      operation: { method: 'GET', path: '/orders', query: { customer: 'c-123' } },
+    });
+    expect(res.status).toBe(200);
+    expect(fs.readdirSync(homeDir)).toEqual([]);
   });
 });
