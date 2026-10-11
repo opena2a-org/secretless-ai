@@ -167,6 +167,49 @@ export function runReview(
   };
 }
 
+export interface Precondition {
+  check: string;
+  detail: string;
+}
+
+/** Every check the run reports as precondition, in census order, with its detail. */
+export function preconditionsOf(run: Run): Precondition[] {
+  return CHECKS.filter((check) => run.census[check] === "precondition").map(
+    (check) => ({
+      check,
+      detail:
+        new RegExp(`^check ${check}: precondition: (.*)$`, "m").exec(
+          run.stdout,
+        )?.[1] ?? "<no detail>",
+    }),
+  );
+}
+
+const REFUSED_ADVISORY_READ =
+  /^advisories endpoint unreadable for (\S+) \(states: [a-z]+\): rate-limited or forbidden \(HTTP (403|429)\)$/;
+
+/**
+ * Why a precondition on the delivered tarball is reported as not measured, or
+ * null when it fails the test. One precondition qualifies: consumer-closure's
+ * GitHub advisories read refused with HTTP 403 or 429 on a run that sends no
+ * GH_TOKEN. Unauthenticated reads share a per-address rate limit, which a
+ * shared CI runner can exhaust on a change that touched nothing near the
+ * review. The script's verdict is unchanged: the check is still a
+ * precondition and the script still exits non-zero, so the release `review`
+ * job, which sends GH_TOKEN, still blocks on it.
+ */
+export function notMeasuredReason(
+  precondition: Precondition,
+  env: Record<string, string | undefined>,
+): string | null {
+  if (precondition.check !== "consumer-closure") return null;
+  // The advisory fetch sends authorization only for a non-empty GH_TOKEN.
+  if (env.GH_TOKEN) return null;
+  const refused = REFUSED_ADVISORY_READ.exec(precondition.detail);
+  if (refused === null) return null;
+  return `the unauthenticated advisories read for ${refused[1]} was refused (HTTP ${refused[2]}); set GH_TOKEN to measure it`;
+}
+
 export function expectSingleFailure(run: Run, check: string) {
   expect(run.status).not.toBe(0);
   const failing = CHECKS.filter((name) => run.census[name] === "fail");
