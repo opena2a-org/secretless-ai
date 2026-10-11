@@ -16,7 +16,8 @@
   "scripts": {
     "build": "tsc",
     "pretest": "npm run build",
-    "test": "vitest run",
+    "test": "npm run check:docs && vitest run",
+    "check:docs": "node scripts/check-docs-prose.mjs",
     "typecheck": "tsc -p tsconfig.test.json",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",

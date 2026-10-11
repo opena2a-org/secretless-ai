@@ -6,7 +6,7 @@ What `scan` opens, which gaps fail a build, and how a command line the tool cann
 
 A scan that could not read everything is not a passing scan. If the walk stops at the file cap, or a path cannot be opened, `scan` prints what it missed, exits 1, and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`. In `--json`, `summary.truncated` and `summary.unreadable` carry the same signal, so CI can tell "clean" from "unfinished". After a stop at the file cap, `summary.eligibleFiles` is the `--max-files` value that covers every eligible file; `summary.walkBudgetExceeded` is `true` when the walk's directory limit stopped it instead, which no file cap clears.
 
-**Two kinds of gap, and only one of them gates.** A gap against a claim the scanner made -- it said it would read something and did not -- sets exit 1: `truncated`, `unreadable`, `oversize`. A boundary the scanner declared and never claimed to cross does not: `outOfRoot`, `skippedUnsupported` (files enumerated but not opened, such as a `.png` or a `.md`), `notEntered` (directories not descended into, such as `node_modules/` or any dot-directory), and `unscannedConfig` (config-format files whose names are not on the built-in list, such as `secrets.json`, `.npmrc` or `values.yaml`; `scan --include-config` reads them). The second group is reported, sampled and given the command that scans it, but it does not fail your build -- every repository contains at least one of them, so gating on it would fail every build. If you want a declared boundary to gate, test it yourself: `jq -e '.summary.notEntered == 0'`.
+**Two kinds of gap, and only one of them gates.** A gap against a claim the scanner made (it said it would read something and did not) sets exit 1: `truncated`, `unreadable`, `oversize`. A boundary the scanner declared and never claimed to cross does not: `outOfRoot`, `skippedUnsupported` (files enumerated but not opened, such as a `.png` or a `.md`), `notEntered` (directories not descended into, such as `node_modules/` or any dot-directory), and `unscannedConfig` (config-format files whose names are not on the built-in list, such as `secrets.json`, `.npmrc` or `values.yaml`; `scan --include-config` reads them). The second group is reported, sampled and given the command that scans it, but it does not fail your build. Every repository contains at least one of them, so gating on it would fail every build. If you want a declared boundary to gate, test it yourself: `jq -e '.summary.notEntered == 0'`.
 
 ## What a directory scan opens
 
@@ -14,7 +14,7 @@ A directory scan checks source files by extension (`.js`, `.ts`, `.py`, `.go`, `
 
 Dot-directories are among the `notEntered` group, and that includes `.claude/`. Inside them, key files and the config files the scan recognizes by name are still scanned; source files and other files are not. See issue #144.
 
-Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed -- otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan -- and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
+Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed (otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan), and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
 
 ## A flag never widens scope
 
@@ -22,9 +22,9 @@ A command line the tool cannot bind is refused with exit 2 before anything runs,
 
 `scan`, `scan-staged` and `scan-history` refuse an unrecognised flag rather than warning and continuing, because their output is the answer: a typo in a coverage flag used to produce `No hardcoded credentials found.` at exit 0 over a narrower scan than the one you asked for. `feedback`, `diff` and `mcp-status` still warn, since they report no verdict.
 
-`--json` is implemented by `scan`, `status`, `secret list` and `secret show`. Passing it to any other command exits 2 and names the commands that implement it, rather than printing human text and exiting 0 -- the caller of `--json` is a machine, and a machine reading exit 0 beside prose cannot tell it was ignored.
+`--json` is implemented by `scan`, `status`, `secret list` and `secret show`. Passing it to any other command exits 2 and names the commands that implement it, rather than printing human text and exiting 0. The caller of `--json` is a machine, and a machine reading exit 0 beside prose cannot tell it was ignored.
 
-Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened, or an `init` that left a tool not configured), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
+Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened, or an `init` that left a tool not configured), `2` the command line was refused and nothing ran. Gate CI on `2` separately: it means the tool did not answer the question, not that the answer was clean.
 
 ```bash
 npx secretless-ai clean --dry-run --path ./transcripts   # reports findings without redacting

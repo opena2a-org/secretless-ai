@@ -133,6 +133,6 @@ The MCP servers continue to work because secretless resolves the references at s
 
 ## Next steps
 
-- [Protect My Credentials](protect-my-credentials.md) -- Block AI tools from reading all credential files
-- [Team Setup](team-setup.md) -- Use 1Password or Vault so your team shares MCP secrets securely
-- [Migrate from .env](migrate-from-dotenv.md) -- Move .env file secrets into the same backend
+- [Protect My Credentials](protect-my-credentials.md): Block AI tools from reading all credential files
+- [Team Setup](team-setup.md): Use 1Password or Vault so your team shares MCP secrets securely
+- [Migrate from .env](migrate-from-dotenv.md): Move .env file secrets into the same backend

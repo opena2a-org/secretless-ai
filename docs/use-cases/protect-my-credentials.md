@@ -95,6 +95,6 @@ No credentials were moved or modified. Your existing workflow continues unchange
 
 ## Next steps
 
-- [Secure MCP Configs](secure-mcp-configs.md) -- Encrypt credentials stored in MCP server configuration files
-- [Migrate from .env](migrate-from-dotenv.md) -- Move `.env` contents into encrypted storage
-- [Team Setup](team-setup.md) -- Share a backend across your team
+- [Secure MCP Configs](secure-mcp-configs.md): Encrypt credentials stored in MCP server configuration files
+- [Migrate from .env](migrate-from-dotenv.md): Move `.env` contents into encrypted storage
+- [Team Setup](team-setup.md): Share a backend across your team

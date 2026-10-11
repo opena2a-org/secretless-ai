@@ -143,6 +143,6 @@ Your code still reads `process.env.*` variables. The difference is that the valu
 
 ## Next steps
 
-- [Protect My Credentials](protect-my-credentials.md) -- Block AI tools from reading all credential file types
-- [Team Setup](team-setup.md) -- Move from local storage to a shared backend like 1Password
-- [Secure MCP Configs](secure-mcp-configs.md) -- Encrypt MCP server credentials the same way
+- [Protect My Credentials](protect-my-credentials.md): Block AI tools from reading all credential file types
+- [Team Setup](team-setup.md): Move from local storage to a shared backend like 1Password
+- [Secure MCP Configs](secure-mcp-configs.md): Encrypt MCP server credentials the same way
