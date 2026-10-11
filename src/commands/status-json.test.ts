@@ -83,7 +83,7 @@ describe('runStatus --json', () => {
     const emitted = Object.keys(JSON.parse(lines.join('\n'))).sort();
 
     const smoke = fs.readFileSync(path.resolve(__dirname, '..', '..', 'docs', 'testing', 'release-smoke.md'), 'utf-8');
-    const listed = /`status --json`: single JSON document — `\{([^}]*)\}`/.exec(smoke);
+    const listed = /`status --json`: single JSON document \(`\{([^}]*)\}`/.exec(smoke);
     expect(listed, 'the status --json key list in release-smoke.md').not.toBeNull();
     expect(listed![1].split(',').map((k) => k.trim()).sort()).toEqual(emitted);
   });

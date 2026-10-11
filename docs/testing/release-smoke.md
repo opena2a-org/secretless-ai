@@ -6,7 +6,7 @@ Every item came from a real bug or regression. Don't skip without writing down w
 
 Run every command from the local build, not the global install. Several commands
 operate on **machine-global state** (the secret store, `~/.zshenv`, shell
-history, MCP configs) — the steps below flag each one and use throwaway names or
+history, MCP configs). The steps below flag each one and use throwaway names or
 isolated `$HOME` so a smoke run never damages the operator's real setup.
 
 **The binary is `dist/cli.js`.** Take it from `package.json` `bin`, never from
@@ -54,7 +54,7 @@ Telemetry: on (opt-out: OPENA2A_TELEMETRY=off  •  details: opena2a.org/telemet
 If the second line is missing, the `versionLine()` helper isn't wired or the
 SDK init failed silently.
 
-`--help` anywhere in the args must short-circuit to top-level help — `scan
+`--help` anywhere in the args must short-circuit to top-level help: `scan
 --help` must NOT run the scanner and `init --help` must NOT create files
 (regression: release-test 2026-04-14).
 
@@ -62,7 +62,7 @@ SDK init failed silently.
 
 ## 2. Core protection walkthrough (3 min)
 
-Build the planted credential at runtime — a literal real-shaped key in this
+Build the planted credential at runtime. A literal real-shaped key in this
 doc would trip GitHub push protection and our own scanners, and short "fake"
 strings like `sk-fake-deadbeef` do NOT match the patterns (verified 2026-07-16:
 scan correctly ignores them, so they make this walkthrough fail spuriously):
@@ -94,13 +94,13 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
   print('verdict:', d['summary']['verdict'])"
 ```
 
-- `scan --json`: single JSON document on stdout — `{tool, version, findings,
-  summary}`. Exit 1 when findings exist (CI gating), 0 when clean.
-- `status --json`: single JSON document — `{tool, version, isProtected,
+- `scan --json`: single JSON document on stdout (`{tool, version, findings,
+  summary}`). Exit 1 when findings exist (CI gating), 0 when clean.
+- `status --json`: single JSON document (`{tool, version, isProtected,
   protectionScope, enforcement, hookInstalled, hookWired, denyRuleCount, detectedTools,
   configuredTools, ignoreFileTools, secretsFound, scanIncomplete, settingsUnreadable,
   settingsAmbiguous, userSettings, transcriptProtection, exposuresOpen, gitCredentials, backend,
-  configuredBackend, gcpProject, session, broker, summary}`.
+  configuredBackend, gcpProject, session, broker, summary}`).
   Exit 0; CI consumers gate on `summary.verdict`.
 - Neither may print the human banner or any ANSI color in JSON mode.
 
@@ -108,7 +108,7 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
 
 **Run every flag row on BOTH a clean tree and a tree with a finding.** A tree
 that contains a credential exits 1 for that reason, so it cannot tell you
-whether a flag changed anything — this exact confound put "`scan --nosuchflag`
+whether a flag changed anything. This exact confound put "`scan --nosuchflag`
 -> exit 1, warns and continues" on the record as evidence that warn-and-continue
 was safe. On a clean tree the same command exited 0 and said `No hardcoded
 credentials found.` The 1 was never the flag.
@@ -125,7 +125,7 @@ $SL bogus-command; echo "exit=$?"         # "Unknown command", help block, exit 
 
 `scan`, `scan-staged` and `scan-history` refuse an unrecognised flag: their
 output is the answer, so a dropped flag is a wrong verdict rather than a wasted
-run. `feedback` and `diff` still warn — they report no verdict. The
+run. `feedback` and `diff` still warn: they report no verdict. The
 `secretless-mcp` wrapper still warns, because its argv lines live in hand-edited
 client configs where a refusal is a server that will not start.
 
@@ -139,7 +139,7 @@ $SL cache --json; echo "exit=$?"       # REFUSED, exit 2 (pre-fix: status page, 
 $SL doctor --json; echo "exit=$?"      # REFUSED, exit 2
 ```
 
-Check both argv positions — `scan --json <dir>` and `scan <dir> --json` — since
+Check both argv positions (`scan --json <dir>` and `scan <dir> --json`), since
 this checklist uses the leading form and the README uses the trailing one.
 
 The one that matters: pre-fix, `verify --json` resolved `--json` as the project
@@ -161,10 +161,10 @@ $SL status /path/with/duplicated-key      # NO green check on that file
 
 `denyRuleCount` is `number | null`: null in BOTH unknown states (would not parse, or
 keys collide), a number only when it was actually measured. Check the three states are
-distinguishable from the JSON alone -- measured / settingsUnreadable / settingsAmbiguous
--- and that no row renders green over a file in either unknown state. Do NOT verify a
+distinguishable from the JSON alone (measured / settingsUnreadable / settingsAmbiguous)
+and that no row renders green over a file in either unknown state. Do NOT verify a
 collision with `grep` or `node -e JSON.parse`: both exit 0 on a duplicate and print
-nothing. Also run it against a REAL settings file from a dev tree, not only fixtures --
+nothing. Also run it against a REAL settings file from a dev tree, not only fixtures:
 a false positive here is a warning on the tool own status page.
 
 ---
@@ -273,7 +273,7 @@ cd / && $SL diff 2>&1 | head -3     # outside a repo: friendly "Not a git reposi
 
 ## 6. Shell history (1 min)
 
-Read-only / dry-run against the operator's real history — safe, but do NOT
+Read-only / dry-run against the operator's real history: safe, but do NOT
 run the destructive form during smoke.
 
 ```bash
@@ -292,7 +292,7 @@ or `--dry-run` modifies the history file (compare mtime).
 NOT try to sandbox it with an isolated `$HOME`: `createBackend('local')`
 silently upgrades to the OS keychain when the platform supports it
 (`src/backends/factory.ts`), and macOS `security` resolves the default
-keychain via `$HOME` — so an isolated `$HOME` pops a blocking "Keychain Not
+keychain via `$HOME`, so an isolated `$HOME` pops a blocking "Keychain Not
 Found" GUI dialog and hangs an unattended smoke (verified 2026-07-16). There
 is no CLI flag that forces the pure file backend on macOS.
 
@@ -306,7 +306,7 @@ $SL mcp-status      # enumerates real clients without errors; exit 0
 ```
 
 Only exercise `protect-mcp`/`mcp-unprotect` manually (on the real `$HOME`,
-against a client you actually use) when the diff touches `src/mcp/` — and
+against a client you actually use) when the diff touches `src/mcp/`, and
 check the restored config with `git diff`-style comparison before and after.
 
 ---
@@ -319,16 +319,16 @@ $SL install status       # "LaunchAgent: not installed" + install hint (macOS)
 $SL cache                # Backend/TTL/Status; local backend says "Not needed"
 ```
 
-Do not exercise `warm` in an unattended smoke — it triggers a Touch ID
+Do not exercise `warm` in an unattended smoke: it triggers a Touch ID
 prompt. `broker start`/`stop` round-trip is covered by unit tests; only
 exercise it manually when the diff touches `src/broker/`.
 
 ---
 
-## 9. Usage surfaces — no dead ends (1 min)
+## 9. Usage surfaces: no dead ends (1 min)
 
 Each bare command must print usage/help with a runnable next step and exit
-cleanly — no stack traces, no silent exits:
+cleanly (no stack traces, no silent exits):
 
 ```bash
 for c in rules scope vault ignore secret; do $SL $c; done
@@ -339,7 +339,7 @@ $SL feedback             # prints repo / issues / discussions links
 
 ## 10. Telemetry disclosure surfaces and opt-out (2 min)
 
-**Do NOT point at the production endpoint while smoking** — set
+**Do NOT point at the production endpoint while smoking**. Set
 `OPENA2A_TELEMETRY_URL=http://127.0.0.1:1/never` so events go to a port that
 refuses connections (proves fire-and-forget tolerance) instead of polluting
 prod aggregates.
@@ -375,7 +375,7 @@ Fail the release if:
 ## 10b. Documented commands must exist (1 min)
 
 Every command the README and `docs/` tell a user to run is copied verbatim by
-readers. Reading the page cannot tell you whether the CLI accepts it — only
+readers. Reading the page cannot tell you whether the CLI accepts it. Only
 running it can.
 
 ```bash
@@ -394,8 +394,8 @@ caught it.** #122 made `init` exit 1 on a `.claude/settings.json` it cannot
 parse. No flag is involved, so the flag guard added in 0.21.0 stayed green while
 `npm install` failed again for anyone whose settings file had a comment in it.
 
-The root cause was never the flag. `init` is *allowed* to fail — that is the
-whole point of the #122 fix — and an npm install-time lifecycle hook converts any
+The root cause was never the flag. `init` is *allowed* to fail (that is the
+whole point of the #122 fix), and an npm install-time lifecycle hook converts any
 non-zero exit into a failed install. So the guard is now on the coupling:
 `docs-commands.test.ts` fails if any doc wires a `secretless-ai` command into
 `preinstall`, `install`, `postinstall`, `prepare` or `prepublish`. When you make
@@ -422,7 +422,7 @@ $SL secret list   # confirm no SMOKE_* names remain
   re-run the lockstep tests and re-verify the pattern count claimed in
   README.md ("N credential patterns from @opena2a/credential-patterns@x.y.z").
 - Diff touches `src/broker/` or `src/grant/`: exercise the broker
-  round-trip manually (`broker start` → grant flow → `broker stop`) — the
+  round-trip manually (`broker start` → grant flow → `broker stop`). The
   daemon lifecycle is not covered above.
 - Diff touches `src/mcp/` or `mcp-wrapper.ts`: also smoke the `secretless-mcp`
   bin entry against a real MCP client config in isolated `$HOME`.

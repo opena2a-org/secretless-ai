@@ -16,7 +16,7 @@ When working on a team, each developer needs access to the same secrets without 
 
 For most teams, 1Password is the simplest starting point. Every developer already has it, and CI/CD uses service account tokens.
 
-> **1Password caveat:** On a machine where the 1Password desktop app is installed and CLI integration is enabled, the first `secretless-ai backend` run triggers a biometric / master-password prompt (used to confirm `op` availability). Cancel it if you don't want 1Password — the backend probe falls back cleanly. If you do want 1Password, unlock once and subsequent calls stay inside the cache window.
+> **1Password caveat:** On a machine where the 1Password desktop app is installed and CLI integration is enabled, the first `secretless-ai backend` run triggers a biometric / master-password prompt (used to confirm `op` availability). Cancel it if you don't want 1Password. The backend probe falls back cleanly. If you do want 1Password, unlock once and subsequent calls stay inside the cache window.
 
 ## Step 2: Configure the backend
 
@@ -92,8 +92,8 @@ Earlier versions of this guide wired `secretless-ai init` into `postinstall`. Do
 that. `init` exits non-zero when it cannot safely configure the project, and anything in
 `postinstall` that exits non-zero fails the whole `npm install`.
 
-`init` exits 1 when `.claude/settings.json` exists but cannot be parsed as strict JSON —
-comments and trailing commas are the common cause, and they are what VS Code writes and
+`init` exits 1 when `.claude/settings.json` exists but cannot be parsed as strict JSON.
+Comments and trailing commas are the common cause, and they are what VS Code writes and
 what people hand-edit into that file. It refuses rather than replacing a file it could not
 read, which is correct on its own terms, but in a `postinstall` hook it means one
 developer's editor formatting blocks dependency installation for them entirely.
@@ -102,14 +102,14 @@ Exit codes, so you can wire `init` into automation deliberately:
 
 | Situation | Exit |
 |---|---|
-| No `.claude/settings.json`, or the file is empty | 0 — configures normally |
-| Valid JSON, including a file with your own keys | 0 — merges, your keys preserved |
-| Already configured (re-run) | 0 — idempotent |
-| File is not parseable JSON (comments, trailing commas) | 1 — changes nothing, names the parse error |
-| File parses but is `null`, an array, a string or a number | 1 — changes nothing |
+| No `.claude/settings.json`, or the file is empty | 0: configures normally |
+| Valid JSON, including a file with your own keys | 0: merges, your keys preserved |
+| Already configured (re-run) | 0: idempotent |
+| File is not parseable JSON (comments, trailing commas) | 1: changes nothing, names the parse error |
+| File parses but is `null`, an array, a string or a number | 1: changes nothing |
 
 If you do want it automatic, run it in a step whose failure is visible and does not block
-installing dependencies — a CI job, or a `prepare` script you are willing to have fail
+installing dependencies: a CI job, or a `prepare` script you are willing to have fail
 loudly. Never suppress the exit code with `|| true`: that restores the silent-success
 behavior this check exists to remove.
 
@@ -227,12 +227,12 @@ npx secretless-ai verify # confirms everything works
 
 Four commands after cloning. No `.env` files to copy from Slack. No credentials in the repo.
 
-If `npm run protect` exits 1, it names the reason and changes nothing — the usual cause is
+If `npm run protect` exits 1, it names the reason and changes nothing. The usual cause is
 a `.claude/settings.json` with comments or a trailing comma. Fix the file and re-run; the
 rest of the checklist is unaffected.
 
 ## Next steps
 
-- [Protect My Credentials](protect-my-credentials.md) -- Understand what init does under the hood
-- [Secure MCP Configs](secure-mcp-configs.md) -- Encrypt MCP server credentials with the same backend
-- [Migrate from .env](migrate-from-dotenv.md) -- Move existing .env files into the shared backend
+- [Protect My Credentials](protect-my-credentials.md): Understand what init does under the hood
+- [Secure MCP Configs](secure-mcp-configs.md): Encrypt MCP server credentials with the same backend
+- [Migrate from .env](migrate-from-dotenv.md): Move existing .env files into the shared backend

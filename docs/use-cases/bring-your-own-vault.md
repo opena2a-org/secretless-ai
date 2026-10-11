@@ -3,7 +3,7 @@
 **Time:** 3 minutes
 **Prerequisites:** An existing secrets backend you trust (HashiCorp Vault, GCP Secret Manager, or 1Password)
 
-If your team already runs a vault, you don't need another one. Point Secretless at the vault you already have and everything downstream — `secret set`, `run --only`, `protect-mcp`, the broker — resolves against it.
+If your team already runs a vault, you don't need another one. Point Secretless at the vault you already have and everything downstream (`secret set`, `run --only`, `protect-mcp`, the broker) resolves against it.
 
 You don't need an AIM account for any of this. The backend is local to your configuration; Secretless is the client.
 
@@ -19,11 +19,11 @@ Five backends are wired into the CLI today:
 | `vault` | Yes | A reachable HashiCorp Vault with a token |
 | `gcp-sm` | Yes | GCP Application Default Credentials |
 
-For AWS Secrets Manager and Azure Key Vault, use the Go AIM backend instead — those aren't part of this CLI today. Track status on the AIM repo.
+For AWS Secrets Manager and Azure Key Vault, use the Go AIM backend instead. Those aren't part of this CLI today. Track status on the AIM repo.
 
 ## Step 2: Connect to HashiCorp Vault (canonical walk-through)
 
-Every external backend follows the same pattern: set env vars, run `backend set <name>`, verify. HashiCorp Vault is the most common — the other backends work identically.
+Every external backend follows the same pattern: set env vars, run `backend set <name>`, verify. HashiCorp Vault is the most common. The other backends work identically.
 
 ```bash
 export VAULT_ADDR=https://vault.yourcompany.com
@@ -77,7 +77,7 @@ value    ghp_<your-real-token>
 
 That's the point: the credential is a normal Vault entry. No Secretless-proprietary encoding, no wrapper format, nothing that would make it hard to migrate off later.
 
-## Same pattern — other backends
+## Same pattern: other backends
 
 | Backend | Env vars to set |
 |---------|-----------------|
@@ -92,7 +92,7 @@ npx secretless-ai secret set MY_KEY=<value>
 npx secretless-ai run --only MY_KEY -- <command>
 ```
 
-## Vault Exec — isolating credentials from AI context
+## Vault Exec: isolating credentials from AI context
 
 Once your backend is connected, use `vault exec` (Tier 2) to run commands without ever exposing the secret to your parent shell or the AI tool watching it:
 
@@ -114,11 +114,11 @@ If none of that matches your use case, stick with the local Tier 1 / Tier 2 flow
 
 ## Caveats
 
-- The first time you run `secretless-ai backend` on a machine where 1Password Desktop integration is enabled, `op` triggers a biometric / unlock prompt (used to check 1Password availability). Cancel or unlock — both are safe. Not triggered when 1Password is not installed or the `op` CLI isn't on `$PATH`.
-- Vault tokens on the command line are visible in `ps aux` — prefer env vars (as shown above) or a token file sourced from a `.envrc`.
+- The first time you run `secretless-ai backend` on a machine where 1Password Desktop integration is enabled, `op` triggers a biometric / unlock prompt (used to check 1Password availability). Cancel or unlock: both are safe. Not triggered when 1Password is not installed or the `op` CLI isn't on `$PATH`.
+- Vault tokens on the command line are visible in `ps aux`. Prefer env vars (as shown above) or a token file sourced from a `.envrc`.
 
 ## Next steps
 
-- [Run the Broker](run-broker.md) -- When to run the daemon for multi-agent workflows
-- [Team Setup](team-setup.md) -- Shared backend + CI/CD
-- [Secure MCP Configs](secure-mcp-configs.md) -- Encrypt MCP server credentials using the same backend
+- [Run the Broker](run-broker.md): When to run the daemon for multi-agent workflows
+- [Team Setup](team-setup.md): Shared backend + CI/CD
+- [Secure MCP Configs](secure-mcp-configs.md): Encrypt MCP server credentials using the same backend

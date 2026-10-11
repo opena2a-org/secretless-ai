@@ -107,7 +107,7 @@ npx secretless-ai run --only STRIPE_SECRET_KEY -- node charge.js
 
 The command reads the value from its environment. `run` refuses to start a command whose arguments carry a stored value of eight or more characters, verbatim or URL-encoded, because `ps` shows a process's arguments to every local process; for `psql`, store the password as `PGPASSWORD` and pass host, user and database as arguments. `--allow-argv` starts it anyway, with a warning.
 
-Reading a value back is TTY-gated: `secret get NAME` prints it in an interactive terminal, but is blocked in piped or AI-driven contexts unless `--force` is passed — and `init` installs deny rules so AI tools cannot run the `--force` form or dump an injected environment (`run -- env`).
+Reading a value back is TTY-gated: `secret get NAME` prints it in an interactive terminal, but is blocked in piped or AI-driven contexts unless `--force` is passed. `init` installs deny rules so AI tools cannot run the `--force` form or dump an injected environment (`run -- env`).
 
 ### Record what a credential is for
 
@@ -227,7 +227,7 @@ npx secretless-ai status --json                # protection state for CI (gate o
 
 ### Exit codes and scan coverage
 
-Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened, or an `init` that left a tool not configured), `2` the command line was refused and nothing ran. Gate CI on `2` separately -- it means the tool did not answer the question, not that the answer was clean.
+Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened, or an `init` that left a tool not configured), `2` the command line was refused and nothing ran. Gate CI on `2` separately: it means the tool did not answer the question, not that the answer was clean.
 
 A scan that stops at the file cap, or cannot open a path, exits 1 and says `No credentials found in the files scanned` rather than `No hardcoded credentials found`; `summary.truncated` and `summary.unreadable` carry the same signal in `--json`. An unrecognised flag, or a flag without a value it can use, is refused with exit 2 before anything runs, rather than partly ignored; `feedback`, `diff` and `mcp-status` instead warn about an unrecognised flag and continue. [Scan coverage and exit codes](docs/scanning.md) says what a directory scan opens, which gaps fail a build and which do not, and shows a sample `--json` summary.
 
@@ -374,7 +374,7 @@ Security issues: `info@opena2a.org` (coordinated disclosure, response within 24 
 - [Demos](https://opena2a.org/demos)
 - [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
 - [Credential patterns library](https://www.npmjs.com/package/@opena2a/credential-patterns)
-- [aicomply](https://github.com/opena2a-org/aicomply) — inline PII and credential classification for agent I/O at runtime, the complement to protecting credentials at rest
+- [aicomply](https://github.com/opena2a-org/aicomply): inline PII and credential classification for agent I/O at runtime, the complement to protecting credentials at rest
 
 Part of the [OpenA2A](https://opena2a.org) security platform.
 
