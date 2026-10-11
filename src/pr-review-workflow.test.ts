@@ -8,20 +8,29 @@ import * as path from 'path';
  * The automated review in .github/workflows/pr-review.yml, and what it is
  * shown about code the pull request did not change.
  *
- * Why this file exists. The review was handed the full source of each changed
- * file and the diff, and nothing else. On #275 a changed file called
- * escapePathForDisplay() and hasDisplayHazard(), both imported from
- * src/display-safe.ts; that file did not change, so neither definition was in
- * the request, and the review raised a CRITICAL saying both were "called but
- * not defined or imported". The gate failed on a symbol that resolves in the
- * checkout.
+ * Why this file exists. The review's request held a full source section for
+ * the changed files and the diff, and nothing else. On #275 a changed file
+ * called escapePathForDisplay() and hasDisplayHazard(), both imported from
+ * src/display-safe.ts, and neither the definitions nor the import were in the
+ * request. The definitions were absent because src/display-safe.ts did not
+ * change. The import was absent because the full source section, the one
+ * place an unchanged import line is shown, held only its own notice that it
+ * was "truncated at 0 bytes": CHANGELOG.md, listed before every src/ path,
+ * was larger than that section's whole budget. The review raised a CRITICAL
+ * saying both functions were "called but not defined or imported". The gate
+ * failed on a symbol that resolves in the checkout.
  *
- * Under test: a step that follows every relative import of a changed file and
- * lists the export declarations of the module it resolves to, read from the
- * HEAD commit and never from a path outside the repository; the prompt that
- * places those declarations between the full source files and the diff; and
- * the system prompt rule that a finding resting on code the review was not
- * shown is MEDIUM at most, which does not block.
+ * Under test: a step that follows the relative imports of a changed file
+ * whose keyword and quoted specifier stand on one line (`from '...'`,
+ * `import '...'`, `require('...')`, `import('...')`) and lists the export
+ * declarations of the module each resolves to, read from the HEAD commit and
+ * never from a path outside the repository; the prompt that places those
+ * declarations between the full source files and the diff; and the system
+ * prompt rule that a finding resting on code the review was not shown is
+ * MEDIUM at most, which does not block. The step does not follow a
+ * template-literal specifier, or a specifier on the line after its `from` or
+ * `require(`. It supplies the definitions only: it does not restore an empty
+ * full source section.
  *
  * The same indent-walk reading as src/release-workflow.test.ts: no YAML
  * dependency, comments stripped before any substring assertion. The step
@@ -55,9 +64,14 @@ function git(args: string[], cwd: string) {
   return run;
 }
 
-/** Actions runs a `run:` body as `bash -e {0}`. */
-function bash(script: string, cwd: string, extra: NodeJS.ProcessEnv = {}) {
-  return spawnSync('bash', ['-e', '-c', script], { cwd, encoding: 'utf-8', env: withoutGitDiscovery(extra) });
+/**
+ * Actions runs a `run:` body as `bash -e {0}`, and as `bash -eo pipefail {0}`
+ * once the step or the workflow names `shell: bash`.
+ */
+const PIPEFAIL = ['-eo', 'pipefail'];
+
+function bash(script: string, cwd: string, extra: NodeJS.ProcessEnv = {}, flags: string[] = ['-e']) {
+  return spawnSync('bash', [...flags, '-c', script], { cwd, encoding: 'utf-8', env: withoutGitDiscovery(extra) });
 }
 
 // ---------------------------------------------------------------------------
@@ -159,9 +173,9 @@ function commitAll(repo: string): void {
     'commit', '--quiet', '--no-verify', '-m', 'fixture'], repo);
 }
 
-function collect(s: Scratch, changed: string[]) {
+function collect(s: Scratch, changed: string[], flags?: string[]) {
   fs.writeFileSync(path.join(s.tmp, 'changed_files.txt'), changed.map((f) => `${f}\n`).join(''));
-  const run = bash(inScratch(runScript(COLLECT_STEP), s.tmp), s.repo);
+  const run = bash(inScratch(runScript(COLLECT_STEP), s.tmp), s.repo, {}, flags);
   const defsFile = path.join(s.tmp, 'imported_defs.txt');
   const defs = fs.existsSync(defsFile) ? fs.readFileSync(defsFile, 'utf-8') : '';
   return { run, defs };
@@ -313,6 +327,32 @@ describe('the review is shown the definitions a changed file imports from unchan
     }
   });
 
+  it('drops a path that climbs above the repository root instead of reading the committed module the same path names from the root', () => {
+    const s = scratchRepo({
+      'src/commands/core.ts': [
+        "import { a } from '../../../outside/secret';",
+        "import { b } from '../../../../../../../../outside/secret';",
+        "import { c } from '../../lib/ok';",
+        '',
+      ].join('\n'),
+      // Where both climbing paths land if a '..' above the root is ignored.
+      'outside/secret.ts': 'export const CLAMPED_MARKER = 1;\n',
+      'lib/ok.ts': 'export const ROOT_MARKER = 1;\n',
+    });
+    try {
+      commitAll(s.repo);
+      const { run, defs } = collect(s, ['src/commands/core.ts']);
+      expect(run.status, run.stderr).toBe(0);
+
+      expect(defs).not.toContain('CLAMPED_MARKER');
+      expect(defs).not.toContain('outside/secret');
+      // Up to the root and down again never leaves the repository.
+      expect(defs).toMatch(/=== lib\/ok\.ts [^\n]*\n +1\texport const ROOT_MARKER = 1;\n/);
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
   it('skips a deleted file, a file that is not code and a file named "-" without failing, and writes an empty list when nothing resolves', () => {
     const s = scratchRepo({ 'README.md': "import { x } from './display-safe';\n", '-': "import { y } from './z';\n" });
     try {
@@ -326,20 +366,64 @@ describe('the review is shown the definitions a changed file imports from unchan
     }
   });
 
-  it('stops at its size budget with a notice instead of growing the request without bound', () => {
-    const huge = Array.from({ length: 2500 }, (_, i) => `export const generated_${i} = ${i};`).join('\n');
+  it('skips a deleted file before reading it, so the step also passes under pipefail and logs no git error for it', () => {
     const s = scratchRepo({
-      'src/a.ts': "import { small } from './small';\nimport { generated_0 } from './huge';\n",
-      'src/small.ts': 'export const small = 1;\n',
-      'src/huge.ts': `${huge}\n`,
+      'src/kept.ts': "import { helper } from './util';\n",
+      'src/util.ts': 'export function helper(): number {\n  return 1;\n}\n',
     });
     try {
       commitAll(s.repo);
-      const { run, defs } = collect(s, ['src/a.ts']);
+      // Read without the skip, the deleted path fails `git cat-file blob` at
+      // the head of a pipeline. Plain -e does not see that; pipefail ends the
+      // step there, before the file listed after it.
+      const { run, defs } = collect(s, ['src/gone.ts', 'src/kept.ts'], PIPEFAIL);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stderr).not.toContain('src/gone.ts');
+      expect(defs).toMatch(/=== src\/util\.ts \(unchanged; imported by src\/kept\.ts\) ===\n +1\texport function helper\(\): number \{\n/);
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops at its size budget with a notice instead of growing the request without bound, and lists nothing after the notice', () => {
+    const huge = Array.from({ length: 2500 }, (_, i) => `export const generated_${i} = ${i};`).join('\n');
+    const s = scratchRepo({
+      'src/a.ts': "import { small } from './small';\nimport { generated_0 } from './huge';\nimport { sameFile } from './same-file';\n",
+      'src/b.ts': "import { nextFile } from './next-file';\n",
+      'src/small.ts': 'export const small = 1;\n',
+      'src/huge.ts': `${huge}\n`,
+      'src/same-file.ts': 'export const sameFile = 1;\n',
+      'src/next-file.ts': 'export const nextFile = 1;\n',
+    });
+    try {
+      commitAll(s.repo);
+      const { run, defs } = collect(s, ['src/a.ts', 'src/b.ts']);
       expect(run.status, run.stderr).toBe(0);
       expect(defs).toContain('export const small = 1;');
-      expect(defs).toMatch(/\[IMPORTED DEFINITIONS TRUNCATED at \d+ bytes — remaining modules omitted\]/);
       expect(defs).not.toContain('generated_');
+      // "remaining modules omitted" holds for the changed file that reached
+      // the budget and for every changed file after it: one notice, last.
+      expect(defs.match(/\[IMPORTED DEFINITIONS TRUNCATED at \d+ bytes — remaining modules omitted\]/g)).toHaveLength(1);
+      expect(defs).toMatch(/\n\[IMPORTED DEFINITIONS TRUNCATED at \d+ bytes — remaining modules omitted\]\n$/);
+      expect(defs).not.toContain('sameFile');
+      expect(defs).not.toContain('nextFile');
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
+  it('lists a module once when two changed files import it under different spellings, under the first that imports it', () => {
+    const s = scratchRepo({
+      'src/a.ts': "import { helper } from './util.js';\n",
+      'src/sub/b.ts': "import { helper } from '../util';\n",
+      'src/util.ts': 'export function helper(): number {\n  return 1;\n}\n',
+    });
+    try {
+      commitAll(s.repo);
+      const { run, defs } = collect(s, ['src/a.ts', 'src/sub/b.ts']);
+      expect(run.status, run.stderr).toBe(0);
+      expect(defs.match(/^=== src\/util\.ts /gm)).toHaveLength(1);
+      expect(defs).toContain('=== src/util.ts (unchanged; imported by src/a.ts) ===');
     } finally {
       fs.rmSync(s.root, { recursive: true, force: true });
     }
