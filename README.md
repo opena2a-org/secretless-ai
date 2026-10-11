@@ -149,7 +149,7 @@ The record is `exposedAt` and `exposedWhere` in the secret's metadata, never the
 
 ### Give git a stored token over HTTPS
 
-A hosting token in `~/.git-credentials` or `~/.netrc` sits on disk in plaintext. `doctor` and `status` report those files (count and line numbers, never values) and a `credential.helper` set to `store`, each with Verify and Fix lines. To keep the token in the store and let git read it from there:
+A hosting token in `~/.git-credentials` or `~/.netrc` sits on disk in plaintext. `status` flags each of those files (count and line numbers, never values) and a `credential.helper` set to `store` on a row that points to `doctor`, which prints Verify and Fix lines for each; `status --json` carries the same lines in `gitCredentials.findings`. To keep the token in the store and let git read it from there:
 
 ```bash
 npx secretless-ai secret set GITHUB_TOKEN

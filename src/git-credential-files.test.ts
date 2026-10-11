@@ -246,4 +246,33 @@ describe('doctor and status on a fixture home', () => {
     expect(human.stdout).toMatch(/⚠ ~\/\.git-credentials: 1 plaintext credential line \(line 1\)\s+→ secretless-ai doctor/);
     expectNoPartOf(human.stdout + human.stderr, TOKEN);
   });
+
+  // The README said `doctor` and `status` each print Verify and Fix lines for
+  // these files, and `status` prints one row that points to `doctor` (#342).
+  // This holds the README to what each command prints.
+  itCli('the README says status flags the file and doctor prints its Verify and Fix lines', () => {
+    fs.writeFileSync(path.join(home, '.git-credentials'), `https://${USER}:${TOKEN}@github.com\n`);
+    const project = path.join(home, 'project');
+    fs.mkdirSync(project);
+
+    const status = cli(['status', project]);
+    expect(status.status, status.stderr).toBe(0);
+    const rows = status.stdout.split('\n').filter((l) => l.includes('~/.git-credentials'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatch(/→ secretless-ai doctor$/);
+    expect(status.stdout).not.toMatch(/Verify:|Fix:/);
+
+    const doctor = cli(['doctor']);
+    expect(doctor.stdout).toContain('Verify: grep -c @ ~/.git-credentials');
+    expect(doctor.stdout).toMatch(/Fix: +1\. Revoke that token/);
+
+    const readme = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf-8').split('\n');
+    const heading = readme.indexOf('### Give git a stored token over HTTPS');
+    expect(heading, 'README.md must keep its "Give git a stored token over HTTPS" section').toBeGreaterThanOrEqual(0);
+    const paragraph = readme.slice(heading + 1).find((l) => l.trim() !== '') ?? '';
+    expect(paragraph).not.toContain('`doctor` and `status` report');
+    expect(paragraph).toContain('`status` flags each of those files');
+    expect(paragraph).toContain('on a row that points to `doctor`, which prints Verify and Fix lines for each');
+    expect(paragraph).toContain('`status --json` carries the same lines in `gitCredentials.findings`');
+  });
 });
