@@ -236,7 +236,12 @@ Fail the release if:
 - `secret list` or any command prints a stored secret VALUE
 - `run --only` fails to inject, or injects keys outside the `--only` set
 - `secret set` does not install the shell hook on first use (check
-  `~/.zshenv` / `~/.bashrc` for `eval "$(secretless-ai env 2>/dev/null)"`)
+  `~/.zshenv` / `~/.bashrc` for the line after
+  `# secretless-ai: auto-load secrets from vault`, which runs
+  `'<node>' '<path>/dist/cli.js' env`), or a new shell with no `secretless-ai`
+  on PATH does not receive the secret:
+  `env -i HOME="$HOME" PATH=/usr/bin:/bin zsh -c '[ -n "$SMOKE_TEST_KEY_DELETEME" ] && echo set || echo unset'`
+  prints `unset` (use `bash -c '. ~/.bashrc; ...'` on Linux)
 
 ---
 
