@@ -397,7 +397,9 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
     case 'ignore':
       return runIgnore(args.slice(1));
     case 'diff':
-      return runDiff(args.slice(1));
+      // Positionals, not `args.slice(1)`: an unknown flag is warned about as
+      // ignored, and it is still in `args`, where `diff` read it as the ref.
+      return runDiff(prepared.positionals);
     case 'git-credential':
       return runGitCredential(args.slice(1));
     case '--help':
