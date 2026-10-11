@@ -24,6 +24,14 @@ export const SECRET_PREFIX = 'secret';
 /** Validates secret names: alphanumeric, dash, underscore only. */
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
 
+/**
+ * The names `secret set` stores: a letter, then letters, digits, '_' or '-'.
+ * The store holds names that start with a digit, '_' or '-' as well (a sync
+ * or an import can write them), so ask `isSettableSecretName` before offering
+ * `secret set NAME` for a name `secret set` did not check itself.
+ */
+const SETTABLE_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+
 export interface SecretStoreOptions {
   /** Backend type to use. Resolved from config if not provided. */
   backendType?: SelectableBackendType;
@@ -275,18 +283,22 @@ export interface SetSecretResult {
   rotation: RotationOutcome;
 }
 
-/** `recordExposure` on a name with no stored value. */
+/**
+ * `recordExposure` on a name with no stored value. The Fix stores the value,
+ * so a name `secret set` refuses gets a line saying so in its place.
+ */
 function notStoredError(name: string): Error {
-  return new Error(
-    [
-      `Secret not found: ${name}`,
-      '',
-      '  Nothing was recorded. An exposure is recorded against a stored value.',
-      '',
-      '  Verify:  secretless-ai secret list',
-      `  Fix:     secretless-ai secret set ${name}`,
-    ].join('\n'),
-  );
+  const lines = [
+    `Secret not found: ${name}`,
+    '',
+    '  Nothing was recorded. An exposure is recorded against a stored value.',
+    '',
+  ];
+  const settable = isSettableSecretName(name);
+  if (!settable) lines.push(`  ${notSettableReason(name)}; give the name the secret is stored under.`, '');
+  lines.push('  Verify:  secretless-ai secret list');
+  if (settable) lines.push(`  Fix:     secretless-ai secret set ${name}`);
+  return new Error(lines.join('\n'));
 }
 
 /** An exposure note refused by `checkAnnotation`. Nothing was recorded. */
@@ -349,11 +361,18 @@ function unmatchedSecretsError(unmatched: string[], available: string[]): Error 
     lines.push('', `  Did you mean:  ${hints.join('   ')}`);
   }
 
-  lines.push(
-    '',
-    '  Verify:  secretless-ai secret list',
-    `  Fix:     secretless-ai secret set ${unmatched[0]}`,
-  );
+  // `--only` names are not checked before they arrive here, and `secret set`
+  // refuses one that starts with a digit, '_' or '-' or holds another
+  // character. Such a name gets a line saying so, and the Fix names the first
+  // unmatched name `secret set` takes; with none, there is no Fix line.
+  const refused = unmatched.filter((name) => !isSettableSecretName(name));
+  if (refused.length > 0) {
+    lines.push('', ...refused.map((name) => `  ${notSettableReason(name)}; give the name the secret is stored under.`));
+  }
+
+  lines.push('', '  Verify:  secretless-ai secret list');
+  const settable = unmatched.find((name) => isSettableSecretName(name));
+  if (settable !== undefined) lines.push(`  Fix:     secretless-ai secret set ${settable}`);
   return new Error(lines.join('\n'));
 }
 
@@ -365,6 +384,20 @@ function unmatchedSecretsError(unmatched: string[], available: string[]): Error 
  */
 export function isValidSecretName(name: string): boolean {
   return SAFE_NAME.test(name);
+}
+
+/** Whether `secret set` stores under this name. Narrower than the store's own rule. */
+export function isSettableSecretName(name: string): boolean {
+  return SETTABLE_NAME.test(name);
+}
+
+/**
+ * Why a line does not offer `secret set NAME` for a name `secret set` refuses:
+ * one clause with no full stop, for the caller to say what to do instead.
+ * True of any refused string, so it also serves a name the store would refuse.
+ */
+export function notSettableReason(name: string): string {
+  return `"${escapeForDisplay(name)}" cannot be stored by \`secret set\`, which takes a letter, then letters, digits, '_' or '-'`;
 }
 
 function validateSecretName(name: string): void {

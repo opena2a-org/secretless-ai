@@ -8,7 +8,7 @@
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import * as path from 'path';
-import { SecretStore } from './secret-store';
+import { SecretStore, isSettableSecretName, notSettableReason } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
 import { leaksAny, scrubOrDrop } from './redact';
 
@@ -243,7 +243,7 @@ function argvRefusalMessage(names: string[], program: string | null): string {
  */
 function unusableSecretMessage(names: string[]): string {
   const plural = names.length === 1 ? '' : 's';
-  return [
+  const lines = [
     `secretless: ${names.join(', ')} cannot be passed in an environment variable.`,
     '',
     `  The stored value${plural} contain${names.length === 1 ? 's' : ''} a null byte. Nothing was injected and the`,
@@ -252,10 +252,19 @@ function unusableSecretMessage(names: string[]): string {
     '  This is usually a value that was mangled when it was stored — a paste that',
     '  captured terminal escape sequences, or a binary value read back as text.',
     '',
-    '  Verify:  secretless-ai secret list',
-    `  Fix:     secretless-ai secret set ${names[0]}`,
-    '',
-  ].join('\n');
+  ];
+  // These are stored names, and the store holds names `secret set` refuses.
+  // Such a name gets a line saying so, and the Fix names the first `secret set`
+  // takes; with none, there is no Fix line.
+  const refused = names.filter((name) => !isSettableSecretName(name));
+  if (refused.length > 0) {
+    lines.push(...refused.map((name) => `  ${notSettableReason(name)}; store it again the way it was first stored.`), '');
+  }
+  lines.push('  Verify:  secretless-ai secret list');
+  const settable = names.find((name) => isSettableSecretName(name));
+  if (settable !== undefined) lines.push(`  Fix:     secretless-ai secret set ${settable}`);
+  lines.push('');
+  return lines.join('\n');
 }
 
 /**
