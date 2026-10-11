@@ -28,7 +28,7 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -192,6 +192,22 @@ function main() {
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+/**
+ * Whether node was started with this file, rather than importing it. Node
+ * resolves symbolic links in the path of the script it runs, so the two paths
+ * are compared resolved: a checkout reached through a link (`/tmp` on macOS)
+ * is still this file.
+ */
+function startedAsScript() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // The path node was started with resolves to no file, so it is not this one.
+    return false;
+  }
+}
+
+if (startedAsScript()) {
   process.exitCode = main();
 }
