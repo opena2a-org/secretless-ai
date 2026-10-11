@@ -41,7 +41,21 @@ export interface ConfidenceBreakdown {
   entropyScore: number;
   lengthScore: number;
   pathScore: number;
+  /**
+   * Which path rule set `pathScore` (`classifyPath`). Always set by
+   * `scoreFinding`; optional so a breakdown built by hand still type-checks.
+   */
+  pathKind?: PathKind;
+  /**
+   * True when the composite was raised to the high threshold because the
+   * pattern's structure is conclusive on its own (see `scoreFinding`). Always
+   * set by `scoreFinding`.
+   */
+  raisedToHigh?: boolean;
 }
+
+/** The path rule a finding's file matched, in `pathTier` order. */
+export type PathKind = 'fixture' | 'docs' | 'config' | 'source';
 
 export interface ScoreFindingInput {
   pattern: Pick<CredentialPattern, 'id' | 'regex'>;
@@ -55,6 +69,14 @@ const WEIGHT_PATTERN = 0.35;
 const WEIGHT_ENTROPY = 0.30;
 const WEIGHT_LENGTH = 0.15;
 const WEIGHT_PATH = 0.20;
+
+/** The composite's weights, for output that explains a score. */
+export const CONFIDENCE_WEIGHTS = {
+  pattern: WEIGHT_PATTERN,
+  entropy: WEIGHT_ENTROPY,
+  length: WEIGHT_LENGTH,
+  path: WEIGHT_PATH,
+} as const;
 const TIER_HIGH_THRESHOLD = 0.85;
 const TIER_MEDIUM_THRESHOLD = 0.60;
 
@@ -213,6 +235,21 @@ export function lengthTier(value: string): number {
  * surface them above real source-code findings.
  */
 export function pathTier(filePath: string): number {
+  return PATH_TIER_SCORES[classifyPath(filePath)];
+}
+
+const PATH_TIER_SCORES: Record<PathKind, number> = {
+  fixture: 0.2,
+  docs: 0.4,
+  config: 1.0,
+  source: 0.85,
+};
+
+/**
+ * The path rule behind `pathTier`. One function decides both the score and the
+ * kind, so output that explains a score cannot name a rule the score did not use.
+ */
+export function classifyPath(filePath: string): PathKind {
   // Normalise. Caller usually passes a POSIX-relative path already.
   const p = filePath.replace(/\\/g, '/').toLowerCase();
 
@@ -228,11 +265,11 @@ export function pathTier(filePath: string): number {
     p.startsWith('.golden/') || p.includes('/.golden/') ||
     /\.(test|spec|e2e)\.[a-z0-9]+$/i.test(p)
   ) {
-    return 0.2;
+    return 'fixture';
   }
   // Documentation paths — credentials in docs are usually example.
   if (p.endsWith('.md') || p.endsWith('.mdx') || p.endsWith('.rst')) {
-    return 0.4;
+    return 'docs';
   }
   // Config files — high confidence (this is where real creds live).
   if (
@@ -241,10 +278,10 @@ export function pathTier(filePath: string): number {
     p.endsWith('settings.json') || p.endsWith('.claude/settings.json') ||
     p.endsWith('config.json') || p.endsWith('config.yaml') || p.endsWith('config.yml')
   ) {
-    return 1.0;
+    return 'config';
   }
   // Source code default — moderate-high.
-  return 0.85;
+  return 'source';
 }
 
 /**
@@ -259,7 +296,8 @@ export function scoreFinding(input: ScoreFindingInput): ConfidenceBreakdown {
   const patternScore = Math.max(prefix, structural.score);
   const entropyScore = valueEntropy(input.value);
   const lengthScore = lengthTier(input.value);
-  const pathScore = pathTier(input.filePath);
+  const pathKind = classifyPath(input.filePath);
+  const pathScore = PATH_TIER_SCORES[pathKind];
 
   const score =
     WEIGHT_PATTERN * patternScore +
@@ -270,6 +308,7 @@ export function scoreFinding(input: ScoreFindingInput): ConfidenceBreakdown {
   // Clamp defensively. The weights sum to 1.0 and each sub-score is in
   // [0, 1], so the composite is already in [0, 1] — but FP arithmetic.
   let clamped = Math.max(0, Math.min(1, score));
+  let raisedToHigh = false;
 
   // Structurally-definitive patterns are conclusive on the match alone: an `AKIA…{16}`
   // access-key ID is short and uppercase-only (so it scores modestly on entropy/length)
@@ -280,6 +319,7 @@ export function scoreFinding(input: ScoreFindingInput): ConfidenceBreakdown {
   // 16 identical or sequential chars) — which the regex matches but which is plainly a
   // placeholder — from being promoted to high; those stay at their (lower) composite score.
   if (structural.definitive && pathScore >= 0.85 && entropyScore >= 0.5) {
+    raisedToHigh = clamped < TIER_HIGH_THRESHOLD;
     clamped = Math.max(clamped, TIER_HIGH_THRESHOLD);
   }
   const tier: ConfidenceTier =
@@ -294,6 +334,8 @@ export function scoreFinding(input: ScoreFindingInput): ConfidenceBreakdown {
     entropyScore: Math.round(entropyScore * 1000) / 1000,
     lengthScore: Math.round(lengthScore * 1000) / 1000,
     pathScore: Math.round(pathScore * 1000) / 1000,
+    pathKind,
+    raisedToHigh,
   };
 }
 

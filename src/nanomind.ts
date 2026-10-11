@@ -77,24 +77,50 @@ export function screenMcpEnvVars(
 // Engine: rich credential context
 // ---------------------------------------------------------------------------
 
+/**
+ * Why the engine cannot run. The package installs as an optional dependency,
+ * but it reports ready only when its model file and runtime exist on disk,
+ * which installing the package does not provide. The two need different
+ * messages: telling a user to install a package they already have is a dead end.
+ */
+export type EngineUnavailableReason =
+  | { kind: 'not-installed' }
+  /** Installed; `missing` names the files it checks for and did not find. */
+  | { kind: 'no-model'; missing: string[] };
+
 let engineLoaded = false;
 let engineInstance: any = null;
+let engineUnavailable: EngineUnavailableReason | null = null;
 
 async function loadEngine(): Promise<boolean> {
   if (engineLoaded) return engineInstance !== null;
   engineLoaded = true;
+  let instance: any;
   try {
     const { NanoMindEngine } = require('@nanomind/engine');
-    engineInstance = new NanoMindEngine();
-    const ready = await engineInstance.isReady();
-    if (!ready) {
-      engineInstance = null;
-      return false;
-    }
-    return true;
+    instance = new NanoMindEngine();
   } catch {
+    engineUnavailable = { kind: 'not-installed' };
     return false;
   }
+  try {
+    if (await instance.isReady()) {
+      engineInstance = instance;
+      return true;
+    }
+  } catch {
+    // Treated as not ready, below.
+  }
+  engineUnavailable = { kind: 'no-model', missing: missingEngineFiles(instance) };
+  return false;
+}
+
+/** The model and runtime paths the engine checks, that do not exist. */
+function missingEngineFiles(instance: any): string[] {
+  const fs = require('fs') as typeof import('fs');
+  const config = instance?.config ?? {};
+  return [config.modelPath, config.llamafilePath]
+    .filter((p): p is string => typeof p === 'string' && p.length > 0 && !fs.existsSync(p));
 }
 
 /**
@@ -245,4 +271,12 @@ export function isGuardAvailable(): boolean {
  */
 export async function isEngineAvailable(): Promise<boolean> {
   return loadEngine();
+}
+
+/**
+ * Why `isEngineAvailable` returned false, or null when it has not been called
+ * or returned true.
+ */
+export function engineUnavailableReason(): EngineUnavailableReason | null {
+  return engineInstance === null ? engineUnavailable : null;
 }
