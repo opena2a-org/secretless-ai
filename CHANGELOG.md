@@ -64,6 +64,16 @@ and `vault exec` child command and fails on a variable the calling shell
 expands, one the child receives as literal text, or one a script passes to
 another program as an argument.
 
+**The 1Password caveat in the team setup and bring-your-own-vault guides names
+`backend set 1password` as the command that raises the unlock prompt (#338).**
+Both guides said the first `secretless-ai backend` run triggered a biometric or
+master-password prompt. `backend` with no subcommand only checks whether `op`
+is on PATH and prints `auth not probed`; `backend set 1password` runs
+`op account get`, which is what makes the 1Password app ask. The caveat now
+sits on that command and says that cancelling leaves the current backend
+unchanged. Verify with `npx secretless-ai backend | grep 1Password`
+(`auth not probed`, no prompt).
+
 **The shell hook `secret set` installs exports secrets without a global
 install (#333).** The hook ran the bare `secretless-ai env` and discarded
 errors, so after `npx secretless-ai secret set` new terminals exported nothing
