@@ -106,6 +106,16 @@ starts empty. Verify with `npx secretless-ai backend` (`Current: local`) and
 `npx secretless-ai secret list`; move the stored secrets with
 `npx secretless-ai migrate --from keychain --to local`.
 
+**The README and the bring-your-own-vault guide no longer say `vault exec`
+reads the configured storage backend (#328).** `vault exec` resolves only from
+the Identity Vault (`~/.aim/vault`) that `vault register` fills, so a secret
+stored with `secret set` in any of the five backends gave
+`Vault resolution denied: Namespace "<name>" not found`, while the README said
+each tier "works against any supported backend" and the guide showed
+`vault exec` as the way to use the backend it had just connected. Both now say
+`vault exec` reads the Identity Vault only, and show
+`run --only NAME -- <command>` for a secret in the backend.
+
 **`secret push` no longer offers `secret set` for a name `secret set`
 refuses (#323).** `secret push A,-x --to vault --dry-run`, with `A` stored and
 `-x` not, printed `Fix: npx secretless-ai secret set -x`, and running that line

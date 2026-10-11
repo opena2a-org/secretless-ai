@@ -233,17 +233,23 @@ A scan that stops at the file cap, or cannot open a path, exits 1 and says `No c
 
 ## Architecture
 
-Three layers. Use one, two, or all three. Each works against any supported backend.
+Three layers. Use one, two, or all three. Vault Exec (Tier 2) reads the Identity Vault, not the configured [storage backend](#storage-backends); the broker (Tier 3) reads the backend. [Two separate stores](docs/use-cases/run-broker.md#storage-two-separate-stores) says which command fills each.
 
 **Tier 1: In-process SDK.** Credentials resolved in the call stack and zeroized after use. Available in the Python and TypeScript AIM SDKs. Sub-millisecond overhead.
 
-**Tier 2: Vault Exec.** Runs one command with a vault credential set in that command's environment. Vault Exec does not export the value to the calling shell, pass it on the command line, or write it to a file.
+**Tier 2: Vault Exec.** Runs one command with a credential from the Identity Vault (`~/.aim/vault`, filled by `vault register`) set in that command's environment. Vault Exec does not export the value to the calling shell, pass it on the command line, or write it to a file.
 
 ```bash
 npx secretless-ai vault exec github -- curl https://api.github.com/user
 ```
 
 The child process receives the value as `$GITHUB` and holds it in its environment for as long as it runs. Vault Exec does not mask the child's output: whatever the command prints goes to whoever ran it, so when an AI assistant runs a wrapped command that prints its environment or the credential, the value enters the assistant's context (see [What the guard cannot see](#what-the-guard-cannot-see)). While the child runs, another process running as the same user can read its environment. Wraps any command, in any language.
+
+Vault Exec does not read the configured storage backend: a secret stored with `secret set` is not visible to it, and `vault exec` stops with `Vault resolution denied: Namespace "<name>" not found`. For a secret in the backend, `run --only` sets it in one command's environment under its stored name:
+
+```bash
+npx secretless-ai run --only GITHUB_TOKEN -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB_TOKEN" | curl -s -H @- https://api.github.com/user'
+```
 
 **Tier 3: Broker with identity policy.** A local daemon that mediates credential access across multiple agents. Policy rules allow or deny access by agent ID, credential name, time window, and rate limit. Optional AIM integration adds trust-score and capability constraints.
 
@@ -253,7 +259,7 @@ npx secretless-ai broker start
 
 See [Run the Broker](docs/use-cases/run-broker.md) for when to use the daemon and how to configure it.
 
-AIM is optional. Tier 1 and Tier 2 work against any of the five [storage backends](#storage-backends) with no AIM involvement. Tier 3 adds identity-bound policy when an AIM server is reachable. Default-deny still enforces locally without one.
+AIM is optional. `run --only` and the broker work against any of the five [storage backends](#storage-backends) with no AIM involvement. Vault Exec needs the optional `@opena2a/aim-core` package for its Identity Vault, and no AIM server. Tier 3 adds identity-bound policy when an AIM server is reachable. Default-deny still enforces locally without one.
 
 ## Supported tools
 
