@@ -635,7 +635,7 @@ describe('doctor CLI output for a secret outside the known list', () => {
   function runDoctorCli(): { status: number | null; stdout: string } {
     const res = spawnSync(process.execPath, [CLI_PATH, 'doctor'], {
       encoding: 'utf-8',
-      env: { PATH: process.env.PATH, HOME: home, SHELL: '/bin/zsh', SECRETLESS_OS_KEYCHAIN: 'off' },
+      env: { PATH: process.env.PATH, HOME: home, SHELL: '/bin/zsh', SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' },
     });
     return { status: res.status, stdout: res.stdout };
   }

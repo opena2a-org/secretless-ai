@@ -351,9 +351,12 @@ $SL feedback             # prints repo / issues / discussions links
 refuses connections (proves fire-and-forget tolerance) instead of polluting
 prod aggregates.
 
+Nothing is sent while `CI` or a test runner's variable is set, so clear them
+for 10.1 to 10.7; 10.8 sets one on purpose.
+
 ```bash
 export OPENA2A_TELEMETRY_URL=http://127.0.0.1:1/never
-unset OPENA2A_TELEMETRY
+unset OPENA2A_TELEMETRY CI GITHUB_ACTIONS VITEST JEST_WORKER_ID NODE_TEST_CONTEXT
 rm -f ~/.config/opena2a/telemetry.json   # start clean
 ```
 
@@ -366,6 +369,7 @@ rm -f ~/.config/opena2a/telemetry.json   # start clean
 | 10.5 | `OPENA2A_TELEMETRY=off secretless-ai telemetry status` | Shows `state: off` even though file says `on` (env wins). |
 | 10.6 | `OPENA2A_TELEMETRY_DEBUG=print secretless-ai status .` | Stderr contains a `[opena2a:telemetry]` line with the JSON payload (`tool: "secretless-ai"`, `event: "command"`, `name: "status"`, `success: true`, `duration_ms: <int>`, no PII fields). |
 | 10.7 | `secretless-ai status .` (with the unreachable URL) | Command completes normally. Telemetry endpoint unreachable must not slow the command perceptibly (≤2s timeout). |
+| 10.8 | `CI=true OPENA2A_TELEMETRY_DEBUG=print secretless-ai status .` then `CI=true secretless-ai telemetry status` | No `[opena2a:telemetry]` line on stderr. The status shows `state: off` and `Off for this run: CI is set, and no usage event is sent from CI or a test runner.` |
 
 Fail the release if:
 - any disclosure line is omitted

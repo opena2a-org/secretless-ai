@@ -15,6 +15,11 @@ export default defineConfig({
     // Every worker, and every CLI child the tests start from a copy of
     // process.env, refuses to start the OS credential-store CLIs. Removing
     // this line is caught by src/backends/bounded-child.test.ts.
-    env: { SECRETLESS_OS_KEYCHAIN: 'off' },
+    //
+    // OPENA2A_TELEMETRY: the same children send no usage event (#320).
+    // Removing it is caught by src/telemetry-automated-run.test.ts.
+    env: { SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' },
+    // Fails a test that starts the CLI with telemetry on.
+    setupFiles: ['src/telemetry-guard.test-support.ts'],
   },
 });
