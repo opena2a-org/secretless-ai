@@ -96,6 +96,19 @@ describe('automatedRunVariable names the variable that marks CI or a test run', 
   });
 });
 
+describe('the release smoke clears every variable that turns telemetry off (#365)', () => {
+  it('section 10 unsets each name in AUTOMATED_RUN_VARIABLES before step 10.1', () => {
+    const doc = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'testing', 'release-smoke.md'), 'utf-8');
+    const start = doc.indexOf('## 10.');
+    const section = doc.slice(start, doc.indexOf('| 10.1 |', start)).replace(/\\\n/g, ' ');
+    const unset = section.split('\n')
+      .filter((line) => line.startsWith('unset '))
+      .flatMap((line) => line.trim().split(/\s+/).slice(1));
+    expect(unset).toContain('OPENA2A_TELEMETRY');
+    expect(AUTOMATED_RUN_VARIABLES.filter((name) => !unset.includes(name))).toEqual([]);
+  });
+});
+
 describe('the CLI sends no usage event from CI or a test runner', () => {
   itIfBuilt.each([
     ['CI', 'true'],

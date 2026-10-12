@@ -148,6 +148,8 @@ Expected output:
 ```
   Secretless Setup
 
+  Store: 1password
+
   STRIPE_KEY (Stripe API key for payments): sk_live_...
   DATABASE_URL (PostgreSQL connection string): postgres://...
   SENTRY_DSN (Error tracking DSN) [optional, press Enter to skip]:
@@ -157,7 +159,7 @@ Expected output:
   Skipped:  1 (optional)
 ```
 
-`setup` prompts only for names not yet stored, with the description from the manifest. The prompt does not mask input: a value is shown as you type or paste it.
+`setup` names the backend it writes to before the first prompt, then prompts only for names not yet stored, with the description from the manifest. The prompt does not mask input: a value is shown as you type or paste it.
 
 ## Step 5: Set up CI/CD
 

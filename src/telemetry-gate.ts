@@ -8,7 +8,8 @@
  * this is the default for runs no person started at a terminal.
  *
  * A variable counts when it is set to anything other than an empty string,
- * `false` or `0`, so `CI=false` leaves telemetry as the user configured it.
+ * `false` or `0`, compared after trimming spaces and in any letter case, so
+ * `CI=false`, `CI=FALSE` and `CI=` leave telemetry as the user configured it.
  */
 export const AUTOMATED_RUN_VARIABLES: readonly string[] = [
   // CI services. Most set `CI`; these are the ones that also set, or only

@@ -351,12 +351,16 @@ $SL feedback             # prints repo / issues / discussions links
 refuses connections (proves fire-and-forget tolerance) instead of polluting
 prod aggregates.
 
-Nothing is sent while `CI` or a test runner's variable is set, so clear them
-for 10.1 to 10.7; 10.8 sets one on purpose.
+Nothing is sent while `CI`, a CI service's own variable or a test runner's
+variable is set, so clear every one `src/telemetry-gate.ts` lists for 10.1 to
+10.7; 10.8 sets one on purpose.
 
 ```bash
 export OPENA2A_TELEMETRY_URL=http://127.0.0.1:1/never
-unset OPENA2A_TELEMETRY CI GITHUB_ACTIONS VITEST JEST_WORKER_ID NODE_TEST_CONTEXT
+unset OPENA2A_TELEMETRY CI CONTINUOUS_INTEGRATION GITHUB_ACTIONS GITLAB_CI \
+  CIRCLECI TRAVIS BUILDKITE BITBUCKET_BUILD_NUMBER DRONE APPVEYOR JENKINS_URL \
+  TEAMCITY_VERSION TF_BUILD CODEBUILD_BUILD_ID VITEST VITEST_WORKER_ID \
+  JEST_WORKER_ID NODE_TEST_CONTEXT
 rm -f ~/.config/opena2a/telemetry.json   # start clean
 ```
 

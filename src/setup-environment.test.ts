@@ -13,7 +13,8 @@ import { prepareArgv } from './argv';
  * #330: the documented CI recipes passed secrets as environment variables
  * and ran `setup --check`, which counted only the store and so always failed;
  * the 1Password recipe had no way to name 1Password; and `setup` without a
- * terminal printed one prompt and exited 0 with nothing stored.
+ * terminal took its answers from a pipe, stored what it was given, and exited
+ * 0 without a summary when the input ended with a prompt unanswered.
  */
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
@@ -141,6 +142,26 @@ describe('runSetup counts names set in the environment (#330)', () => {
       write.mockRestore();
     }
   });
+
+  it('interactive: names the store before the first prompt (#365)', async () => {
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let out: string[] = [];
+    try {
+      await runSetup(tmpDir, {
+        backend,
+        interactive: true,
+        env: {},
+        input: Readable.from(['\n\n\n']),
+      });
+      out = write.mock.calls.map(c => String(c[0]));
+    } finally {
+      write.mockRestore();
+    }
+    const store = out.findIndex(l => l.includes('Store: local'));
+    const prompt = out.findIndex(l => l.startsWith('  STRIPE_KEY'));
+    expect(store, out.join('')).toBeGreaterThanOrEqual(0);
+    expect(prompt, out.join('')).toBeGreaterThan(store);
+  });
 });
 
 describe('secretless-ai setup, as the CI recipes run it (#330)', () => {
@@ -232,6 +253,27 @@ describe('secretless-ai setup, as the CI recipes run it (#330)', () => {
     expect(res.stdout + res.stderr).toMatch(/1password/i);
     expect(res.stdout).not.toContain('Store:     local');
     expect(res.stdout).not.toContain('PASS');
+  });
+
+  it('--check --backend local checks the encrypted file when no backend is configured (#365)', () => {
+    // With no config, `local` is the default and upgrades to a platform
+    // keychain (always assumed on macOS; the `secret-tool` stand-in makes one
+    // likely on Linux). Named with --backend, it is the file.
+    fs.rmSync(path.join(home, '.secretless-ai', 'config.json'));
+    const res = cli(['--check', '--backend', 'local'], { STRIPE_KEY: 'x', DATABASE_URL: 'y' });
+    expect(res.status, res.stdout + res.stderr).toBe(0);
+    expect(res.stdout).toContain('Store:     local');
+    expect(res.stdout + res.stderr).not.toContain('keychain');
+  });
+
+  it('an unreachable --backend is reported as named for this run, with no migration offered (#365)', () => {
+    const res = cli(['--check', '--backend', '1password'], { STRIPE_KEY: 'x', DATABASE_URL: 'y' });
+    const out = res.stdout + res.stderr;
+    expect(res.status).toBe(1);
+    expect(out).toContain('Backend "1password", named with --backend, is not reachable');
+    expect(out).not.toContain('Configured backend');
+    expect(out).not.toContain('backend migrate');
+    expect(out).toContain('without --backend');
   });
 
   it('an unknown --backend is refused before anything runs', () => {
