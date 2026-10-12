@@ -476,7 +476,7 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "the tarball packed from the delivered tree passes every no-network check, with no precondition anywhere",
+    "the tarball packed from the delivered tree passes every no-network check, with no precondition but consumer-closure's advisories read refused on a run with no GH_TOKEN",
     { timeout: 600_000 },
     () => {
       const packDir = fs.mkdtempSync(path.join(tmpRoot, "pack-"));

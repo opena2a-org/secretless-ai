@@ -51,7 +51,7 @@ export function isInScope(relPath) {
 
 const FENCE_OPEN = /^\s*(`{3,}|~{3,})/;
 const FENCE_CLOSE = /^\s*(`{3,}|~{3,})\s*$/;
-const HEADING = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
+const HEADING_START = /^\s{0,3}#{1,6}\s+/;
 const BOLD_LABEL = /^\s*(\*\*|__)\s*why this (exists|matters)\b/i;
 const WHY_THIS = /^why this (exists|matters)\b/i;
 
@@ -138,6 +138,21 @@ function proseLines(text) {
 }
 
 /**
+ * The text of a heading line without its closing run of `#` and the spaces
+ * around it, or null when the line is not a heading. The end is trimmed here
+ * rather than by the pattern: a lazy group followed by two optional
+ * whitespace runs took time cubic in a run of spaces inside the heading.
+ */
+function headingText(line) {
+  const start = line.match(HEADING_START);
+  if (!start) return null;
+  const text = line.slice(start[0].length).trimEnd();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '#') end--;
+  return text.slice(0, end).trimEnd();
+}
+
+/**
  * The findings in one Markdown text, each as `{ line, message }` with a
  * 1-based line number.
  */
@@ -147,8 +162,8 @@ export function findProseIssues(text) {
     for (const rule of RULES) {
       if (rule.pattern.test(prose)) findings.push({ line: i + 1, message: rule.message });
     }
-    const heading = prose.match(HEADING);
-    if ((heading && WHY_THIS.test(heading[1].replace(/^[*_]+/, ''))) || BOLD_LABEL.test(prose)) {
+    const heading = headingText(prose);
+    if ((heading !== null && WHY_THIS.test(heading.replace(/^[*_]+/, ''))) || BOLD_LABEL.test(prose)) {
       findings.push({ line: i + 1, message: 'section named "Why this exists" or "Why this matters"' });
     }
   });
@@ -193,18 +208,26 @@ function main() {
 }
 
 /**
- * Whether node was started with this file, rather than importing it. Node
- * resolves symbolic links in the path of the script it runs, so the two paths
- * are compared resolved: a checkout reached through a link (`/tmp` on macOS)
- * is still this file.
+ * Whether node was started with this file, rather than importing it: whether
+ * `started`, the path node was started with, names the file at `self`. Node
+ * resolves symbolic links in the path of the script it runs unless started
+ * with `--preserve-symlinks-main`, so the two paths are compared resolved: a
+ * checkout reached through a link (`/tmp` on macOS) is still this file.
  */
-function startedAsScript() {
-  if (!process.argv[1]) return false;
+export function startedAsScript(
+  started = process.argv[1],
+  self = fileURLToPath(import.meta.url),
+  realpath = fs.realpathSync,
+) {
+  if (!started) return false;
   try {
-    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    // The path node was started with resolves to no file, so it is not this one.
-    return false;
+    return realpath(started) === realpath(self);
+  } catch (err) {
+    // A start path that names no file is not this one.
+    if (err?.code === 'ENOENT') return false;
+    // Any other failure to resolve falls back to the paths as given, so a
+    // start that cannot be resolved is never quieter than one that can.
+    return path.resolve(started) === path.resolve(self);
   }
 }
 
