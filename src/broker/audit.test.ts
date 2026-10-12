@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -206,6 +207,13 @@ describe('AuditLogger', () => {
       logger.log(makeEntry({ agentId: 'agent-3', result: 'denied' }));
     }
 
+    const BASE64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+    /** Whether `sig` is a valid signature by `key` over the record without `sig`. */
+    function signatureHolds(unsigned: object, sig: string, key: crypto.KeyObject): boolean {
+      return crypto.verify(null, Buffer.from(JSON.stringify(unsigned), 'utf-8'), key, Buffer.from(sig, 'base64url'));
+    }
+
     it('signs every record and chains it to the line before it', () => {
       logThree();
       const records = lines().map(l => JSON.parse(l));
@@ -373,15 +381,115 @@ describe('AuditLogger', () => {
       expect(logger.verify()).toEqual({ valid: true, records: 3 });
     });
 
-    it('rejects a record whose signature was truncated', () => {
+    it.each([
+      ['truncated', (bytes: Buffer) => bytes.subarray(0, 30)],
+      ['one byte too long', (bytes: Buffer) => Buffer.concat([bytes, Buffer.from([0])])],
+    ])('rejects a record whose signature was %s', (_name, resize) => {
       logThree();
       const content = lines();
-      content[2] = content[2].replace(/"sig":"([^"]+)"/, (_m, sig: string) => `"sig":"${sig.slice(0, 40)}"`);
+      const record = JSON.parse(content[2]);
+      // Canonical base64url of the wrong length: only the length check refuses it.
+      record.sig = resize(Buffer.from(record.sig, 'base64url')).toString('base64url');
+      content[2] = JSON.stringify(record);
       writeLines(content);
 
-      const result = logger.verify();
-      expect(result.valid).toBe(false);
-      expect(result.failedLine).toBe(3);
+      expect(logger.verify()).toEqual({
+        valid: false,
+        records: 2,
+        failedLine: 3,
+        reason: 'signature is not an Ed25519 signature in canonical base64url',
+      });
+    });
+
+    it.each([
+      ['with padding', (sig: string) => `${sig}==`],
+      ['with non-zero trailing bits', (sig: string) => {
+        // 64 bytes leave 4 unused bits in the last character, zero when canonical.
+        const last = BASE64URL.indexOf(sig[sig.length - 1]);
+        return sig.slice(0, -1) + BASE64URL[last | 1];
+      }],
+    ])('rejects the last record when its signature is spelled %s', (_name, respell) => {
+      logThree();
+      const content = lines();
+      const record = JSON.parse(content[2]);
+      const respelled = respell(record.sig);
+      // The same signature bytes spelled another way: the signature alone would
+      // hold, and the last record has no successor whose chain would break.
+      expect(respelled).not.toBe(record.sig);
+      expect(Buffer.from(respelled, 'base64url').equals(Buffer.from(record.sig, 'base64url'))).toBe(true);
+      record.sig = respelled;
+      content[2] = JSON.stringify(record);
+      writeLines(content);
+
+      expect(logger.verify()).toEqual({
+        valid: false,
+        records: 2,
+        failedLine: 3,
+        reason: 'signature is not an Ed25519 signature in canonical base64url',
+      });
+    });
+
+    it('rejects the last record when sig is not its last member', () => {
+      logThree();
+      const content = lines();
+      const { sig, ...unsigned } = JSON.parse(content[2]);
+      // The signature still covers the record without `sig`, and the last
+      // record has no successor whose chain would break.
+      expect(signatureHolds(unsigned, sig, crypto.createPublicKey(logger.publicKeyPem()))).toBe(true);
+      content[2] = JSON.stringify({ sig, ...unsigned });
+      writeLines(content);
+
+      expect(logger.verify()).toEqual({
+        valid: false,
+        records: 2,
+        failedLine: 3,
+        reason: 'record is not in canonical form',
+      });
+    });
+
+    it.each(['null', '[]', '42', '"text"'])(
+      'rejects %s, JSON that is not an object, between signed records',
+      inserted => {
+        logThree();
+        const content = lines();
+        content.splice(1, 0, inserted);
+        writeLines(content);
+
+        expect(logger.verify()).toEqual({
+          valid: false,
+          records: 1,
+          failedLine: 2,
+          reason: 'line is not a JSON object',
+        });
+      },
+    );
+
+    it('refuses the signing key in place of the public key', () => {
+      logThree();
+      const signingKey = crypto.createPrivateKey(fs.readFileSync(`${logPath}.key`, 'utf-8'));
+      // A private key verifies these signatures too: only the key-type check refuses it.
+      const { sig, ...unsigned } = JSON.parse(lines()[2]);
+      expect(signatureHolds(unsigned, sig, signingKey)).toBe(true);
+
+      expect(verifyAuditLog(logPath, signingKey)).toEqual({
+        valid: false,
+        records: 0,
+        reason: 'audit public key is not an Ed25519 public key',
+      });
+    });
+
+    it('refuses a public key of another algorithm', () => {
+      logThree();
+      const { publicKey } = crypto.generateKeyPairSync('ed448');
+      const refused = {
+        valid: false,
+        records: 0,
+        reason: 'audit public key is not an Ed25519 public key',
+      };
+
+      expect(verifyAuditLog(logPath, publicKey)).toEqual(refused);
+      expect(verifyAuditLog(logPath, publicKey.export({ type: 'spki', format: 'pem' }) as string))
+        .toEqual(refused);
     });
 
     it('names the key file when the signing key cannot be read', () => {
