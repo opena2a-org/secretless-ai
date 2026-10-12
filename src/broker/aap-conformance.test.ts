@@ -12,14 +12,13 @@
  * the bytes the agent actually sends and receives.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as crypto from 'crypto';
 import * as http from 'http';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
-import { BrokerServer } from './server';
+import { BrokerServer, TOKEN_FILE } from './server';
 import { CredentialResolver } from './resolver';
 import { SecretStore } from '../secret-store';
 import { McpVault } from '../mcp/vault';
@@ -34,6 +33,35 @@ import { EphemeralWorker, type DownstreamCaller, type AgentOperation, type Opera
 import { AuditLogger, verifyAuditLog } from './audit';
 import type { ScopedCredential } from './cpi/types';
 import type { TokenExchangeRequest, TokenExchangeResponse, TokenExchangeTransport } from './cpi/exchange';
+
+/**
+ * audit.ts, policy.ts and server.ts fix their default paths under
+ * ~/.secretless-ai when they load, before any beforeEach runs. Hoisted above
+ * the imports, this sets an empty HOME of the suite's own before any of them
+ * loads, so a default the server below is not given lands there, where the
+ * last test looks for it, and never under the HOME of whoever runs the suite.
+ */
+const suite = vi.hoisted(() => {
+  const fs = require('fs') as typeof import('fs');
+  const os = require('os') as typeof import('os');
+  const path = require('path') as typeof import('path');
+  // broker.sock is 28 bytes longer than the directory a test makes, so made
+  // under a TMPDIR longer than 76 bytes it passed the 104-byte macOS socket
+  // path limit and every test failed with listen EINVAL. On POSIX the suite's
+  // directories are made under /tmp.
+  const makeTmpDir = (prefix: string): string =>
+    fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', prefix));
+  const originalHome = process.env.HOME;
+  const homeDir = makeTmpDir('aap-conf-home-');
+  process.env.HOME = homeDir;
+  return { homeDir, originalHome, makeTmpDir };
+});
+
+afterAll(() => {
+  if (suite.originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = suite.originalHome;
+  fs.rmSync(suite.homeDir, { recursive: true, force: true });
+});
 
 // @opena2a/atx-verify is ESM-only and this file compiles as CommonJS, so its
 // values load through require(esm), the way src/broker/cpi/assertion.ts loads
@@ -181,14 +209,40 @@ function brokerPost(
   });
 }
 
+describe('AAP v1 conformance test HOME and directories', () => {
+  it('loads the broker modules under the suite\'s own HOME', () => {
+    expect(TOKEN_FILE).toBe(path.join(suite.homeDir, '.secretless-ai', 'broker.token'));
+  });
+
+  it('keeps broker.sock within the socket path limit when TMPDIR is long', () => {
+    // Made under a TMPDIR this long, broker.sock passed the limit.
+    const base = suite.makeTmpDir('aap-conf-long-');
+    const longTmp = path.join(base, 'x'.repeat(80));
+    fs.mkdirSync(longTmp);
+    const savedTmp = process.env.TMPDIR;
+    process.env.TMPDIR = longTmp;
+    let dir: string;
+    try {
+      dir = suite.makeTmpDir('aap-conf-');
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmp;
+    }
+    try {
+      expect(Buffer.byteLength(path.join(dir, 'broker.sock'))).toBeLessThanOrEqual(104);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('AAP v1 conformance: no credential or backend identifier in the agent context', () => {
   let server: BrokerServer;
   let tmpDir: string;
   let socketPath: string;
   let auditPath: string;
   let tokenPath: string;
-  let homeDir: string;
-  let originalHome: string | undefined;
   let idp: FakeIdp;
   let ordersApi: FakeOrdersApi;
   let brokerToken: string;
@@ -206,19 +260,12 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
   };
 
   beforeEach(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-conf-'));
+    tmpDir = suite.makeTmpDir('aap-conf-');
     socketPath = path.join(tmpDir, 'broker.sock');
     auditPath = path.join(tmpDir, 'audit.log');
     // Isolated token file: never touch the machine-wide ~/.secretless-ai/broker.token,
     // which a real broker may own and which would otherwise race across test instances.
     tokenPath = path.join(tmpDir, 'broker.token');
-    // An empty HOME of the suite's own, so anything that still falls back to
-    // ~/.secretless-ai lands here, where the last test looks for it, and never
-    // in the store of whoever runs the suite.
-    originalHome = process.env.HOME;
-    homeDir = path.join(tmpDir, 'home');
-    fs.mkdirSync(homeDir);
-    process.env.HOME = homeDir;
 
     const { atx, pubHex, keypair } = makeSignedAtx();
     // Stash a valid ATX the "agent" will present. (In production the agent carries its own.)
@@ -269,8 +316,6 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
 
   afterEach(async () => {
     await server.stop();
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -512,6 +557,6 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
       operation: { method: 'GET', path: '/orders', query: { customer: 'c-123' } },
     });
     expect(res.status).toBe(200);
-    expect(fs.readdirSync(homeDir)).toEqual([]);
+    expect(fs.readdirSync(suite.homeDir)).toEqual([]);
   });
 });
