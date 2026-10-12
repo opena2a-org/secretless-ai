@@ -262,6 +262,39 @@ describe('AuditLogger', () => {
       expect(result.reason).toMatch(/not signed/);
     });
 
+    // Each case fails exactly one of the two "not signed" clauses: the record
+    // stays in canonical form and keeps its place in the hash chain.
+    it.each([null, 7])('rejects a record whose sig is %s', sig => {
+      logger.log(makeEntry({ agentId: 'agent-1' }));
+      logger.log(makeEntry({ agentId: 'agent-2' }));
+      const content = lines();
+      content[1] = JSON.stringify({ ...JSON.parse(content[1]), sig });
+      writeLines(content);
+
+      expect(logger.verify()).toEqual({
+        valid: false,
+        records: 1,
+        failedLine: 2,
+        reason: 'record is not signed',
+      });
+    });
+
+    it('rejects a signed record with its prevHash removed', () => {
+      logger.log(makeEntry({ agentId: 'agent-1' }));
+      logger.log(makeEntry({ agentId: 'agent-2' }));
+      const content = lines();
+      const { prevHash: _prevHash, ...withoutPrevHash } = JSON.parse(content[1]);
+      content[1] = JSON.stringify(withoutPrevHash);
+      writeLines(content);
+
+      expect(logger.verify()).toEqual({
+        valid: false,
+        records: 1,
+        failedLine: 2,
+        reason: 'record is not signed',
+      });
+    });
+
     it('rejects a line that is not JSON inserted between signed records', () => {
       logThree();
       const content = lines();
