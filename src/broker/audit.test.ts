@@ -243,6 +243,17 @@ describe('AuditLogger', () => {
       expect(result.reason).toMatch(/not signed/);
     });
 
+    it('rejects an unsigned record appended with no trailing newline', () => {
+      logThree();
+      fs.appendFileSync(logPath, JSON.stringify(makeEntry({ agentId: 'unsigned' })));
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.records).toBe(3);
+      expect(result.failedLine).toBe(4);
+      expect(result.reason).toMatch(/not signed/);
+    });
+
     it('rejects a log that holds only unsigned records', () => {
       logger.log(makeEntry());
       writeLines([JSON.stringify(makeEntry()), JSON.stringify(makeEntry())]);
@@ -295,14 +306,17 @@ describe('AuditLogger', () => {
     it('rejects a signed record carrying a decoy duplicate member', () => {
       logThree();
       const content = lines();
-      // The signed member still parses last, so the signature alone would hold;
-      // a reader that takes the first member would see a different decision.
-      content[2] = content[2].replace('{', '{"result":"allowed",');
+      // The decoy stands where the signed member stood, so key order is
+      // unchanged and the signed member still parses last: the signature alone
+      // would hold, and a reader that keeps the first member would see a
+      // different decision.
+      content[2] = content[2].replace('"result":"denied"', '"result":"allowed","result":"denied"');
       writeLines(content);
 
       const result = logger.verify();
       expect(result.valid).toBe(false);
       expect(result.failedLine).toBe(3);
+      expect(result.reason).toMatch(/canonical/);
     });
 
     it('rejects a log signed by a different key', () => {
