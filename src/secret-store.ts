@@ -39,7 +39,10 @@ export interface SecretStoreOptions {
    * Set when `backendType` was named for this run by a flag, as
    * `setup --backend` does, rather than read from config. `local` is then the
    * encrypted file even with no backend configured, and an unreachable backend
-   * is not reported as the configured one (#365).
+   * is not reported as the configured one (#365). Unless it is the store this
+   * machine uses anyway, it is read and written without the value cache, so
+   * nothing it holds is later served as the configured backend's (#367).
+   * Without a `backendType` this names nothing and is ignored.
    */
   backendNamed?: boolean;
   /** Pre-constructed backend instance (overrides backendType). For DI/testing. */

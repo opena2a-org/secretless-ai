@@ -53,6 +53,11 @@ import type { SelectableBackendType } from './config';
  *                 configured one (`setup --backend`): `local` is the encrypted
  *                 file, never the keychain upgrade, and an unreachable-backend
  *                 error says it was named for this run and offers no migration.
+ *                 It is built without the cache layer for the same reason a
+ *                 source is, unless it names the store this machine uses
+ *                 anyway (see `isConfiguredStore`): that store's values are
+ *                 the ones the cache holds, and a write that went round the
+ *                 cache would leave the value from before it being served.
  */
 export function createBackend(
   type: SelectableBackendType,
@@ -62,7 +67,8 @@ export function createBackend(
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
   const role: BackendRole = options?.role ?? 'configured';
-  const cacheTtl = (): number => (role === 'source' ? 0 : readCacheTtl());
+  const uncached = role === 'source' || (role === 'named' && !isConfiguredStore(type));
+  const cacheTtl = (): number => (uncached ? 0 : readCacheTtl());
 
   // When callers request the default 'local', prefer keychain if the platform
   // supports it. Use the prompt-free Likely check here — this path runs from
@@ -423,6 +429,22 @@ export function isOnePasswordAvailable(
  */
 function upgradesToKeychain(type: SelectableBackendType, config?: Record<string, unknown>): boolean {
   return type === 'local' && !config?.key && readBackendConfig() === undefined;
+}
+
+/**
+ * Whether `type`, named for one run, is the store this machine uses without
+ * the flag: the configured backend, or the platform keychain the unconfigured
+ * default upgrades to. Prompt-free, as `isKeychainLikely` is.
+ *
+ * Any other named backend is a second store beside the configured one, and
+ * the shared cache must hold nothing of it: `setup --check --backend vault`
+ * cached what Vault held, and `setup --check` then reported those names as
+ * satisfied by a keychain that held none of them (#367).
+ */
+function isConfiguredStore(type: SelectableBackendType): boolean {
+  const configured = readBackendConfig();
+  if (configured !== undefined) return type === configured;
+  return type === 'keychain' && isKeychainLikely().available;
 }
 
 /**

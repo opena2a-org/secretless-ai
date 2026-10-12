@@ -4,6 +4,9 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
 import { createBackend, isKeychainAvailable, unavailableBackendError } from './factory';
+import type { BackendRole } from './factory';
+import { CachedBackend } from './cache';
+import { writeBackendConfig } from './config';
 import { LocalBackend } from './local';
 
 vi.mock('child_process', async (importOriginal) => {
@@ -205,4 +208,150 @@ describe('unavailableBackendError formatting', () => {
     expect(err.message).toMatch(/^  Fix:     brew install 1password-cli && op signin$/m);
     expect(err.message).toContain('run the command again without --backend');
   });
+
+  it('tells a backend named with --backend that no other store was touched, as it tells the configured one (#367)', () => {
+    const message = (role: BackendRole): string =>
+      unavailableBackendError('vault', 'VAULT_ADDR and VAULT_TOKEN must be set', [], 'vault token lookup', role).message;
+    const assurance = '  Your secrets are safe. Nothing was read from or written to another store.';
+    expect(message('named').split('\n')).toContain(assurance);
+    expect(message('configured').split('\n')).toContain(assurance);
+    // CONTROL: a source is only read, so it is told something else.
+    expect(message('source')).not.toContain('another store');
+    expect(message('named')).not.toContain('Nothing was read from it');
+  });
+});
+
+/**
+ * #367: `setup --backend` built the backend it names behind the shared value
+ * cache. That file is keyed by entry name alone, so `setup --check --backend
+ * vault` cached what Vault held, and `setup --check` then counted those names
+ * as satisfied by a configured keychain that held none of them.
+ *
+ * The configured store is played by a `CachedBackend` over an empty store on
+ * the default cache file, which is what `createBackend` wraps the configured
+ * backend in: no OS keychain is asked for anything.
+ */
+describe('createBackend: a backend named for one run and the shared value cache (#367)', () => {
+  const HELD = 'held-by-vault-only';
+  const saved = {
+    HOME: process.env.HOME,
+    PATH: process.env.PATH,
+    VAULT_ADDR: process.env.VAULT_ADDR,
+    VAULT_TOKEN: process.env.VAULT_TOKEN,
+  };
+  let root: string;
+  let vault: Record<string, string>;
+
+  /** A Vault KV v2 server holding `secret/<name>` for each name in `vault`. */
+  function vaultServer() {
+    const json = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body });
+    return vi.fn(async (url: string, init: { method: string; body?: string }) => {
+      const { pathname } = new URL(url);
+      if (init.method === 'LIST' && pathname === '/v1/secret/metadata/secret') {
+        return json(200, { data: { keys: Object.keys(vault) } });
+      }
+      const name = /^\/v1\/secret\/data\/secret\/(.+)$/.exec(pathname)?.[1];
+      if (name !== undefined && init.method === 'POST') {
+        vault[name] = (JSON.parse(init.body ?? '{}') as { data: { value: string } }).data.value;
+        return json(200, { data: { version: 1 } });
+      }
+      if (name !== undefined && init.method === 'GET' && name in vault) {
+        return json(200, { data: { data: { value: vault[name] } } });
+      }
+      return json(404, { errors: [] });
+    });
+  }
+
+  /** The configured store's cache layer, over a store that holds nothing. */
+  function configuredStoreCache(): CachedBackend {
+    return new CachedBackend(new LocalBackend({ storeDir: path.join(root, 'empty-store'), key: 'test' }));
+  }
+
+  beforeEach(() => {
+    root = tmpDir();
+    const home = path.join(root, 'home');
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(home);
+    fs.mkdirSync(bin);
+    // A `secret-tool` stand-in, so a Linux runner sees a likely keychain as
+    // macOS always does. Nothing here starts it.
+    fs.writeFileSync(path.join(bin, 'secret-tool'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    process.env.HOME = home;
+    process.env.PATH = `${bin}${path.delimiter}${saved.PATH ?? ''}`;
+    process.env.VAULT_ADDR = 'http://127.0.0.1:1';
+    process.env.VAULT_TOKEN = 'not-a-real-token';
+    vault = { STRIPE_KEY: HELD };
+    vi.stubGlobal('fetch', vaultServer());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    cleanup(root);
+  });
+
+  it('a value read through a named backend is not served as the configured store\'s', async () => {
+    writeBackendConfig('keychain');
+    const named = createBackend('vault', undefined, true, { role: 'named' });
+    expect(await named.resolve('secret')).toEqual({ 'secret/STRIPE_KEY': HELD });
+
+    // Before the fix this answered { 'secret/STRIPE_KEY': HELD } from the
+    // cache, without asking the store it wraps.
+    expect(await configuredStoreCache().resolve('secret')).toEqual({});
+    expect(configuredStoreCache().getCacheStats().entries).toBe(0);
+  });
+
+  it('a value written through a named backend is not left in the cache', async () => {
+    writeBackendConfig('keychain');
+    const named = createBackend('vault', undefined, true, { role: 'named' });
+    await named.store('secret/DATABASE_URL', 'typed-into-setup');
+    expect(vault.DATABASE_URL).toBe('typed-into-setup');
+    expect(configuredStoreCache().getCacheStats().entries).toBe(0);
+  });
+
+  it('CONTROL: the same read through the default role is cached, so the two tests above can fail', async () => {
+    writeBackendConfig('keychain');
+    await createBackend('vault').resolve('secret');
+    expect(configuredStoreCache().getCacheStats().entries).toBe(1);
+  });
+
+  it('is built without the cache layer beside a different configured backend, and beside the default', () => {
+    const name = (): string => createBackend('vault', undefined, true, { role: 'named' }).name;
+    expect(name()).toBe('vault');
+    writeBackendConfig('keychain');
+    expect(name()).toBe('vault');
+    writeBackendConfig('local');
+    expect(name()).toBe('vault');
+  });
+
+  it('keeps the cache layer when it names the configured backend, whose values the cache holds', async () => {
+    writeBackendConfig('vault');
+    const named = createBackend('vault', undefined, true, { role: 'named' });
+    expect(named.name).toBe('cached(vault)');
+
+    // What that is for: a write through --backend reaches the next read
+    // without --backend. Uncached, the list cached before it would be served.
+    const configured = createBackend('vault');
+    expect(Object.keys(await configured.resolve('secret'))).toEqual(['secret/STRIPE_KEY']);
+    await named.store('secret/DATABASE_URL', 'typed-into-setup');
+    expect(Object.keys(await createBackend('vault').resolve('secret')).sort()).toEqual([
+      'secret/DATABASE_URL',
+      'secret/STRIPE_KEY',
+    ]);
+  });
+
+  it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')(
+    'keeps the cache layer for a named keychain when no backend is configured, where the keychain is the default',
+    () => {
+      const unconfigured = createBackend('local').name;
+      expect(unconfigured).toMatch(/^cached\(keychain-(macos|linux)\)$/);
+      expect(createBackend('keychain', undefined, true, { role: 'named' }).name).toBe(unconfigured);
+      // Once another backend is configured, a named keychain is a second store.
+      writeBackendConfig('vault');
+      expect(createBackend('keychain', undefined, true, { role: 'named' }).name).toMatch(/^keychain-(macos|linux)$/);
+    },
+  );
 });

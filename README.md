@@ -354,7 +354,7 @@ Secretless sends anonymous tier-1 usage data to the OpenA2A Registry: tool name 
 - Status: `secretless-ai telemetry status`.
 - Disable per-invocation: `OPENA2A_TELEMETRY=off secretless-ai <anything>`.
 - Disable persistently: `secretless-ai telemetry off`.
-- Never sent from CI or a test runner: nothing is sent while `CI`, a CI service's own variable (`GITHUB_ACTIONS`, `GITLAB_CI`, `JENKINS_URL`, `TF_BUILD` and others), `VITEST`, `JEST_WORKER_ID` or `NODE_TEST_CONTEXT` is set. A variable counts as unset when its value is empty or only spaces, or is `false` or `0` in any letter case with surrounding spaces ignored, so `CI=false` and `CI=` leave telemetry as you configured it. `telemetry status` then shows `state: off` and names the variable.
+- Never sent from CI or a test runner: nothing is sent while `CI`, a CI service's own variable (`GITHUB_ACTIONS`, `GITLAB_CI`, `JENKINS_URL`, `TF_BUILD` and others), `VITEST`, `JEST_WORKER_ID` or `NODE_TEST_CONTEXT` is set. `telemetry status` then shows `state: off` and names the variable. A variable counts as unset when its value is empty or only spaces, or is `false` or `0` in any letter case with surrounding spaces ignored, so `CI=false` and `CI=` leave telemetry as you configured it.
 - Audit every payload: `OPENA2A_TELEMETRY_DEBUG=print secretless-ai <anything>` echoes each event to stderr as JSON.
 
 Fire-and-forget with a 2-second timeout. Telemetry never blocks Secretless.

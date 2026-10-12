@@ -13,8 +13,10 @@ import { prepareArgv } from './argv';
  * #330: the documented CI recipes passed secrets as environment variables
  * and ran `setup --check`, which counted only the store and so always failed;
  * the 1Password recipe had no way to name 1Password; and `setup` without a
- * terminal took its answers from a pipe, stored what it was given, and exited
- * 0 without a summary when the input ended with a prompt unanswered.
+ * terminal took its answers from a pipe, stored a line as the secret whose
+ * prompt was open when it arrived (two lines piped at once stored the first
+ * name only), and exited 0 without a summary when the input ended with a
+ * prompt unanswered.
  */
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');

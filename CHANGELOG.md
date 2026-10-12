@@ -118,10 +118,20 @@ becomes, still counts as missing. `setup --backend <type>` checks or stores in
 the named backend instead of the configured one, so the 1Password recipe runs
 `setup --check --backend 1password`, and the report names the store it checked.
 `--backend local` is the AES-256-GCM encrypted file, also on a machine with no
-backend configured, where `local` otherwise means the platform keychain. A
-backend named with `--backend` that cannot be reached is reported as named for
-this run, with no `backend migrate` line, because the configured backend is
-unchanged. In a terminal, `setup` names the store before its first prompt.
+backend configured, where `local` otherwise means the platform keychain when
+one is detected (macOS, or Linux with `secret-tool` on PATH). A `1password`,
+`vault` or `gcp-sm` backend named with `--backend` that cannot be reached is
+reported as named for this run, with no `backend migrate` line, because the
+configured backend is unchanged. `keychain` is not checked when it is named:
+under `SECRETLESS_OS_KEYCHAIN=off`, `setup --check --backend keychain` reports
+the names as missing, and a value typed into `setup --backend keychain` fails
+with the keychain's own error. A backend named with `--backend` that is not
+the one this machine uses anyway is read and written without the value cache,
+which is one file keyed by secret name alone, so a secret it holds is not then
+counted as held by the configured backend: with `keychain` configured,
+`setup --check --backend vault` followed by `setup --check` reports a secret
+only Vault holds as missing. In a terminal, `setup` names the store before its
+first prompt.
 Plain `setup` with standard input that is not a terminal took its answers from
 that input: a piped value was stored as the secret it was prompted for, and
 when the input ended with a prompt unanswered, `setup` exited 0 without a
@@ -138,7 +148,10 @@ standard input is not a terminal, it returns the report with
 `process.env` as present unless `env` is passed (`env: {}` counts the store
 alone); `SetupResult` has a new required field, `fromEnvironmentNames`, that
 lists those names; and `backendNamed: true` treats `backendType` as named for
-this run, as `--backend` does. Verify with
+this run, as `--backend` does. Two other exports take the same choice:
+`SecretStoreOptions` has `backendNamed`, which `new SecretStore(options)`
+reads, and `createBackend` takes `{ role: 'named' }` as its fourth argument.
+Verify with
 `printf 'STRIPE_KEY\n' > .secretless; STRIPE_KEY=x npx secretless-ai setup --check`
 (`PASS`, exit 0) and `npx secretless-ai setup </dev/null` (exit 1).
 
@@ -300,11 +313,11 @@ test run starts in a fresh home directory, and each fresh home was given a new
 install id, so every job and every test run that started the CLI was counted
 as a new user. Nothing is sent now while `CI`, a CI service's own variable
 (`GITHUB_ACTIONS`, `GITLAB_CI`, `JENKINS_URL`, `TF_BUILD` and others),
-`VITEST`, `JEST_WORKER_ID` or `NODE_TEST_CONTEXT` is set. A value that is
-empty or only spaces, or is `false` or `0` in any letter case with surrounding
-spaces ignored, counts as unset, so `CI=false` and `CI=` leave telemetry as
-the user configured it. `--version` shows `Telemetry: off` for such a run, and
-`telemetry status` shows `state: off` with a line naming the variable. This
+`VITEST`, `JEST_WORKER_ID` or `NODE_TEST_CONTEXT` is set. `--version` shows
+`Telemetry: off` for such a run, and `telemetry status` shows `state: off`
+with a line naming the variable. A value that is empty or only spaces, or is
+`false` or `0` in any letter case with surrounding spaces ignored, counts as
+unset, so `CI=false` and `CI=` leave telemetry as the user configured it. This
 repository's test suite runs with `OPENA2A_TELEMETRY=off`, and a test that
 starts the CLI with telemetry on fails before the CLI starts.
 
