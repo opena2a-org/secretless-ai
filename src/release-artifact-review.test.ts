@@ -47,8 +47,8 @@ import {
  * advisories read refused (HTTP 403 or 429) on a run that sends no token is
  * reported as not measured. That exempts no release: the script's verdict is
  * unchanged, and the release `review` job runs it with GH_TOKEN set. The
- * deprecated-dependency case takes the same exception, since its advisories
- * read follows the deprecation probe.
+ * deprecated-dependency case takes no exception: the script keeps the
+ * deprecation it found when the advisories read after it is refused.
  */
 
 /** The checks whose verdict needs no network reading. */
@@ -435,17 +435,9 @@ describe("each blocking class is caught by name, and the delivered tree passes",
       const run = reviewOf("poison-deprecated", () =>
         runReview(["--tarball", buildTarball("poison-deprecated.tgz", files)]),
       );
-      // An advisories read refused with no GH_TOKEN hides the deprecation
-      // fail behind a precondition: reported as not measured (see
-      // notMeasuredReason).
-      const reason = expectDeprecatedDependencyCaught(
-        run,
-        `hackmyagent@${version}`,
-        process.env,
-      );
-      if (reason !== null) {
-        console.log(`check consumer-closure: not measured: ${reason}`);
-      }
+      // The deprecation is found before the advisories read, so a refused
+      // read leaves the check failed, not a precondition.
+      expectDeprecatedDependencyCaught(run, `hackmyagent@${version}`);
     },
   );
 

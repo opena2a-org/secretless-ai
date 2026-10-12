@@ -211,36 +211,33 @@ export function notMeasuredReason(
 }
 
 /**
- * The deprecated-dependency case's judgment of its run: consumer-closure
- * fails naming `dependency` ("name@version") as deprecated, and null is
- * returned. The script reads the advisories after its deprecation probe and
- * records a refused read as a precondition even when a deprecation row
- * already failed, so the one precondition notMeasuredReason accepts is
- * reported as not measured instead: its reason is returned. Any other
- * precondition fails the case. Either way the script exits non-zero.
+ * The deprecated-dependency case's judgment of its run: the script exits
+ * non-zero, consumer-closure is a fail, the output names `dependency`
+ * ("name@version") as deprecated, and the result line lists consumer-closure
+ * as failing. The script keeps a deprecation it found when the advisories
+ * read after it fails, so no precondition is accepted here, with or without
+ * GH_TOKEN.
  */
 export function expectDeprecatedDependencyCaught(
   run: Run,
   dependency: string,
-  env: Record<string, string | undefined>,
-): string | null {
-  expect(run.status).not.toBe(0);
+): void {
+  expect(run.status, "exit status").not.toBe(0);
   const precondition = preconditionsOf(run).find(
     ({ check }) => check === "consumer-closure",
   );
-  if (precondition !== undefined) {
-    const reason = notMeasuredReason(precondition, env);
-    if (reason !== null) return reason;
-  }
   expect(
     run.census["consumer-closure"],
     precondition === undefined
       ? "consumer-closure"
       : `consumer-closure precondition: ${precondition.detail}`,
   ).toBe("fail");
-  expect(run.stdout).toContain(`${dependency} is deprecated`);
-  expect(run.stdout).toMatch(/failing: .*consumer-closure/);
-  return null;
+  expect(run.stdout, "deprecated version named").toContain(
+    `${dependency} is deprecated`,
+  );
+  expect(run.stdout, "consumer-closure listed as failing").toMatch(
+    /failing: .*consumer-closure/,
+  );
 }
 
 export function expectSingleFailure(run: Run, check: string) {
