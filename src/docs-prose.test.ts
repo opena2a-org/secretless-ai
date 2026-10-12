@@ -29,6 +29,7 @@ interface CheckModule {
   findProseIssues(text: string): Finding[];
   isInScope(relPath: string): boolean;
   filesInScope(root?: string): string[];
+  startedAsScript(started?: string, self?: string, realpath?: (p: string) => string): boolean;
 }
 
 const load = (): Promise<CheckModule> => import(pathToFileURL(SCRIPT).href);
@@ -143,6 +144,27 @@ describe('check-docs-prose findings', () => {
     // about 6 s for this 2 MB paragraph, against a few milliseconds now.
     expect(elapsed).toBeLessThan(1000);
     expect(found).toEqual([{ line: 1, message: 'double hyphen used as a dash' }]);
+  });
+
+  it('checks a heading that holds a long run of spaces in time linear in its length', async () => {
+    const { findProseIssues } = await load();
+    const text = [
+      '# a' + ' '.repeat(3000) + 'b',
+      '## Why this matters ##',
+      '#  Why this exists   #####   ',
+    ].join('\n');
+
+    const started = Date.now();
+    const found = findProseIssues(text);
+    const elapsed = Date.now() - started;
+
+    // The heading pattern ended in a lazy group and two optional whitespace
+    // runs, which took time cubic in the spaces: about 5 s for this line.
+    expect(elapsed).toBeLessThan(1000);
+    expect(found).toEqual([
+      { line: 2, message: 'section named "Why this exists" or "Why this matters"' },
+      { line: 3, message: 'section named "Why this exists" or "Why this matters"' },
+    ]);
   });
 
   it('keeps line numbers after the skipped blocks', async () => {
@@ -286,5 +308,64 @@ describe('check-docs-prose run on a repository', () => {
     expect(run.stdout).toBe('docs/guide.md:3: em dash\n');
     expect(run.stderr).toContain('check-docs-prose: 1 finding(s) in 2 file(s).');
     expect(run.status).toBe(1);
+  });
+
+  it('checks the repository when started through a symbolic link with --preserve-symlinks-main', () => {
+    const root = repoWith({
+      'README.md': '# Readme\n\nPlain prose.\n',
+      'docs/guide.md': `# Guide\n\nOne ${EM} two.\n`,
+    });
+    const link = `${root}-link`;
+    fs.symlinkSync(root, link, 'dir');
+    made.push(link);
+
+    // Started this way, node leaves the link in the script's own location as
+    // well, so the check holds only while both paths are resolved.
+    const run = spawnSync(
+      process.execPath,
+      ['--preserve-symlinks-main', path.join(link, 'scripts', 'check-docs-prose.mjs')],
+      { cwd: link, env, encoding: 'utf8' },
+    );
+
+    expect(run.stdout).toBe('docs/guide.md:3: em dash\n');
+    expect(run.stderr).toContain('check-docs-prose: 1 finding(s) in 2 file(s).');
+    expect(run.status).toBe(1);
+  });
+
+  it('does not run the check when the script is imported, from a script file or from node -e', () => {
+    const root = repoWith({ 'docs/guide.md': `# Guide\n\nOne ${EM} two.\n` });
+    const report =
+      "const m = await import('./scripts/check-docs-prose.mjs');" +
+      'process.stdout.write(JSON.stringify({ exports: Object.keys(m).length > 0, exitCode: process.exitCode ?? null }));';
+    fs.writeFileSync(path.join(root, 'importer.mjs'), report);
+
+    // node -e leaves its first argument in the place of a script path; here it
+    // names no file, so resolving it fails.
+    for (const args of [
+      ['importer.mjs'],
+      ['--input-type=module', '-e', report, 'no-such-file'],
+    ]) {
+      const run = spawnSync(process.execPath, args, { cwd: root, env, encoding: 'utf8' });
+
+      expect(run.stderr, args.join(' ')).toBe('');
+      expect(run.stdout, args.join(' ')).toBe('{"exports":true,"exitCode":null}');
+      expect(run.status, args.join(' ')).toBe(0);
+    }
+  });
+
+  it('reads a start path that names no file as another file, and compares the paths as given on any other failure to resolve them', async () => {
+    const { startedAsScript } = await load();
+    const self = path.resolve('/repo/scripts/check-docs-prose.mjs');
+    const failWith = (code: string) => (p: string): string => {
+      throw Object.assign(new Error(`${code}: ${p}`), { code });
+    };
+
+    expect(startedAsScript(path.resolve('/repo/no-such-file'), self, failWith('ENOENT'))).toBe(false);
+    expect(startedAsScript(self, self, failWith('ENOENT'))).toBe(false);
+    // A start that cannot be resolved is never quieter than one that can.
+    expect(startedAsScript(self, self, failWith('EACCES'))).toBe(true);
+    expect(startedAsScript(self, self, failWith('ELOOP'))).toBe(true);
+    expect(startedAsScript(path.resolve('/repo/importer.mjs'), self, failWith('EACCES'))).toBe(false);
+    expect(startedAsScript('', self)).toBe(false);
   });
 });
