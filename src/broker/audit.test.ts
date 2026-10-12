@@ -254,6 +254,22 @@ describe('AuditLogger', () => {
       expect(result.reason).toMatch(/not signed/);
     });
 
+    it('rejects a line that is not JSON inserted between signed records', () => {
+      logThree();
+      const content = lines();
+      // JSON.parse refuses NaN, which some JSON readers accept as a number.
+      const inserted = JSON.stringify(makeEntry({ agentId: 'inserted' }))
+        .replace('"latencyMs":5', '"latencyMs":NaN');
+      content.splice(1, 0, inserted);
+      writeLines(content);
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.records).toBe(1);
+      expect(result.failedLine).toBe(2);
+      expect(result.reason).toMatch(/not JSON/);
+    });
+
     it('rejects a log that holds only unsigned records', () => {
       logger.log(makeEntry());
       writeLines([JSON.stringify(makeEntry()), JSON.stringify(makeEntry())]);
