@@ -35,6 +35,13 @@ const SETTABLE_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 export interface SecretStoreOptions {
   /** Backend type to use. Resolved from config if not provided. */
   backendType?: SelectableBackendType;
+  /**
+   * Set when `backendType` was named for this run by a flag, as
+   * `setup --backend` does, rather than read from config. `local` is then the
+   * encrypted file even with no backend configured, and an unreachable backend
+   * is not reported as the configured one (#365).
+   */
+  backendNamed?: boolean;
   /** Pre-constructed backend instance (overrides backendType). For DI/testing. */
   backend?: WritableSecretBackend;
   /**
@@ -59,7 +66,8 @@ export class SecretStore {
     }
 
     const backendType = resolveBackendType(options?.backendType);
-    this.backend = createBackend(backendType);
+    const named = options?.backendNamed === true && options.backendType !== undefined;
+    this.backend = createBackend(backendType, undefined, true, named ? { role: 'named' } : undefined);
   }
 
   /**

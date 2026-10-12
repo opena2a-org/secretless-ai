@@ -187,4 +187,22 @@ describe('unavailableBackendError formatting', () => {
     expect(err.message).toMatch(/^  Verify:  op account get$/m);
     expect(err.message).toMatch(/^  Fix:     do the thing$/m);
   });
+
+  it('names a backend chosen with --backend as that, and offers no migration (#365)', () => {
+    const err = unavailableBackendError(
+      '1password',
+      '1Password CLI (op) not found.',
+      ['brew install 1password-cli && op signin'],
+      'op account get',
+      'named',
+    );
+    expect(err.message.split('\n')[0]).toBe(
+      'Backend "1password", named with --backend, is not reachable: 1Password CLI (op) not found.',
+    );
+    expect(err.message).not.toContain('Configured backend');
+    expect(err.message).not.toContain('migrate');
+    expect(err.message).toMatch(/^  Verify:  op account get$/m);
+    expect(err.message).toMatch(/^  Fix:     brew install 1password-cli && op signin$/m);
+    expect(err.message).toContain('run the command again without --backend');
+  });
 });

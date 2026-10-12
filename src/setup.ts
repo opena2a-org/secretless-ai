@@ -115,8 +115,9 @@ export async function runSetup(
   const env = options?.env ?? process.env;
   const inEnvironment = (name: string): boolean => typeof env[name] === 'string' && env[name] !== '';
 
-  // Without a terminal, a prompt is printed and never answered: stdin closes
-  // and setup used to exit 0 having stored nothing. Report instead (#330).
+  // Without a terminal, setup used to print the first prompt, store the first
+  // line a pipe gave it, ask nothing else and exit 0. It reads nothing from a
+  // pipe now and reports instead; `secret set NAME` takes a piped value (#330).
   const interactive = options?.interactive ?? process.stdin.isTTY === true;
   if (options?.check || !interactive) {
     const missing = check.missing.filter(e => !inEnvironment(e.name));
@@ -155,9 +156,11 @@ export async function runSetup(
   }
 
   // Named before the first prompt, so the user knows where each value they
-  // type will be written before writing it (#177). Prompts go to stderr too.
+  // type will be written before writing it (#177, #365). Prompts go to stderr too.
+  process.stderr.write(`  Store: ${store.backendName}\n`);
   const projectNote = repositoryProjectNote(store.backendName);
-  if (projectNote) process.stderr.write(`  ${projectNote}\n\n`);
+  if (projectNote) process.stderr.write(`  ${projectNote}\n`);
+  process.stderr.write('\n');
 
   const input = options?.input ?? process.stdin;
   const rl = readline.createInterface({

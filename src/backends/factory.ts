@@ -27,7 +27,8 @@ import type { SelectableBackendType } from './config';
  * to 'keychain' if the OS keychain is available (macOS Keychain, Linux Secret
  * Service, or Windows Credential Manager). Falls back to 'local' only when
  * keychain initialization fails. A configured backend is never upgraded: after
- * `backend set local`, 'local' is the encrypted file (#327).
+ * `backend set local`, 'local' is the encrypted file (#327). Neither is one
+ * named for a run: `setup --backend local` is the encrypted file (#365).
  *
  * When the caller explicitly configured a non-local backend and that backend is
  * unavailable, this THROWS rather than substituting a different store.
@@ -48,6 +49,10 @@ import type { SelectableBackendType } from './config';
  *                 second backend through it is later served as the configured
  *                 backend's value for the same name. An unreachable-backend
  *                 error names it as the source and offers no migration.
+ *                 'named' is a backend named for one run IN PLACE of the
+ *                 configured one (`setup --backend`): `local` is the encrypted
+ *                 file, never the keychain upgrade, and an unreachable-backend
+ *                 error says it was named for this run and offers no migration.
  */
 export function createBackend(
   type: SelectableBackendType,
@@ -63,7 +68,7 @@ export function createBackend(
   // supports it. Use the prompt-free Likely check here — this path runs from
   // MCP wrappers, brokers, and resolvers that must not trigger Touch ID. Real
   // auth happens lazily on the first secret read/write.
-  if (upgradesToKeychain(type, config)) {
+  if (role !== 'named' && upgradesToKeychain(type, config)) {
     const keychainStatus = isKeychainLikely();
     if (keychainStatus.available) {
       try {
@@ -149,8 +154,11 @@ export function createBackend(
   return backend;
 }
 
-/** Whether a backend is this machine's configured store or one read alongside it. */
-export type BackendRole = 'configured' | 'source';
+/**
+ * Whether a backend is this machine's configured store, one read alongside it,
+ * or one named for a single run in its place.
+ */
+export type BackendRole = 'configured' | 'source' | 'named';
 
 /**
  * Build the error raised when a user-configured backend cannot be reached.
@@ -175,27 +183,30 @@ export function unavailableBackendError(
   // list — the recovery instructions are the whole point of this message.
   const reason = why.replace(/\s+/g, ' ').trim();
 
-  const lines = role === 'source'
-    ? [
-      `Source backend "${type}" is not reachable: ${reason}`,
-      '',
-      '  Nothing was read from it, and nothing on this machine was changed.',
-      '',
-      `  Verify:  ${verifyCmd}`,
-    ]
-    : [
-      `Configured backend "${type}" is not reachable: ${reason}`,
-      '',
-      `  Your secrets are safe. Nothing was read from or written to another store.`,
-      '',
-      `  Verify:  ${verifyCmd}`,
-    ];
+  const heading = {
+    source: `Source backend "${type}" is not reachable: ${reason}`,
+    named: `Backend "${type}", named with --backend, is not reachable: ${reason}`,
+    configured: `Configured backend "${type}" is not reachable: ${reason}`,
+  }[role];
+  const assurance = role === 'source'
+    ? '  Nothing was read from it, and nothing on this machine was changed.'
+    : '  Your secrets are safe. Nothing was read from or written to another store.';
+  const lines = [heading, '', assurance, '', `  Verify:  ${verifyCmd}`];
   for (const fix of fixes) {
     lines.push(`  Fix:     ${fix}`);
   }
   // A source is not the store secrets are written to, so there is nothing to
   // migrate away from.
   if (role === 'source') return new Error(lines.join('\n'));
+  // Neither is a store named for one run: the configured one is unchanged.
+  if (role === 'named') {
+    lines.push(
+      '',
+      `  --backend chose "${type}" for this run only; the configured backend is`,
+      `  unchanged. To use it, run the command again without --backend.`,
+    );
+    return new Error(lines.join('\n'));
+  }
   lines.push(
     '',
     `  Secretless will not silently use a different store, because a secret`,
@@ -406,7 +417,9 @@ export function isOnePasswordAvailable(
  * and `backend set` both described `local` as the AES-256-GCM encrypted file,
  * and left no way to select that file on macOS (#327). With a backend
  * configured, `local` therefore means the file: whether it is the configured
- * backend, or the source of `migrate --from local` beside another one.
+ * backend, or the source of `migrate --from local` beside another one. A
+ * `--backend local` given for one run is a choice as well, and `createBackend`
+ * builds the file for it without asking this (#365).
  */
 function upgradesToKeychain(type: SelectableBackendType, config?: Record<string, unknown>): boolean {
   return type === 'local' && !config?.key && readBackendConfig() === undefined;

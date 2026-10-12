@@ -117,11 +117,28 @@ stored):`; an empty value, which is what an undefined GitHub Actions secret
 becomes, still counts as missing. `setup --backend <type>` checks or stores in
 the named backend instead of the configured one, so the 1Password recipe runs
 `setup --check --backend 1password`, and the report names the store it checked.
-Plain `setup` with standard input that is not a terminal printed one prompt and
-exited 0 with nothing stored; it now prompts for nothing, prints the same report
-as `--check`, and exits 1 when a required secret is missing. In a terminal, a
+`--backend local` is the AES-256-GCM encrypted file, also on a machine with no
+backend configured, where `local` otherwise means the platform keychain. A
+backend named with `--backend` that cannot be reached is reported as named for
+this run, with no `backend migrate` line, because the configured backend is
+unchanged. In a terminal, `setup` names the store before its first prompt.
+Plain `setup` with standard input that is not a terminal took its answers from
+that input: a piped value was stored as the secret it was prompted for, and
+when the input ended with a prompt unanswered, `setup` exited 0 without a
+summary, whatever was still missing. It now reads nothing from a pipe: it
+prompts for nothing, prints the same report as `--check`, and exits 1 when a
+required secret is missing. To store a value from a script, pipe it to
+`secret set NAME`, which reads the value from standard input. In a terminal, a
 required secret left blank, or input ended with Ctrl-D, is reported as still
-missing with exit 1 instead of a successful summary. Verify with
+missing with exit 1 instead of a successful summary. `runSetup`, exported from
+the package, changed the same way: called without `check` from a process whose
+standard input is not a terminal, it returns the report with
+`promptsSkipped: true` instead of prompting (pass `interactive: true` and an
+`input` stream to prompt); it counts a name set to a non-empty value in
+`process.env` as present unless `env` is passed (`env: {}` counts the store
+alone); `SetupResult` has a new required field, `fromEnvironmentNames`, that
+lists those names; and `backendNamed: true` treats `backendType` as named for
+this run, as `--backend` does. Verify with
 `printf 'STRIPE_KEY\n' > .secretless; STRIPE_KEY=x npx secretless-ai setup --check`
 (`PASS`, exit 0) and `npx secretless-ai setup </dev/null` (exit 1).
 
@@ -283,8 +300,10 @@ test run starts in a fresh home directory, and each fresh home was given a new
 install id, so every job and every test run that started the CLI was counted
 as a new user. Nothing is sent now while `CI`, a CI service's own variable
 (`GITHUB_ACTIONS`, `GITLAB_CI`, `JENKINS_URL`, `TF_BUILD` and others),
-`VITEST`, `JEST_WORKER_ID` or `NODE_TEST_CONTEXT` is set to anything but
-`false` or `0`. `--version` shows `Telemetry: off` for such a run, and
+`VITEST`, `JEST_WORKER_ID` or `NODE_TEST_CONTEXT` is set. A value that is
+empty or only spaces, or is `false` or `0` in any letter case with surrounding
+spaces ignored, counts as unset, so `CI=false` and `CI=` leave telemetry as
+the user configured it. `--version` shows `Telemetry: off` for such a run, and
 `telemetry status` shows `state: off` with a line naming the variable. This
 repository's test suite runs with `OPENA2A_TELEMETRY=off`, and a test that
 starts the CLI with telemetry on fails before the CLI starts.

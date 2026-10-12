@@ -36,9 +36,13 @@ const TEAM_GUIDE = 'docs/use-cases/team-setup.md';
 const DOTENV_GUIDE = 'docs/use-cases/migrate-from-dotenv.md';
 const BROKER_GUIDE = 'docs/use-cases/run-broker.md';
 
-/** Where the in-process commands store secrets, and what `setup` is typed. */
+/**
+ * Where the in-process commands store secrets, the backend name that store
+ * reports (empty keeps the file's own `local`), and what `setup` is typed.
+ */
 const fixture = vi.hoisted(() => ({
   storeDir: '',
+  backendName: '',
   mcpHome: '',
   wrapperPath: '',
   answers: [] as string[],
@@ -49,7 +53,11 @@ vi.mock('./backends/factory', async (importOriginal) => {
   const { LocalBackend } = await vi.importActual<typeof import('./backends/local')>('./backends/local');
   return {
     ...actual,
-    createBackend: () => new LocalBackend({ storeDir: fixture.storeDir, key: 'docs-sample-output' }),
+    createBackend: () => {
+      const backend = new LocalBackend({ storeDir: fixture.storeDir, key: 'docs-sample-output' });
+      if (fixture.backendName) Object.defineProperty(backend, 'name', { value: fixture.backendName });
+      return backend;
+    },
   };
 });
 
@@ -99,6 +107,7 @@ afterEach(() => {
   if (savedHome === undefined) delete process.env.HOME;
   else process.env.HOME = savedHome;
   fixture.answers = [];
+  fixture.backendName = '';
   for (const pid of pids.splice(0)) {
     try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
   }
@@ -399,6 +408,9 @@ describe('team-setup.md', () => {
     const manifest = blockAfterText(TEAM_GUIDE, 'Create a `.secretless` manifest');
     fs.writeFileSync(path.join(cwd, '.secretless'), manifest + '\n');
     fixture.answers = ['sk_live_...', 'postgres://...', ''];
+    // setup names the store before the first prompt, and the guide's reader
+    // set the 1password backend in Step 2.
+    fixture.backendName = '1password';
 
     // The guide's reader types at a terminal, with none of the manifest's
     // names set in the environment. Without a terminal setup does not prompt,

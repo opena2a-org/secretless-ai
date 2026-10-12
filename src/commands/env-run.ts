@@ -242,7 +242,7 @@ export async function runSetupCommand(args: string[]): Promise<number> {
   console.log('\n  Secretless Setup\n');
 
   try {
-    const result = await runSetup(dir, { check: checkOnly, backendType });
+    const result = await runSetup(dir, { check: checkOnly, backendType, backendNamed: backendType !== undefined });
 
     // An unparseable manifest is not a store that is missing things. runSetup
     // already printed the offending lines and the expected format; a tally here
