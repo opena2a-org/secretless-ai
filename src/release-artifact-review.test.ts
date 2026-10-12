@@ -10,6 +10,7 @@ import {
   SCRIPT,
   buildTarball,
   buildUstarTgz,
+  expectDeprecatedDependencyCaught,
   expectSingleFailure,
   fixturePackageJson,
   healthyFiles,
@@ -45,7 +46,9 @@ import {
  * with one exception conditioned on GH_TOKEN instead: consumer-closure's
  * advisories read refused (HTTP 403 or 429) on a run that sends no token is
  * reported as not measured. That exempts no release: the script's verdict is
- * unchanged, and the release `review` job runs it with GH_TOKEN set.
+ * unchanged, and the release `review` job runs it with GH_TOKEN set. The
+ * deprecated-dependency case takes the same exception, since its advisories
+ * read follows the deprecation probe.
  */
 
 /** The checks whose verdict needs no network reading. */
@@ -432,10 +435,17 @@ describe("each blocking class is caught by name, and the delivered tree passes",
       const run = reviewOf("poison-deprecated", () =>
         runReview(["--tarball", buildTarball("poison-deprecated.tgz", files)]),
       );
-      expect(run.census["consumer-closure"]).toBe("fail");
-      expect(run.status).not.toBe(0);
-      expect(run.stdout).toContain(`hackmyagent@${version} is deprecated`);
-      expect(run.stdout).toMatch(/failing: .*consumer-closure/);
+      // An advisories read refused with no GH_TOKEN hides the deprecation
+      // fail behind a precondition: reported as not measured (see
+      // notMeasuredReason).
+      const reason = expectDeprecatedDependencyCaught(
+        run,
+        `hackmyagent@${version}`,
+        process.env,
+      );
+      if (reason !== null) {
+        console.log(`check consumer-closure: not measured: ${reason}`);
+      }
     },
   );
 

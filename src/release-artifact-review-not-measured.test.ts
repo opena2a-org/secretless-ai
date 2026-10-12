@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import {
   SCRIPT,
+  expectDeprecatedDependencyCaught,
   notMeasuredReason,
   preconditionsOf,
   type Run,
@@ -110,5 +111,80 @@ describe("a refused advisories read with no GH_TOKEN is not measured; every othe
       ]),
     );
     expect(notMeasuredReason(precondition, {})).toBeNull();
+  });
+});
+
+/**
+ * The deprecated-dependency case of src/release-artifact-review.test.ts. The
+ * script probes deprecation first and reads the advisories after, and a
+ * refused advisories read records a precondition even when a deprecation row
+ * already failed. So with no GH_TOKEN, once the unauthenticated allowance is
+ * used up, the run reports consumer-closure as a precondition, never as the
+ * fail the case looks for.
+ */
+describe("the deprecated-dependency case reports a refused advisories read with no GH_TOKEN as not measured", () => {
+  const DEPRECATED = "hackmyagent@0.0.0-fixture";
+  const CAUGHT = [
+    "check consumer-closure: fail: hackmyagent@0.0.0-fixture is deprecated: \"fixture notice\"",
+    "census: consumer-closure=fail",
+    "result: fail — failing: consumer-closure",
+  ];
+
+  it("a refused advisories read with no GH_TOKEN is not measured, and the reason names GH_TOKEN", () => {
+    for (const line of [RATE_LIMITED_403, RATE_LIMITED_429]) {
+      const reason = expectDeprecatedDependencyCaught(
+        runOf([line]),
+        DEPRECATED,
+        {},
+      );
+      expect(reason, line).not.toBeNull();
+      expect(reason).toContain("GH_TOKEN");
+    }
+  });
+
+  it("a consumer-closure fail naming the deprecated version is caught", () => {
+    expect(
+      expectDeprecatedDependencyCaught(runOf(CAUGHT), DEPRECATED, {}),
+    ).toBeNull();
+  });
+
+  it("with GH_TOKEN set, a refused advisories read fails the case", () => {
+    expect(() =>
+      expectDeprecatedDependencyCaught(runOf([RATE_LIMITED_403]), DEPRECATED, {
+        GH_TOKEN: "fixture-token-not-a-secret",
+      }),
+    ).toThrow(/precondition/);
+  });
+
+  it("every other consumer-closure precondition fails the case", () => {
+    for (const line of [
+      "check consumer-closure: precondition: advisories endpoint unreadable for opena2a-org/opena2a (states: all): HTTP 500",
+      "check consumer-closure: precondition: npm view hackmyagent@0.0.0-fixture deprecated errored: E404",
+    ]) {
+      expect(
+        () => expectDeprecatedDependencyCaught(runOf([line]), DEPRECATED, {}),
+        line,
+      ).toThrow(/precondition/);
+    }
+  });
+
+  it("a pass, or a fail that does not name the deprecated version, fails the case", () => {
+    expect(() =>
+      expectDeprecatedDependencyCaught(
+        runOf(["check consumer-closure: pass"]),
+        DEPRECATED,
+        {},
+      ),
+    ).toThrow();
+    expect(() =>
+      expectDeprecatedDependencyCaught(
+        runOf([
+          "check consumer-closure: fail: hackmyagent@0.0.1-fixture is deprecated: \"fixture notice\"",
+          "result: fail — failing: consumer-closure",
+        ]),
+        DEPRECATED,
+        {},
+      ),
+    ).toThrow();
   });
 });

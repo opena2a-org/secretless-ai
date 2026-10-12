@@ -210,6 +210,39 @@ export function notMeasuredReason(
   return `the unauthenticated advisories read for ${refused[1]} was refused (HTTP ${refused[2]}); set GH_TOKEN to measure it`;
 }
 
+/**
+ * The deprecated-dependency case's judgment of its run: consumer-closure
+ * fails naming `dependency` ("name@version") as deprecated, and null is
+ * returned. The script reads the advisories after its deprecation probe and
+ * records a refused read as a precondition even when a deprecation row
+ * already failed, so the one precondition notMeasuredReason accepts is
+ * reported as not measured instead: its reason is returned. Any other
+ * precondition fails the case. Either way the script exits non-zero.
+ */
+export function expectDeprecatedDependencyCaught(
+  run: Run,
+  dependency: string,
+  env: Record<string, string | undefined>,
+): string | null {
+  expect(run.status).not.toBe(0);
+  const precondition = preconditionsOf(run).find(
+    ({ check }) => check === "consumer-closure",
+  );
+  if (precondition !== undefined) {
+    const reason = notMeasuredReason(precondition, env);
+    if (reason !== null) return reason;
+  }
+  expect(
+    run.census["consumer-closure"],
+    precondition === undefined
+      ? "consumer-closure"
+      : `consumer-closure precondition: ${precondition.detail}`,
+  ).toBe("fail");
+  expect(run.stdout).toContain(`${dependency} is deprecated`);
+  expect(run.stdout).toMatch(/failing: .*consumer-closure/);
+  return null;
+}
+
 export function expectSingleFailure(run: Run, check: string) {
   expect(run.status).not.toBe(0);
   const failing = CHECKS.filter((name) => run.census[name] === "fail");
