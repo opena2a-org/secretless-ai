@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as http from 'http';
+import * as net from 'net';
 import { startDaemon, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning } from './daemon';
 import { TOKEN_FILE } from './server';
 
@@ -20,7 +21,7 @@ const testHome = vi.hoisted(() => {
   const os = require('os') as typeof import('os');
   const path = require('path') as typeof import('path');
   // broker.sock is 42 bytes longer than the directory this is made in, so
-  // under a TMPDIR longer than 61 bytes it passed the macOS limit again. On
+  // under a TMPDIR longer than 62 bytes it passed the macOS limit again. On
   // POSIX it is made under /tmp.
   const makeHome = (): string =>
     fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'sl-home-'));
@@ -29,6 +30,11 @@ const testHome = vi.hoisted(() => {
   process.env.HOME = dir;
   return { dir, original, makeHome };
 });
+
+// Node on macOS listens on a Unix socket path of up to 104 bytes. Given a
+// longer one, Node 24 and 26 fail with EINVAL, while Node 20 and 22 shorten it
+// to 104 bytes and listen there instead. Linux allows a longer path.
+const SOCKET_PATH_MAX = 104;
 
 // startDaemon adds SIGTERM and SIGINT handlers that stop the server, and stop()
 // writes a shutdown entry to the audit log under HOME. Left in place, the
@@ -59,8 +65,7 @@ describe('daemon test HOME', () => {
     try {
       const socketPath = getDaemonStatus()?.socketPath;
       expect(socketPath).toBe(path.join(dir, 'broker.sock'));
-      // sun_path holds 104 bytes on macOS and 108 on Linux, the NUL included.
-      expect(Buffer.byteLength(socketPath!)).toBeLessThan(104);
+      expect(Buffer.byteLength(socketPath!)).toBeLessThanOrEqual(SOCKET_PATH_MAX);
     } finally {
       await server.stop();
       fs.rmSync(path.join(dir, 'broker.pid'), { force: true });
@@ -81,9 +86,33 @@ describe('daemon test HOME', () => {
       else process.env.TMPDIR = savedTmp;
     }
     try {
-      expect(Buffer.byteLength(path.join(home, '.secretless-ai', 'broker.sock'))).toBeLessThan(104);
+      expect(Buffer.byteLength(path.join(home, '.secretless-ai', 'broker.sock'))).toBeLessThanOrEqual(
+        SOCKET_PATH_MAX,
+      );
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('checks against the socket path limit Node listens within', async () => {
+    // Resolves 'listening' when the socket is at the path given, 'shortened'
+    // when Node listened and nothing is there, or the error code when it failed.
+    const listen = (socketPath: string): Promise<string> =>
+      new Promise((resolve) => {
+        const server = net.createServer();
+        server.once('error', (err: NodeJS.ErrnoException) => resolve(err.code ?? err.message));
+        server.listen(socketPath, () => {
+          const outcome = fs.existsSync(socketPath) ? 'listening' : 'shortened';
+          server.close(() => resolve(outcome));
+        });
+      });
+    const pathOf = (bytes: number): string =>
+      path.join(testHome.dir, 's'.repeat(bytes - Buffer.byteLength(testHome.dir) - 1));
+
+    expect(await listen(pathOf(SOCKET_PATH_MAX))).toBe('listening');
+    if (process.platform === 'darwin') {
+      // One byte past the limit: EINVAL on Node 24 and 26, a shortened path on 20 and 22.
+      expect(['EINVAL', 'shortened']).toContain(await listen(pathOf(SOCKET_PATH_MAX + 1)));
     }
   });
 });
@@ -100,7 +129,7 @@ describe('daemon test HOME', () => {
  * SIGTERM would kill the test runner itself.
  */
 describe('getLiveDaemonStatus', () => {
-  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-daemon-test-'));
+  const tmpBase = fs.mkdtempSync(path.join(testHome.dir, 'broker-daemon-test-'));
   const policyFile = path.join(tmpBase, 'policies.json');
   fs.writeFileSync(
     policyFile,
@@ -132,6 +161,10 @@ describe('getLiveDaemonStatus', () => {
     }
     try { fs.unlinkSync(TOKEN_FILE); } catch { /* ignore */ }
   }
+
+  it('makes its fixture directory in the temporary HOME, which afterAll removes', () => {
+    expect(path.dirname(tmpBase)).toBe(testHome.dir);
+  });
 
   it('returns null when the daemon is not running', async () => {
     cleanupDaemonFiles();
@@ -241,7 +274,7 @@ describe('getLiveDaemonStatus', () => {
  * letting JSON.parse keep the last copy.
  */
 describe('daemon status reads refuse a duplicated member name', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-daemon-dup-'));
+  const dir = fs.mkdtempSync(path.join(testHome.dir, 'broker-daemon-dup-'));
   const pidFile = path.join(dir, 'broker.pid');
 
   afterEach(() => {
@@ -258,6 +291,10 @@ describe('daemon status reads refuse a duplicated member name', () => {
       httpPort,
     }));
   }
+
+  it('makes its fixture directory in the temporary HOME, which afterAll removes', () => {
+    expect(path.dirname(dir)).toBe(testHome.dir);
+  });
 
   it('reads a PID file as startDaemon writes it (control)', () => {
     writePidFile(1);
