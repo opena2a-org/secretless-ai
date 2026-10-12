@@ -70,12 +70,41 @@ describe('check-docs-prose findings', () => {
         '**Why this exists:** a label standing in for a heading.',
         '## Why this is not a `postinstall` hook',
         'Prose that asks why this exists is not a section.',
+        '#### Why this matters###',
       ),
     ).toEqual([
       '1: section named "Why this exists" or "Why this matters"',
       '2: section named "Why this exists" or "Why this matters"',
       '3: section named "Why this exists" or "Why this matters"',
+      '6: section named "Why this exists" or "Why this matters"',
     ]);
+  });
+
+  it('ends a line at a line feed, a carriage return or both, as Markdown does, and at no other character', async () => {
+    const { findProseIssues } = await load();
+    const why = { message: 'section named "Why this exists" or "Why this matters"' };
+    const dash = { message: 'double hyphen used as a dash' };
+
+    expect(findProseIssues('# Why this exists\rmore text')).toEqual([{ line: 1, ...why }]);
+    expect(findProseIssues('One.\rTwo -- three.\r\nFour.\nFive -- six.')).toEqual([
+      { line: 2, ...dash },
+      { line: 4, ...dash },
+    ]);
+    // Front matter and fences are found on lines a carriage return ends.
+    expect(findProseIssues('---\rtitle: a -- b\r---\r```\rcode -- line\r```\rProse -- line.')).toEqual([
+      { line: 7, ...dash },
+    ]);
+    // U+2028 and U+2029 end no Markdown line, so the heading's text runs on
+    // past them and still starts with the name.
+    for (const code of [0x2028, 0x2029]) {
+      expect(
+        findProseIssues(`# Why this exists${String.fromCharCode(code)}more text\nNext -- line.`),
+        code.toString(16),
+      ).toEqual([
+        { line: 1, ...why },
+        { line: 2, ...dash },
+      ]);
+    }
   });
 
   it('passes hyphens that are not dashes', async () => {

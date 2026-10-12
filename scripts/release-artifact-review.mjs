@@ -825,13 +825,28 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
     repoOf.set(name, `${match[1]}/${match[2]}`);
   }
 
+  const copies = [...ownCopies.keys()].sort().join(', ');
   const failures = [];
+  // A read that fails after a finding does not hide it: the check fails on
+  // what it found and names the read it stopped at. With no finding yet, the
+  // failed read is a precondition.
+  const stoppedAt = (missing) => {
+    if (failures.length === 0) {
+      results.precondition('consumer-closure', missing);
+    } else {
+      results.fail(
+        'consumer-closure',
+        `${failures.join('; ')}; read no further: ${missing} — own copies in the closure: ${copies} (advisory states: ${advisoryStates})`,
+      );
+    }
+  };
+
   let deprecationProbes = 0;
   for (const { name, version } of ownCopies.values()) {
     if (!publishedVersions.get(name)?.has(version)) continue;
     const read = npmViewDeprecated(name, version);
     if (read.error !== null) {
-      results.precondition('consumer-closure', `npm view ${name}@${version} deprecated errored: ${read.error}`);
+      stoppedAt(`npm view ${name}@${version} deprecated errored: ${read.error}`);
       return;
     }
     deprecationProbes += 1;
@@ -847,10 +862,7 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
     const url = `https://api.github.com/repos/${repo}/security-advisories?per_page=100${stateParam}`;
     const response = httpGetJson(url);
     if (response.error !== null || !Array.isArray(response.body)) {
-      results.precondition(
-        'consumer-closure',
-        `advisories endpoint unreadable for ${repo} (states: ${advisoryStates}): ${response.error ?? 'not an advisory list'}`,
-      );
+      stoppedAt(`advisories endpoint unreadable for ${repo} (states: ${advisoryStates}): ${response.error ?? 'not an advisory list'}`);
       return;
     }
     advisoriesByRepo.set(repo, response.body);
@@ -871,7 +883,7 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
   // GitHub joins compound ranges with ", "; npm semver wants a space.
   const semver = requireSemver();
   if (semver === null) {
-    results.precondition('consumer-closure', 'the semver package is not resolvable; run `npm ci --ignore-scripts`');
+    stoppedAt('the semver package is not resolvable; run `npm ci --ignore-scripts`');
     return;
   }
   for (const { name, version } of ownCopies.values()) {
@@ -884,7 +896,7 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
         try {
           satisfied = semver.satisfies(version, range, { includePrerelease: true });
         } catch {
-          results.precondition('consumer-closure', `unparseable vulnerable_version_range "${range}" on ${advisory.ghsa_id} for ${name}`);
+          stoppedAt(`unparseable vulnerable_version_range "${range}" on ${advisory.ghsa_id} for ${name}`);
           return;
         }
         if (satisfied) {
@@ -894,7 +906,6 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
     }
   }
 
-  const copies = [...ownCopies.keys()].sort().join(', ');
   if (failures.length > 0) {
     results.fail('consumer-closure', `${failures.join('; ')} — own copies examined: ${copies} (advisory states: ${advisoryStates})`);
   } else {

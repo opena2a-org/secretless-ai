@@ -21,13 +21,13 @@ import {
  * output format, as the delivered-tarball case reads them.
  */
 
-function runOf(lines: string[]): Run {
+function runOf(lines: string[], status: number | null = 1): Run {
   const census: Record<string, string> = {};
   for (const line of lines) {
     const match = /^check ([a-z-]+): (pass|fail|precondition)/.exec(line);
     if (match) census[match[1]] = match[2];
   }
-  return { status: 1, stdout: `${lines.join("\n")}\n`, stderr: "", census };
+  return { status, stdout: `${lines.join("\n")}\n`, stderr: "", census };
 }
 
 const RATE_LIMITED_403 =
@@ -115,76 +115,65 @@ describe("a refused advisories read with no GH_TOKEN is not measured; every othe
 });
 
 /**
- * The deprecated-dependency case of src/release-artifact-review.test.ts. The
- * script probes deprecation first and reads the advisories after, and a
- * refused advisories read records a precondition even when a deprecation row
- * already failed. So with no GH_TOKEN, once the unauthenticated allowance is
- * used up, the run reports consumer-closure as a precondition, never as the
- * fail the case looks for.
+ * The judgment of the deprecated-dependency case of
+ * src/release-artifact-review.test.ts. The script keeps a deprecation it
+ * found when the advisories read after it is refused
+ * (src/release-artifact-review-consumer-closure.test.ts), so that case takes
+ * no not-measured exception. Each run below breaks one thing the case holds,
+ * and the error names the assertion that caught it.
  */
-describe("the deprecated-dependency case reports a refused advisories read with no GH_TOKEN as not measured", () => {
+describe("the deprecated-dependency case accepts only a non-zero exit, a consumer-closure fail naming the deprecated version, and consumer-closure listed as failing", () => {
   const DEPRECATED = "hackmyagent@0.0.0-fixture";
-  const CAUGHT = [
-    "check consumer-closure: fail: hackmyagent@0.0.0-fixture is deprecated: \"fixture notice\"",
-    "census: consumer-closure=fail",
-    "result: fail — failing: consumer-closure",
-  ];
+  const NAMED =
+    'check consumer-closure: fail: hackmyagent@0.0.0-fixture is deprecated: "fixture notice"';
+  const FAILING = "result: fail — failing: consumer-closure";
 
-  it("a refused advisories read with no GH_TOKEN is not measured, and the reason names GH_TOKEN", () => {
-    for (const line of [RATE_LIMITED_403, RATE_LIMITED_429]) {
-      const reason = expectDeprecatedDependencyCaught(
-        runOf([line]),
-        DEPRECATED,
-        {},
-      );
-      expect(reason, line).not.toBeNull();
-      expect(reason).toContain("GH_TOKEN");
-    }
-  });
-
-  it("a consumer-closure fail naming the deprecated version is caught", () => {
-    expect(
-      expectDeprecatedDependencyCaught(runOf(CAUGHT), DEPRECATED, {}),
-    ).toBeNull();
-  });
-
-  it("with GH_TOKEN set, a refused advisories read fails the case", () => {
+  it("a run that exits non-zero, fails consumer-closure naming the deprecated version and lists it as failing is caught", () => {
     expect(() =>
-      expectDeprecatedDependencyCaught(runOf([RATE_LIMITED_403]), DEPRECATED, {
-        GH_TOKEN: "fixture-token-not-a-secret",
-      }),
-    ).toThrow(/precondition/);
+      expectDeprecatedDependencyCaught(runOf([NAMED, FAILING]), DEPRECATED),
+    ).not.toThrow();
   });
 
-  it("every other consumer-closure precondition fails the case", () => {
-    for (const line of [
-      "check consumer-closure: precondition: advisories endpoint unreadable for opena2a-org/opena2a (states: all): HTTP 500",
-      "check consumer-closure: precondition: npm view hackmyagent@0.0.0-fixture deprecated errored: E404",
+  it("a run that exits 0 fails the case", () => {
+    expect(() =>
+      expectDeprecatedDependencyCaught(runOf([NAMED, FAILING], 0), DEPRECATED),
+    ).toThrow(/^exit status: expected \+0 not to be \+0/);
+  });
+
+  it("a consumer-closure that is not a fail fails the case, a refused advisories read with no GH_TOKEN included", () => {
+    for (const lines of [
+      [
+        'check consumer-closure: pass: hackmyagent@0.0.0-fixture is deprecated: "fixture notice"',
+        FAILING,
+      ],
+      [RATE_LIMITED_403],
+      [RATE_LIMITED_429],
+      [
+        "check consumer-closure: precondition: npm view hackmyagent@0.0.0-fixture deprecated errored: E404",
+      ],
     ]) {
       expect(
-        () => expectDeprecatedDependencyCaught(runOf([line]), DEPRECATED, {}),
-        line,
-      ).toThrow(/precondition/);
+        () => expectDeprecatedDependencyCaught(runOf(lines), DEPRECATED),
+        lines[0],
+      ).toThrow(/^consumer-closure.*: expected '(pass|precondition)' to be 'fail'/);
     }
   });
 
-  it("a pass, or a fail that does not name the deprecated version, fails the case", () => {
-    expect(() =>
-      expectDeprecatedDependencyCaught(
-        runOf(["check consumer-closure: pass"]),
-        DEPRECATED,
-        {},
-      ),
-    ).toThrow();
+  it("a consumer-closure fail that does not name the deprecated version fails the case", () => {
     expect(() =>
       expectDeprecatedDependencyCaught(
         runOf([
-          "check consumer-closure: fail: hackmyagent@0.0.1-fixture is deprecated: \"fixture notice\"",
-          "result: fail — failing: consumer-closure",
+          'check consumer-closure: fail: hackmyagent@0.0.1-fixture is deprecated: "fixture notice"',
+          FAILING,
         ]),
         DEPRECATED,
-        {},
       ),
-    ).toThrow();
+    ).toThrow(/^deprecated version named: /);
+  });
+
+  it("output that names the deprecated version with no failing: line fails the case", () => {
+    expect(() =>
+      expectDeprecatedDependencyCaught(runOf([NAMED]), DEPRECATED),
+    ).toThrow(/^consumer-closure listed as failing: /);
   });
 });

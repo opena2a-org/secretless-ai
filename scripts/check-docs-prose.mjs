@@ -109,9 +109,11 @@ function replaceCodeSpans(text, replace) {
  * fenced code blocks become empty lines, HTML comments are removed and each
  * inline code span becomes the word `code`. A word rather than a space, so the
  * en dash between two code spans in a range does not read as a spaced one.
+ * Lines end where Markdown ends them: at a line feed, a carriage return or
+ * both. U+2028 and U+2029 end none.
  */
 function proseLines(text) {
-  const lines = text.split(/\r?\n/);
+  const lines = text.split(/\r\n|\r|\n/);
   let start = 0;
   if (lines[0] === '---') {
     const end = lines.findIndex((l, n) => n > 0 && (l === '---' || l === '...'));
@@ -138,18 +140,13 @@ function proseLines(text) {
 }
 
 /**
- * The text of a heading line without its closing run of `#` and the spaces
- * around it, or null when the line is not a heading. The end is trimmed here
- * rather than by the pattern: a lazy group followed by two optional
- * whitespace runs took time cubic in a run of spaces inside the heading.
+ * The text of a heading line after its opening run of `#`, or null when the
+ * line is not a heading. A closing run of `#` is left in place: the one rule
+ * that reads a heading tests the start of its text.
  */
 function headingText(line) {
   const start = line.match(HEADING_START);
-  if (!start) return null;
-  const text = line.slice(start[0].length).trimEnd();
-  let end = text.length;
-  while (end > 0 && text[end - 1] === '#') end--;
-  return text.slice(0, end).trimEnd();
+  return start ? line.slice(start[0].length) : null;
 }
 
 /**
