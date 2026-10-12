@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { AuditLogger } from './audit';
+import { AuditLogger, AUDIT_GENESIS_HASH, verifyAuditLog } from './audit';
 import type { AuditEntry } from './types';
 
 describe('AuditLogger', () => {
@@ -189,5 +189,196 @@ describe('AuditLogger', () => {
     nestedLogger.log(makeEntry());
     expect(fs.existsSync(nestedLog)).toBe(true);
     nestedLogger.close();
+  });
+
+  describe('signed audit', () => {
+    function lines(): string[] {
+      return fs.readFileSync(logPath, 'utf-8').split('\n').filter(l => l.length > 0);
+    }
+
+    function writeLines(content: string[]): void {
+      fs.writeFileSync(logPath, content.join('\n') + '\n');
+    }
+
+    function logThree(): void {
+      logger.log(makeEntry({ agentId: 'agent-1', result: 'allowed' }));
+      logger.log(makeEntry({ agentId: 'agent-2', result: 'allowed' }));
+      logger.log(makeEntry({ agentId: 'agent-3', result: 'denied' }));
+    }
+
+    it('signs every record and chains it to the line before it', () => {
+      logThree();
+      const records = lines().map(l => JSON.parse(l));
+      expect(records).toHaveLength(3);
+      for (const record of records) {
+        expect(typeof record.prevHash).toBe('string');
+        expect(typeof record.sig).toBe('string');
+      }
+      expect(records[0].prevHash).toBe(AUDIT_GENESIS_HASH);
+      expect(records[1].prevHash).not.toBe(records[0].prevHash);
+
+      expect(logger.verify()).toEqual({ valid: true, records: 3 });
+    });
+
+    it('verifies against the public key written beside the log', () => {
+      logThree();
+      const publicKey = fs.readFileSync(`${logPath}.pub`, 'utf-8');
+      expect(verifyAuditLog(logPath, publicKey)).toEqual({ valid: true, records: 3 });
+      expect(logger.publicKeyPem()).toBe(publicKey);
+    });
+
+    it('keeps the signing key readable by its owner only', () => {
+      logger.log(makeEntry());
+      expect(fs.statSync(`${logPath}.key`).mode & 0o077).toBe(0);
+    });
+
+    it('rejects an unsigned record', () => {
+      logThree();
+      fs.appendFileSync(logPath, JSON.stringify(makeEntry({ agentId: 'unsigned' })) + '\n');
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.records).toBe(3);
+      expect(result.failedLine).toBe(4);
+      expect(result.reason).toMatch(/not signed/);
+    });
+
+    it('rejects a log that holds only unsigned records', () => {
+      logger.log(makeEntry());
+      writeLines([JSON.stringify(makeEntry()), JSON.stringify(makeEntry())]);
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.failedLine).toBe(1);
+    });
+
+    it('rejects a record whose decision was changed after signing', () => {
+      logThree();
+      const content = lines();
+      content[2] = content[2].replace('"result":"denied"', '"result":"allowed"');
+      writeLines(content);
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.failedLine).toBe(3);
+      expect(result.reason).toMatch(/signature/);
+    });
+
+    it('rejects a log with a record removed from the middle', () => {
+      logThree();
+      const content = lines();
+      writeLines([content[0], content[2]]);
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.failedLine).toBe(2);
+      expect(result.reason).toMatch(/chain/);
+    });
+
+    it('rejects a log with its first record removed', () => {
+      logThree();
+      writeLines(lines().slice(1));
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.failedLine).toBe(1);
+    });
+
+    it('rejects reordered records', () => {
+      logThree();
+      const content = lines();
+      writeLines([content[0], content[2], content[1]]);
+
+      expect(logger.verify().valid).toBe(false);
+    });
+
+    it('rejects a signed record carrying a decoy duplicate member', () => {
+      logThree();
+      const content = lines();
+      // The signed member still parses last, so the signature alone would hold;
+      // a reader that takes the first member would see a different decision.
+      content[2] = content[2].replace('{', '{"result":"allowed",');
+      writeLines(content);
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.failedLine).toBe(3);
+    });
+
+    it('rejects a log signed by a different key', () => {
+      logThree();
+      const otherPath = path.join(tmpDir, 'other.log');
+      const other = new AuditLogger(otherPath);
+      other.log(makeEntry());
+
+      expect(verifyAuditLog(logPath, other.publicKeyPem()).valid).toBe(false);
+      expect(other.verify(logPath).valid).toBe(false);
+    });
+
+    it('keeps one chain when two loggers write the same file', () => {
+      const second = new AuditLogger(logPath);
+      logger.log(makeEntry({ agentId: 'first' }));
+      second.log(makeEntry({ agentId: 'second' }));
+      logger.log(makeEntry({ agentId: 'first-again' }));
+
+      expect(logger.verify()).toEqual({ valid: true, records: 3 });
+      expect(second.publicKeyPem()).toBe(logger.publicKeyPem());
+    });
+
+    it('starts a record on its own line when the file ends mid-line', () => {
+      logger.log(makeEntry());
+      fs.appendFileSync(logPath, 'partial');
+      logger.log(makeEntry({ agentId: 'after-partial' }));
+
+      const content = lines();
+      expect(content[1]).toBe('partial');
+      expect(JSON.parse(content[2]).agentId).toBe('after-partial');
+    });
+
+    it('chains past a record longer than one tail read', () => {
+      logger.log(makeEntry({ reason: 'r'.repeat(10_000) }));
+      logger.log(makeEntry({ agentId: 'after-long' }));
+      logger.log(makeEntry({ agentId: 'after-long-2' }));
+
+      expect(logger.verify()).toEqual({ valid: true, records: 3 });
+    });
+
+    it('rejects a record whose signature was truncated', () => {
+      logThree();
+      const content = lines();
+      content[2] = content[2].replace(/"sig":"([^"]+)"/, (_m, sig: string) => `"sig":"${sig.slice(0, 40)}"`);
+      writeLines(content);
+
+      const result = logger.verify();
+      expect(result.valid).toBe(false);
+      expect(result.failedLine).toBe(3);
+    });
+
+    it('names the key file when the signing key cannot be read', () => {
+      fs.writeFileSync(`${logPath}.key`, 'not a key', { mode: 0o600 });
+      expect(() => logger.log(makeEntry())).toThrow(/audit signing key .*cannot be read/);
+    });
+
+    it('starts a fresh chain in the new file after rotation', () => {
+      fs.writeFileSync(logPath, 'x'.repeat(50 * 1024 * 1024 + 1));
+      logger.log(makeEntry({ agentId: 'after-rotation' }));
+      logger.log(makeEntry({ agentId: 'after-rotation-2' }));
+
+      expect(logger.verify()).toEqual({ valid: true, records: 2 });
+    });
+
+    it('reports a missing log as not verified', () => {
+      const result = verifyAuditLog(path.join(tmpDir, 'absent.log'), logger.publicKeyPem());
+      expect(result.valid).toBe(false);
+      expect(result.records).toBe(0);
+    });
+
+    it('returns entries without the integrity fields from readRecent', () => {
+      logger.log(makeEntry({ agentId: 'plain' }));
+      const [entry] = logger.readRecent(1);
+      expect(entry.agentId).toBe('plain');
+      expect(entry).not.toHaveProperty('sig');
+      expect(entry).not.toHaveProperty('prevHash');
+    });
   });
 });

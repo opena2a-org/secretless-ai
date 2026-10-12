@@ -60,13 +60,13 @@ export {
 // Broker service
 export {
   PolicyEngine, matchGlob, isWithinTimeWindow,
-  RateLimiter, AuditLogger, AimClient,
+  RateLimiter, AuditLogger, verifyAuditLog, AimClient,
   CredentialResolver, BrokerServer,
   startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning,
   CredentialEventEmitter,
   type BrokerConfig, type ResolveRequest, type ResolveResponse,
   type PolicyRule, type PolicyConstraints, type PolicyEvaluation,
-  type AuditEntry, type AgentIdentity,
+  type AuditEntry, type AuditVerification, type AgentIdentity,
   type BrokerHealth, type BrokerStatus,
   type ResolverOptions, type DaemonOptions,
   type CredentialEvent, type CredentialEventType, type AlertLevel,

@@ -8,7 +8,7 @@
  *   3. evaluates local grant policy against the verified context (default-deny — §3.4),
  *   4. resolves a scoped credential via the selected CPI provider (§5),
  *   5. runs the operation in an ephemeral worker and returns ONLY the result (§6.5),
- *   6. audits every step through the existing signed audit path (§6.7).
+ *   6. audits every step to the signed, hash-chained audit log (§6.7; see audit.ts).
  *
  * Every failure yields the SAME opaque typed denial (§6.6): the agent learns nothing
  * about policy internals or backend topology. Diagnostic detail goes to the audit log.

@@ -12,7 +12,7 @@ export type {
 
 export { PolicyEngine, matchGlob, isWithinTimeWindow, type PolicyEvaluation } from './policy';
 export { RateLimiter } from './rate-limiter';
-export { AuditLogger } from './audit';
+export { AuditLogger, verifyAuditLog, type AuditVerification } from './audit';
 export { AimClient } from './aim-client';
 export { CredentialResolver, type ResolverOptions } from './resolver';
 export { BrokerServer } from './server';

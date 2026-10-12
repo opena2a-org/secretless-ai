@@ -31,7 +31,7 @@ import { MapProviderRegistry } from './cpi/registry';
 import { createOktaExchangeProvider } from './cpi/okta-adapter';
 import { generateBrokerSigningKey } from './cpi/assertion';
 import { EphemeralWorker, type DownstreamCaller, type AgentOperation, type OperationResult } from './worker';
-import { AuditLogger } from './audit';
+import { AuditLogger, verifyAuditLog } from './audit';
 import type { ScopedCredential } from './cpi/types';
 import type { TokenExchangeRequest, TokenExchangeResponse, TokenExchangeTransport } from './cpi/exchange';
 
@@ -372,6 +372,44 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     expect(audit).toMatch(/"eventType":"grant"/);
     expect(audit).toMatch(/"result":"allowed"/);
     expect(audit).not.toContain(SCOPED_TOKEN);
+
+    // Every record, the grant decision included, verifies against the broker's
+    // audit public key and its hash chain.
+    const publicKey = fs.readFileSync(`${auditPath}.pub`, 'utf-8');
+    const verified = verifyAuditLog(auditPath, publicKey);
+    expect(verified.valid).toBe(true);
+    expect(verified.records).toBe(audit.trim().split('\n').length);
+  });
+
+  it('the audit verifier refuses an unsigned or altered decision record', async () => {
+    const atx = (globalThis as any).__aapTestAtx;
+    await brokerPost(socketPath, '/grant', brokerToken, {
+      agentId: 'aim_orders_reader',
+      atx,
+      grant: 'grant://orders-db',
+      operation: { method: 'GET', path: '/orders' },
+    });
+    const publicKey = fs.readFileSync(`${auditPath}.pub`, 'utf-8');
+    const signed = fs.readFileSync(auditPath, 'utf-8');
+    const records = signed.trim().split('\n');
+    const grantLine = records.findIndex(l => l.includes('"eventType":"grant"'));
+    expect(grantLine).toBeGreaterThanOrEqual(0);
+
+    // The same decision with its integrity fields stripped: an append-only but
+    // unsigned record must not pass as signed audit.
+    const { prevHash: _p, sig: _s, ...unsigned } = JSON.parse(records[grantLine]);
+    fs.writeFileSync(auditPath, signed + JSON.stringify(unsigned) + '\n');
+    const unsignedResult = verifyAuditLog(auditPath, publicKey);
+    expect(unsignedResult.valid).toBe(false);
+    expect(unsignedResult.failedLine).toBe(records.length + 1);
+
+    // The signed decision rewritten from allowed to denied.
+    const altered = [...records];
+    altered[grantLine] = altered[grantLine].replace('"result":"allowed"', '"result":"denied"');
+    fs.writeFileSync(auditPath, altered.join('\n') + '\n');
+    const alteredResult = verifyAuditLog(auditPath, publicKey);
+    expect(alteredResult.valid).toBe(false);
+    expect(alteredResult.failedLine).toBe(grantLine + 1);
   });
 
   it('returns a uniform opaque denial when policy denies (no detail leak)', async () => {
