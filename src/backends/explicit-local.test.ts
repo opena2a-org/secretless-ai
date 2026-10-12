@@ -88,6 +88,14 @@ describe.skipIf(!hasKeychainPath)('an explicit `backend set local` is honoured (
     expect(new SecretStore({ backendType: 'local' }).backendName).toMatch(/^keychain-(macos|linux)$/);
   });
 
+  it('`backendNamed` without a `backendType` names nothing, so the store is the default one (#367)', () => {
+    // With nothing named there is nothing to build in place of the configured
+    // store. Read as naming the resolved `local`, it built the encrypted file.
+    const unnamed = new SecretStore().backendName;
+    expect(unnamed).toMatch(/^keychain-(macos|linux)$/);
+    expect(new SecretStore({ backendNamed: true }).backendName).toBe(unnamed);
+  });
+
   it('builds the encrypted file for `migrate --from local` beside another configured backend', () => {
     writeBackendConfig('keychain');
     expect(createBackend('local')).toBeInstanceOf(LocalBackend);

@@ -115,9 +115,12 @@ export async function runSetup(
   const env = options?.env ?? process.env;
   const inEnvironment = (name: string): boolean => typeof env[name] === 'string' && env[name] !== '';
 
-  // Without a terminal, setup used to print the first prompt, store the first
-  // line a pipe gave it, ask nothing else and exit 0. It reads nothing from a
-  // pipe now and reports instead; `secret set NAME` takes a piped value (#330).
+  // Without a terminal, setup used to take its answers from standard input: a
+  // line was stored as the secret whose prompt was open when it arrived (two
+  // lines piped at once stored the first name only), and when the input ended
+  // with a prompt unanswered, setup exited 0 without a summary, whatever was
+  // still missing. It reads nothing from a pipe now and reports instead;
+  // `secret set NAME` takes a piped value (#330).
   const interactive = options?.interactive ?? process.stdin.isTTY === true;
   if (options?.check || !interactive) {
     const missing = check.missing.filter(e => !inEnvironment(e.name));
