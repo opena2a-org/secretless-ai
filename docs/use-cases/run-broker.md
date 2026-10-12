@@ -207,9 +207,22 @@ tail -f ~/.secretless-ai/broker-audit.log
 ```
 
 ```json
-{"timestamp":"...","eventType":"resolve","agentId":"scan-01","credentialName":"GITHUB_TOKEN","policyId":"scanner-github-readonly","result":"allowed","reason":"Allowed by rule ...","latencyMs":3}
-{"timestamp":"...","eventType":"auth","agentId":"unknown","credentialName":"","policyId":"","result":"denied","reason":"Unauthorized access attempt from 127.0.0.1","latencyMs":0}
+{"timestamp":"...","eventType":"resolve","agentId":"scan-01","credentialName":"GITHUB_TOKEN","policyId":"scanner-github-readonly","result":"allowed","reason":"Allowed by rule ...","latencyMs":3,"prevHash":"...","sig":"..."}
+{"timestamp":"...","eventType":"auth","agentId":"unknown","credentialName":"","policyId":"","result":"denied","reason":"Unauthorized access attempt from 127.0.0.1","latencyMs":0,"prevHash":"...","sig":"..."}
 ```
+
+Every line is signed. `sig` is an Ed25519 signature over the line without `sig`, and `prevHash` is the SHA-256 of the line before it in the same file (all zeros for the first line), so changing, inserting, moving or removing a line makes verification fail at the first line it affects. The broker creates the signing key on its first write: `broker-audit.log.key` (readable by you only) and its public half `broker-audit.log.pub`, both beside the log. Verify a log from Node:
+
+```js
+const fs = require('fs');
+const { verifyAuditLog } = require('secretless-ai');
+const log = `${process.env.HOME}/.secretless-ai/broker-audit.log`;
+console.log(verifyAuditLog(log, fs.readFileSync(`${log}.pub`, 'utf-8')));
+// { valid: true, records: 2 }
+// on failure: { valid: false, records: 2, failedLine: 3, reason: 'record is not signed' }
+```
+
+To verify against a key an attacker on this machine cannot replace, copy `broker-audit.log.pub` somewhere else and pass that copy. Verification cannot show that lines were cut from the end of a file, and it does not hold against someone who can read `broker-audit.log.key`. A log written by an earlier version starts with unsigned lines and fails at line 1; move it aside to start a log that verifies. After a rotation each file starts its own chain, so verify `broker-audit.log.1` and the others one file at a time.
 
 ## Client integration
 

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+**The broker audit log is signed, and `verifyAuditLog` checks it (#259).**
+The AAP broker profile requires every verification, decision, resolution and
+denial to be written to a signed audit log, and the reference test for it
+passed on an append-only log with no signature: it checked only that the
+grant event was there and the scoped token was not. Each line of
+`broker-audit.log` now carries `prevHash`, the SHA-256 of the line before it,
+and `sig`, an Ed25519 signature over the line without `sig`. The key is created
+on the first write as `broker-audit.log.key` (mode 0600), with its public half
+in `broker-audit.log.pub`. `verifyAuditLog(logPath, publicKey)`, exported from
+the package, returns `{ valid, records }` and, on failure, the first line that
+failed and why: an unsigned line, a line changed after signing, a line that is
+not in the exact form the broker wrote, or a line removed, inserted or moved.
+The conformance test now verifies the log and requires an unsigned or altered
+decision record to be refused. Lines cut from the end of a file are not
+detected. A log written by an earlier version fails at its first line; move it
+aside to start one that verifies.
+
 **`run`, `env`, `secret sync`, `secret show` and `secret exposed` no longer
 offer `secret set` for a name `secret set` refuses (#325).** The store holds
 names that start with a digit, `_` or `-` (a sync or an import writes them),
