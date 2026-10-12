@@ -19,10 +19,15 @@ const testHome = vi.hoisted(() => {
   const fs = require('fs') as typeof import('fs');
   const os = require('os') as typeof import('os');
   const path = require('path') as typeof import('path');
+  // broker.sock is 42 bytes longer than the directory this is made in, so
+  // under a TMPDIR longer than 61 bytes it passed the macOS limit again. On
+  // POSIX it is made under /tmp.
+  const makeHome = (): string =>
+    fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'sl-home-'));
   const original = process.env.HOME;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-home-'));
+  const dir = makeHome();
   process.env.HOME = dir;
-  return { dir, original };
+  return { dir, original, makeHome };
 });
 
 // startDaemon adds SIGTERM and SIGINT handlers that stop the server, and stop()
@@ -59,6 +64,26 @@ describe('daemon test HOME', () => {
     } finally {
       await server.stop();
       fs.rmSync(path.join(dir, 'broker.pid'), { force: true });
+    }
+  });
+
+  it('keeps the temporary HOME short when TMPDIR is long', () => {
+    // Made under a TMPDIR this long, the temporary HOME put broker.sock past the limit.
+    const longTmp = path.join(testHome.dir, 'x'.repeat(80));
+    fs.mkdirSync(longTmp);
+    const savedTmp = process.env.TMPDIR;
+    process.env.TMPDIR = longTmp;
+    let home: string;
+    try {
+      home = testHome.makeHome();
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmp;
+    }
+    try {
+      expect(Buffer.byteLength(path.join(home, '.secretless-ai', 'broker.sock'))).toBeLessThan(104);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });
