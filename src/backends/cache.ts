@@ -15,7 +15,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { WritableSecretBackend, BackendHealth } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
 
 const CACHE_FILENAME = '.secret-cache';
 const SALT_FILE = '.salt';
@@ -182,10 +182,10 @@ export class CachedBackend implements WritableSecretBackend {
     }
   }
 
-  async resolve(secretPath: string): Promise<Record<string, string>> {
+  async resolve(secretPath: string, options?: ResolveOptions): Promise<Record<string, string>> {
     if (this.ttlMs <= 0) {
       // Cache disabled — pass through
-      return this.inner.resolve(secretPath);
+      return this.inner.resolve(secretPath, options);
     }
 
     const cache = this.loadCache();
@@ -234,7 +234,7 @@ export class CachedBackend implements WritableSecretBackend {
     }
 
     // Cache miss or expired — resolve from the real backend
-    const results = await this.inner.resolve(secretPath);
+    const results = await this.inner.resolve(secretPath, options);
 
     // Store results in cache
     let cachedCount = 0;

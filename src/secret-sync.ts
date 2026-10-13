@@ -117,7 +117,9 @@ async function syncOne(
 
   let sourceValue: string | undefined;
   try {
-    const resolved = await source.resolve(key);
+    // Asked as an exact read, so Vault answers a name it does not hold without
+    // a LIST its token may be refused (#375).
+    const resolved = await source.resolve(key, { exact: true });
     // Exact key only. Some backends answer an unknown name with a listing of
     // other entries (GCP Secret Manager falls back to listing the project);
     // none of those is the entry asked for.

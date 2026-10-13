@@ -125,7 +125,7 @@ export class SecretStore {
     let update = annotation;
     const exposure = openExposure(current);
     if (exposure) {
-      const previous = (await this.backend.resolve(key))[key];
+      const previous = await this.getSecret(name);
       if (previous === value) {
         rotation = { kind: 'still-open', exposure };
       } else {
@@ -182,11 +182,16 @@ export class SecretStore {
     return this.annotations.all();
   }
 
-  /** Retrieve a secret value by name. Returns undefined if not found. */
+  /**
+   * Retrieve a secret value by name. Returns undefined if not found.
+   *
+   * Asked of the backend as an exact read: a name holds no '/', so
+   * `secret/<name>` is one entry and not a prefix of others (#375).
+   */
   async getSecret(name: string): Promise<string | undefined> {
     validateSecretName(name);
     const key = `${SECRET_PREFIX}/${name}`;
-    const result = await this.backend.resolve(key);
+    const result = await this.backend.resolve(key, { exact: true });
     return result[key];
   }
 

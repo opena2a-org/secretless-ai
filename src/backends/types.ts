@@ -8,10 +8,21 @@ export interface SecretBackend {
   readonly name: string;
 
   /** Resolve one or more secrets by path/name. Returns key-value pairs. */
-  resolve(path: string): Promise<Record<string, string>>;
+  resolve(path: string, options?: ResolveOptions): Promise<Record<string, string>>;
 
   /** Check if the backend is available and authenticated */
   healthCheck(): Promise<BackendHealth>;
+}
+
+/** How `resolve` is to read its path. */
+export interface ResolveOptions {
+  /**
+   * The path names one entry, not a prefix: the caller wants that entry or
+   * nothing. The Vault backend then answers a path it does not hold without
+   * listing it as a prefix, and the cache layer passes the option to the
+   * backend it wraps (#375).
+   */
+  exact?: boolean;
 }
 
 /**
