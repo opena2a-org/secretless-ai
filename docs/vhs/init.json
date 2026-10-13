@@ -1,0 +1,68 @@
+{
+  "tape": "docs/vhs/init.tape",
+  "tapeSha256": "5e65d475a39327aa8a595d632e785b01488ac1ec56a6cc7658ac1104064d6af2",
+  "scriptSha256": "5e65d475a39327aa8a595d632e785b01488ac1ec56a6cc7658ac1104064d6af2",
+  "commands": [
+    "npx secretless-ai init",
+    "npx secretless-ai verify"
+  ],
+  "tool": "secretless-ai",
+  "version": "0.23.1",
+  "packedFromCommit": "5e5a1669435944a25958a961c89330bc011882de",
+  "packedTarballSha256": "68e61eccc1af5b9b2c24a873d1001e614e03b69264786fa6da713641616ce12c",
+  "ranAtUtc": "2026-10-13T17:36:17Z",
+  "fixture": "a new project directory holding an empty .claude/ directory, and a new empty home directory",
+  "fixtureScript": "docs/vhs/setup-fixture.sh",
+  "fixtureSha": "b58039f5a42ef69863ac4445906bfee492b001b48ecd992f541b08f3473df576",
+  "fixtureUncommittedChanges": 0,
+  "fixturePath": "/work/project",
+  "fixtureHome": "/work/new-home",
+  "keychain": "none",
+  "hostname": "laptop",
+  "columns": 120,
+  "rows": 40,
+  "framerate": 10,
+  "gifsicle": "-O3 --lossy=40 --batch",
+  "gifFrames": 28,
+  "gifFullScreenFrames": 0,
+  "gifScrollInSpan": null,
+  "renderedPixelSize": {
+    "width": 1150,
+    "height": 774
+  },
+  "outputs": {
+    "gif": {
+      "path": "docs/vhs/init.gif",
+      "bytes": 59694
+    },
+    "mp4": {
+      "path": "docs/vhs/out/init.mp4",
+      "bytes": 121917,
+      "sha256": "1b25ff2f7ff0bf5c4a089b3210293ab26ed635965881ca58d315d628cf668b05",
+      "committed": false
+    },
+    "frames": [],
+    "capture": "docs/vhs/init-capture.txt"
+  },
+  "durationSeconds": 15,
+  "wallClockSeconds": 27.1,
+  "meteredCostUsd": 0,
+  "exitCodes": [
+    0,
+    1
+  ],
+  "frames": {},
+  "vhsPatchSha256": "c4b812056b2e16f046ea705f617906c30136ff20f19de5bf2f8bf5e3b38035a0",
+  "edits": [
+    "setup not shown"
+  ],
+  "environment": {
+    "container": "docs/vhs/docker/Dockerfile (Debian GNU/Linux 13 (trixie), Node 22.20.0, secretless-ai installed globally)",
+    "vhs": {
+      "version": "v0.12.0+render-context-patch",
+      "patch": "docs/vhs/docker/vhs-0.12.0-render-context.patch",
+      "patchSha256": "c4b812056b2e16f046ea705f617906c30136ff20f19de5bf2f8bf5e3b38035a0"
+    },
+    "telemetry": "off"
+  }
+}
