@@ -8,7 +8,7 @@
 
 import * as path from 'path';
 import { discoverMcpConfigsDetailed } from './discover';
-import type { UnparsedMcpConfig } from './discover';
+import type { UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
 import { McpVault } from './vault';
 import { rewriteConfig } from './rewrite';
@@ -44,6 +44,13 @@ export interface ProtectedServer {
   secretKeys: string[];
 }
 
+/** A config that was read, with the server entries in it that had a part that could not be. */
+export interface UncheckedMcpConfig {
+  client: string;
+  filePath: string;
+  servers: UncheckedMcpServer[];
+}
+
 export interface ProtectResult {
   clientsScanned: number;
   secretsFound: number;
@@ -54,6 +61,8 @@ export interface ProtectResult {
   injectionWarnings: InjectionWarning[];
   /** Config files that exist but could not be read or parsed: nothing in them was checked or protected. */
   unparsed: UnparsedMcpConfig[];
+  /** Server entries with a part that could not be read: a secret in that part was not found or protected. */
+  unchecked: UncheckedMcpConfig[];
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +116,9 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     alreadyProtected: 0,
     injectionWarnings: [],
     unparsed,
+    unchecked: configs
+      .filter((config) => config.unchecked.length > 0)
+      .map((config) => ({ client: config.client, filePath: config.filePath, servers: config.unchecked })),
   };
 
   // 2. For each config: classify, encrypt, rewrite

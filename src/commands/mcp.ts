@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { protectMcp } from '../mcp/protect';
 import { discoverMcpConfigsDetailed } from '../mcp/discover';
-import type { UnparsedMcpConfig } from '../mcp/discover';
+import type { UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
 import { resolveBackendType } from '../backends/config';
@@ -33,6 +33,23 @@ function printUnparsedFix(count: number, consequence: string, command: string): 
   console.log(`  Fix the file(s) above, then run \`npx secretless-ai ${command}\` again.\n`);
 }
 
+/**
+ * One line for each server entry with a part that could not be read. That part
+ * was not checked for secrets, so the server is never listed as clean.
+ */
+function printUncheckedServers(servers: UncheckedMcpServer[]): void {
+  for (const server of servers) {
+    console.log(`    ? ${listedName(server.name)}: ${server.part} not checked: ${server.reason}`);
+  }
+}
+
+/** The count of servers printUncheckedServers listed, the shape that can be read, and the command to run once they are fixed. */
+function printUncheckedFix(count: number, command: string): void {
+  console.log(`  ${count} server(s) have a part that could not be read, so it was not checked for secrets.`);
+  console.log('  A server is a JSON object, and its env is a JSON object of string values.');
+  console.log(`  Fix the entries above, then run \`npx secretless-ai ${command}\` again.\n`);
+}
+
 export async function runProtectMcp(args: string[]): Promise<number> {
   console.log('\n  Secretless MCP Protection\n');
 
@@ -53,8 +70,18 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 
   try {
     const result = await protectMcp({ wrapperPath, backendType });
-    const { unparsed } = result;
+    const { unparsed, unchecked } = result;
     const notChecked = () => {
+      if (unchecked.length > 0) {
+        let servers = 0;
+        for (const config of unchecked) {
+          console.log(`  ${config.client} (${config.filePath})`);
+          printUncheckedServers(config.servers);
+          console.log();
+          servers += config.servers.length;
+        }
+        printUncheckedFix(servers, 'protect-mcp');
+      }
       if (unparsed.length === 0) return;
       printUnparsedConfigs(unparsed, 'not checked');
       printUnparsedFix(unparsed.length, 'the servers in them were not checked', 'protect-mcp');
@@ -74,6 +101,13 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     console.log(`  Scanned ${result.clientsScanned} client(s)\n`);
 
     if (result.secretsFound === 0) {
+      // "Already clean." covers every server in every config, so it is not
+      // printed over a config, or a part of a server entry, that was not read.
+      if (unchecked.length > 0) {
+        console.log('  No plaintext secrets found in the parts of the MCP configs that were read.\n');
+        notChecked();
+        return 0;
+      }
       if (unparsed.length > 0) {
         console.log('  No plaintext secrets found in the MCP configs that were read.\n');
         notChecked();
@@ -135,9 +169,13 @@ export function runMcpStatus(): number {
 
   let protectedCount = 0;
   let exposedCount = 0;
+  let uncheckedCount = 0;
 
   for (const config of configs) {
     console.log(`  ${config.client} (${config.filePath})`);
+    // A server with a part that could not be read is never listed as clean:
+    // a plaintext secret in that part was not looked for.
+    const unchecked = new Set(config.unchecked.map((server) => server.name));
     for (const server of config.servers) {
       if (server.alreadyProtected) {
         console.log(`    + ${server.name}: protected`);
@@ -147,11 +185,13 @@ export function runMcpStatus(): number {
         if (secretCount > 0) {
           console.log(`    ! ${server.name}: EXPOSED (${secretCount} plaintext secret(s))`);
           exposedCount++;
-        } else {
+        } else if (!unchecked.has(server.name)) {
           console.log(`    * ${server.name}: clean (no secrets in env)`);
         }
       }
     }
+    printUncheckedServers(config.unchecked);
+    uncheckedCount += config.unchecked.length;
     console.log();
   }
 
@@ -163,6 +203,9 @@ export function runMcpStatus(): number {
     console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
   } else if (protectedCount > 0) {
     console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
+  }
+  if (uncheckedCount > 0) {
+    printUncheckedFix(uncheckedCount, 'mcp-status');
   }
   if (unparsed.length > 0) {
     printUnparsedFix(unparsed.length, 'the servers in them were not checked', 'mcp-status');

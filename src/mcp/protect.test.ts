@@ -100,6 +100,44 @@ describe('protectMcp', () => {
     expect(result.clientsScanned).toBe(1);
     expect(result.secretsFound).toBe(0);
     expect(result.serversProtected).toBe(0);
+    expect(result.unchecked).toEqual([]);
+  });
+
+  it('returns each server with a part it could not read, and still protects the secret it did read', async () => {
+    const configPath = path.join(homeDir, '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          github: { command: 'npx', env: { GITHUB_TOKEN: 'not-a-real-token', API_TOKEN: 1234 } },
+          db: { command: 'npx', env: 'not-an-object' },
+        },
+      })
+    );
+
+    const result = await protectMcp({
+      homeDir,
+      dataDir,
+      wrapperPath: '/usr/local/bin/secretless-mcp',
+      backendType: 'local',
+    });
+
+    expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['GITHUB_TOKEN'] }]);
+    expect(result.unchecked).toEqual([
+      {
+        client: 'cursor',
+        filePath: configPath,
+        servers: [
+          { name: 'github', part: 'env value API_TOKEN', reason: 'not a string' },
+          { name: 'db', part: 'env', reason: 'not a JSON object' },
+        ],
+      },
+    ]);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(config.mcpServers.github.env).not.toHaveProperty('GITHUB_TOKEN');
+    expect(config.mcpServers.db.env).toBe('not-an-object');
   });
 
   it('protects multiple servers across multiple clients', async () => {

@@ -667,6 +667,28 @@ exports that exist for this package's own tests and help text:
 `nearMissCellsEvaluated` and `resetNearMissCellsEvaluated` in
 `dist/near-miss`. Detection, exit codes and `--json` output are unchanged.
 
+**`mcp-status` and `protect-mcp` no longer report a server as clean when a part
+of its entry could not be read.** A config that is valid JSON can still hold a
+server entry these commands cannot read: an `env` written as one string or as
+an array, an env value that is a number or a nested object, or a server that is
+not a JSON object. Each such part was passed over without a word, so
+`mcp-status` printed `clean (no secrets in env)` and `protect-mcp` printed
+`Already clean.` over a value neither had looked at. `mcp-status` now lists the
+server under its config as `? <server>: env not checked: not a JSON object`,
+`? <server>: env value API_TOKEN not checked: not a string` or
+`? <server>: entry not checked: not a JSON object`, and prints no `clean` line
+for it. A plaintext secret found in the rest of the entry is still reported as
+`EXPOSED`, and `protect-mcp` still encrypts it. Both commands then print the
+number of servers with an unread part, the shape that can be read (a server is
+a JSON object, and its env is a JSON object of string values) and a Fix line,
+and `protect-mcp` prints `No plaintext secrets found in the parts of the MCP
+configs that were read.` in place of `Already clean.` The lines name the server
+and the env entry and never quote a value. An entry, `env` or env value that is
+`null` holds nothing and is not listed. What these commands detect as a secret
+is unchanged, and so are their exit codes. In the library, each config from
+`discoverMcpConfigs()` carries the list as `unchecked`, and the `protectMcp()`
+result carries it per config as `unchecked`.
+
 **`status` no longer prints `Protected` for a project configured only through
 instruction files, and `status --json` adds `enforcement`.** `status` reported
 a project as `Protected` once any AI tool carried the Secretless instruction

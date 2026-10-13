@@ -82,6 +82,59 @@ describe('mcp-status over a config it could not parse', () => {
   });
 });
 
+// Valid JSON whose `env` is one string where a JSON object of names and values belongs.
+const ENV_AS_STRING = JSON.stringify({
+  mcpServers: { gh: { command: 'npx', env: MARKER } },
+});
+
+describe('mcp-status over a server entry with a part it could not read', () => {
+  it('lists a server whose env it could not read as not checked instead of clean', () => {
+    const configPath = write('.cursor/mcp.json', ENV_AS_STRING);
+
+    const out = runCli(['mcp-status']);
+
+    expect(out).toContain(`cursor (${configPath})`);
+    expect(out).not.toContain('clean (no secrets in env)');
+    expect(out).toContain('    ? gh: env not checked: not a JSON object');
+    expect(out).toContain('1 server(s) have a part that could not be read, so it was not checked for secrets.');
+    expect(out).toContain('A server is a JSON object, and its env is a JSON object of string values.');
+    expect(out).toContain('Fix the entries above, then run `npx secretless-ai mcp-status` again.');
+    expect(out).not.toContain('PLAINTEXT');
+  });
+
+  it('names an env value that is not a string beside the secret it did find, and a server that is not an object', () => {
+    write(
+      '.cursor/mcp.json',
+      JSON.stringify({
+        mcpServers: {
+          gh: { command: 'npx', env: { GITHUB_TOKEN: MARKER, API_TOKEN: 1234 } },
+          db: MARKER,
+          fs: { command: 'npx', env: {} },
+        },
+      }),
+    );
+
+    const out = runCli(['mcp-status']);
+
+    expect(out).toContain('    ! gh: EXPOSED (1 plaintext secret(s))');
+    expect(out).toContain('    ? gh: env value API_TOKEN not checked: not a string');
+    expect(out).toContain('    ? db: entry not checked: not a JSON object');
+    expect(out).toContain('    * fs: clean (no secrets in env)');
+    expect(out).toContain('2 server(s) have a part that could not be read');
+    expect(out).not.toContain('PLAINTEXT');
+  });
+
+  it('CONTROL: prints no not-checked line when every entry was read', () => {
+    write('.cursor/mcp.json', JSON.stringify({ mcpServers: { fs: { command: 'npx', env: { GITHUB_ORG: 'my-org' } } } }));
+
+    const out = runCli(['mcp-status']);
+
+    expect(out).toContain('    * fs: clean (no secrets in env)');
+    expect(out).not.toContain('not checked');
+    expect(out).not.toContain('could not be read');
+  });
+});
+
 // A Cursor config with a trailing comma: valid but for one byte.
 const TRAILING_COMMA = `{\n  "mcpServers": {\n    "gh": { "command": "npx", "env": { "GITHUB_TOKEN": "${MARKER}" } },\n  }\n}\n`;
 
@@ -119,6 +172,31 @@ describe('protect-mcp over a config it could not parse', () => {
   it('CONTROL: still prints "No MCP configurations found." when there is none', () => {
     const out = protect();
     expect(out).toContain('No MCP configurations found.');
+    expect(out).not.toContain('not checked');
+  });
+
+  it('does not call the configs clean when it could not read the env of a server in one', () => {
+    const configPath = write('.cursor/mcp.json', ENV_AS_STRING);
+
+    const out = protect();
+
+    expect(out).toContain('Scanned 1 client(s)');
+    expect(out).not.toContain('Already clean.');
+    expect(out).toContain('No plaintext secrets found in the parts of the MCP configs that were read.');
+    expect(out).toContain(`cursor (${configPath})`);
+    expect(out).toContain('    ? gh: env not checked: not a JSON object');
+    expect(out).toContain('1 server(s) have a part that could not be read, so it was not checked for secrets.');
+    expect(out).toContain('Fix the entries above, then run `npx secretless-ai protect-mcp` again.');
+    expect(out).not.toContain('PLAINTEXT');
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(ENV_AS_STRING);
+  });
+
+  it('CONTROL: still prints "Already clean." when every entry was read and holds no secret', () => {
+    write('.cursor/mcp.json', JSON.stringify({ mcpServers: { fs: { command: 'npx', env: { GITHUB_ORG: 'my-org' } } } }));
+
+    const out = protect();
+
+    expect(out).toContain('No plaintext secrets found in MCP configs. Already clean.');
     expect(out).not.toContain('not checked');
   });
 });

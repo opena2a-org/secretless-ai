@@ -18,8 +18,8 @@ export { doctor, quickDiagnosis, fixProfiles, type DoctorOptions, type DoctorRes
 export {
   discoverMcpConfigs, classifyEnvVars, McpVault,
   protectMcp, rewriteConfig, restoreConfig,
-  type McpClient, type McpConfigFile, type McpServerEntry, type UnparsedMcpConfig,
-  type ClassifiedEnv, type ProtectOptions, type ProtectResult,
+  type McpClient, type McpConfigFile, type McpServerEntry, type UncheckedMcpServer, type UnparsedMcpConfig,
+  type ClassifiedEnv, type ProtectOptions, type ProtectResult, type UncheckedMcpConfig,
   type RewriteResult,
 } from './mcp';
 

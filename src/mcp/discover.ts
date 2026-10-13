@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { listedName } from '../secret-value';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,10 +25,22 @@ export interface McpServerEntry {
   alreadyProtected: boolean;
 }
 
+/** A server entry in a parsed config with a part that could not be read, so that part was not checked for secrets. */
+export interface UncheckedMcpServer {
+  /** Server name as written in the config */
+  name: string;
+  /** The part that was not read: "entry", "env", or env values by name. Never quotes a value. */
+  part: string;
+  /** Why it was not read, e.g. "not a JSON object" */
+  reason: string;
+}
+
 export interface McpConfigFile {
   client: McpClient;
   filePath: string;
   servers: McpServerEntry[];
+  /** Server entries with a part that could not be read. A caller never reports one of these as clean. */
+  unchecked: UncheckedMcpServer[];
   /** Raw parsed JSON for later rewriting */
   raw: Record<string, unknown>;
 }
@@ -126,10 +139,21 @@ function isProtectedCommand(command: string): boolean {
 }
 
 /**
+ * True for a value that holds content where a JSON object belongs. null and
+ * undefined hold nothing, so there is nothing in them left unchecked.
+ */
+function isNotJsonObject(value: unknown): boolean {
+  return value !== null && value !== undefined && (typeof value !== 'object' || Array.isArray(value));
+}
+
+/**
  * Extract MCP server entries from a parsed JSON config.
  * Supports both `mcpServers` and `mcp-servers` keys.
+ *
+ * A part that does not have the shape of a server entry is passed over and
+ * returned in `unchecked`: a secret in it was not seen.
  */
-function parseServers(raw: Record<string, unknown>): McpServerEntry[] | null {
+function parseServers(raw: Record<string, unknown>): { servers: McpServerEntry[]; unchecked: UncheckedMcpServer[] } | null {
   const serversObj =
     (raw['mcpServers'] as Record<string, unknown> | undefined) ??
     (raw['mcp-servers'] as Record<string, unknown> | undefined);
@@ -139,8 +163,12 @@ function parseServers(raw: Record<string, unknown>): McpServerEntry[] | null {
   }
 
   const entries: McpServerEntry[] = [];
+  const unchecked: UncheckedMcpServer[] = [];
 
   for (const [name, value] of Object.entries(serversObj)) {
+    if (isNotJsonObject(value)) {
+      unchecked.push({ name, part: 'entry', reason: 'not a JSON object' });
+    }
     if (!value || typeof value !== 'object') continue;
 
     const serverDef = value as Record<string, unknown>;
@@ -150,11 +178,26 @@ function parseServers(raw: Record<string, unknown>): McpServerEntry[] | null {
       : [];
     const env: Record<string, string> = {};
 
-    if (serverDef['env'] && typeof serverDef['env'] === 'object') {
-      for (const [k, v] of Object.entries(serverDef['env'] as Record<string, unknown>)) {
+    const envValue = serverDef['env'];
+    if (isNotJsonObject(envValue)) {
+      unchecked.push({ name, part: 'env', reason: 'not a JSON object' });
+    }
+    if (envValue && typeof envValue === 'object') {
+      const notStrings: string[] = [];
+      for (const [k, v] of Object.entries(envValue as Record<string, unknown>)) {
         if (typeof v === 'string') {
           env[k] = v;
+        } else if (v !== null) {
+          notStrings.push(listedName(k));
         }
+      }
+      // An env written as an array is already reported whole.
+      if (notStrings.length > 0 && !Array.isArray(envValue)) {
+        unchecked.push(
+          notStrings.length === 1
+            ? { name, part: `env value ${notStrings[0]}`, reason: 'not a string' }
+            : { name, part: `env values ${notStrings.join(', ')}`, reason: 'not strings' },
+        );
       }
     }
 
@@ -167,7 +210,7 @@ function parseServers(raw: Record<string, unknown>): McpServerEntry[] | null {
     });
   }
 
-  return entries;
+  return { servers: entries, unchecked };
 }
 
 /**
@@ -251,13 +294,14 @@ export function discoverMcpConfigsDetailed(homeOverride?: string, projectDirOver
       continue;
     }
 
-    const servers = parseServers(raw);
-    if (!servers) continue; // No mcpServers key
+    const parsedServers = parseServers(raw);
+    if (!parsedServers) continue; // No mcpServers key
 
     results.push({
       client,
       filePath: fullPath,
-      servers,
+      servers: parsedServers.servers,
+      unchecked: parsedServers.unchecked,
       raw,
     });
   }
