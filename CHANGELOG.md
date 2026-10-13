@@ -939,6 +939,21 @@ file cap clears. `init notes.txt/sub`, where `notes.txt` is a file, said
 now names the file and suggests `init` on the directory that holds it.
 Detection, the report's "files not opened" list and exit codes are unchanged.
 
+**The broker's assertion mint functions refuse an issue time that is not a clock reading in seconds.**
+`mintBrokerAssertion`, `mintBrokerAssertionMlDsa65` and
+`mintHybridBrokerAssertion` take the issue time as an argument, `nowSeconds`,
+so tests and fixture generation can fix the clock, and `exp` is that value
+plus the binding's TTL. Nothing checked it: `NaN` or `Infinity` minted
+`"iat": null, "exp": null`, the string `"1780315200"` minted a thirteen-digit
+string `exp`, and a `Date.now()` reading, which is in milliseconds, minted an
+`exp` more than fifty thousand years out (the year 58385 for a reading taken
+on 2026-06-01). Each now throws, naming the value, unless `nowSeconds` is a
+number from 0 to 253402300799 (9999-12-31T23:59:59Z, the last second a
+four-digit year can state). Every millisecond reading after 11 January 1978
+lies outside that range, and the error for one says to pass
+`Math.floor(Date.now() / 1000)`. The default clock is unchanged, so every
+assertion `ExchangeProvider` mints is unchanged.
+
 **In Exchange mode the life reported for a scoped credential is capped by the TTL its assertion was minted with.**
 `ExchangeProvider.resolve` checked the binding's TTL when it minted the broker
 assertion, then read `ttlSeconds` from the caller's binding object a second

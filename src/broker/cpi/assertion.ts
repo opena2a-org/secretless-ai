@@ -74,11 +74,31 @@ function base64url(input: Buffer | string): string {
 }
 
 /**
+ * The latest issue time a mint function accepts, in seconds since the epoch:
+ * 9999-12-31T23:59:59Z, the last second a four-digit year can state.
+ *
+ * The issue time is the other operand of `exp` (the issue time plus the binding's TTL), and the
+ * mint functions take it as an argument. This is not a rule on how far ahead a broker may issue.
+ * It separates a clock reading in seconds from a reading in another unit: `Date.now()` is in
+ * milliseconds, every millisecond reading after 11 January 1978 lies past this value, and a
+ * current one passed unchecked mints an `exp` more than fifty thousand years out.
+ */
+export const MAX_ISSUE_TIME_SECONDS = Date.UTC(9999, 11, 31, 23, 59, 59) / 1000;
+
+/** A refused argument as an error names it: a number or an absent value itself, else its type. */
+function describeRefused(value: unknown): string {
+  if (typeof value === 'number' || value == null) return String(value);
+  return typeof value === 'object' ? 'an object' : `a ${typeof value}`;
+}
+
+/**
  * Mint a broker assertion (compact EdDSA JWT) from a verified-ATX context and a binding.
  *
  * Claims are derived ONLY from the verified ATX and the local binding — never from
  * agent-supplied input. `nowSeconds` and `jti` are injectable for deterministic tests
  * and fixture generation (AAP-SPEC §9.7); the defaults are the production behavior.
+ * `nowSeconds` is a clock reading in seconds, from 0 to MAX_ISSUE_TIME_SECONDS: a reading in
+ * milliseconds, or a value that is not a number, is refused before anything is signed.
  */
 export function mintBrokerAssertion(
   ctx: ResolutionContext,
@@ -129,13 +149,32 @@ function buildAssertionClaims(
     ttlSeconds <= 0 ||
     ttlSeconds > MAX_GRANT_TTL_SECONDS
   ) {
-    const got =
-      typeof ttlSeconds === 'number' || ttlSeconds == null
-        ? String(ttlSeconds)
-        : `a ${typeof ttlSeconds}`;
     throw new Error(
       'broker assertion minting: binding.ttlSeconds must be a whole number of seconds from 1 ' +
-        `to ${MAX_GRANT_TTL_SECONDS} (12 hours), not ${got}; \`exp\` is the issue time plus it`,
+        `to ${MAX_GRANT_TTL_SECONDS} (12 hours), not ${describeRefused(ttlSeconds)}; ` +
+        '`exp` is the issue time plus it',
+    );
+  }
+  // The issue time is the other operand of `exp`, and every mint function takes it as an
+  // argument so tests and fixture generation can fix the clock. Unchecked, NaN or Infinity
+  // serialises to `"iat": null, "exp": null`, a string concatenates with the TTL into a
+  // thirteen-digit `exp`, and a reading in milliseconds mints an `exp` more than fifty thousand
+  // years out. The range test is written so that NaN, which compares false to everything,
+  // fails it.
+  const issuedAt: unknown = nowSeconds;
+  if (typeof issuedAt !== 'number' || !(issuedAt >= 0 && issuedAt <= MAX_ISSUE_TIME_SECONDS)) {
+    // A finite reading past the ceiling is most often a clock in the wrong unit.
+    const pastCeiling =
+      typeof issuedAt === 'number' &&
+      Number.isFinite(issuedAt) &&
+      issuedAt > MAX_ISSUE_TIME_SECONDS;
+    const hint = pastCeiling
+      ? '. Date.now() reads milliseconds: pass Math.floor(Date.now() / 1000)'
+      : '';
+    throw new Error(
+      'broker assertion minting: nowSeconds must be a number of seconds since the epoch from 0 ' +
+        `to ${MAX_ISSUE_TIME_SECONDS} (9999-12-31T23:59:59Z), not ${describeRefused(issuedAt)}; ` +
+        `\`iat\` is that value and \`exp\` is it plus the binding TTL${hint}`,
     );
   }
   return {
@@ -147,8 +186,8 @@ function buildAssertionClaims(
     trust_class: binding.trustClass,
     issuer_chain: ctx.issuerChain,
     trust_level: ctx.trustLevel,
-    iat: nowSeconds,
-    exp: nowSeconds + ttlSeconds,
+    iat: issuedAt,
+    exp: issuedAt + ttlSeconds,
     jti,
   };
 }
