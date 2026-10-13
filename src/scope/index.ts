@@ -65,10 +65,31 @@ export function createScopeProvider(provider: string, credential: string): Scope
       // VAULT_ADDR still comes from env (the server address doesn't change)
       return new VaultScopeProvider(undefined, credential);
     case 'aws':
-      return new AWSScopeProvider();
+      return awsProviderFor(credential);
     default:
       throw new Error(`Unsupported scope provider: "${provider}"`);
   }
+}
+
+/**
+ * An AWS credential's stored value is its access key ID; the secret key that
+ * signs requests comes from the environment. Every request is signed with the
+ * stored key ID, so AWS either answers for that key or rejects the signature,
+ * and never reports another principal's permissions under this credential's
+ * name. An environment whose AWS_ACCESS_KEY_ID names a different key is refused
+ * before any request: its secret key and session token belong to that key.
+ */
+function awsProviderFor(credential: string): AWSScopeProvider {
+  const accessKeyId = credential.trim();
+  const ambientKeyId = process.env.AWS_ACCESS_KEY_ID?.trim();
+  if (ambientKeyId && ambientKeyId !== accessKeyId) {
+    throw new Error(
+      'AWS_ACCESS_KEY_ID in the environment names a different access key than this credential, ' +
+      'so the secret key beside it cannot sign for this credential. Set AWS_ACCESS_KEY_ID and ' +
+      'AWS_SECRET_ACCESS_KEY to this credential\'s key pair, then run the command again.',
+    );
+  }
+  return new AWSScopeProvider(accessKeyId);
 }
 
 /**
