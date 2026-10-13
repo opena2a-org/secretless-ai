@@ -1,7 +1,7 @@
 {
   "name": "secretless-ai",
   "version": "0.23.1",
-  "description": "One command to keep secrets out of AI. Works with Claude Code, Cursor, Copilot, Windsurf, and any AI coding tool.",
+  "description": "Secretless stores API keys outside your project files and sets up AI coding tools not to read credential files. In Claude Code a hook and deny rules enforce that; Cursor, GitHub Copilot, Windsurf, Cline and Aider get instruction or ignore files that nothing enforces. A command that prints its own credential is not blocked.",
   "license": "Apache-2.0",
   "type": "commonjs",
   "main": "dist/index.js",
