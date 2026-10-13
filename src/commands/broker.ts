@@ -14,6 +14,7 @@ export async function runBroker(args: string[]): Promise<number> {
       let aimToken: string | undefined;
       let port: number | undefined;
       let policyFile: string | undefined;
+      let grantFile: string | undefined;
 
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--aim-url' && args[i + 1]) {
@@ -30,6 +31,8 @@ export async function runBroker(args: string[]): Promise<number> {
           }
         } else if (args[i] === '--policy-file' && args[i + 1]) {
           policyFile = path.resolve(args[++i]);
+        } else if (args[i] === '--grant-file' && args[i + 1]) {
+          grantFile = path.resolve(args[++i]);
         }
       }
 
@@ -37,7 +40,7 @@ export async function runBroker(args: string[]): Promise<number> {
       console.log('  Starting credential broker daemon...');
 
       try {
-        const server = await startDaemon({ aimUrl, aimToken, httpPort: port, policyFile });
+        const server = await startDaemon({ aimUrl, aimToken, httpPort: port, policyFile, grantFile });
         const info = server.getStatus();
         console.log('  Broker is running.\n');
         console.log(`  PID:          ${info.pid}`);
@@ -107,6 +110,7 @@ export async function runBroker(args: string[]): Promise<number> {
       console.log('    --aim-url <url>        AIM server URL for identity verification');
       console.log('    --aim-token <token>    Bearer token for AIM auth (or env SECRETLESS_AIM_TOKEN)');
       console.log('    --port <port>          HTTP port (default: 19421)');
+      console.log('    --grant-file <path>    Grant file path (turns on POST /grant)');
       console.log('    --policy-file <path>   Policy file path\n');
       return isUnknown ? EXIT_USAGE : 0;
     }

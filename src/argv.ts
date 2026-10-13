@@ -302,6 +302,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--aim-url': true,
       '--aim-token': true,
       '--port': true,
+      '--grant-file': true,
       '--policy-file': true,
     },
     unknownFlags: 'reject',

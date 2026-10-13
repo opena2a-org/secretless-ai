@@ -6,6 +6,7 @@
  *
  * Routes:
  *   POST /resolve  — Resolve a credential for an agent (policy-gated)
+ *   POST /grant    — Run an operation under a grant (404 unless a grant resolver is configured)
  *   GET  /health   — Health check
  *   GET  /status   — Extended status with metrics
  *
@@ -31,6 +32,30 @@ export const TOKEN_FILE = path.join(os.homedir(), '.secretless-ai', 'broker.toke
 
 /** Maximum request body size (64 KB — credential names should be tiny). */
 const MAX_BODY_SIZE = 64 * 1024;
+
+/**
+ * The AIM client for a broker configured by `config`, or null when it names no AIM URL.
+ *
+ * A 4xx from AIM is written to `audit`. The daemon calls this too, so that a grant resolver
+ * and the server it is handed to ask one client and write to one log.
+ */
+export function createAimClient(config: BrokerConfig, audit: AuditLogger): AimClient | null {
+  if (!config.aimUrl) return null;
+  return new AimClient(config.aimUrl, {
+    authToken: config.aimToken,
+    onAuthError: ({ url, status }) => {
+      audit.logEvent(
+        'aim_auth_error',
+        'broker',
+        '',
+        '',
+        'denied',
+        `AIM returned ${status} for ${url}`,
+        0,
+      );
+    },
+  });
+}
 
 export class BrokerServer {
   private readonly config: BrokerConfig;
@@ -76,24 +101,9 @@ export class BrokerServer {
     this.resolver = deps?.resolver ?? new CredentialResolver();
     this.audit = deps?.audit ?? new AuditLogger(config.auditLog);
     this.grantResolver = deps?.grantResolver ?? null;
-    this.aimClient = deps?.aimClient !== undefined ? deps.aimClient : (
-      config.aimUrl
-        ? new AimClient(config.aimUrl, {
-            authToken: config.aimToken,
-            onAuthError: ({ url, status }) => {
-              this.audit.logEvent(
-                'aim_auth_error',
-                'broker',
-                '',
-                '',
-                'denied',
-                `AIM returned ${status} for ${url}`,
-                0,
-              );
-            },
-          })
-        : null
-    );
+    this.aimClient = deps?.aimClient !== undefined
+      ? deps.aimClient
+      : createAimClient(config, this.audit);
   }
 
   /**

@@ -667,6 +667,39 @@ exports that exist for this package's own tests and help text:
 `nearMissCellsEvaluated` and `resetNearMissCellsEvaluated` in
 `dist/near-miss`. Detection, exit codes and `--json` output are unchanged.
 
+**`broker start` now serves `POST /grant` when it has a grant file; until now
+the endpoint answered 404 on every broker the command could start.** The grant
+flow has been in the package as a library: the broker verifies the agent's ATX
+credential, matches it against a binding, exchanges it for a short-lived scoped
+token at an identity provider, makes the downstream call itself and returns
+only the response. The daemon never built it, so `/grant` answered
+`404 {"error":"Not found"}` beside a healthy `/health`, and only code that
+constructed `BrokerServer` by hand could reach it. `broker start` now loads
+`~/.secretless-ai/broker-grants.json` when that file exists, or the file named
+by the new `--grant-file <path>` (which must exist). The file has four
+sections: `trust` (the ATX issuers accepted, their Ed25519 public keys, and
+revoked agents), `assertion` (the issuer and key id the broker signs under),
+`providers` (identity providers by id, each an OAuth token endpoint for an
+RFC 8693 token exchange) and `bindings` (one per grant, read by the same code
+that validates a binding passed in memory). A file the broker cannot apply as
+written stops the start and says why: a key it does not read, a repeated key, a
+misspelled predicate, a public key the verifier would drop, a token endpoint
+over plain `http` off the loopback address. The first start creates the
+broker's Ed25519 signing key at `~/.secretless-ai/broker-assertion.key` (mode
+`0600`) and writes its public half beside it as a JWK for you to register with
+each identity provider; a later start signs with the same key, and a key file
+other users can read is refused with the `chmod` that fixes it. A start that
+loaded a grant file prints the file, the number of bindings and providers, and
+the path of the public key. Grant decisions go to the broker's audit log as
+`grant` events, and a broker started with `--aim-url` denies an agent AIM
+reports as unverified on `/grant` as well. The grant file is read at start, so
+an edit, including a revocation, takes effect on restart. Unchanged: with no
+grant file `/grant` still answers 404, and `/resolve`, `/health`, `/status` and
+the policy file behave as before. `broker status` does not report grants yet.
+For library callers, `startDaemon` accepts `grantFile` and `tokenFile`.
+`docs/use-cases/run-broker.md` has a new Grants section with the file format
+and a request.
+
 **`mcp-status` and `protect-mcp` no longer report a server as clean when a part
 of its entry could not be read.** A config that is valid JSON can still hold a
 server entry these commands cannot read: an `env` written as one string or as
