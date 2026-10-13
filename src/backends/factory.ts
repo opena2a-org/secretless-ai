@@ -44,10 +44,12 @@ import type { SelectableBackendType } from './config';
  *                 disclose which backend actually answered.
  * @param options.role - Default 'configured'. 'source' is a backend read
  *                 ALONGSIDE the configured one, such as the source of `secret
- *                 sync`. It is built without the cache layer: the cache file is
- *                 shared and keyed by entry name alone, so a value read from a
- *                 second backend through it is later served as the configured
- *                 backend's value for the same name. An unreachable-backend
+ *                 sync` or of `migrate --from`. It is built without the cache
+ *                 layer: the cache file is shared and keyed by entry name
+ *                 alone, so a value read from a second backend through it is
+ *                 later served as the configured backend's value for the same
+ *                 name, and a value already cached under a name is handed back
+ *                 in place of the one the source holds. An unreachable-backend
  *                 error names it as the source and offers no migration.
  *                 'named' is a backend named for one run IN PLACE of the
  *                 configured one (`setup --backend`): `local` is the encrypted
