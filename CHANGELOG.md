@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+**The recorded walkthrough shows `npx secretless-ai init` and then
+`npx secretless-ai verify`, and is rendered from a committed tape.** The
+recording the README linked showed `scan`, had last been rendered six months
+before its tape was last edited, and nothing said which build it showed. The
+new one is `docs/vhs/init.gif`: `docs/vhs/record-init.sh` renders
+`docs/vhs/init.tape` in a container, in a new project directory and a new
+empty home directory that `docs/vhs/setup-fixture.sh` creates, on a host with
+no OS keychain, and writes `docs/vhs/init.json` beside it. That sidecar names
+the build shown (the published package by its integrity, or the commit the
+package was packed from), the fixture, the typed commands, the terminal size
+and the output files; `docs/vhs/init-capture.txt` is the same two commands as
+text. The test suite compares the sidecar with the tape, the fixture script
+and the version in `package.json`, and checks every command a tape types
+against the commands and flags the CLI registers, so a release or a tape edit
+that is not followed by a render fails a test. `docs/demo.tape` and
+`docs/secretless-ai-demo.gif` are removed. No command, flag, output or exit
+code changed.
+
 **The unreachable-backend message offers `migrate`, a command that exists
 (#372).** When the configured backend could not be reached, the message gave
 `secretless-ai backend migrate --from <backend> --to local` as the way to move

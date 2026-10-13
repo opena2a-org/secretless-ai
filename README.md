@@ -100,7 +100,7 @@ Fire-and-forget with a 2-second timeout. Telemetry never blocks Secretless.
 - [Commands](docs/commands.md): MCP protection, triage flags, exit codes
 - [Scan coverage and exit codes](docs/scanning.md), with [what a directory scan opens](docs/scanning.md#what-a-directory-scan-opens)
 - [Use cases](docs/USE-CASES.md): step-by-step guides
-- [Recorded demo](docs/secretless-ai-demo.gif), [Contributing](CONTRIBUTING.md)
+- [secretless-ai init: sets up a project, then verifies the setup](docs/vhs/init.gif), [Contributing](CONTRIBUTING.md)
 
 Security issues: report privately through [GitHub private vulnerability reporting](https://github.com/opena2a-org/secretless-ai/security/advisories/new) or `info@opena2a.org`. We acknowledge receipt within 48 hours; [SECURITY.md](SECURITY.md) has the full policy.
 
