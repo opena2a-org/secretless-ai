@@ -20,7 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { runMigrate } from './backend';
+import { runBackend, runMigrate } from './backend';
 import { CachedBackend } from '../backends/cache';
 import { readBackendConfig, writeBackendConfig } from '../backends/config';
 import { createBackend } from '../backends/factory';
@@ -38,6 +38,7 @@ vi.mock('child_process', async (importOriginal) => {
 
 const saved = {
   HOME: process.env.HOME,
+  PATH: process.env.PATH,
   VAULT_ADDR: process.env.VAULT_ADDR,
   VAULT_TOKEN: process.env.VAULT_TOKEN,
 };
@@ -48,6 +49,8 @@ let vault: Record<string, string>;
 let vaultRefusesWrites: boolean;
 /** Vault answers a read of the `mcp` prefix with 500. */
 let vaultFailsMcpRead: boolean;
+/** When set, Vault answers the LIST of the `secret` prefix with this status. */
+let vaultListStatus: number | undefined;
 let out: string[];
 let err: string[];
 
@@ -58,6 +61,7 @@ function vaultServer() {
     const { pathname } = new URL(url);
     if (vaultFailsMcpRead && pathname === '/v1/secret/data/mcp') return json(500, { errors: [] });
     if (init.method === 'LIST' && pathname === '/v1/secret/metadata/secret') {
+      if (vaultListStatus !== undefined) return json(vaultListStatus, { errors: [] });
       return json(200, { data: { keys: Object.keys(vault) } });
     }
     const name = /^\/v1\/secret\/data\/secret\/(.+)$/.exec(pathname)?.[1];
@@ -104,6 +108,7 @@ beforeEach(() => {
   vault = {};
   vaultRefusesWrites = false;
   vaultFailsMcpRead = false;
+  vaultListStatus = undefined;
   vi.stubGlobal('fetch', vaultServer());
   out = [];
   err = [];
@@ -238,5 +243,113 @@ describe('migrate removes the value cache when it ends (#370)', () => {
     expect(out.join('\n')).toContain('No secrets found to migrate.');
     expect(readBackendConfig()).toBe('keychain');
     expect(fs.existsSync(cacheFile())).toBe(false);
+  });
+});
+
+describe('the way out of an unreachable backend, and the destination of a migration (#372)', () => {
+  it('offers a migration command that runs, not `backend migrate`', async () => {
+    writeBackendConfig('1password');
+    const refusal = (() => {
+      try {
+        createBackend('1password');
+        return undefined;
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+
+    // Before the fix: `secretless-ai backend migrate --from 1password --to
+    // local`, which `backend` refuses as `Unknown backend command: migrate`.
+    const offered = /^ {4}secretless-ai (.+)$/m.exec(refusal?.message ?? '')?.[1];
+    expect(offered).toBe('migrate --from 1password --to local');
+    expect(await runBackend(offered!.split(' '))).toBe(2);
+    // The command it names is `migrate` itself, which gets as far as the
+    // source: it is not refused as a command line.
+    await expect(runMigrate(offered!.split(' ').slice(1))).rejects.toThrow(
+      /^Source backend "1password" is not reachable/,
+    );
+  });
+
+  it('names an unreachable --to as the destination, without offering a migration', async () => {
+    writeBackendConfig('local');
+
+    const refusal = await runMigrate(['--from', 'local', '--to', '1password']).then(
+      () => undefined,
+      (e: Error) => e,
+    );
+
+    // Before the fix: 'Configured backend "1password" is not reachable', and
+    // a migration away from it as the way out.
+    expect(refusal?.message.split('\n')[0]).toBe(
+      'Destination backend "1password" is not reachable: 1Password CLI (op) not found. Install from https://developer.1password.com/docs/cli',
+    );
+    expect(refusal?.message).toContain('Nothing was copied, and the configured backend is unchanged.');
+    expect(refusal?.message).not.toContain('migrate --from');
+    expect(readBackendConfig()).toBe('local');
+  });
+
+  it('refuses --from local --to keychain where, with no backend configured, both are the keychain', async () => {
+    // A `secret-tool` stand-in, so a Linux runner sees a likely keychain as
+    // macOS always does. Nothing here starts it.
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'secret-tool'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    process.env.PATH = `${bin}${path.delimiter}${saved.PATH ?? ''}`;
+    expect(readBackendConfig()).toBeUndefined();
+
+    expect(await runMigrate(['--from', 'local', '--to', 'keychain'])).toBe(1);
+
+    // Before the fix: the keychain was read and written as two stores, and
+    // the keychain was then configured; here, with nothing in it, the
+    // migration reported 'No secrets found to migrate.' and exited 0.
+    expect(err.join('\n')).toMatch(
+      /Source and destination are the same store: --from local and --to keychain are both (keychain-macos|keychain-linux|local) on this machine\./,
+    );
+    expect(err.join('\n')).toContain('secretless-ai backend set keychain');
+    expect(out.join('\n')).not.toContain('Secretless Migration');
+    expect(readBackendConfig()).toBeUndefined();
+  });
+
+  it('builds --to local as the encrypted file that `local` names once the migration configures it', () => {
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'secret-tool'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    process.env.PATH = `${bin}${path.delimiter}${saved.PATH ?? ''}`;
+
+    expect(createBackend('local', undefined, true, { role: 'destination' })).toBeInstanceOf(LocalBackend);
+    // CONTROL: on a platform with a keychain, the unconfigured default for the
+    // same type is the keychain, which a copy into left `local` empty.
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      expect(createBackend('local')).not.toBeInstanceOf(LocalBackend);
+    }
+  });
+
+  it('reports a Vault that refuses the LIST, instead of migrating nothing at exit 0', async () => {
+    writeBackendConfig('keychain');
+    vault = { STRIPE_KEY: 'held-by-vault' };
+    vaultListStatus = 400;
+
+    expect(await runMigrate(['--from', 'vault', '--to', 'local'])).toBe(1);
+
+    // Before the fix: 'No secrets found to migrate.' and exit 0.
+    expect(err.join('\n')).toContain('Vault: list failed (HTTP 400)');
+    expect(out.join('\n')).not.toContain('No secrets found to migrate.');
+    expect(readBackendConfig()).toBe('keychain');
+  });
+});
+
+describe('backend set removes the value cache (#372)', () => {
+  it('so the new backend is not answered for from the previous one\'s entries', async () => {
+    writeBackendConfig('keychain');
+    await readThroughConfiguredKeychain({ STRIPE_KEY: 'held-by-keychain' });
+    expect(fs.existsSync(cacheFile())).toBe(true);
+
+    expect(await runBackend(['set', 'vault'])).toBe(0);
+
+    expect(readBackendConfig()).toBe('vault');
+    expect(fs.existsSync(cacheFile())).toBe(false);
+    // Vault holds nothing. Before the fix this read was answered
+    // { 'secret/STRIPE_KEY': 'held-by-keychain' } from the cache.
+    expect(await createBackend('vault').resolve('secret')).toEqual({});
   });
 });

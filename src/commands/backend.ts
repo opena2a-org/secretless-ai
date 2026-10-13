@@ -209,6 +209,12 @@ export async function runBackend(args: string[]): Promise<number> {
     }
 
     writeBackendConfig(type);
+    // The value cache is one file keyed by entry name alone, holding what was
+    // read from the backend configured until now. Left in place, a read
+    // through the new backend's cache layer was answered with the previous
+    // backend's entries until the TTL ran out, as `migrate` was before it
+    // removed the file (#370, #372).
+    clearCacheFile();
     console.log(`\n  Backend set to: ${type}\n`);
     console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
     console.log('  Or use `npx secretless-ai migrate` to migrate existing secrets.\n');
@@ -322,10 +328,6 @@ export async function runMigrate(args: string[]): Promise<number> {
     }
   }
 
-  console.log('\n  Secretless Migration\n');
-  console.log(`  From: ${fromType}`);
-  console.log(`  To:   ${toType}\n`);
-
   // `--from` is read in the source role, without the cache layer. The value
   // cache is one file keyed by entry name alone, and it answers whichever
   // backend asks. Through it this command copied what was cached under a name
@@ -333,7 +335,26 @@ export async function runMigrate(args: string[]): Promise<number> {
   // name, or the source's own value from before a rotation. A cached empty
   // listing made it report that there was nothing to migrate (#370).
   const source = createBackend(fromType, undefined, true, { role: 'source' });
-  const destination = createBackend(toType, undefined, true);
+  // `--to` is the destination: the store this command configures, so an
+  // unreachable one is reported as the destination, not as the configured
+  // backend, and `--to local` is the encrypted file that `local` names once
+  // configured, not the keychain the unconfigured default upgrades to (#372).
+  const destination = createBackend(toType, undefined, true, { role: 'destination' });
+
+  // Two names can be one store. With no backend configured, `--from local` is
+  // the platform keychain, so `--from local --to keychain` copied the keychain
+  // onto itself and reported each entry as migrated (#372). Neither side is
+  // behind the cache layer, so each name is the store itself.
+  if (source.name === destination.name) {
+    console.error(`\n  Source and destination are the same store: --from ${fromType} and --to ${toType} are both ${source.name} on this machine.`);
+    console.error('  Nothing was copied, and the configured backend is unchanged.');
+    console.error(`  To configure ${toType} without copying anything: ${CLI_BARE} backend set ${toType}\n`);
+    return 1;
+  }
+
+  console.log('\n  Secretless Migration\n');
+  console.log(`  From: ${fromType}`);
+  console.log(`  To:   ${toType}\n`);
 
   // Migrate all known prefixes. Some backends (keychain, 1password) return nothing
   // for empty prefix -- we need to resolve each prefix explicitly.
@@ -341,8 +362,7 @@ export async function runMigrate(args: string[]): Promise<number> {
 
   try {
     // One prefix after the other, so that when a read fails nothing is still
-    // being copied, and the cache file removed below is not written again
-    // through the destination's cache layer after this command has returned.
+    // being copied after this command has returned.
     const perPrefix: MigrateResult[] = [];
     for (const prefix of PREFIXES) {
       perPrefix.push(await migrateSecrets(source, destination, { deleteFromSource: false, prefix }));
@@ -380,7 +400,7 @@ export async function runMigrate(args: string[]): Promise<number> {
     return 1;
   } finally {
     // The cache holds what was read from the backend configured before this
-    // command, and `--to` adds what it wrote. Once the configured backend has
+    // command. Once the configured backend has
     // changed, or a migration has stopped part-way, an entry there is no longer
     // known to be the configured backend's value: after a migration whose
     // writes all failed, the new backend was answered for from the old one's

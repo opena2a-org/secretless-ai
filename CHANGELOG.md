@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+**The unreachable-backend message offers `migrate`, a command that exists
+(#372).** When the configured backend could not be reached, the message gave
+`secretless-ai backend migrate --from <backend> --to local` as the way to move
+to another backend, and `backend` answered that with `Unknown backend command:
+migrate` at exit 2. It now gives `secretless-ai migrate --from <backend> --to
+local`.
+
+**`migrate --to` is built as the destination (#372).** An unreachable `--to`
+was reported as `Configured backend "<backend>" is not reachable`, with a
+migration away from it as the way out. It is now reported as the destination,
+with the assurance that nothing was copied and the configured backend is
+unchanged. On a machine with no backend configured, `--to local` wrote to the
+platform keychain while the migration then configured `local`, which once
+configured is the encrypted file, so the configured store was left empty;
+`--to local` is now the encrypted file. Two names that are one store are
+refused before anything is read: with no backend configured,
+`migrate --from local --to keychain` read the keychain and wrote it back onto
+itself, and now names the store and offers `backend set keychain`.
+
+**`backend set` removes the value cache (#372).** The cache file, keyed by
+secret name alone, kept what was read from the previous backend, and until the
+cache TTL ran out (5 minutes by default) a read through the new backend was
+answered with those entries. `backend set` now removes it, as `migrate` does
+(#370).
+
+**A `secret://` reference whose backend cannot be reached is not answered by
+the configured backend (#372).** `resolveRef` and `resolveEnvRefs` fell back to
+the configured backend when the one a reference names could not be built, and
+reported the value as the named backend's: with `local` configured and
+`VAULT_ADDR` unset, `secret://vault/STRIPE_KEY` resolved to the encrypted
+file's `STRIPE_KEY` as `backend: 'vault'`. The reference is now unresolved,
+with a `RefResolutionError` that names the URI and why the backend could not
+be reached, and no other store is read in its place.
+
+**A Vault LIST that is refused is reported, not read as an empty store
+(#372).** Reading a prefix lists its keys first, and any answer to that LIST
+other than success was taken to mean the prefix held nothing, so
+`migrate --from vault` printed `No secrets found to migrate.` and exited 0
+against a server that refused it. A 403 now throws `Vault: permission denied
+listing "<prefix>"` and any other failure `Vault: list failed (HTTP <status>)`,
+as a refused read of the same path does. A 404 still means nothing is stored
+there.
+
 **A `secret://` reference that names a backend other than the configured one
 is resolved without the value cache (#369).**
 `resolveRef` and `resolveEnvRefs`, exported from the package, built the backend

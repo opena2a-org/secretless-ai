@@ -1,14 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../backends/factory', () => ({
-  createBackend: vi.fn(),
-}));
+vi.mock('../backends/factory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../backends/factory')>();
+  return {
+    ...actual,
+    createBackend: vi.fn(),
+  };
+});
 
 vi.mock('../backends/config', () => ({
   readBackendConfig: vi.fn(),
 }));
 
-import { createBackend } from '../backends/factory';
+import { createBackend, unavailableBackendError } from '../backends/factory';
 import { readBackendConfig } from '../backends/config';
 import { resolveRef, RefResolutionError } from './resolver';
 
@@ -16,15 +20,13 @@ const mockCreateBackend = vi.mocked(createBackend);
 const mockReadBackendConfig = vi.mocked(readBackendConfig);
 
 /**
- * `resolveFromBackend` tries the ref's own backend, then falls back to the
- * configured one. Both calls go through `createBackend`, which since 0.21.0
- * THROWS when a configured backend is unreachable instead of quietly handing
- * back a local store.
+ * `resolveFromBackend` builds the backend a reference names through
+ * `createBackend`, which THROWS when that backend is unreachable instead of
+ * quietly handing back a local store.
  *
- * That made the fallback call able to throw for the first time. Escaping there
- * would replace the RefResolutionError — which names the URI that failed — with
- * a bare backend error carrying no reference at all, from a function whose
- * caller has no try/catch.
+ * Escaping there would replace the RefResolutionError — which names the URI
+ * that failed — with a bare backend error carrying no reference at all, from a
+ * function whose caller has no try/catch.
  */
 describe('resolveRef when backends are unreachable', () => {
   beforeEach(() => {
@@ -45,31 +47,41 @@ describe('resolveRef when backends are unreachable', () => {
     await expect(resolveRef(uri)).rejects.toThrow(uri);
   });
 
-  it('still resolves through the fallback backend when only the ref backend is down', async () => {
+  it('does not answer the ref from the configured backend when only the ref backend is down (#372)', async () => {
     mockReadBackendConfig.mockReturnValue('local' as never);
 
     let call = 0;
     mockCreateBackend.mockImplementation((() => {
       call += 1;
-      if (call === 1) throw new Error('1password unreachable');
+      if (call === 1) {
+        throw unavailableBackendError('1password', 'not signed in', ['op signin'], 'op account get', 'named');
+      }
       return {
         name: 'local',
-        resolve: async () => ({ 'secret/prod/password': 'the-value' }),
+        resolve: async () => ({ 'secret/prod/password': 'held-by-the-configured-backend' }),
         store: async () => {},
         delete: async () => false,
         healthCheck: async () => ({ healthy: true, latencyMs: 0, message: '' }),
       };
     }) as never);
 
-    const result = await resolveRef('secret://1password/prod/password');
-    expect(result.value).toBe('the-value');
-    expect(mockCreateBackend).toHaveBeenCalledTimes(2);
-    // #369: the ref's backend is named for this read, which keeps a second
-    // store out of the shared value cache. The fallback is the configured
-    // backend as itself, cache layer included.
+    const uri = 'secret://1password/prod/password';
+    const refusal = await resolveRef(uri).then(
+      (r) => r,
+      (e: Error) => e,
+    );
+
+    // Before the fix this resolved to 'held-by-the-configured-backend',
+    // reported as backend '1password'.
+    expect(refusal).toBeInstanceOf(RefResolutionError);
+    expect((refusal as RefResolutionError).message).toBe(
+      `Backend "1password" named by ${uri} is not reachable: not signed in. No other store was read in its place.`,
+    );
+    expect((refusal as RefResolutionError).ref).toBe(uri);
+    expect((refusal as RefResolutionError).backend).toBe('1password');
+    // #369: the ref's backend is named for this read. Nothing else is built.
     expect(mockCreateBackend.mock.calls).toEqual([
       ['1password', undefined, true, { role: 'named' }],
-      ['local'],
     ]);
   });
 });

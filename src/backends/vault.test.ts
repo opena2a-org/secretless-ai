@@ -112,6 +112,22 @@ describe('VaultBackend', () => {
       expect(result).toEqual({});
     });
 
+    // #372: only a 404 means nothing is stored under the prefix. A refused
+    // LIST was answered as an empty store, while a refused GET throws.
+    it.each([
+      [400, 'Vault: list failed (HTTP 400)'],
+      [405, 'Vault: list failed (HTTP 405)'],
+      [500, 'Vault: list failed (HTTP 500)'],
+      [403, 'Vault: permission denied listing "secret"'],
+    ])('throws when the LIST of a prefix is answered %i', async (status, message) => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+      mockFetch.mockResolvedValueOnce({ ok: false, status });
+
+      const vault = createVault();
+      await expect(vault.resolve('secret')).rejects.toThrow(message);
+      expect(mockFetch.mock.calls[1][1].method).toBe('LIST');
+    });
+
     it('throws on 403', async () => {
       mockFetch.mockResolvedValueOnce({ ok: false, status: 403 });
 
