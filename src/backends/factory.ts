@@ -58,6 +58,10 @@ import type { SelectableBackendType } from './config';
  *                 anyway (see `isConfiguredStore`): that store's values are
  *                 the ones the cache holds, and a write that went round the
  *                 cache would leave the value from before it being served.
+ *                 A `secret://` reference names its backend for one read in
+ *                 the same way and is built with this role (#369); its
+ *                 resolver reports an unreachable backend against the
+ *                 reference and never shows the `--backend` wording.
  */
 export function createBackend(
   type: SelectableBackendType,
@@ -439,7 +443,8 @@ function upgradesToKeychain(type: SelectableBackendType, config?: Record<string,
  * Any other named backend is a second store beside the configured one, and
  * the shared cache must hold nothing of it: `setup --check --backend vault`
  * cached what Vault held, and `setup --check` then reported those names as
- * satisfied by a keychain that held none of them (#367).
+ * satisfied by a keychain that held none of them (#367). A `secret://`
+ * reference naming a second store did the same on each read (#369).
  */
 function isConfiguredStore(type: SelectableBackendType): boolean {
   const configured = readBackendConfig();
