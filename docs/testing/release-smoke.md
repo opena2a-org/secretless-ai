@@ -74,7 +74,7 @@ PLANT="sk-ant-api03-$(openssl rand -base64 48 | tr -d '/+=' | head -c 51)"
 echo "const k = \"$PLANT\";" > config.js
 
 $SL status .        # "Not protected" verdict; every ⚠ row ends in a → command
-$SL init .          # Configured: Claude Code; Created: hook + CLAUDE.md; Modified: settings.json (99 deny patterns)
+$SL init .          # Configured: Claude Code; Created: hooks + settings.json (99 deny patterns) + CLAUDE.md; no Modified: section
 $SL scan .          # 1 credential found: HIGH Anthropic API Key, config.js:1, value REDACTED in preview; exit 1
 $SL status .        # verdict flips to "Protected (...)"
 $SL verify .        # scope disclosure line + PASS/WARN with next steps

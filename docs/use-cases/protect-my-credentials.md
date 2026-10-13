@@ -25,11 +25,9 @@ Expected output in a project that Claude Code and Cursor both use, after the ver
   Created:
     + .claude/hooks/secretless-guard.sh
     + .claude/hooks/secretless-output-check.cjs
+    + .claude/settings.json (99 deny patterns)
     + CLAUDE.md
     + .cursor/rules/secretless.mdc
-
-  Modified:
-    ~ .claude/settings.json (added 99 deny patterns)
 
   Next steps:
     Verify: secretless-ai verify

@@ -2605,10 +2605,12 @@ describe('README sample output matches the build', () => {
   it('states the deny-pattern count init actually writes', () => {
     const result = init(dir);
 
-    const claimed = README().match(/added (\d+) deny patterns/);
+    // The sample is a run on a project with no settings file, so the count is
+    // on the row that lists the file as created.
+    const claimed = README().match(/\+ \.claude\/settings\.json \((\d+) deny patterns\)/);
     // If the sample line is renamed or removed, fail loudly rather than passing
     // vacuously on a regex that stopped matching anything.
-    expect(claimed, 'README no longer contains an "added N deny patterns" sample').not.toBeNull();
+    expect(claimed, 'README no longer contains a "+ .claude/settings.json (N deny patterns)" sample').not.toBeNull();
     expect(result.denyRulesAdded).toBeGreaterThan(0);
     expect(Number(claimed![1])).toBe(result.denyRulesAdded);
   });
@@ -2738,11 +2740,18 @@ describe('protect-my-credentials use case matches the build', () => {
     const configured = `${result.toolsConfigured.length} of ${result.toolsDetected.length} detected`;
     expect(lines).toContain(`Configured: ${names} (${configured})`);
 
+    // The settings row carries its count; every other row is the path alone.
+    const settingsRow = `.claude/settings.json (${result.denyRulesAdded} deny patterns)`;
     const created = lines.filter(l => l.startsWith('+ ')).map(l => l.slice(2));
-    expect(created).toEqual(result.filesCreated);
+    expect(created).toContain(settingsRow);
+    expect(created).toEqual(
+      result.filesCreated.map(f => (f === '.claude/settings.json' ? settingsRow : f)),
+    );
 
-    expect(result.filesModified).toEqual(['.claude/settings.json']);
-    expect(lines).toContain(`~ .claude/settings.json (added ${result.denyRulesAdded} deny patterns)`);
+    // The project had no settings file, so init created one and modified nothing.
+    expect(result.filesModified).toEqual([]);
+    expect(lines).not.toContain('Modified:');
+    expect(lines.some(l => l.startsWith('~ '))).toBe(false);
   });
 
   it('names only files init writes in the prose under the sample', () => {
