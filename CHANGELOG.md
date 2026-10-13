@@ -20,6 +20,21 @@ that is not followed by a render fails a test. `docs/demo.tape` and
 `docs/secretless-ai-demo.gif` are removed. No command, flag, output or exit
 code changed.
 
+**A `secret://keychain/` reference is not answered by the encrypted file on a
+platform with no OS keychain implementation (#376).** With `process.platform`
+reported as `win32` or `freebsd`, `createBackend` builds the local encrypted
+file for `keychain`, and `resolveRef` and `resolveEnvRefs` read that file as
+the keychain: with `win32` reported and `local` configured,
+`secret://keychain/STRIPE_KEY` resolved to the file's `STRIPE_KEY` as
+`backend: 'keychain'`, with one line on stderr, `secretless: OS keychain not
+supported on win32. Falling back to local encrypted backend.` The reference is
+now unresolved there, with a `RefResolutionError` that names the URI and the
+platform (`Backend "keychain" named by secret://keychain/STRIPE_KEY is not
+reachable: OS keychain is not supported on win32. No other store was read in
+its place.`), and `resolveEnvRefs` reports it in `errors` and leaves the
+reference as the variable's value. With `local` configured,
+`secret://local/STRIPE_KEY` reads the file.
+
 **The unreachable-backend message offers `migrate`, a command that exists
 (#372).** When the configured backend could not be reached, the message gave
 `secretless-ai backend migrate --from <backend> --to local` as the way to move
