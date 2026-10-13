@@ -126,6 +126,29 @@ describe('ExchangeProvider (RFC 8693)', () => {
     const provider = new ExchangeProvider({ tokenEndpoint: 'https://idp.example/token' }, key, transport);
     await expect(provider.resolve(CTX, BINDING)).rejects.toThrow(/access_token/);
   });
+
+  // The binding's TTL (300 here) is the ceiling; the server's `expires_in` can only shorten it.
+  const cases: Array<[unknown, number]> = [
+    [86400 * 365, 300],
+    [Infinity, 300],
+    [120, 120],
+    [NaN, 300],
+    [undefined, 300],
+    ['3600', 300],
+    [-5, 0],
+  ];
+  for (const [expiresIn, reported] of cases) {
+    it(`reports ${reported}s for a binding TTL of 300s and expires_in ${String(expiresIn)}`, async () => {
+      const key = generateBrokerSigningKey('https://broker.acme.example', 'broker-key-1');
+      const transport: TokenExchangeTransport = {
+        async exchange() {
+          return { access_token: 'not-a-real-token', expires_in: expiresIn } as TokenExchangeResponse;
+        },
+      };
+      const provider = new ExchangeProvider({ tokenEndpoint: 'https://idp.example/token' }, key, transport);
+      expect((await provider.resolve(CTX, BINDING)).expiresInSeconds).toBe(reported);
+    });
+  }
 });
 
 describe('Okta adapter (vendor isolation, AAP Principle 4)', () => {

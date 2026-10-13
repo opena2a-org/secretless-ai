@@ -83,10 +83,18 @@ export class ExchangeProvider implements CredentialProvider {
 
     // 3. Return a SCOPED credential. It is confined to the broker (§6.5) — the caller
     //    uses it in an ephemeral worker and returns only the operation result.
+    //
+    //    The binding's TTL is the operator's ceiling on the credential's life, and the
+    //    server's `expires_in` (RFC 6749 §5.1) can only shorten it: a longer stated life, or a
+    //    NaN, does not raise the ceiling, and a negative one reads as already expired.
+    const stated = res.expires_in;
     return {
       token: res.access_token,
       tokenType: res.token_type ?? 'Bearer',
-      expiresInSeconds: typeof res.expires_in === 'number' ? res.expires_in : binding.ttlSeconds,
+      expiresInSeconds:
+        typeof stated === 'number' && !Number.isNaN(stated)
+          ? Math.max(0, Math.min(stated, binding.ttlSeconds))
+          : binding.ttlSeconds,
     };
   }
 }
