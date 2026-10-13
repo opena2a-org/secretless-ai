@@ -52,6 +52,17 @@ copies what the source holds now and deletes nothing from it;
 any `migrate` with `ls ~/.secretless-ai/cache/.secret-cache` (`No such file or
 directory`).
 
+**The package description says what the README says.** `npm search`,
+`npm view` and the registry listing showed "One command to keep secrets out of
+AI. Works with Claude Code, Cursor, Copilot, Windsurf, and any AI coding
+tool." The README's opening paragraph is narrower: a hook and deny rules
+enforce the read gate in Claude Code, the other tools get instruction or
+ignore files that nothing enforces, and a command that prints its own
+credential is not blocked. The description in `package.json` is now that
+paragraph without its license line, and a test holds the two to the same
+sentences, so a change to one fails until the other follows. The listing
+changes with the next release. No command, flag, output or exit code changed.
+
 **The README is cut to a short form, and its reference sections are pages
 under `docs/`.** The README was 4376 words in 16 sections, and a reader had to
 scroll past the architecture, the supported-tools table and the backends to
