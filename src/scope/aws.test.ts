@@ -400,6 +400,33 @@ describe('AWSScopeProvider', () => {
     const permissions = await provider.discover();
     expect(permissions).toEqual([]);
   });
+
+  // IAM's UserName is the friendly name alone. A user created with a path has
+  // an ARN of the form arn:aws:iam::<account>:user/<path>/<name>, and sending
+  // the path with the name is refused with HTTP 400.
+  it.each([
+    ['arn:aws:iam::123456789012:user/division_abc/subdivision_xyz/JaneDoe', 'JaneDoe'],
+    ['arn:aws:iam::123456789012:user/JaneDoe', 'JaneDoe'],
+  ])('sends IAM the user name alone when the caller ARN is %s', async (arn, userName) => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => stsGetCallerIdentityXml('123456789012', arn),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => iamListAttachedPoliciesXml([]),
+    });
+
+    const provider = new AWSScopeProvider(FAKE_ACCESS_KEY, FAKE_SECRET_KEY);
+    expect(await provider.discover()).toEqual([]);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [url, listRequest] = mockFetch.mock.calls[1];
+    expect(new URL(url).hostname).toBe('iam.amazonaws.com');
+    expect(listRequest.body).toBe(
+      `Action=ListAttachedUserPolicies&UserName=${userName}&Version=2010-05-08`,
+    );
+  });
 });
 
 describe('AWSScopeProvider signing region', () => {

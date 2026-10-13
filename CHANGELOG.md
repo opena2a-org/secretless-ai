@@ -1031,6 +1031,16 @@ signature. A baseline saved while either variable named another region may
 list no permissions: `scope reset <name>` and then `scope discover <name>`
 rebuilds it.
 
+**`scope discover` and `scope check` profile an IAM user created with a path.**
+Both commands took the user name they send to IAM from everything after
+`:user/` in the caller's ARN. An IAM user created with a path has an ARN of
+the form `arn:aws:iam::123456789012:user/division/team/JaneDoe`, and IAM takes
+`UserName` as the friendly name alone, so for such a user the request carried
+`division/team/JaneDoe`, IAM refused it with HTTP 400, and both commands
+stopped with `IAM ListAttachedUserPolicies failed (HTTP 400)`. The name sent
+is now the last segment of the ARN. A user created without a path is
+unchanged.
+
 **`scan` prints a control character in a file name or an excerpt as a visible escape.**
 The report printed names and excerpts from the scanned files as they were,
 so a line feed in a file name started a new report line that read like the
