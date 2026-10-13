@@ -730,13 +730,22 @@ describe("the counting string counts a copy's reads and names a plain string it 
 });
 
 describe("neither the source nor the tarball packed from it carries a retracted claim", () => {
-  it("no file under src/ and not the README carries one", async () => {
+  it("no file under src/, not the README and no page its sections moved to carries one", async () => {
     const mod = await loadRetractedClaims();
     const hits = claimsUnder(mod, path.join(REPO_ROOT, "src"), "src");
-    for (const { claim, line } of mod.retractedClaimsIn(
-      fs.readFileSync(path.join(REPO_ROOT, "README.md"), "utf-8"),
-    )) {
-      hits.push(`README.md:${line} "${claim}"`);
+    for (const page of [
+      "README.md",
+      "CONTRIBUTING.md",
+      "docs/install.md",
+      "docs/how-it-works.md",
+      "docs/secrets.md",
+      "docs/commands.md",
+    ]) {
+      for (const { claim, line } of mod.retractedClaimsIn(
+        fs.readFileSync(path.join(REPO_ROOT, page), "utf-8"),
+      )) {
+        hits.push(`${page}:${line} "${claim}"`);
+      }
     }
     expect(hits).toEqual([]);
   });

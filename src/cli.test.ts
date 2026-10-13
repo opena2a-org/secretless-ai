@@ -825,7 +825,8 @@ describe('verify with no API key in the environment', () => {
       expect(res.stdout).toMatch(/AI context: clean/);
       expect(res.stdout).toMatch(/No API keys found in env vars/);
 
-      for (const doc of ['README.md', path.join('docs', 'scanning.md')]) {
+      // The README's exit-code line moved to docs/commands.md.
+      for (const doc of [path.join('docs', 'commands.md'), path.join('docs', 'scanning.md')]) {
         const text = fs.readFileSync(path.resolve(__dirname, '..', doc), 'utf-8');
         const line = text.split('\n').find((l) => l.startsWith('Exit codes: '));
         expect(line, doc).toContain(EXIT_LINE);

@@ -52,6 +52,26 @@ copies what the source holds now and deletes nothing from it;
 any `migrate` with `ls ~/.secretless-ai/cache/.secret-cache` (`No such file or
 directory`).
 
+**The README is cut to a short form, and its reference sections are pages
+under `docs/`.** The README was 4376 words in 16 sections, and a reader had to
+scroll past the architecture, the supported-tools table and the backends to
+reach Telemetry. It is now under 900 words in 7 sections: the first command and
+its output, a task list that links to the section for each task, storing and
+using a secret, install, telemetry, documentation and license. The other
+sections moved as written: `docs/install.md` (from source, verifying a release,
+when Secretless reads a stored value), `docs/how-it-works.md` (how it works,
+architecture, supported tools, storage backends, NanoMind),
+`docs/secrets.md` (every `secret` workflow, git credentials, what the guard
+cannot see, pushing to a cloud secret store), `docs/commands.md` (MCP server
+protection, triage helpers, exit codes, use through opena2a-cli) and
+`CONTRIBUTING.md`. The description now says where the read gate is enforced
+and where it is an instruction file, and that a command that prints its own
+credential is not blocked. The sample `init` output starts below the version
+banner, so the README carries no release number or date; the whole output is
+in `docs/captures/quick-start.txt`, which the test suite compares with what
+the build prints. Guide links that pointed at README sections point at the new
+pages. No command, flag, output or exit code changed.
+
 **The broker audit log is signed, and `verifyAuditLog` checks it (#259).**
 The AAP broker profile requires every verification, decision, resolution and
 denial to be written to a signed audit log, and the reference test for it

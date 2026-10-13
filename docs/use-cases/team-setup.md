@@ -13,7 +13,7 @@ When working on a team, each developer needs access to the same secrets without 
 | `vault` | Self-hosted, enterprise | HashiCorp Vault instance |
 | `gcp-sm` | GCP-native teams | GCP project with Secret Manager API |
 
-`keychain` (macOS Keychain or Linux Secret Service) and `local` are not in this table: each keeps its store on one machine, so teammates cannot resolve secrets from it. To hand a store kept there to another machine, use an encrypted `export`/`import` bundle, described in [Move secrets to another machine](../../README.md#move-secrets-to-another-machine).
+`keychain` (macOS Keychain or Linux Secret Service) and `local` are not in this table: each keeps its store on one machine, so teammates cannot resolve secrets from it. To hand a store kept there to another machine, use an encrypted `export`/`import` bundle, described in [Move secrets to another machine](../secrets.md#move-secrets-to-another-machine).
 
 For most teams, 1Password is the simplest starting point. Every developer already has it, and CI/CD uses service account tokens.
 

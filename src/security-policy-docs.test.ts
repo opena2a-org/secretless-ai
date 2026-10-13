@@ -20,17 +20,18 @@ describe('security report response time', () => {
     expect(new Set(hoursIn(read('SECURITY.md'))).size).toBe(1);
   });
 
-  it('the README states the same commitment as SECURITY.md and points to it', () => {
+  // CONTRIBUTING.md carries the line the README's Contributing section held.
+  it.each(['README.md', 'CONTRIBUTING.md'])('%s states the same commitment as SECURITY.md and points to it', (page) => {
     const policyHours = hoursIn(read('SECURITY.md'))[0];
-    const lines = read('README.md').split('\n');
+    const lines = read(page).split('\n');
     const line = lines.find((l) => l.startsWith('Security issues:'));
-    expect(line, 'README.md must keep its "Security issues:" line').toBeDefined();
+    expect(line, `${page} must keep its "Security issues:" line`).toBeDefined();
     expect(hoursIn(line!)).toEqual([policyHours]);
     expect(line).toContain('[SECURITY.md](SECURITY.md)');
     expect(line).toContain('https://github.com/opena2a-org/secretless-ai/security/advisories/new');
     expect(read('SECURITY.md')).toContain('https://github.com/opena2a-org/secretless-ai/security/advisories/new');
 
     const elsewhere = lines.filter((l) => l !== line).join('\n');
-    expect(hoursIn(elsewhere), 'no other README line may state a response time').toEqual([]);
+    expect(hoursIn(elsewhere), `no other ${page} line may state a response time`).toEqual([]);
   });
 });

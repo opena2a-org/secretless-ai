@@ -35,7 +35,7 @@ Expected output in a project that Claude Code and Cursor both use, after the ver
     Status: secretless-ai status
 ```
 
-For Claude Code, `init` adds deny rules to `.claude/settings.json`, writes instructions to `CLAUDE.md` and wires in two hooks: `.claude/hooks/secretless-guard.sh` denies tool calls that would read credential files before they run, and `.claude/hooks/secretless-output-check.cjs` warns after a Bash command prints a credential-shaped value (detection, not prevention). For Cursor it writes `.cursor/rules/secretless.mdc`, an instruction file: nothing enforces it, and it has no effect unless Cursor loads that file. The [Supported tools](../../README.md#supported-tools) table names the file `init` writes for each tool.
+For Claude Code, `init` adds deny rules to `.claude/settings.json`, writes instructions to `CLAUDE.md` and wires in two hooks: `.claude/hooks/secretless-guard.sh` denies tool calls that would read credential files before they run, and `.claude/hooks/secretless-output-check.cjs` warns after a Bash command prints a credential-shaped value (detection, not prevention). For Cursor it writes `.cursor/rules/secretless.mdc`, an instruction file: nothing enforces it, and it has no effect unless Cursor loads that file. The [Supported tools](../how-it-works.md#supported-tools) table names the file `init` writes for each tool.
 
 ## Step 2: Verify protection
 

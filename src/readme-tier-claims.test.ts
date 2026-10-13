@@ -12,12 +12,14 @@ import * as path from 'path';
  * bring-your-own-vault guide showed `vault exec` as the way to use the backend
  * it had just connected (#328). These tests hold that text and vault-core.ts
  * together: a change that lets `vault exec` read the configured backend fails
- * here, and the text has to change with it.
+ * here, and the text has to change with it. The Architecture section moved
+ * from the README to docs/how-it-works.md, and is held there.
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const read = (rel: string) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
-const README = read('README.md');
+const ARCH_DOC_PATH = 'docs/how-it-works.md';
+const ARCH_DOC = read(ARCH_DOC_PATH);
 const BYOV_PATH = 'docs/use-cases/bring-your-own-vault.md';
 const BYOV = read(BYOV_PATH);
 const BROKER_DOC_PATH = 'docs/use-cases/run-broker.md';
@@ -25,7 +27,7 @@ const BROKER_DOC_PATH = 'docs/use-cases/run-broker.md';
 /** The text of a `## ` section, up to the next `## ` heading. */
 function section(doc: string, heading: string): string {
   const start = doc.indexOf(`\n## ${heading}\n`);
-  expect(start, `README.md must hold a "## ${heading}" section`).toBeGreaterThan(-1);
+  expect(start, `${ARCH_DOC_PATH} must hold a "## ${heading}" section`).toBeGreaterThan(-1);
   const end = doc.indexOf('\n## ', start + 1);
   return doc.slice(start, end === -1 ? undefined : end);
 }
@@ -50,7 +52,7 @@ function headingAnchor(text: string): string {
   return text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
 }
 
-const ARCHITECTURE = section(README, 'Architecture');
+const ARCHITECTURE = section(ARCH_DOC, 'Architecture');
 
 describe('which store vault exec reads (#328)', () => {
   it('vault-core.ts opens the Identity Vault and no configured storage backend', () => {
@@ -58,7 +60,7 @@ describe('which store vault exec reads (#328)', () => {
     expect(src, 'vaultExec no longer resolves from ~/.aim/vault').toMatch(/path\.join\(HOME, '\.aim', 'vault'\)/);
     expect(
       src,
-      'src/vault-core.ts now reaches the configured storage backend; README.md Architecture and ' +
+      `src/vault-core.ts now reaches the configured storage backend; ${ARCH_DOC_PATH} Architecture and ` +
         `${BYOV_PATH} say \`vault exec\` does not read it, update them in the same change`,
     ).not.toMatch(/(from|require\()\s*'\.\/(secret-store|backends)/);
   });
@@ -67,18 +69,18 @@ describe('which store vault exec reads (#328)', () => {
     const subject = /Tier 2|Vault Exec|`vault exec`|\bEach\b/;
     const store = /backend|existing vault/i;
     const claims = [
-      ...sentences(ARCHITECTURE).map(s => `README.md: ${s}`),
+      ...sentences(ARCHITECTURE).map(s => `${ARCH_DOC_PATH}: ${s}`),
       ...sentences(BYOV).map(s => `${BYOV_PATH}: ${s}`),
     ].filter(s => subject.test(s) && store.test(s) && !/\bnot\b/.test(s));
     expect(claims).toEqual([]);
   });
 
-  it('the README Tier 2 paragraph names the store it reads and the command for a backend secret', () => {
+  it('the Tier 2 paragraph names the store it reads and the command for a backend secret', () => {
     const tier2 = ARCHITECTURE.split('\n').filter(l => l.startsWith('**Tier 2: Vault Exec.**'));
-    expect(tier2, 'README.md Architecture must hold one "**Tier 2: Vault Exec.**" paragraph').toHaveLength(1);
+    expect(tier2, `${ARCH_DOC_PATH} Architecture must hold one "**Tier 2: Vault Exec.**" paragraph`).toHaveLength(1);
     expect(tier2[0]).toContain('`~/.aim/vault`');
     expect(tier2[0]).toContain('`vault register`');
-    expect(ARCHITECTURE, 'README.md Architecture must show `run --only` for a secret in the configured backend')
+    expect(ARCHITECTURE, `${ARCH_DOC_PATH} Architecture must show \`run --only\` for a secret in the configured backend`)
       .toMatch(/^npx secretless-ai run --only [A-Z_]+ -- /m);
   });
 
@@ -94,8 +96,8 @@ describe('which store vault exec reads (#328)', () => {
     const headings = new Set(
       read(BROKER_DOC_PATH).split('\n').filter(l => /^#{1,6} /.test(l)).map(l => headingAnchor(l.replace(/^#+ /, ''))),
     );
-    const links = [...`${README}\n${BYOV}`.matchAll(/run-broker\.md#([\w-]+)/g)].map(m => m[1]);
-    expect(links.length, 'README.md or the guide must link to the two stores in Run the Broker').toBeGreaterThan(0);
+    const links = [...`${ARCH_DOC}\n${BYOV}`.matchAll(/run-broker\.md#([\w-]+)/g)].map(m => m[1]);
+    expect(links.length, `${ARCH_DOC_PATH} or the guide must link to the two stores in Run the Broker`).toBeGreaterThan(0);
     for (const anchor of links) expect(headings, `#${anchor}`).toContain(anchor);
   });
 });
