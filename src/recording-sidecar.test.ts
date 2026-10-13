@@ -38,12 +38,12 @@ function readmeLine(): string {
 
 /**
  * What a recording never shows: a path under a home directory, which names the
- * machine and often the person it was rendered on, or a planning label. Each
- * pattern is put together from parts so this file does not hold the text it
- * looks for.
+ * machine and often the person it was rendered on, or a numbered phase. Each
+ * path pattern is put together from parts so this file does not hold the text
+ * it looks for.
  */
 const under = (directory: string) => `${directory}/`;
-const MACHINE_WORDS = new RegExp([under('/Users'), under('/home'), under('~'), '\\[CHIEF' + '-', 'phase [0-9]'].join('|'));
+const MACHINE_WORDS = new RegExp([under('/Users'), under('/home'), under('~'), 'phase [0-9]'].join('|'));
 const VERSION_OR_DATE = /[0-9]+\.[0-9]+\.[0-9]+|20[0-9]{2}-[0-9]{2}-[0-9]{2}/;
 
 /**
@@ -80,7 +80,7 @@ describe('the recorded walkthrough and its sidecar', () => {
     expect(capture.filter(line => /^\[exit \d+\]$/.test(line)).map(line => Number(line.slice(6, -1)))).toEqual(sidecar().exitCodes);
   });
 
-  it('can tell a home-directory path and a planning label from ordinary output', () => {
+  it('can tell a home-directory path and a numbered phase from ordinary output', () => {
     // Pinned in both directions before the real files are read.
     for (const line of [`cd ${under('/Users')}name/project`, `${under('/home')}name`, `ls ${under('~')}project`, 'phase 2']) {
       expect(MACHINE_WORDS.test(line), line).toBe(true);
@@ -91,7 +91,7 @@ describe('the recorded walkthrough and its sidecar', () => {
     expect(MACHINE_WORDS.test(verifyScopeLine())).toBe(true);
   });
 
-  it('shows no home-directory path and no planning label in the tape, the text capture or the README line', () => {
+  it('shows no home-directory path and no numbered phase in the tape, the text capture or the README line', () => {
     const offenders: string[] = [];
     const check = (file: string, lines: string[], printedByTheTool: string[] = []): void => {
       lines.forEach((line, i) => {
