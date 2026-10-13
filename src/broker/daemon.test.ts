@@ -1,10 +1,13 @@
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as http from 'http';
 import * as net from 'net';
-import { startDaemon, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning } from './daemon';
+import {
+  assertSocketPathFits, startDaemon, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning,
+} from './daemon';
 import { TOKEN_FILE } from './server';
 
 /**
@@ -113,6 +116,101 @@ describe('daemon test HOME', () => {
     if (process.platform === 'darwin') {
       // One byte past the limit: EINVAL on Node 24 and 26, a shortened path on 20 and 22.
       expect(['EINVAL', 'shortened']).toContain(await listen(pathOf(SOCKET_PATH_MAX + 1)));
+    }
+  });
+});
+
+/**
+ * `startDaemon` checks the socket path against the platform's limit before it creates the
+ * config directory, a PID file or a token. Without the check, a start on macOS under Node 26
+ * with a path one byte past the limit failed in `listen` with
+ * `listen EINVAL: invalid argument <path>` and no Verify or Fix line.
+ */
+describe('startDaemon socket path limit', () => {
+  const pidFile = path.join(testHome.dir, '.secretless-ai', 'broker.pid');
+  const platformMax = ({ darwin: 104, linux: 108 } as Partial<Record<NodeJS.Platform, number>>)[
+    process.platform
+  ];
+
+  /** A path of exactly `bytes` bytes under the temporary HOME. */
+  const pathOf = (bytes: number): string =>
+    path.join(testHome.dir, 's'.repeat(bytes - Buffer.byteLength(testHome.dir) - 1));
+
+  it.each([
+    ['darwin', 104],
+    ['linux', 108],
+  ] as const)('accepts a %s path of %i bytes and refuses one byte more', (platform, max) => {
+    expect(Buffer.byteLength(pathOf(max))).toBe(max);
+    expect(() => assertSocketPathFits(pathOf(max), platform)).not.toThrow();
+    expect(() => assertSocketPathFits(pathOf(max + 1), platform)).toThrow(
+      `is ${max + 1} bytes long, and a Unix socket path on this platform can be at most ${max} bytes`,
+    );
+  });
+
+  it('measures the path in bytes, not characters', () => {
+    const socketPath = path.join(testHome.dir, 'é'.repeat(50));
+    expect(socketPath.length).toBeLessThanOrEqual(104);
+    expect(Buffer.byteLength(socketPath)).toBeGreaterThan(104);
+
+    expect(() => assertSocketPathFits(socketPath, 'darwin')).toThrow(
+      `is ${Buffer.byteLength(socketPath)} bytes long`,
+    );
+  });
+
+  it('checks no path on a platform it holds no limit for', () => {
+    expect(() => assertSocketPathFits(pathOf(400), 'win32')).not.toThrow();
+  });
+
+  it.skipIf(platformMax === undefined)(
+    'refuses a socket path past the limit with a Verify and a Fix line, and writes no PID file, token or socket',
+    async () => {
+      fs.rmSync(pidFile, { force: true });
+      fs.rmSync(TOKEN_FILE, { force: true });
+      const socketPath = pathOf(200);
+
+      await expect(startDaemon({ socketPath })).rejects.toThrow(
+        `Broker socket path ${socketPath} is 200 bytes long, and a Unix socket path on this ` +
+        `platform can be at most ${platformMax} bytes. The broker was not started.\n` +
+        `  Verify: printf %s '${socketPath}' | wc -c\n` +
+        `  Fix:    start the broker on a socket path of at most ${platformMax} bytes`,
+      );
+
+      expect(fs.existsSync(pidFile)).toBe(false);
+      expect(fs.existsSync(TOKEN_FILE)).toBe(false);
+      expect(fs.existsSync(socketPath)).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'prints a Verify command that counts the bytes of a path holding quotes, a space and a $(...)',
+    () => {
+      const socketPath = path.join(testHome.dir, `it's "a" $(echo x) é`, 's'.repeat(100));
+      let message = '';
+      try {
+        assertSocketPathFits(socketPath, 'darwin');
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      const verify = /^ {2}Verify: (.*)$/m.exec(message)?.[1];
+      expect(verify).toBeDefined();
+
+      const counted = spawnSync('/bin/sh', ['-c', verify!], { encoding: 'utf-8' });
+
+      expect(counted.stdout.trim()).toBe(String(Buffer.byteLength(socketPath)));
+      expect(message).toContain(`is ${Buffer.byteLength(socketPath)} bytes long`);
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')('starts on a socket path of exactly the limit', async () => {
+    const socketPath = pathOf(SOCKET_PATH_MAX);
+
+    const server = await startDaemon({ socketPath, httpPort: 24000 + Math.floor(Math.random() * 1000) });
+    try {
+      expect(getDaemonStatus()?.socketPath).toBe(socketPath);
+      expect(fs.existsSync(socketPath)).toBe(true);
+    } finally {
+      await server.stop();
+      fs.rmSync(pidFile, { force: true });
     }
   });
 });
