@@ -939,6 +939,21 @@ file cap clears. `init notes.txt/sub`, where `notes.txt` is a file, said
 now names the file and suggests `init` on the directory that holds it.
 Detection, the report's "files not opened" list and exit codes are unchanged.
 
+**The grant resolver holds the life any provider reports for a scoped credential to the binding's TTL.**
+`ExchangeProvider` caps the life it reports at the binding's `ttlSeconds`, but
+the provider registry takes any `CredentialProvider`, and `GrantResolver`
+handed the worker whatever a provider returned. Under a 300 second binding, a
+provider that reported `43200`, `1e21`, `NaN`, the string `"300"` or no life at
+all reached the downstream caller with that value as `expiresInSeconds`. The
+resolver now applies the rule the exchange site applies, from one shared
+function: a stated life can shorten the binding's TTL and cannot extend it, a
+value that is not a number reports the TTL, and a negative one reports 0. The
+worker receives a copy of the credential, so the object a provider returned is
+not changed, and own members a provider adds beside `token`, `tokenType` and
+`expiresInSeconds` are kept. A provider that returns no credential object is
+now denied before the downstream caller runs. This bounds the life the broker
+reports; it does not shorten the credential the provider issued.
+
 **The broker's assertion mint functions refuse an issue time that is not a clock reading in seconds.**
 `mintBrokerAssertion`, `mintBrokerAssertionMlDsa65` and
 `mintHybridBrokerAssertion` take the issue time as an argument, `nowSeconds`,

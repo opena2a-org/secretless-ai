@@ -77,8 +77,28 @@ export interface ScopedCredential {
   token: string;
   /** Token type, e.g. "Bearer". */
   tokenType: string;
-  /** Seconds until the scoped credential expires. */
+  /** Seconds until the scoped credential expires: at most the binding's TTL (capCredentialLife). */
   expiresInSeconds: number;
+}
+
+/**
+ * The life to report for a scoped credential: what its provider stated, held to the binding's TTL.
+ *
+ * The TTL is the operator's ceiling on the credential's life, so a stated life can shorten it and
+ * cannot extend it. A longer one reports the TTL, a negative one reports 0 (already expired), and
+ * a value that is not a number (absent, NaN, a string) states no life, so the TTL stands.
+ *
+ * One rule for the two sites that report a life: where Exchange reads the authorization server's
+ * `expires_in` (./exchange.ts), and where the grant resolver takes a credential from whichever
+ * provider the registry returned (../grant-resolver.ts). `ttlSeconds` is a binding TTL inside its
+ * range; each site passes one that was already checked.
+ *
+ * This bounds the life the broker reports. It does not shorten the credential the provider issued.
+ */
+export function capCredentialLife(stated: unknown, ttlSeconds: number): number {
+  return typeof stated === 'number' && !Number.isNaN(stated)
+    ? Math.max(0, Math.min(stated, ttlSeconds))
+    : ttlSeconds;
 }
 
 /** A credential provider implements one or more CPI modes. */
