@@ -140,7 +140,7 @@ $SL doctor --json; echo "exit=$?"      # REFUSED, exit 2
 ```
 
 Check both argv positions (`scan --json <dir>` and `scan <dir> --json`), since
-this checklist uses the leading form and the README uses the trailing one.
+this checklist uses the leading form and `docs/commands.md` uses the trailing one.
 
 The one that matters: pre-fix, `verify --json` resolved `--json` as the project
 directory and printed `AI context: clean (no credentials found)` for a directory
@@ -435,7 +435,7 @@ $SL secret list   # confirm no SMOKE_* names remain
 
 - Diff touches `src/patterns.ts` or bumps `@opena2a/credential-patterns`:
   re-run the lockstep tests and re-verify the pattern count claimed in
-  README.md ("N credential patterns from @opena2a/credential-patterns@x.y.z").
+  docs/how-it-works.md ("N credential patterns from @opena2a/credential-patterns@x.y.z").
 - Diff touches `src/broker/` or `src/grant/`: exercise the broker
   round-trip manually (`broker start` → grant flow → `broker stop`). The
   daemon lifecycle is not covered above.

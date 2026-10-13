@@ -30,6 +30,9 @@ const itIfBuilt = hasBuild ? it : it.skip;
 const TEST_TIMEOUT_MS = 30_000;
 
 const README = 'README.md';
+const COMMANDS_DOC = 'docs/commands.md';
+const QUICK_START_CAPTURE = 'docs/captures/quick-start.txt';
+const QUICK_START_PROVENANCE = 'docs/captures/quick-start.json';
 const PROTECT_GUIDE = 'docs/use-cases/protect-my-credentials.md';
 const MCP_GUIDE = 'docs/use-cases/secure-mcp-configs.md';
 const TEAM_GUIDE = 'docs/use-cases/team-setup.md';
@@ -361,7 +364,48 @@ describe('protect-my-credentials.md', () => {
   }, TEST_TIMEOUT_MS);
 });
 
-describe('secure-mcp-configs.md and the README', () => {
+describe('the README quick start and its capture', () => {
+  const read = (file: string) => fs.readFileSync(path.join(REPO_ROOT, file), 'utf-8');
+  const capture = () => read(QUICK_START_CAPTURE).replace(/\n+$/, '');
+  const VERSION_OR_DATE = /v?[0-9]+\.[0-9]+\.[0-9]+|20[0-9]{2}-[0-9]{2}-[0-9]{2}/;
+
+  itIfBuilt('`init` in a project Claude Code uses prints the capture, and its provenance names this build', () => {
+    const home = tempDir();
+    const project = tempDir();
+    fs.mkdirSync(path.join(project, '.claude'));
+
+    const res = cli(['init'], { home, cwd: project });
+    expect(normalize(res.output, home)).toBe(capture());
+
+    const provenance = JSON.parse(read(QUICK_START_PROVENANCE));
+    const pkg = JSON.parse(read('package.json'));
+    expect(provenance.command).toBe('npx secretless-ai init');
+    expect(provenance.exitCode).toBe(res.status);
+    expect(provenance.version, `${QUICK_START_PROVENANCE} names the release the capture was taken from`).toBe(pkg.version);
+    expect(provenance.capturedAt).toMatch(/^20\d{2}-\d{2}-\d{2}$/);
+    expect(path.posix.join(path.posix.dirname(QUICK_START_PROVENANCE), provenance.outputs.capture)).toBe(QUICK_START_CAPTURE);
+  }, TEST_TIMEOUT_MS);
+
+  it('the README shows consecutive lines of the capture, with no version or date, and links the whole of it', () => {
+    const { lines, blocks } = fencedBlocks(README);
+    const command = blocks.findIndex(b => b.body.some(l => l.trim() === 'npx secretless-ai init'));
+    expect(command, 'README.md must run `npx secretless-ai init` in its first sample').toBe(0);
+    const shown = blocks[command + 1].body.join('\n');
+
+    // An excerpt is a run of whole lines, so no token of the output is edited.
+    expect(shown.length).toBeGreaterThan(0);
+    expect(`\n${capture()}\n`, 'the README sample is not a run of consecutive capture lines').toContain(`\n${shown}\n`);
+    expect(shown).not.toMatch(VERSION_OR_DATE);
+    expect(capture(), 'the capture keeps the version banner the README leaves out').toMatch(VERSION_OR_DATE);
+
+    const label = lines.slice(blocks[command].start, blocks[command + 1].start).find(l => l.includes('`npx secretless-ai init` prints'));
+    expect(label, 'the line above the sample says what it is and where the whole output is').toBeDefined();
+    expect(label).toContain('trimmed');
+    expect(label).toContain(`](${QUICK_START_CAPTURE})`);
+  });
+});
+
+describe('secure-mcp-configs.md and docs/commands.md', () => {
   it('`protect-mcp` on a Claude Desktop config with three servers', async () => {
     const { home } = inProcessFixture();
     writeClaudeDesktopConfig(home);
@@ -370,7 +414,7 @@ describe('secure-mcp-configs.md and the README', () => {
     expect(res.code).toBe(0);
     const output = normalize(res.output, home);
     expect(output).toBe(sampleAfter(MCP_GUIDE, 'protect-mcp'));
-    expect(output).toBe(sampleAfter(README, 'protect-mcp'));
+    expect(output).toBe(sampleAfter(COMMANDS_DOC, 'protect-mcp'));
   });
 
   itIfBuilt('`mcp-status` after `protect-mcp`', async () => {

@@ -1,4 +1,4 @@
-# Use Cases
+# Use cases
 
 Step-by-step guides for common secretless-ai workflows. Each guide takes 2-5 minutes and includes expected output so you know it worked.
 
@@ -24,4 +24,4 @@ Step-by-step guides for common secretless-ai workflows. Each guide takes 2-5 min
 
 ## Full Reference
 
-For the complete command reference, see the [README](../README.md). For what a scan opens, which gaps fail a build, and what each exit code means, see [Scan coverage and exit codes](scanning.md).
+For the commands, see [Commands](commands.md) and [Store and use secrets](secrets.md); for the layers, the supported tools and the storage backends, see [How it works](how-it-works.md). For what a scan opens, which gaps fail a build, and what each exit code means, see [Scan coverage and exit codes](scanning.md).

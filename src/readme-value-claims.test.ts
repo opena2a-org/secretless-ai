@@ -12,14 +12,20 @@ import { PUSH_TARGETS, type PushTargetType } from './secret-push';
  * store. The README's own text names `secret set NAME=VALUE` as putting a value
  * in shell history. What holds is narrower: no value goes to OpenA2A, and a
  * value is read when a command the user runs needs it. These tests keep the
- * absolute wording out and hold the replacement to the CLI it describes.
+ * absolute wording out and hold the replacement to the CLI it describes. The
+ * replacement line moved with "Verifying what was installed" to
+ * docs/install.md, and the pages the README's sections moved to are read for
+ * the absolute wording as the README is.
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const README = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf-8');
+const read = (rel: string) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
+const README = read('README.md');
+const INSTALL_DOC_PATH = 'docs/install.md';
+const MOVED_TO = [INSTALL_DOC_PATH, 'docs/how-it-works.md', 'docs/secrets.md', 'docs/commands.md'];
 const FENCE = /^\s*(```|~~~)/;
 
-/** README lines outside fenced code blocks. */
+/** Lines outside fenced code blocks. */
 function proseLines(text: string): string[] {
   const out: string[] = [];
   let inFence = false;
@@ -49,7 +55,8 @@ const PUSH_TARGET_NAMES: Record<PushTargetType, string> = {
 const VALUE_LINE_START = 'Secretless sends no credential value to OpenA2A';
 
 describe('README statements about reading and sending credential values', () => {
-  const prose = proseLines(README);
+  const prose = [README, ...MOVED_TO.map(read)].flatMap(proseLines);
+  const installProse = proseLines(read(INSTALL_DOC_PATH));
 
   it('no line says Secretless never reads or never transmits the values it manages', () => {
     expect(prose.filter((l) => /\bnever (reads|transmits)\b/i.test(l))).toEqual([]);
@@ -61,16 +68,17 @@ describe('README statements about reading and sending credential values', () => 
   });
 
   it('states that no value goes to OpenA2A, and the Telemetry section backs it', () => {
-    const line = prose.find((l) => l.startsWith(VALUE_LINE_START));
-    expect(line, `README.md must keep its "${VALUE_LINE_START}" line`).toBeDefined();
-    expect(line).toContain('[telemetry](#telemetry)');
-    const telemetry = README.slice(README.indexOf('\n## Telemetry\n'));
-    expect(telemetry.length).toBeGreaterThan(0);
+    const line = installProse.find((l) => l.startsWith(VALUE_LINE_START));
+    expect(line, `${INSTALL_DOC_PATH} must keep its "${VALUE_LINE_START}" line`).toBeDefined();
+    expect(line).toContain('[telemetry](../README.md#telemetry)');
+    const at = README.indexOf('\n## Telemetry\n');
+    expect(at, 'README.md must keep its "## Telemetry" section').toBeGreaterThan(-1);
+    const telemetry = README.slice(at);
     expect(telemetry).toMatch(/No content is collected\.[^\n]*no env-var values/);
   });
 
   it('names only commands the CLI dispatches, and every store `secret push` writes to', () => {
-    const line = prose.find((l) => l.startsWith(VALUE_LINE_START))!;
+    const line = installProse.find((l) => l.startsWith(VALUE_LINE_START))!;
     const commands = dispatchedCommands();
     const named = [...line.matchAll(/`(?:secretless-ai )?([a-z][a-z-]*)(?: [a-z-]+)?`/g)].map((m) => m[1]);
     expect(named).toContain('secret');

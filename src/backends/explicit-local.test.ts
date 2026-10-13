@@ -101,14 +101,15 @@ describe.skipIf(!hasKeychainPath)('an explicit `backend set local` is honoured (
     expect(createBackend('local')).toBeInstanceOf(LocalBackend);
   });
 
-  it("the README's backend switch migrates from the store the unconfigured default wrote to", () => {
-    // README.md shows `backend set <target>` and then `migrate --from <source>
-    // --to <target>`. Secrets stored before the switch went to the default
-    // store, so once the switch is configured the source has to name that store.
-    const readme = fs.readFileSync(path.resolve(__dirname, '..', '..', 'README.md'), 'utf-8');
-    const set = /^npx secretless-ai backend set (\S+)/m.exec(readme);
-    const migrate = /^npx secretless-ai migrate --from (\S+) --to (\S+)/m.exec(readme);
-    if (!set || !migrate) throw new Error('README.md shows no `backend set` and `migrate --from` pair');
+  it("the documented backend switch migrates from the store the unconfigured default wrote to", () => {
+    // docs/how-it-works.md (Storage backends, moved from the README) shows
+    // `backend set <target>` and then `migrate --from <source> --to <target>`.
+    // Secrets stored before the switch went to the default store, so once the
+    // switch is configured the source has to name that store.
+    const page = fs.readFileSync(path.resolve(__dirname, '..', '..', 'docs', 'how-it-works.md'), 'utf-8');
+    const set = /^npx secretless-ai backend set (\S+)/m.exec(page);
+    const migrate = /^npx secretless-ai migrate --from (\S+) --to (\S+)/m.exec(page);
+    if (!set || !migrate) throw new Error('docs/how-it-works.md shows no `backend set` and `migrate --from` pair');
     expect(migrate[2]).toBe(set[1]);
 
     const writtenTo = createBackend('local').name;

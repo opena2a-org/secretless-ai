@@ -2593,6 +2593,10 @@ describe('status next steps stay runnable when settings.json does not parse', ()
  * while init wrote 96. Both sides here are derived from real artifacts (the
  * published README, and the count init actually returns), so the assertion
  * cannot drift into restating one of them.
+ *
+ * The README keeps the sample below its version banner. The whole run is in
+ * docs/captures/quick-start.txt, and the file-pattern count and the Supported
+ * tools table are in docs/how-it-works.md; each claim is held where it lives.
  */
 describe('README sample output matches the build', () => {
   let dir: string;
@@ -2600,7 +2604,10 @@ describe('README sample output matches the build', () => {
   beforeEach(() => { dir = tmpDir(); });
   afterEach(() => { cleanup(dir); });
 
-  const README = (): string => fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf-8');
+  const published = (...rel: string[]): string => fs.readFileSync(path.resolve(__dirname, '..', ...rel), 'utf-8');
+  const README = (): string => published('README.md');
+  const HOW_IT_WORKS = (): string => published('docs', 'how-it-works.md');
+  const QUICK_START_CAPTURE = (): string => published('docs', 'captures', 'quick-start.txt');
 
   it('states the deny-pattern count init actually writes', () => {
     const result = init(dir);
@@ -2621,26 +2628,28 @@ describe('README sample output matches the build', () => {
       fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'),
     );
     // File patterns are the Read() rules. Bash() rules are command patterns and
-    // are counted separately by the README sentence above this one.
+    // are counted separately by the README sample line checked above.
     const readRules = (settings.permissions.deny as string[]).filter(r => r.startsWith('Read('));
 
-    const claimed = README().match(/(\d+) file patterns enforced/);
-    expect(claimed, 'README no longer contains an "N file patterns enforced" claim').not.toBeNull();
+    const claimed = HOW_IT_WORKS().match(/(\d+) file patterns enforced/);
+    expect(claimed, 'docs/how-it-works.md no longer contains an "N file patterns enforced" claim').not.toBeNull();
     expect(readRules.length).toBeGreaterThan(0);
     expect(Number(claimed![1])).toBe(readRules.length);
   });
 
   it('shows the version this package actually ships', () => {
-    // The quickstart sample prints a version banner. `npm version` bumps
-    // package.json and nothing else, so without this the sample goes stale on
+    // The quickstart capture prints a version banner. `npm version` bumps
+    // package.json and nothing else, so without this the capture goes stale on
     // every release — and it is the first output a new user compares against
-    // their own terminal.
+    // their own terminal. The README shows the run from below the banner, so
+    // it carries no version to go stale.
     const pkg = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8'),
     );
-    const claimed = README().match(/Secretless v(\d+\.\d+\.\d+)/);
-    expect(claimed, 'README no longer contains a "Secretless vX.Y.Z" sample banner').not.toBeNull();
+    const claimed = QUICK_START_CAPTURE().match(/Secretless v(\d+\.\d+\.\d+)/);
+    expect(claimed, 'docs/captures/quick-start.txt no longer contains a "Secretless vX.Y.Z" banner').not.toBeNull();
     expect(claimed![1]).toBe(pkg.version);
+    expect(README(), 'the README sample starts below the version banner').not.toMatch(/Secretless v\d+\.\d+\.\d+/);
   });
 
   it('names, for each instruction-file tool, the file init writes in a new project', () => {
@@ -2649,8 +2658,8 @@ describe('README sample output matches the build', () => {
     // it. It kept naming `.cursorrules` and `.clinerules` after init moved to
     // `.cursor/rules/secretless.mdc` and `.clinerules/secretless.md`, so a user
     // following the table looked for files init no longer creates.
-    const section = README().split(/^## Supported tools$/m)[1]?.split(/^## /m)[0];
-    expect(section, 'README no longer has a "## Supported tools" section').toBeDefined();
+    const section = HOW_IT_WORKS().split(/^## Supported tools$/m)[1]?.split(/^## /m)[0];
+    expect(section, 'docs/how-it-works.md no longer has a "## Supported tools" section').toBeDefined();
     const rows = new Map<string, string>();
     for (const m of section!.matchAll(/^\| ([^|]+?) \| ([^|]+?) \|$/gm)) rows.set(m[1], m[2]);
 
@@ -2678,9 +2687,9 @@ describe('README sample output matches the build', () => {
         expect(written, `init wrote no instruction file for ${tool}`).toHaveLength(1);
 
         const row = rows.get(toolDisplayName(tool));
-        expect(row, `README has no Supported tools row for ${toolDisplayName(tool)}`).toBeDefined();
+        expect(row, `docs/how-it-works.md has no Supported tools row for ${toolDisplayName(tool)}`).toBeDefined();
         const named = [...row!.matchAll(/`([^`]+)`/g)].map(m => m[1]);
-        expect(named, `README row for ${toolDisplayName(tool)}`).toEqual(written);
+        expect(named, `docs/how-it-works.md row for ${toolDisplayName(tool)}`).toEqual(written);
       } finally {
         cleanup(project);
       }

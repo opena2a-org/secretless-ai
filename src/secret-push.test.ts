@@ -1325,7 +1325,8 @@ describe('secret push is a subcommand, and its flags belong to it', () => {
 describe('the vault guide never says a push target is missing from the CLI (#343)', () => {
   const REPO_ROOT = path.resolve(__dirname, '..');
   const guide = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'use-cases', 'bring-your-own-vault.md'), 'utf-8');
-  const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf-8');
+  // The push section moved from the README to docs/secrets.md.
+  const secretsDoc = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'secrets.md'), 'utf-8');
   const SERVICE: Record<PushTargetType, string> = {
     'azure-kv': 'Azure Key Vault',
     vault: 'HashiCorp Vault',
@@ -1339,13 +1340,13 @@ describe('the vault guide never says a push target is missing from the CLI (#343
     }
   });
 
-  it('calls Azure Key Vault a push target and links the README section on `secret push --to azure-kv`', () => {
+  it('calls Azure Key Vault a push target and links the docs section on `secret push --to azure-kv`', () => {
     expect(guide).toContain('push target, not as a storage backend');
     expect(guide).toContain('`secret push --to azure-kv`');
 
-    const anchor = guide.match(/\]\(\.\.\/\.\.\/README\.md#([a-z0-9-]+)\)/)?.[1];
+    const anchor = guide.match(/\]\(\.\.\/secrets\.md#([a-z0-9-]+)\)/)?.[1];
     expect(anchor).toBeDefined();
-    const lines = readme.split('\n');
+    const lines = secretsDoc.split('\n');
     const start = lines.findIndex((line) => {
       const h = line.match(/^(#{1,6})\s+(.+?)\s*$/);
       return h !== null && h[2].toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s/g, '-') === anchor;

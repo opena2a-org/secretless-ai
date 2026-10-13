@@ -15,12 +15,12 @@ import * as path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
-/** The README section under `heading`, up to the next `## ` heading. */
-function readmeSection(heading: string): string {
-  const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf-8');
-  const start = readme.indexOf(`\n${heading}\n`);
-  expect(start, `README.md must hold a "${heading}" section`).toBeGreaterThan(-1);
-  const rest = readme.slice(start + heading.length + 2);
+/** The docs/commands.md section under `heading`, up to the next `## ` heading. */
+function commandsSection(heading: string): string {
+  const page = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'commands.md'), 'utf-8');
+  const start = page.indexOf(`\n${heading}\n`);
+  expect(start, `docs/commands.md must hold a "${heading}" section`).toBeGreaterThan(-1);
+  const rest = page.slice(start + heading.length + 2);
   const end = rest.search(/^## /m);
   return end === -1 ? rest : rest.slice(0, end);
 }
@@ -37,7 +37,7 @@ function sentences(text: string): string[] {
 }
 
 const PAGES: { label: string; text: () => string }[] = [
-  { label: 'README.md "## MCP server protection"', text: () => readmeSection('## MCP server protection') },
+  { label: 'docs/commands.md "## MCP server protection"', text: () => commandsSection('## MCP server protection') },
   {
     label: 'docs/use-cases/secure-mcp-configs.md',
     text: () => fs.readFileSync(path.join(REPO_ROOT, 'docs', 'use-cases', 'secure-mcp-configs.md'), 'utf-8'),

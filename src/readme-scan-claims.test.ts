@@ -14,16 +14,20 @@ import { CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
  * notebooks. These tests hold the published text and the walker's file filter
  * together: a change that starts opening one of these files fails here, and
  * the text has to change with it. The full paragraph lives in
- * docs/scanning.md, which the README's How it works step 1 links to.
+ * docs/scanning.md, which step 1 of docs/how-it-works.md links to. The steps
+ * were the README's "How it works" section until the README was cut to its
+ * short form; the claims are held where they now live.
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const README = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+const HOW_DOC_PATH = 'docs/how-it-works.md';
+const HOW_DOC = fs.readFileSync(path.join(REPO_ROOT, HOW_DOC_PATH), 'utf8');
 const SCAN_DOC_PATH = 'docs/scanning.md';
 const SCAN_DOC = fs.readFileSync(path.join(REPO_ROOT, SCAN_DOC_PATH), 'utf8');
 
 const TEXT_DRIFT =
-  `README.md How it works step 1, the ${SCAN_DOC_PATH} paragraph beginning "A directory scan checks", ` +
+  `${HOW_DOC_PATH} step 1, the ${SCAN_DOC_PATH} paragraph beginning "A directory scan checks", ` +
   `the ${SCAN_DOC_PATH} paragraph beginning "Dot-directories are among" and the scan line of --help ` +
   '(src/commands/help.ts) say a directory scan does not open this file; update them in the ' +
   'same change that starts opening it.';
@@ -32,7 +36,9 @@ const TEXT_DRIFT =
 function directoryScanParagraph(): string {
   const para = SCAN_DOC.split('\n').filter(l => l.startsWith('A directory scan checks'));
   expect(para, `${SCAN_DOC_PATH} must hold exactly one paragraph beginning "A directory scan checks"`).toHaveLength(1);
-  expect(README, 'README.md must not hold a second copy of the directory-scan paragraph').not.toMatch(/^A directory scan checks/m);
+  for (const [name, text] of [['README.md', README], [HOW_DOC_PATH, HOW_DOC]]) {
+    expect(text, `${name} must not hold a second copy of the directory-scan paragraph`).not.toMatch(/^A directory scan checks/m);
+  }
   return para[0];
 }
 
@@ -64,10 +70,10 @@ function tmpProject(): string {
   return dir;
 }
 
-describe('README claims about the pattern catalog', () => {
+describe('How it works claims about the pattern catalog', () => {
   it('states the pattern count and the pinned catalog version', () => {
-    const m = README.match(/(\d+) credential patterns from \[`@opena2a\/credential-patterns@(\d+\.\d+\.\d+)`\]/);
-    expect(m, 'README.md How it works step 1 no longer names the pattern count and catalog version').not.toBeNull();
+    const m = HOW_DOC.match(/(\d+) credential patterns from \[`@opena2a\/credential-patterns@(\d+\.\d+\.\d+)`\]/);
+    expect(m, `${HOW_DOC_PATH} step 1 no longer names the pattern count and catalog version`).not.toBeNull();
     const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
     expect(Number(m![1])).toBe(CREDENTIAL_PATTERNS.length);
     expect(m![2]).toBe(pkg.dependencies['@opena2a/credential-patterns']);
@@ -143,12 +149,13 @@ describe('README claims about what a directory scan opens', () => {
   });
 
   it('the step 1 link target exists and holds the directory-scan paragraph', () => {
-    const step1 = README.split('\n').filter(l => l.startsWith('1. **Scans**'));
-    expect(step1, 'README.md must hold exactly one How it works step beginning "1. **Scans**"').toHaveLength(1);
+    const step1 = HOW_DOC.split('\n').filter(l => l.startsWith('1. **Scans**'));
+    expect(step1, `${HOW_DOC_PATH} must hold exactly one step beginning "1. **Scans**"`).toHaveLength(1);
     const link = step1[0].match(/\]\(([^)#\s]+)#([^)\s]+)\)/);
-    expect(link, 'README.md How it works step 1 no longer links to the paragraph that says what a directory scan opens').not.toBeNull();
+    expect(link, `${HOW_DOC_PATH} step 1 no longer links to the paragraph that says what a directory scan opens`).not.toBeNull();
     const [, target, anchor] = link!;
-    expect(target, 'the step 1 link must point at the scan coverage page').toBe(SCAN_DOC_PATH);
+    // The link is relative to the page that holds it.
+    expect(path.posix.join(path.posix.dirname(HOW_DOC_PATH), target), 'the step 1 link must point at the scan coverage page').toBe(SCAN_DOC_PATH);
 
     const lines = SCAN_DOC.split('\n');
     const at = lines.flatMap((l, i) => {

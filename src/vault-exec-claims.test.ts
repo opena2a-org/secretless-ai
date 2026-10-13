@@ -48,8 +48,11 @@ describe('vault exec claim surface', () => {
     expect(fs.existsSync(path.join(DIST, 'commands', 'vault.js')), 'run `npm run build` first').toBe(true);
   });
 
-  it('the README does not say the agent or a process listing never sees the value', () => {
+  // Vault Exec is described in docs/how-it-works.md, where the README's
+  // Architecture section moved.
+  it('neither the README nor How it works says the agent or a process listing never sees the value', () => {
     expect(hits(path.join(ROOT, 'README.md'))).toEqual([]);
+    expect(hits(path.join(ROOT, 'docs', 'how-it-works.md'))).toEqual([]);
   });
 
   it('no built type declaration says it', () => {
@@ -62,8 +65,8 @@ describe('vault exec claim surface', () => {
     expect(hits(path.join(DIST, 'commands', 'vault.js'))).toEqual([]);
   });
 
-  it("the README states that the child's output is not masked", () => {
-    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf-8');
-    expect(readme).toContain("does not mask the child's output");
+  it("How it works states that the child's output is not masked", () => {
+    const page = fs.readFileSync(path.join(ROOT, 'docs', 'how-it-works.md'), 'utf-8');
+    expect(page).toContain("does not mask the child's output");
   });
 });

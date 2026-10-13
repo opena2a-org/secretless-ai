@@ -1,0 +1,18 @@
+{
+  "name": "quick-start",
+  "command": "npx secretless-ai init",
+  "tool": "secretless-ai",
+  "version": "0.23.1",
+  "capturedAt": "2026-10-12",
+  "capturedFrom": "a build of this repository's source, run as the built CLI",
+  "fixture": "a new project directory holding an empty .claude/ directory, and a new empty home directory",
+  "environment": {
+    "NO_COLOR": "1",
+    "OPENA2A_TELEMETRY": "off"
+  },
+  "exitCode": 0,
+  "outputs": {
+    "capture": "quick-start.txt"
+  },
+  "checkedBy": "src/docs-sample-output.test.ts"
+}

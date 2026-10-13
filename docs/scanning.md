@@ -1,6 +1,6 @@
 # Scan coverage and exit codes
 
-What `scan` opens, which gaps fail a build, and how a command line the tool cannot bind is refused. The commands themselves are in the [README](../README.md#triage-helpers).
+What `scan` opens, which gaps fail a build, and how a command line the tool cannot bind is refused. The commands themselves are in [Commands](commands.md#triage-helpers).
 
 ## Incomplete scans do not report clean
 
