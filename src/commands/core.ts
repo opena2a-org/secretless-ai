@@ -113,7 +113,12 @@ export function runInit(projectDir: string): number {
     console.log();
     console.log('  Created:');
     for (const f of result.filesCreated) {
-      console.log(`    + ${f}`);
+      // A settings file this run created carries the same count, in the words
+      // `status` prints for it: nothing was there to add the patterns to.
+      const suffix = (f === '.claude/settings.json' && result.denyRulesAdded > 0)
+        ? ` (${result.denyRulesAdded} deny pattern${result.denyRulesAdded === 1 ? '' : 's'})`
+        : '';
+      console.log(`    + ${f}${suffix}`);
     }
   }
 

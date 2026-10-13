@@ -276,6 +276,14 @@ function configureClaudeCode(
   // backup, so `init` reports the refusal and leaves the file byte-identical
   // (#122). CLAUDE.md handling below still runs — it is additive and safe.
   const settingsPath = path.join(claudeDir, 'settings.json');
+  // Which list names the file is decided by whether the path is there before
+  // this run writes it, taken here: a file this run creates is not one it
+  // modified. An existing empty file reads as `absent` below and still counts
+  // as existing, so it is listed as modified.
+  const settingsList = fs.existsSync(settingsPath) ? result.filesModified : result.filesCreated;
+  const listSettings = (): void => {
+    if (!settingsList.includes('.claude/settings.json')) settingsList.push('.claude/settings.json');
+  };
   const read = readSettingsFile(settingsPath);
   if (read.status === 'unusable') {
     result.settingsUnusable = {
@@ -305,7 +313,7 @@ function configureClaudeCode(
         command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/secretless-guard.sh',
       }],
     });
-    result.filesModified.push('.claude/settings.json');
+    listSettings();
   }
 
   // Add the PostToolUse output check for Bash. Bash is the channel #129 names:
@@ -326,9 +334,7 @@ function configureClaudeCode(
         command: `"$CLAUDE_PROJECT_DIR"/.claude/hooks/${OUTPUT_CHECK_FILE}`,
       }],
     });
-    if (!result.filesModified.includes('.claude/settings.json')) {
-      result.filesModified.push('.claude/settings.json');
-    }
+    listSettings();
   }
 
   // Add Stop hook for transcript cleaning after conversations
@@ -513,9 +519,7 @@ function configureClaudeCode(
     removed = before - settings.permissions.deny.length;
   }
 
-  if ((added > 0 || removed > 0) && !result.filesModified.includes('.claude/settings.json')) {
-    result.filesModified.push('.claude/settings.json');
-  }
+  if (added > 0 || removed > 0) listSettings();
   result.denyRulesAdded += added;
   result.denyRulesRemoved += removed;
   result.denyRulesTotal = settings.permissions.deny.length;

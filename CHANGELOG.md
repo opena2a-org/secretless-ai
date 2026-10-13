@@ -667,6 +667,24 @@ exports that exist for this package's own tests and help text:
 `nearMissCellsEvaluated` and `resetNearMissCellsEvaluated` in
 `dist/near-miss`. Detection, exit codes and `--json` output are unchanged.
 
+**`init` lists a `.claude/settings.json` it created under `Created:`, where it
+listed the file under `Modified:`.** In a project with no settings file, `init`
+printed `Modified:` and `~ .claude/settings.json (added 99 deny patterns)`
+about a file that was not there before the run. The list is what a reader uses
+to decide what to commit and what a revert costs, and it said a file of theirs
+had been edited. The row now reads `+ .claude/settings.json (99 deny patterns)`
+under `Created:`, after the two hook scripts and before `CLAUDE.md`, with the
+count worded as `status` words it, and the run prints no `Modified:` section. A
+settings file that was there before the run, an empty one included, stays under
+`Modified:` as `~ .claude/settings.json (added 99 deny patterns)`. For library
+callers, the value `init()` returns keeps its keys and types, and one path
+moves: on a project with no settings file `.claude/settings.json` is now in
+`filesCreated` and no longer in `filesModified`, so code that reads
+`filesModified` to learn whether the settings were written should read both
+lists. The README quick start and the `docs/use-cases/protect-my-credentials.md`
+sample are regenerated from this build. Unchanged: what `init` writes, its exit
+codes, and the output of `status` and `verify`.
+
 **`broker start` now serves `POST /grant` when it has a grant file; until now
 the endpoint answered 404 on every broker the command could start.** The grant
 flow has been in the package as a library: the broker verifies the agent's ATX

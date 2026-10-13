@@ -28,10 +28,8 @@ npx secretless-ai init
   Created:
     + .claude/hooks/secretless-guard.sh
     + .claude/hooks/secretless-output-check.cjs
+    + .claude/settings.json (99 deny patterns)
     + CLAUDE.md
-
-  Modified:
-    ~ .claude/settings.json (added 99 deny patterns)
 
   Next steps:
     Verify: secretless-ai verify
