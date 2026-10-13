@@ -12,7 +12,13 @@
  */
 
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
-import type { CredentialProvider, CpiMode, ResourceBinding, ScopedCredential } from './types';
+import {
+  capCredentialLife,
+  type CredentialProvider,
+  type CpiMode,
+  type ResourceBinding,
+  type ScopedCredential,
+} from './types';
 import { mintBrokerAssertion, type BrokerSigningKey } from './assertion';
 
 export const TOKEN_EXCHANGE_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:token-exchange';
@@ -100,14 +106,10 @@ export class ExchangeProvider implements CredentialProvider {
     //    server's `expires_in` (RFC 6749 §5.1) can only shorten it: a longer stated life, or a
     //    NaN, does not raise the ceiling, and a negative one reads as already expired.
     //    `bound.ttlSeconds` is the value the mint accepted, a whole number inside its range.
-    const stated = res.expires_in;
     return {
       token: res.access_token,
       tokenType: res.token_type ?? 'Bearer',
-      expiresInSeconds:
-        typeof stated === 'number' && !Number.isNaN(stated)
-          ? Math.max(0, Math.min(stated, bound.ttlSeconds))
-          : bound.ttlSeconds,
+      expiresInSeconds: capCredentialLife(res.expires_in, bound.ttlSeconds),
     };
   }
 }

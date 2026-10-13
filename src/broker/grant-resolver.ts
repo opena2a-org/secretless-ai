@@ -6,7 +6,8 @@
  *   1. verifies the ATX locally (signature/suite/expiry/CRL — §6 step 2),
  *   2. (optionally) cross-checks AIM agent identity (reuse of the existing AIM path),
  *   3. evaluates local grant policy against the verified context (default-deny — §3.4),
- *   4. resolves a scoped credential via the selected CPI provider (§5),
+ *   4. resolves a scoped credential via the selected CPI provider (§5), and holds the life it
+ *      reports to the binding's TTL,
  *   5. runs the operation in an ephemeral worker and returns ONLY the result (§6.5),
  *   6. audits every step to the signed, hash-chained audit log (§6.7; see audit.ts).
  *
@@ -16,7 +17,7 @@
 
 import type { Atx, AtxVerifier } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { GrantPolicy } from './grant-policy';
-import type { ProviderRegistry } from './cpi/types';
+import { capCredentialLife, type ProviderRegistry, type ScopedCredential } from './cpi/types';
 import type { AgentOperation, EphemeralWorker, OperationResult } from './worker';
 import type { AuditLogger } from './audit';
 import type { AimClient } from './aim-client';
@@ -126,9 +127,31 @@ export class GrantResolver {
         ...binding.resolve,
         trustClass: binding.match.trustClass,
       });
+      if (!cred || typeof cred !== 'object') {
+        audit(
+          'denied',
+          `provider "${binding.resolve.providerId}" returned no credential`,
+          binding.grant,
+        );
+        return DENIED;
+      }
+      // The binding's TTL is the operator's ceiling on the credential's life, and it holds for
+      // whichever provider the registry returned, not only for one that caps its own report. The
+      // worker is handed a copy this call owns, with the life held to the TTL policy loaded, so a
+      // provider that reports a longer life, NaN or a string cannot hand the downstream caller a
+      // life the binding does not allow. Each named member is read from the provider's object
+      // once, and by name, so a credential that keeps them on its prototype still carries them;
+      // the rest keeps any member a provider adds for the caller it is paired with.
+      const { token, tokenType, expiresInSeconds: stated, ...added } = cred;
+      const confined: ScopedCredential = {
+        ...added,
+        token,
+        tokenType,
+        expiresInSeconds: capCredentialLife(stated, binding.resolve.ttlSeconds),
+      };
 
       // 5. Run the operation in an ephemeral worker. Only the result crosses back.
-      const result = await this.deps.worker.run(binding.resolve, cred, input.operation);
+      const result = await this.deps.worker.run(binding.resolve, confined, input.operation);
 
       // 6. Audit success. Note: no token, no credential, no backend secret is logged.
       audit('allowed', `resolved ${binding.grant} via ${binding.resolve.mode}`, binding.grant);
