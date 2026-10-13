@@ -11,8 +11,12 @@ import * as http from 'http';
 import * as path from 'path';
 import * as os from 'os';
 import type { BrokerConfig, BrokerStatus } from './types';
-import { BrokerServer, TOKEN_FILE } from './server';
+import { BrokerServer, TOKEN_FILE, createAimClient } from './server';
 import { parseJsonRefusingDuplicates } from './strict-json';
+import { AuditLogger } from './audit';
+import { GrantResolver } from './grant-resolver';
+import { EphemeralWorker, HttpsDownstreamCaller } from './worker';
+import { loadGrantConfig, type GrantConfig } from './grant-config';
 
 const SECRETLESS_DIR = path.join(os.homedir(), '.secretless-ai');
 const DEFAULT_PID_FILE = path.join(SECRETLESS_DIR, 'broker.pid');
@@ -20,6 +24,7 @@ const DEFAULT_SOCKET_PATH = path.join(SECRETLESS_DIR, 'broker.sock');
 const DEFAULT_HTTP_PORT = 19421;
 const DEFAULT_POLICY_FILE = path.join(SECRETLESS_DIR, 'broker-policies.json');
 const DEFAULT_AUDIT_LOG = path.join(SECRETLESS_DIR, 'broker-audit.log');
+const DEFAULT_GRANT_FILE = path.join(SECRETLESS_DIR, 'broker-grants.json');
 
 export interface DaemonOptions {
   /** Override socket path. */
@@ -32,10 +37,21 @@ export interface DaemonOptions {
   aimToken?: string;
   /** Policy file path. */
   policyFile?: string;
+  /**
+   * Grant file path. A broker that loads one answers `POST /grant`. A path named here must
+   * exist. Left unset, ~/.secretless-ai/broker-grants.json is loaded when it exists, and
+   * `/grant` answers 404 when it does not.
+   */
+  grantFile?: string;
   /** Audit log path. */
   auditLog?: string;
   /** PID file path. */
   pidFile?: string;
+  /**
+   * Auth token file path. Default: ~/.secretless-ai/broker.token, which `broker status` and
+   * `broker stop` read; a broker started on another path is not one they can reach.
+   */
+  tokenFile?: string;
 }
 
 /**
@@ -64,9 +80,16 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
     aimToken: options?.aimToken ?? process.env.SECRETLESS_AIM_TOKEN ?? undefined,
     policyFile: options?.policyFile ?? DEFAULT_POLICY_FILE,
     auditLog: options?.auditLog ?? DEFAULT_AUDIT_LOG,
+    tokenFile: options?.tokenFile ?? TOKEN_FILE,
   };
 
-  const server = new BrokerServer(config);
+  // Loaded here, before the PID file is written and before a socket or token exists: a grant
+  // file this build cannot apply stops the start with nothing left behind, for the reason a
+  // refused policy file does (see BrokerServer.start).
+  const grants = await loadGrants(options?.grantFile);
+  const server = grants
+    ? new BrokerServer(config, grantDependencies(config, grants))
+    : new BrokerServer(config);
 
   // Write PID file before starting (TOCTOU protection via O_EXCL)
   const pidData = JSON.stringify({
@@ -110,9 +133,60 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
   }
 
   // Print token file path so callers know where to read the auth token
-  console.log(`Broker auth token: ${TOKEN_FILE}`);
+  console.log(`Broker auth token: ${config.tokenFile}`);
+  if (grants) {
+    console.log(
+      `Grant file: ${grants.file} ` +
+      `(${countOf(grants.bindingCount, 'binding')}, ${countOf(grants.providerCount, 'provider')})`,
+    );
+    console.log(
+      `Broker assertion public key: ${grants.assertionPublicKeyFile}` +
+      (grants.assertionKeyCreated
+        ? ' (new key: register it with each identity provider in the grant file)'
+        : ''),
+    );
+  }
 
   return server;
+}
+
+/**
+ * The grant file a start loads: the one named, or the default when it exists.
+ *
+ * A named file that is missing is refused by `loadGrantConfig`. A missing default is the
+ * ordinary case of a broker that serves no grants, and returns null.
+ */
+async function loadGrants(grantFile: string | undefined): Promise<GrantConfig | null> {
+  if (grantFile !== undefined) return loadGrantConfig(grantFile);
+  return fs.existsSync(DEFAULT_GRANT_FILE) ? loadGrantConfig(DEFAULT_GRANT_FILE) : null;
+}
+
+/**
+ * The dependencies of a broker that serves grants.
+ *
+ * The audit logger and the AIM client are built here and handed to both the grant resolver
+ * and the server, so a grant decision lands in the same log as every other broker event and
+ * is checked against the same AIM the `/resolve` path asks.
+ */
+function grantDependencies(
+  config: BrokerConfig,
+  grants: GrantConfig,
+): NonNullable<ConstructorParameters<typeof BrokerServer>[1]> {
+  const audit = new AuditLogger(config.auditLog);
+  const aimClient = createAimClient(config, audit);
+  const grantResolver = new GrantResolver({
+    verifier: grants.verifier,
+    policy: grants.policy,
+    providers: grants.providers,
+    worker: new EphemeralWorker(new HttpsDownstreamCaller()),
+    audit,
+    aimClient,
+  });
+  return { audit, aimClient, grantResolver };
+}
+
+function countOf(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
 export interface SpawnDaemonOptions {
@@ -410,4 +484,5 @@ export {
   DEFAULT_HTTP_PORT,
   DEFAULT_POLICY_FILE,
   DEFAULT_AUDIT_LOG,
+  DEFAULT_GRANT_FILE,
 };

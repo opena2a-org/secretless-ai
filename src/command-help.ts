@@ -485,6 +485,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--aim-url': ['<url>', 'AIM server URL for identity verification'],
       '--aim-token': ['<token>', 'Bearer token for AIM auth (or env SECRETLESS_AIM_TOKEN)'],
       '--port': ['<port>', 'HTTP port (default: 19421)'],
+      '--grant-file': ['<path>', 'Grant file path (turns on POST /grant)'],
       '--policy-file': ['<path>', 'Policy file path'],
     },
   },

@@ -91,6 +91,7 @@ HTTP routes:
 | `GET` | `/health` | Health check |
 | `GET` | `/status` | Uptime, request count, policy count, AIM state |
 | `POST` | `/resolve` | `{agentId, credentialName}` -> `{value}` or 403 |
+| `POST` | `/grant` | `{agentId, atx, grant, operation}` -> `{result}` or 403. Answers 404 until a grant file is loaded ([Grants](#grants-run-an-operation-without-handing-over-the-credential)) |
 
 Both the HTTP port and a Unix socket at `~/.secretless-ai/broker.sock` accept the same routes. The socket is `0600`, same user only.
 
@@ -160,6 +161,110 @@ naming it is refused rather than silently ignored, so that a policy relying on
 it fails visibly instead of appearing enforced.
 
 Reload by restarting the daemon. Or pass `--policy-file <path>` on start to use a non-default location.
+
+## Grants: run an operation without handing over the credential
+
+`/resolve` returns a credential value to the agent. `/grant` does not. The agent names a grant and an operation, the broker exchanges the agent's verified identity for a short-lived scoped token at your identity provider, makes the downstream call itself, and returns only the response. The token stays in the broker.
+
+`/grant` is off until the broker loads a grant file, and answers 404 without one. Create `~/.secretless-ai/broker-grants.json`:
+
+```json
+{
+  "version": 1,
+  "trust": {
+    "trustedIssuers": ["did:opena2a:authority:opena2a.org"],
+    "publicKeys": [
+      { "algorithm": "Ed25519", "publicKeyHex": "<the issuer's public key, 64 hex characters>" }
+    ],
+    "crl": { "entries": [] }
+  },
+  "assertion": {
+    "issuer": "https://broker.example.com",
+    "keyId": "broker-key-1"
+  },
+  "providers": {
+    "orders-idp": { "mode": "exchange", "tokenEndpoint": "https://idp.example.com/oauth2/v1/token" }
+  },
+  "bindings": [
+    {
+      "grant": "grant://orders-db",
+      "match": { "trustClass": "orders:read", "minTrustLevel": 3, "oasbLevel": ">=L2" },
+      "resolve": {
+        "mode": "exchange",
+        "providerId": "orders-idp",
+        "scope": "orders.read",
+        "audience": "https://api.orders.example.com",
+        "ttlSeconds": 300
+      }
+    }
+  ]
+}
+```
+
+| Section | What it holds |
+|---------|---------------|
+| `trust` | The ATX issuers whose agent credentials the broker accepts (`trustedIssuers`), their Ed25519 public keys (`publicKeys`), and the agents whose credentials are revoked (`crl.entries`, each `{"agentId": "...", "reason": "..."}`). When more than one issuer is listed, each key needs a `keyId` of the form `<issuer DID>#<name>`, so one issuer's key cannot sign as another. |
+| `assertion` | The identity the broker signs under. `issuer` is the `iss` claim and `keyId` the `kid` of every assertion it sends to an identity provider. Optional `keyFile` moves the signing key; a relative path is resolved against the grant file's directory. |
+| `providers` | Identity providers by id. Each is an OAuth token endpoint that accepts an RFC 8693 token exchange with the broker's assertion as the subject token. `exchange` is the only mode with a provider in this version, and the endpoint must be `https` (`http` is accepted for a loopback address). |
+| `bindings` | One entry per grant. `match` is what the agent's verified credential must carry; `resolve` names the provider, the scope and lifetime of the token, and the `audience` the operation is sent to. A grant with no binding is denied. |
+
+Start the broker. Two lines report what was loaded:
+
+```bash
+npx secretless-ai broker start
+```
+
+```
+Grant file: /Users/you/.secretless-ai/broker-grants.json (1 binding, 1 provider)
+Broker assertion public key: /Users/you/.secretless-ai/broker-assertion.key.pub.json (new key: register it with each identity provider in the grant file)
+```
+
+Pass `--grant-file <path>` to load a grant file from another location. A path named on the command line must exist.
+
+The first start creates the signing key at `~/.secretless-ai/broker-assertion.key` (Ed25519, mode `0600`) and writes its public half beside it as a JWK. Register that JWK with each identity provider so it accepts assertions signed by this broker. To rotate the key, stop the broker, delete the key file, start again, and register the new public key. The broker refuses to start on a key file that other users can read.
+
+An agent presents its ATX credential, the grant, and the operation. It sends no host and no credential:
+
+```bash
+TOK=$(cat ~/.secretless-ai/broker.token)
+curl -s -X POST \
+  -H "Authorization: Bearer $TOK" \
+  -H "Content-Type: application/json" \
+  -d @grant-request.json \
+  http://127.0.0.1:19421/grant
+```
+
+where `grant-request.json` is:
+
+```json
+{
+  "agentId": "orders-reader",
+  "atx": { "...": "the agent's signed ATX credential, version 1.1" },
+  "grant": "grant://orders-db",
+  "operation": { "method": "GET", "path": "/orders", "query": { "customer": "c-123" } }
+}
+```
+
+The response carries the downstream status and body, and nothing about where it came from:
+
+```json
+{"result":{"status":200,"body":{"rows":[{"id":1,"customer":"c-123","total":42}]}}}
+```
+
+Before the call is made, the broker checks, in order:
+
+1. The credential's signature, expiry, issuer and revocation against `trust`.
+2. With `--aim-url`, that AIM does not report the agent as unverified.
+3. The binding's `match` predicates against the verified credential. A version 1.0 credential is denied here: its signature does not cover the capabilities and OASB level that bindings match on.
+
+Every denial is the same `403 {"error":"denied"}`, so an agent learns nothing about the policy from it. The reason is in the audit log as a `grant` event, with the agent id and the grant. A request the broker cannot parse gets a 400 that says what is missing.
+
+Things to know:
+
+- The grant file is read at start. Restart the broker after any edit, including adding an agent to `crl.entries`.
+- A file the broker cannot apply as written stops the start with the reason: a key it does not read, a repeated key, a misspelled predicate, an OASB floor it cannot rank. It does not start without the part it could not read.
+- A binding whose `providerId` is not under `providers` loads, and every request for that grant is denied. The audit log records `no provider "<id>"`.
+- `broker status` does not report grants. The two start lines above are where the loaded counts appear.
 
 ## AIM-connected mode
 
