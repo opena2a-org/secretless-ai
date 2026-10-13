@@ -3,7 +3,7 @@
 1. **Scans** your project for hardcoded credentials in source files, key files, and the config files it recognizes by name; a directory scan does not open other files, such as `values.yaml` or `main.tf` (see [What a directory scan opens](scanning.md#what-a-directory-scan-opens)), and naming a file scans it: `npx secretless-ai scan deploy/values.yaml`. 57 credential patterns from [`@opena2a/credential-patterns@0.1.3`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
 3. **Gates** AI-tool reads of credential files. 18 file patterns enforced as Claude Code deny rules, plus a PreToolUse hook that denies tool calls that would read credential files or expose secrets before they run: a gate on the assistant's tool path, not a security boundary around the machine. Other tools get instruction files or ignore patterns (see [Supported tools](#supported-tools)).
-4. **Brokers** access through environment variables. Stored values never enter AI context; a command whose own output is a credential is the one channel no layer blocks. In Claude Code a PostToolUse check warns after such a command runs (see [What the guard cannot see](secrets.md#what-the-guard-cannot-see)).
+4. **Brokers** access through environment variables. Stored values never enter AI context; a command whose own output is a credential is the one channel no layer blocks. In Claude Code a PostToolUse check warns after such a command runs (see [What the guard cannot see](managing-secrets.md#what-the-guard-cannot-see)).
 
 ## Architecture
 
@@ -17,7 +17,7 @@ Three layers. Use one, two, or all three. Vault Exec (Tier 2) reads the Identity
 npx secretless-ai vault exec github -- curl https://api.github.com/user
 ```
 
-The child process receives the value as `$GITHUB` and holds it in its environment for as long as it runs. Vault Exec does not mask the child's output: whatever the command prints goes to whoever ran it, so when an AI assistant runs a wrapped command that prints its environment or the credential, the value enters the assistant's context (see [What the guard cannot see](secrets.md#what-the-guard-cannot-see)). While the child runs, another process running as the same user can read its environment. Wraps any command, in any language.
+The child process receives the value as `$GITHUB` and holds it in its environment for as long as it runs. Vault Exec does not mask the child's output: whatever the command prints goes to whoever ran it, so when an AI assistant runs a wrapped command that prints its environment or the credential, the value enters the assistant's context (see [What the guard cannot see](managing-secrets.md#what-the-guard-cannot-see)). While the child runs, another process running as the same user can read its environment. Wraps any command, in any language.
 
 Vault Exec does not read the configured storage backend: a secret stored with `secret set` is not visible to it, and `vault exec` stops with `Vault resolution denied: Namespace "<name>" not found`. For a secret in the backend, `run --only` sets it in one command's environment under its stored name:
 
@@ -79,7 +79,7 @@ npx secretless-ai secret sync --from 1password            # copy the required na
 npx secretless-ai setup --check                           # confirm nothing required is missing
 ```
 
-To write a stored secret to Azure Key Vault, HashiCorp Vault or GCP Secret Manager for a deployment, see [Push secrets to a cloud secret store](secrets.md#push-secrets-to-a-cloud-secret-store).
+To write a stored secret to Azure Key Vault, HashiCorp Vault or GCP Secret Manager for a deployment, see [Push secrets to a cloud secret store](managing-secrets.md#push-secrets-to-a-cloud-secret-store).
 
 ## NanoMind integration
 

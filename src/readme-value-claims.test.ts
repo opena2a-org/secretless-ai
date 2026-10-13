@@ -22,7 +22,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const read = (rel: string) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
 const README = read('README.md');
 const INSTALL_DOC_PATH = 'docs/install.md';
-const MOVED_TO = [INSTALL_DOC_PATH, 'docs/how-it-works.md', 'docs/secrets.md', 'docs/commands.md'];
+const MOVED_TO = [INSTALL_DOC_PATH, 'docs/how-it-works.md', 'docs/managing-secrets.md', 'docs/commands.md'];
 const FENCE = /^\s*(```|~~~)/;
 
 /** Lines outside fenced code blocks. */

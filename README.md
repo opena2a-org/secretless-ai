@@ -42,10 +42,10 @@ Run it in a project root. It needs Node.js 20.19 or later and exits 1 when it le
 - [Store a secret and use it by name](#store-secrets-and-use-them-in-ai-sessions)
 - [Scan for hardcoded credentials](docs/commands.md#scan-for-hardcoded-credentials)
 - [Encrypt keys in MCP configs](docs/commands.md#mcp-server-protection)
-- [Move secrets to another machine](docs/secrets.md#move-secrets-to-another-machine)
-- [Track an exposed key until rotated](docs/secrets.md#track-an-exposed-key-until-it-is-rotated)
-- [Give git a stored token](docs/secrets.md#give-git-a-stored-token-over-https)
-- [Push secrets to a cloud store](docs/secrets.md#push-secrets-to-a-cloud-secret-store)
+- [Move secrets to another machine](docs/managing-secrets.md#move-secrets-to-another-machine)
+- [Track an exposed key until rotated](docs/managing-secrets.md#track-an-exposed-key-until-it-is-rotated)
+- [Give git a stored token](docs/managing-secrets.md#give-git-a-stored-token-over-https)
+- [Push secrets to a cloud store](docs/managing-secrets.md#push-secrets-to-a-cloud-secret-store)
 - [Switch storage backend](docs/how-it-works.md#storage-backends)
 - [Run the broker](docs/use-cases/run-broker.md)
 
@@ -63,7 +63,7 @@ Commands and AI tools see the name, and the value goes to the process that uses 
 
 `secret set` installs a shell hook in `~/.zshenv` or `~/.bashrc` that exports stored secrets as environment variables in every new terminal. `secret set NAME=VALUE` puts the value in shell history.
 
-The guard hook and the deny rules that `init` installs check a command before it runs and cannot see what it prints. A command whose own output is a credential puts the value in AI context, and nothing in Secretless blocks it: see [What the guard cannot see](docs/secrets.md#what-the-guard-cannot-see).
+The guard hook and the deny rules that `init` installs check a command before it runs and cannot see what it prints. A command whose own output is a credential puts the value in AI context, and nothing in Secretless blocks it: see [What the guard cannot see](docs/managing-secrets.md#what-the-guard-cannot-see).
 
 ## Install
 
@@ -96,7 +96,7 @@ Fire-and-forget with a 2-second timeout. Telemetry never blocks Secretless.
 ## Documentation
 
 - [How it works](docs/how-it-works.md): the scan, supported tools, storage backends, Vault Exec and the broker
-- [Store and use secrets](docs/secrets.md): every `secret` workflow
+- [Store and use secrets](docs/managing-secrets.md): every `secret` workflow
 - [Commands](docs/commands.md): MCP protection, triage flags, exit codes
 - [Scan coverage and exit codes](docs/scanning.md), with [what a directory scan opens](docs/scanning.md#what-a-directory-scan-opens)
 - [Use cases](docs/USE-CASES.md): step-by-step guides

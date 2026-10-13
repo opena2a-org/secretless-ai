@@ -249,7 +249,7 @@ describe('doctor and status on a fixture home', () => {
 
   // The README said `doctor` and `status` each print Verify and Fix lines for
   // these files, and `status` prints one row that points to `doctor` (#342).
-  // This holds the section, now in docs/secrets.md, to what each command prints.
+  // This holds the section, now in docs/managing-secrets.md, to what each command prints.
   itCli('the docs say status flags the file and doctor prints its Verify and Fix lines', () => {
     fs.writeFileSync(path.join(home, '.git-credentials'), `https://${USER}:${TOKEN}@github.com\n`);
     const project = path.join(home, 'project');
@@ -266,9 +266,9 @@ describe('doctor and status on a fixture home', () => {
     expect(doctor.stdout).toContain('Verify: grep -c @ ~/.git-credentials');
     expect(doctor.stdout).toMatch(/Fix: +1\. Revoke that token/);
 
-    const page = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'secrets.md'), 'utf-8').split('\n');
+    const page = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'managing-secrets.md'), 'utf-8').split('\n');
     const heading = page.indexOf('### Give git a stored token over HTTPS');
-    expect(heading, 'docs/secrets.md must keep its "Give git a stored token over HTTPS" section').toBeGreaterThanOrEqual(0);
+    expect(heading, 'docs/managing-secrets.md must keep its "Give git a stored token over HTTPS" section').toBeGreaterThanOrEqual(0);
     const paragraph = page.slice(heading + 1).find((l) => l.trim() !== '') ?? '';
     expect(paragraph).not.toContain('`doctor` and `status` report');
     expect(paragraph).toContain('`status` flags each of those files');

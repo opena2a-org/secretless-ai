@@ -83,7 +83,7 @@ using a secret, install, telemetry, documentation and license. The other
 sections moved as written: `docs/install.md` (from source, verifying a release,
 when Secretless reads a stored value), `docs/how-it-works.md` (how it works,
 architecture, supported tools, storage backends, NanoMind),
-`docs/secrets.md` (every `secret` workflow, git credentials, what the guard
+`docs/managing-secrets.md` (every `secret` workflow, git credentials, what the guard
 cannot see, pushing to a cloud secret store), `docs/commands.md` (MCP server
 protection, triage helpers, exit codes, use through opena2a-cli) and
 `CONTRIBUTING.md`. The description now says where the read gate is enforced

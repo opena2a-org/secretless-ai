@@ -1325,8 +1325,8 @@ describe('secret push is a subcommand, and its flags belong to it', () => {
 describe('the vault guide never says a push target is missing from the CLI (#343)', () => {
   const REPO_ROOT = path.resolve(__dirname, '..');
   const guide = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'use-cases', 'bring-your-own-vault.md'), 'utf-8');
-  // The push section moved from the README to docs/secrets.md.
-  const secretsDoc = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'secrets.md'), 'utf-8');
+  // The push section moved from the README to docs/managing-secrets.md.
+  const secretsDoc = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'managing-secrets.md'), 'utf-8');
   const SERVICE: Record<PushTargetType, string> = {
     'azure-kv': 'Azure Key Vault',
     vault: 'HashiCorp Vault',
@@ -1344,7 +1344,7 @@ describe('the vault guide never says a push target is missing from the CLI (#343
     expect(guide).toContain('push target, not as a storage backend');
     expect(guide).toContain('`secret push --to azure-kv`');
 
-    const anchor = guide.match(/\]\(\.\.\/secrets\.md#([a-z0-9-]+)\)/)?.[1];
+    const anchor = guide.match(/\]\(\.\.\/managing-secrets\.md#([a-z0-9-]+)\)/)?.[1];
     expect(anchor).toBeDefined();
     const lines = secretsDoc.split('\n');
     const start = lines.findIndex((line) => {
