@@ -522,8 +522,11 @@ export class AWSScopeProvider implements ScopeProvider {
 
       // Step 2: Get user name from IAM
       let userName = '';
-      // Extract username from ARN (arn:aws:iam::123456789012:user/username)
-      const arnMatch = identity.arn.match(/:user\/(.+)$/);
+      // Extract the friendly user name from the ARN. A user ARN is
+      // arn:aws:iam::123456789012:user/path/username, where the path is
+      // optional and may have several segments; IAM takes the last segment
+      // alone as UserName, and refuses a value that carries the path.
+      const arnMatch = identity.arn.match(/:user\/(?:[^/]*\/)*([^/]+)$/);
       if (arnMatch) {
         userName = arnMatch[1];
       }
