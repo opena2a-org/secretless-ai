@@ -26,6 +26,53 @@ const DEFAULT_POLICY_FILE = path.join(SECRETLESS_DIR, 'broker-policies.json');
 const DEFAULT_AUDIT_LOG = path.join(SECRETLESS_DIR, 'broker-audit.log');
 const DEFAULT_GRANT_FILE = path.join(SECRETLESS_DIR, 'broker-grants.json');
 
+/**
+ * The longest Unix socket path, in bytes, a start accepts on each platform. 104 is the size
+ * of `sun_path` in the macOS `sockaddr_un`, and 108 the size the Linux unix(7) manual page
+ * gives for it. A platform with no entry is not checked.
+ */
+const SOCKET_PATH_MAX_BYTES: Partial<Record<NodeJS.Platform, number>> = {
+  darwin: 104,
+  linux: 108,
+};
+
+/** Bytes the default socket path adds to the home directory path. */
+const DEFAULT_SOCKET_SUFFIX_BYTES = Buffer.byteLength(
+  path.join(path.sep, '.secretless-ai', 'broker.sock'),
+);
+
+/**
+ * Throw when `socketPath` is longer than the limit recorded for `platform`, naming the path,
+ * its length in bytes and the limit, with a Verify and a Fix line.
+ *
+ * `startDaemon` calls this first, before it creates the config directory, a PID file or a
+ * token.
+ */
+export function assertSocketPathFits(
+  socketPath: string,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const max = SOCKET_PATH_MAX_BYTES[platform];
+  if (max === undefined) return;
+  const bytes = Buffer.byteLength(socketPath);
+  if (bytes <= max) return;
+
+  const fix = socketPath === DEFAULT_SOCKET_PATH
+    ? `HOME=<directory> secretless-ai broker start   (a directory whose path is at most ` +
+      `${max - DEFAULT_SOCKET_SUFFIX_BYTES} bytes; the broker then keeps its files in ` +
+      `<directory>/.secretless-ai)`
+    : `start the broker on a socket path of at most ${max} bytes`;
+  // Single-quoted, with `'\''` for a quote in the path, so the shell the line is pasted into
+  // counts the path's own bytes and expands nothing in it.
+  const quoted = `'${socketPath.replace(/'/g, `'\\''`)}'`;
+  throw new Error(
+    `Broker socket path ${socketPath} is ${bytes} bytes long, and a Unix socket path on this ` +
+    `platform can be at most ${max} bytes. The broker was not started.\n` +
+    `  Verify: printf %s ${quoted} | wc -c\n` +
+    `  Fix:    ${fix}`,
+  );
+}
+
 export interface DaemonOptions {
   /** Override socket path. */
   socketPath?: string;
@@ -60,6 +107,9 @@ export interface DaemonOptions {
  */
 export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer> {
   const pidFile = options?.pidFile ?? DEFAULT_PID_FILE;
+  const socketPath = options?.socketPath ?? DEFAULT_SOCKET_PATH;
+
+  assertSocketPathFits(socketPath);
 
   fs.mkdirSync(SECRETLESS_DIR, { recursive: true, mode: 0o700 });
 
@@ -74,7 +124,7 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
   }
 
   const config: BrokerConfig = {
-    socketPath: options?.socketPath ?? DEFAULT_SOCKET_PATH,
+    socketPath,
     httpPort: options?.httpPort ?? DEFAULT_HTTP_PORT,
     aimUrl: options?.aimUrl,
     aimToken: options?.aimToken ?? process.env.SECRETLESS_AIM_TOKEN ?? undefined,

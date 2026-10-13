@@ -35,6 +35,17 @@ its place.`), and `resolveEnvRefs` reports it in `errors` and leaves the
 reference as the variable's value. With `local` configured,
 `secret://local/STRIPE_KEY` reads the file.
 
+**`broker start` checks the length of its socket path before it starts
+(#377).** The socket is created at `~/.secretless-ai/broker.sock`. On macOS
+under Node 26, a home directory path of 78 bytes made `broker start` fail with
+`Error: listen EINVAL: invalid argument <path>` and no Verify or Fix line, and
+the failed start left `~/.secretless-ai/broker.token` behind. `broker start`
+now refuses a socket path longer than 104 bytes on macOS or 108 bytes on Linux
+before it creates `~/.secretless-ai`, a PID file or a token. The message names
+the path, its length in bytes and the limit, with a Verify line that counts
+the bytes and a Fix line that starts the broker under a `HOME` whose path is
+short enough (77 bytes on macOS, 81 on Linux).
+
 **The unreachable-backend message offers `migrate`, a command that exists
 (#372).** When the configured backend could not be reached, the message gave
 `secretless-ai backend migrate --from <backend> --to local` as the way to move

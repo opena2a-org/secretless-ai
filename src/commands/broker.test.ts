@@ -85,21 +85,57 @@ describe('broker start --grant-file (built CLI)', () => {
   });
 
   beforeEach(() => {
-    home = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-cli-'));
+    // Under /tmp on POSIX rather than os.tmpdir(): the broker's socket path is 45 bytes longer
+    // than the directory this is made in, and `broker start` refuses a socket path past the
+    // platform's limit (104 bytes on macOS), so a long TMPDIR would decide these cases.
+    home = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'broker-cli-'));
   });
 
   afterEach(() => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  function brokerStart(args: string[]): { status: number | null; stdout: string; stderr: string } {
+  function brokerStart(
+    args: string[],
+    underHome: string = home,
+  ): { status: number | null; stdout: string; stderr: string } {
     const res = spawnSync(process.execPath, [CLI, 'broker', 'start', ...args], {
-      env: { ...process.env, HOME: home, OPENA2A_TELEMETRY: 'off' },
+      env: { ...process.env, HOME: underHome, OPENA2A_TELEMETRY: 'off' },
       encoding: 'utf-8',
       timeout: 30_000,
     });
     return { status: res.status, stdout: res.stdout, stderr: res.stderr };
   }
+
+  // The socket path limit `broker start` checks on this platform; undefined where it checks none.
+  const socketPathMax = ({ darwin: 104, linux: 108 } as Partial<Record<NodeJS.Platform, number>>)[
+    process.platform
+  ];
+
+  it.skipIf(socketPathMax === undefined)(
+    'refuses to start under a HOME that puts the socket path past the limit: exit 1, the length and the limit named, no config directory made',
+    () => {
+      const longHome = path.join(home, 'h'.repeat(120));
+      fs.mkdirSync(longHome);
+      const socketPath = path.join(longHome, '.secretless-ai', 'broker.sock');
+      const homeMax = socketPathMax! - Buffer.byteLength('/.secretless-ai/broker.sock');
+
+      const res = brokerStart([], longHome);
+
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain(
+        `Error: Broker socket path ${socketPath} is ${Buffer.byteLength(socketPath)} bytes long, ` +
+        `and a Unix socket path on this platform can be at most ${socketPathMax} bytes. ` +
+        'The broker was not started.\n' +
+        `  Verify: printf %s '${socketPath}' | wc -c\n` +
+        '  Fix:    HOME=<directory> secretless-ai broker start   (a directory whose path is at ' +
+        `most ${homeMax} bytes; the broker then keeps its files in <directory>/.secretless-ai)`,
+      );
+      expect(res.stderr).not.toContain('EINVAL');
+      expect(res.stdout).not.toContain('Broker is running');
+      expect(fs.existsSync(path.join(longHome, '.secretless-ai'))).toBe(false);
+    },
+  );
 
   it('refuses to start on a grant file that does not exist: exit 1, the file named, no broker left', () => {
     const missing = path.join(home, 'grants.json');

@@ -365,6 +365,7 @@ The daemon removes the socket, pid file, and auth token on shutdown.
 - **`broker status` shows `Policies: 0` but I have a policy file**: confirm the file is at `~/.secretless-ai/broker-policies.json` or you passed `--policy-file`. Restart the daemon after edits. `broker status` now pulls live values from the running server, so a zero means the daemon really loaded zero rules.
 - **All `/resolve` calls return 403 "default deny"**: write an `allow` rule that matches your `agentId` and `credentialSelector`. Check the audit log for the exact input.
 - **AIM shows `configured (unreachable)`**: probe the URL yourself: `curl -s -o /dev/null -w "%{http_code}\n" <aim-url>/health`. Common causes: wrong URL, network segmentation, AIM not deployed to that host.
+- **`broker start` reports `Broker socket path ... is <n> bytes long`**: the socket is created at `~/.secretless-ai/broker.sock`, and `broker start` refuses a socket path longer than 104 bytes on macOS or 108 bytes on Linux. Count the bytes with `printf %s "$HOME/.secretless-ai/broker.sock" | wc -c`. Start the broker with `HOME` set to a directory whose path is at most 77 bytes on macOS or 81 on Linux; it then keeps its files in that directory's `.secretless-ai`.
 
 ## Next steps
 
