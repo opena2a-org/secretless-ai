@@ -478,10 +478,19 @@ export class AWSScopeProvider implements ScopeProvider {
     this.region = region ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-east-1';
   }
 
-  async discover(): Promise<string[]> {
+  async discover(credential?: string): Promise<string[]> {
     if (!this.accessKeyId || !this.secretAccessKey) {
       throw new Error(
         'AWS credentials not configured. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.',
+      );
+    }
+    // Discovery signs with the key this provider was built with. Profiling it for
+    // a different credential would report another principal's permissions under
+    // that credential's name, so the mismatch is refused.
+    if (credential !== undefined && credential.trim() !== this.accessKeyId.trim()) {
+      throw new Error(
+        'This AWS scope provider signs with a different access key than the credential ' +
+        'it was asked to discover. Build the provider with that credential\'s key pair.',
       );
     }
 

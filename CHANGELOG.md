@@ -939,6 +939,20 @@ file cap clears. `init notes.txt/sub`, where `notes.txt` is a file, said
 now names the file and suggests `init` on the directory that holds it.
 Detection, the report's "files not opened" list and exit codes are unchanged.
 
+**`scope discover` and `scope check` profile an AWS credential's own access key.**
+For an AWS credential, both commands signed their requests with the key pair
+in the environment instead of the credential's stored access key ID, so the
+permissions of whichever principal the environment held were reported as that
+credential's, and `scope discover` saved them as its baseline. Requests are
+now signed with the stored access key ID, using the secret key and session
+token from the environment, so AWS answers for that key or rejects the
+signature. When `AWS_ACCESS_KEY_ID` in the environment names a different key,
+both commands stop before sending a request and save no baseline.
+`AWSScopeProvider.discover(credential)` refuses a credential other than the
+access key it signs with. A baseline an earlier version saved for an AWS
+credential while the environment held a different key pair holds that key's
+permissions: `scope reset <name>` and then `scope discover <name>` rebuilds it.
+
 **`scan` prints a control character in a file name or an excerpt as a visible escape.**
 The report printed names and excerpts from the scanned files as they were,
 so a line feed in a file name started a new report line that read like the
