@@ -333,6 +333,81 @@ describe('discoverMcpConfigsDetailed — configs that could not be parsed', () =
   });
 });
 
+describe('discoverMcpConfigsDetailed — server entries with a part that could not be read', () => {
+  let home: string;
+  let project: string;
+
+  beforeEach(() => { home = tmpDir(); project = tmpDir(); });
+  afterEach(() => { cleanup(home); cleanup(project); });
+
+  // Stands in for a plaintext secret value in the file.
+  const marker = 'PLAINTEXT-MARKER-0123456789';
+
+  function uncheckedIn(mcpServers: Record<string, unknown>) {
+    writeConfig(home, '.cursor/mcp.json', { mcpServers });
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+    expect(unparsed).toEqual([]);
+    expect(configs.length).toBe(1);
+    return configs[0];
+  }
+
+  it('reports a server whose env is not a JSON object, and still lists the server', () => {
+    const config = uncheckedIn({ gh: { command: 'npx', env: marker } });
+
+    expect(config.unchecked).toEqual([{ name: 'gh', part: 'env', reason: 'not a JSON object' }]);
+    expect(config.servers.map((s) => [s.name, s.command, s.env])).toEqual([['gh', 'npx', {}]]);
+  });
+
+  it('reports an env written as an array', () => {
+    const config = uncheckedIn({ gh: { command: 'npx', env: [marker] } });
+
+    expect(config.unchecked).toEqual([{ name: 'gh', part: 'env', reason: 'not a JSON object' }]);
+  });
+
+  it('reports each env value that is not a string by its name, and keeps the values that are', () => {
+    const config = uncheckedIn({
+      one: { command: 'npx', env: { API_TOKEN: 1234, GITHUB_ORG: 'my-org' } },
+      two: { command: 'npx', env: { API_TOKEN: [marker], FLAGS: { token: marker } } },
+    });
+
+    expect(config.unchecked).toEqual([
+      { name: 'one', part: 'env value API_TOKEN', reason: 'not a string' },
+      { name: 'two', part: 'env values API_TOKEN, FLAGS', reason: 'not strings' },
+    ]);
+    expect(config.servers.map((s) => s.env)).toEqual([{ GITHUB_ORG: 'my-org' }, {}]);
+  });
+
+  it('reports a server entry that is not a JSON object', () => {
+    const config = uncheckedIn({ gh: marker, db: [marker], fs: { command: 'npx' } });
+
+    expect(config.unchecked).toEqual([
+      { name: 'gh', part: 'entry', reason: 'not a JSON object' },
+      { name: 'db', part: 'entry', reason: 'not a JSON object' },
+    ]);
+    expect(config.servers.map((s) => s.name)).toContain('fs');
+  });
+
+  it('never quotes a value, and writes a control character in an env name as an escape', () => {
+    const config = uncheckedIn({ gh: { command: 'npx', env: { 'X\x1b[2J_TOKEN': [marker] } } });
+
+    expect(config.unchecked).toEqual([
+      { name: 'gh', part: 'env value "X\\u001b[2J_TOKEN"', reason: 'not a string' },
+    ]);
+    expect(JSON.stringify(config.unchecked)).not.toContain('PLAINTEXT');
+  });
+
+  it('CONTROL: reports nothing for well-formed entries, a null entry, a null env or a null env value', () => {
+    const config = uncheckedIn({
+      ...(makeMcpServers().mcpServers as Record<string, unknown>),
+      absent: null,
+      'no-env': { command: 'npx', env: null },
+      'null-value': { command: 'npx', env: { GITHUB_ORG: null } },
+    });
+
+    expect(config.unchecked).toEqual([]);
+  });
+});
+
 describe('discoverMcpConfigs — project-scope .mcp.json (release-test P1)', () => {
   let home: string;
   let project: string;

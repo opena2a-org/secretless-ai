@@ -29,6 +29,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       alreadyProtected: 0,
       injectionWarnings: [],
       unparsed: [],
+      unchecked: [],
     });
 
     const output = await protectOutput();
@@ -47,6 +48,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       alreadyProtected: 0,
       injectionWarnings: [],
       unparsed: [],
+      unchecked: [],
     });
 
     expect(await protectOutput()).toContain('\n      GITHUB_TOKEN (encrypted)');
@@ -61,6 +63,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       alreadyProtected: 0,
       injectionWarnings: [],
       unparsed: [],
+      unchecked: [],
     });
 
     expect(await protectOutput()).toContain('      "\\"X\\\\u001b[2J_TOKEN\\"" (encrypted)');
@@ -75,6 +78,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       alreadyProtected: 0,
       injectionWarnings: [{ client: 'cursor', server: 'github', key: 'NOTE\x1b[2J', injectionType: 'instruction', severity: 'high' }],
       unparsed: [],
+      unchecked: [],
     });
 
     const output = await protectOutput();
@@ -92,6 +96,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       alreadyProtected: 0,
       injectionWarnings: [],
       unparsed: [{ client: 'windsurf', filePath: '/home/u/.windsurf/mcp.json', reason: 'not valid JSON (line 2, column 1)' }],
+      unchecked: [],
     });
 
     const output = await protectOutput();
@@ -100,6 +105,70 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
     expect(output).toContain('  windsurf (/home/u/.windsurf/mcp.json)\n    ? not checked: not valid JSON (line 2, column 1)');
     expect(output).toContain('1 config(s) could not be parsed, so the servers in them were not checked.');
     expect(output).toContain('Fix the file(s) above, then run `npx secretless-ai protect-mcp` again.');
+  });
+
+  it('names the part of a server it could not read after the secrets it did encrypt', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      clientsScanned: 1,
+      secretsFound: 1,
+      serversProtected: 1,
+      servers: [{ client: 'cursor', server: 'gh', secretKeys: ['GITHUB_TOKEN'] }],
+      alreadyProtected: 0,
+      injectionWarnings: [],
+      unparsed: [],
+      unchecked: [
+        {
+          client: 'cursor',
+          filePath: '/home/u/.cursor/mcp.json',
+          servers: [{ name: 'gh', part: 'env value API_TOKEN', reason: 'not a string' }],
+        },
+      ],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).toContain('1 secret(s) encrypted across 1 server(s).');
+    expect(output).toContain('  cursor (/home/u/.cursor/mcp.json)\n    ? gh: env value API_TOKEN not checked: not a string');
+    expect(output).toContain('1 server(s) have a part that could not be read, so it was not checked for secrets.');
+  });
+
+  it('lists each server with a part it could not read under its config, with the name escaped', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      clientsScanned: 2,
+      secretsFound: 0,
+      serversProtected: 0,
+      servers: [],
+      alreadyProtected: 0,
+      injectionWarnings: [],
+      unparsed: [],
+      unchecked: [
+        {
+          client: 'cursor',
+          filePath: '/home/u/.cursor/mcp.json',
+          servers: [
+            { name: 'gh', part: 'env', reason: 'not a JSON object' },
+            { name: 'db\x1b[2J', part: 'entry', reason: 'not a JSON object' },
+          ],
+        },
+        {
+          client: 'vscode',
+          filePath: '/home/u/.vscode/mcp.json',
+          servers: [{ name: 'api', part: 'env values PORT, FLAGS', reason: 'not strings' }],
+        },
+      ],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).not.toMatch(RAW_CONTROL);
+    expect(output).not.toContain('Already clean.');
+    expect(output).toContain('No plaintext secrets found in the parts of the MCP configs that were read.');
+    expect(output).toContain(
+      '  cursor (/home/u/.cursor/mcp.json)\n    ? gh: env not checked: not a JSON object\n    ? "db\\u001b[2J": entry not checked: not a JSON object',
+    );
+    expect(output).toContain('  vscode (/home/u/.vscode/mcp.json)\n    ? api: env values PORT, FLAGS not checked: not strings');
+    expect(output).toContain('3 server(s) have a part that could not be read, so it was not checked for secrets.');
+    expect(output).toContain('Fix the entries above, then run `npx secretless-ai protect-mcp` again.');
   });
 
   it('writes a control character in the key of a refused value as an escape on every line', async () => {
