@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { GrantPolicy, type GrantBinding } from './grant-policy';
+import { GrantPolicy, MAX_GRANT_TTL_SECONDS, type GrantBinding } from './grant-policy';
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 
 const CTX: ResolutionContext = {
@@ -451,6 +451,22 @@ describe('GrantPolicy: the resource half is validated too', () => {
       expect(() => new GrantPolicy([b])).toThrow(/ttlSeconds/);
     });
   }
+
+  // The upper bound. A whole number has none of its own: `1e21` passes `Number.isInteger` and
+  // mints an `exp` trillions of years out, which reads downstream as no expiry at all.
+  for (const bad of [MAX_GRANT_TTL_SECONDS + 1, Number.MAX_SAFE_INTEGER, 1e21]) {
+    it(`refuses ttlSeconds ${String(bad)}, above the twelve-hour ceiling`, () => {
+      expect(() => new GrantPolicy([withResolve({ ttlSeconds: bad })])).toThrow(
+        /resolve\.ttlSeconds must be at most 43200 \(12 hours\)/,
+      );
+    });
+  }
+
+  it('loads a ttlSeconds of exactly twelve hours', () => {
+    expect(MAX_GRANT_TTL_SECONDS).toBe(43200);
+    const p = new GrantPolicy([withResolve({ ttlSeconds: MAX_GRANT_TTL_SECONDS })]);
+    expect(p.evaluate('orders-db', CTX).binding?.resolve.ttlSeconds).toBe(43200);
+  });
 
   it('refuses a CPI mode this build has no provider interface for', () => {
     expect(() => new GrantPolicy([withResolve({ mode: 'impersonate' })])).toThrow(/resolve.mode/);

@@ -939,6 +939,17 @@ file cap clears. `init notes.txt/sub`, where `notes.txt` is a file, said
 now names the file and suggests `init` on the directory that holds it.
 Detection, the report's "files not opened" list and exit codes are unchanged.
 
+**A grant binding's `resolve.ttlSeconds` may be at most twelve hours.**
+`GrantPolicy` required a whole number of seconds greater than zero and set no
+upper bound, so `ttlSeconds: 1e21` loaded and minted a broker assertion whose
+`exp` lay trillions of years out, which a verifier reads as no expiry at all.
+A binding above 43200 seconds is now refused at load, and the error names the
+ceiling and the value. In Exchange mode the binding's TTL also caps the life
+reported for the scoped credential:
+an `expires_in` from the authorization server can shorten it but not extend
+it, a `NaN` falls back to the binding's TTL, and a negative value is reported
+as 0 seconds.
+
 **`scope discover` and `scope check` profile an AWS credential's own access key.**
 For an AWS credential, both commands signed their requests with the key pair
 in the environment instead of the credential's stored access key ID, so the
