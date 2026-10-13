@@ -122,14 +122,20 @@ async function resolveFromLocal(ref: SecretRef): Promise<string | undefined> {
   return store.getSecret(ref.path);
 }
 
-/** Resolve from a configured backend (keychain, vault, 1password). */
+/** Resolve from the backend the reference names (keychain, vault, 1password). */
 async function resolveFromBackend(ref: SecretRef): Promise<string | undefined> {
   const configuredBackend = readBackendConfig();
   let backend: WritableSecretBackend;
 
   try {
-    // Use the ref's backend type, not the configured default
-    backend = createBackend(ref.backend as any);
+    // Use the ref's backend type, not the configured default. It is named for
+    // this one read, so unless it is the store this machine uses anyway it is
+    // built without the value cache. That file is shared and keyed by entry
+    // name alone: behind it, a value read from a second store was served as
+    // the configured backend's for the same name, and a value the configured
+    // backend had cached answered the reference in the named backend's
+    // place (#369).
+    backend = createBackend(ref.backend as any, undefined, true, { role: 'named' });
   } catch {
     // Backend not available (e.g., 1password CLI not installed).
     // Try the configured backend as fallback — which can be unavailable too,

@@ -64,5 +64,12 @@ describe('resolveRef when backends are unreachable', () => {
     const result = await resolveRef('secret://1password/prod/password');
     expect(result.value).toBe('the-value');
     expect(mockCreateBackend).toHaveBeenCalledTimes(2);
+    // #369: the ref's backend is named for this read, which keeps a second
+    // store out of the shared value cache. The fallback is the configured
+    // backend as itself, cache layer included.
+    expect(mockCreateBackend.mock.calls).toEqual([
+      ['1password', undefined, true, { role: 'named' }],
+      ['local'],
+    ]);
   });
 });

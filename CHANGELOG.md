@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**A `secret://` reference that names a backend other than the configured one
+is resolved without the value cache (#369).**
+`resolveRef` and `resolveEnvRefs`, exported from the package, built the backend
+a reference names behind the value cache, which is one file keyed by secret
+name alone. With `keychain` configured, resolving `secret://vault/STRIPE_KEY`
+cached the value Vault held, and for the cache lifetime (300 seconds by
+default) a read of `STRIPE_KEY` by name from the configured backend was
+answered with Vault's value, also when the keychain held no such secret. The
+other way round, a value the configured backend had cached under that name
+answered the reference, and Vault was not asked. A reference whose backend is
+not the store this machine uses anyway is now read from that backend on every
+resolve, and nothing it returns is written to the cache. A reference that names
+the configured backend is cached as before, as is one that names `keychain` on
+a machine with no backend configured where a keychain is detected (macOS, or
+Linux with `secret-tool` on PATH).
+
 **The broker audit log is signed, and `verifyAuditLog` checks it (#259).**
 The AAP broker profile requires every verification, decision, resolution and
 denial to be written to a signed audit log, and the reference test for it
