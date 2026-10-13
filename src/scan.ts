@@ -10,7 +10,7 @@ import { redactMatches } from './redact';
 import { loadSecretlessIgnore, buildMatcher, defaultIgnoreLines, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceBreakdown, type ConfidenceTier } from './confidence';
 import { BUNDLE_EXTENSION } from './bundle';
-import { withSlashSeparators } from './display-safe';
+import { withSlashSeparators, hasDisplayHazard, shellQuote } from './display-safe';
 
 export interface ScanFinding {
   file: string;
@@ -76,11 +76,45 @@ const FIX_GUIDANCE: Record<string, string> = {
  * deliberately names NO console URL — an invented rotation URL is the same
  * class of harm as an invented package name, and can point a user at a domain
  * an attacker is free to register.
+ *
+ * `envFile` is the shell operand naming the real `.env` file the finding is
+ * in, when it is in one (`envFileOperand`).
  */
-export function fixFor(pattern: Pick<CredentialPattern, 'id' | 'name' | 'envPrefix'>): string {
-  const verified = FIX_GUIDANCE[pattern.id];
-  if (verified) return verified;
-  return `Move to env var ${pattern.envPrefix}. Revoke and reissue this ${pattern.name} in the provider's dashboard.`;
+export function fixFor(
+  pattern: Pick<CredentialPattern, 'id' | 'name' | 'envPrefix'>,
+  options?: { envFile?: string },
+): string {
+  const fix = FIX_GUIDANCE[pattern.id]
+    ?? `Move to env var ${pattern.envPrefix}. Revoke and reissue this ${pattern.name} in the provider's dashboard.`;
+  // In a `.env` file the value already is an env var, so "Move to env var"
+  // sends the user where it is. The step left is the one `import` takes: into
+  // the secret store, out of the file. The rotation text is kept as written.
+  const moveStep = /^Move to env var \S+\. /.exec(fix);
+  if (options?.envFile === undefined || !moveStep) return fix;
+  return `Store it with npx secretless-ai import ${options.envFile}, delete the line, and start the app with npx secretless-ai run -- <command>. ${fix.slice(moveStep[0].length)}`;
+}
+
+/**
+ * The operand of the `import` command in the fix for a finding in a real
+ * `.env` file, or undefined for any other file.
+ *
+ * The scan root is not always the shell's cwd (`scan services/api`), so the
+ * path is taken from cwd, absolute when it lies outside it or would read as a
+ * flag. The name comes from the scanned repository and the fix is meant to be
+ * pasted, so it is quoted for the shell, and replaced by `<file>` when it
+ * holds a character that would reach the terminal as a control.
+ */
+function envFileOperand(filePath: string): string | undefined {
+  if (!isEnvFile(path.basename(filePath))) return undefined;
+  let shown = path.resolve(filePath);
+  try {
+    const rel = path.relative(fs.realpathSync(process.cwd()), fs.realpathSync(filePath));
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.startsWith('-')) shown = rel;
+  } catch {
+    // keep the absolute path
+  }
+  shown = withSlashSeparators(shown);
+  return hasDisplayHazard(shown) ? '<file>' : shellQuote(shown);
 }
 
 /**
@@ -508,6 +542,7 @@ function scanSingleFile(
   })();
   const isConfig = CONFIG_FILES.some(c => c === name || filePath.replace(/\\/g, '/').endsWith('/' + c));
   const severity: 'critical' | 'high' = isConfig ? 'critical' : 'high';
+  const envFile = envFileOperand(filePath);
   const minConfidence = Math.max(0, Math.min(1, options?.minConfidence ?? 0));
 
   try {
@@ -549,7 +584,7 @@ function scanSingleFile(
               patternName: pattern.name,
               severity,
               preview: maskLine(line, pattern).trim().substring(0, 80),
-              fix: fixFor(pattern),
+              fix: fixFor(pattern, { envFile }),
               confidence: breakdown.score,
               confidenceTier: breakdown.tier,
               looksLikeFixture: false,
@@ -666,7 +701,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       patternName: pattern.name,
       severity,
       preview: masked.trim().substring(0, 80),
-      fix: fixFor(pattern),
+      fix: fixFor(pattern, { envFile: envFileOperand(path.join(projectDir, file)) }),
       confidence: breakdown.score,
       confidenceTier: breakdown.tier,
       looksLikeFixture,

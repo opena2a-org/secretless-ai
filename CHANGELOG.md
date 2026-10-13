@@ -1583,6 +1583,32 @@ For library callers, `startDaemon` accepts `grantFile` and `tokenFile`.
 `docs/use-cases/run-broker.md` has a new Grants section with the file format
 and a request.
 
+**`scan` no longer tells you to move a key in a `.env` file to an env var, and
+no longer prints `Protect now: npx secretless-ai init` in a project `status`
+reports protected.** A key found in a real `.env` file (`.env`, `.env.local`,
+`.env.production` and the other names `scan` reads) got the same Fix as a key
+in source code, `Move to env var STRIPE_SECRET_KEY`, where it already is. Its
+Fix now reads `Store it with npx secretless-ai import .env, delete the line,
+and start the app with npx secretless-ai run -- <command>.`, followed by the
+same rotation text as before. The path is the one that works from the
+directory you ran `scan` in, quoted for the shell when it needs to be, and
+`<file>` when the name holds a terminal control character. A key in any other
+file keeps its Fix as it was. `scan --json` and the library's `scan()` carry
+the same text in `fix`. The Next Steps block printed `Protect now: npx
+secretless-ai init` after every scan with findings, including in a project
+where `init` had run; `scan --explain` did the same with `Run \`npx
+secretless-ai init\` to add protections.` Both lines now follow the rule
+`status` uses for its own `init` advice: they appear where nothing is set up,
+where the guard script is on disk and no settings file runs it, and where only
+instruction files are set up in a project `init` sets up Claude Code in. A
+project where the Claude Code hook enforces protection no longer gets them, nor
+does one `init` set up through instruction or ignore files for Cursor, GitHub
+Copilot, Windsurf, Cline or Aider alone. A scan of a single file reads the
+directory holding it. What `scan` detects, its severities and its exit codes
+are unchanged. The sample `scan` output in the guide for migrating from `.env`
+files (`docs/use-cases/migrate-from-dotenv.md`) shows the new Fix, and the
+guide says that Step 2 imports every `.env` file at once.
+
 **`mcp-status` and `protect-mcp` no longer report a server as clean when a part
 of its entry could not be read.** A config that is valid JSON can still hold a
 server entry these commands cannot read: an `env` written as one string or as

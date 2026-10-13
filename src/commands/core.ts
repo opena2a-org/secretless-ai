@@ -3,7 +3,7 @@ import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips, unreadReason, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
-import { status, USER_SETTINGS_PATH } from '../status';
+import { status, protection, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles, noKeysFinding, type StoreCount } from '../doctor';
@@ -21,7 +21,7 @@ import { findGitCredentialExposure, describeExposure } from '../git-credential-f
 import { explainFinding, isEngineAvailable, engineUnavailableReason, type EngineUnavailableReason } from '../nanomind';
 import { CREDENTIAL_PATTERNS } from '../patterns';
 import { CONFIDENCE_WEIGHTS, type PathKind } from '../confidence';
-import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard, quotePathForDisplay, withSlashSeparators } from '../display-safe';
+import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard, quotePathForDisplay, shellQuote as quoteForShell, withSlashSeparators } from '../display-safe';
 import { c, divider } from './colors';
 
 export function runInit(projectDir: string): number {
@@ -383,16 +383,14 @@ function refusedPathFix(quoted: string, reason: string): string {
 }
 
 /**
- * Quote a path for a shell command we PRINT for the user to copy.
- *
- * The paths here are filenames from a scanned repository, i.e. attacker
- * controlled, and the whole point of a `Fix:` line is that it gets pasted into a
- * terminal. A link named `a"; id; echo "b` interpolated raw produced a command
- * that closed the quote and ran `id`. Single quotes with the standard
- * `'\''` escape make every byte literal.
+ * Quote a path for a shell command we PRINT for the user to copy: every byte
+ * literal, so an attacker-controlled filename cannot close the quote. The
+ * quoting is defined beside the display helpers, where `scan` uses it for the
+ * path in a fix; this module keeps declaring it for the code that imports it
+ * from here.
  */
 export function shellQuote(p: string): string {
-  return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
+  return quoteForShell(p);
 }
 
 /**
@@ -1156,6 +1154,8 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     return 0;
   }
 
+  const initNext = await initIsNextStep(projectDir);
+
   // --explain: the detailed per-finding view. Built from the scan alone, so it
   // does not depend on the NanoMind engine or its model.
   if (options?.explain) {
@@ -1173,21 +1173,21 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       }
       return operand([file]);
     };
-    const code = await runScanWithExplanations(findings, verifyOperand);
+    const code = await runScanWithExplanations(findings, verifyOperand, initNext);
     coverageWarnings();
     placeholderHint();
     confidenceHint();
     return code;
   }
 
-  printFindings(findings);
+  printFindings(findings, initNext);
   coverageWarnings();
   placeholderHint();
   confidenceHint();
   return 1;
 }
 
-function printFindings(findings: ReturnType<typeof scan>): void {
+function printFindings(findings: ReturnType<typeof scan>, initNext: boolean): void {
   const critCount = findings.filter(f => f.severity === 'critical').length;
   const highCount = findings.length - critCount;
 
@@ -1233,7 +1233,8 @@ function printFindings(findings: ReturnType<typeof scan>): void {
   }
 
   console.log(divider('Next Steps'));
-  console.log(`  ${c.cyan('Protect now:')}        npx secretless-ai init`);
+  // Only where running `init` would change something (`initIsNextStep`).
+  if (initNext) console.log(`  ${c.cyan('Protect now:')}        npx secretless-ai init`);
   console.log(`  ${c.cyan('Full security scan:')} npx hackmyagent secure`);
   console.log();
 }
@@ -1294,6 +1295,7 @@ function engineUnavailableLines(reason: EngineUnavailableReason | null): string[
 async function runScanWithExplanations(
   findings: ReturnType<typeof scan>,
   verifyOperand: (file: string) => string,
+  initNext: boolean,
 ): Promise<number> {
   // Generated context is opt-in (see below), so the engine is consulted only
   // when it was asked for. Not finding it costs that note, never the view.
@@ -1362,9 +1364,32 @@ async function runScanWithExplanations(
     console.log();
   }
 
-  console.log(`  Run \`npx secretless-ai init\` to add protections.`);
+  if (initNext) console.log(`  Run \`npx secretless-ai init\` to add protections.`);
   console.log('  For a full security scan: npx hackmyagent secure\n');
   return findings.length > 0 ? 1 : 0;
+}
+
+/**
+ * Whether `init` is a next step for the project a scan covered, by the rule
+ * `status` uses for its own `init` advice: false where the Claude Code hook
+ * enforces protection, true where nothing is set up or only a guard script no
+ * settings file runs is on disk. A project set up through instruction or
+ * ignore files gets it only where `init` sets up Claude Code, which adds the
+ * hook; for the other tools those files are as far as `init` goes. A file
+ * target is read as the directory holding it. Read without a second scan.
+ * When the check fails, the step is shown.
+ */
+async function initIsNextStep(scanTarget: string): Promise<boolean> {
+  const nodeFs = require('fs') as typeof import('fs');
+  try {
+    const dir = nodeFs.statSync(scanTarget).isFile() ? path.dirname(scanTarget) : scanTarget;
+    const p = await protection(dir);
+    if (p.enforcement === 'hook') return false;
+    if (p.enforcement === 'none') return true;
+    return p.detectedTools.length === 0 || p.detectedTools.includes('claude-code');
+  } catch {
+    return true;
+  }
 }
 
 // `status` and `verify` refuse a target directory that does not exist, with the
