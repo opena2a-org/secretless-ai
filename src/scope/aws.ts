@@ -48,6 +48,14 @@ const AI_RELEVANT_PERMISSIONS = [
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * Region every request is signed for. STS and IAM are called at their global
+ * endpoints, sts.amazonaws.com and iam.amazonaws.com, and AWS scopes a
+ * signature for either host to us-east-1, whatever region the environment
+ * names.
+ */
+const GLOBAL_ENDPOINT_SIGNING_REGION = 'us-east-1';
+
 interface CallerIdentity {
   account: string;
   arn: string;
@@ -466,16 +474,21 @@ export class AWSScopeProvider implements ScopeProvider {
   private sessionToken?: string;
   private region: string;
 
+  /**
+   * @param _region Not used: both hosts this provider calls are global
+   *   endpoints, so every request is signed for us-east-1 whatever region is
+   *   passed here or named by AWS_REGION or AWS_DEFAULT_REGION.
+   */
   constructor(
     accessKeyId?: string,
     secretAccessKey?: string,
     sessionToken?: string,
-    region?: string,
+    _region?: string,
   ) {
     this.accessKeyId = accessKeyId ?? process.env.AWS_ACCESS_KEY_ID ?? '';
     this.secretAccessKey = secretAccessKey ?? process.env.AWS_SECRET_ACCESS_KEY ?? '';
     this.sessionToken = sessionToken ?? process.env.AWS_SESSION_TOKEN;
-    this.region = region ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-east-1';
+    this.region = GLOBAL_ENDPOINT_SIGNING_REGION;
   }
 
   async discover(credential?: string): Promise<string[]> {

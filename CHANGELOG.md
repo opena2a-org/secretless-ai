@@ -1017,6 +1017,20 @@ access key it signs with. A baseline an earlier version saved for an AWS
 credential while the environment held a different key pair holds that key's
 permissions: `scope reset <name>` and then `scope discover <name>` rebuilds it.
 
+**`scope discover` and `scope check` sign their AWS requests for `us-east-1`.**
+Both commands send their AWS requests to the global STS and IAM endpoints,
+`sts.amazonaws.com` and `iam.amazonaws.com`, for which AWS scopes a signature
+to `us-east-1`. They signed them for the region named by `AWS_REGION` or
+`AWS_DEFAULT_REGION` instead, so with either set to another region the
+signature did not carry the scope AWS checks for those hosts. The IAM steps
+read a 403 as a permission the key does not hold, so `scope discover` could
+save a refused IAM request as a baseline with no permissions. Every request is
+now signed for `us-east-1` whatever region the environment names, and the
+`region` argument of the `AWSScopeProvider` constructor no longer changes the
+signature. A baseline saved while either variable named another region may
+list no permissions: `scope reset <name>` and then `scope discover <name>`
+rebuilds it.
+
 **`scan` prints a control character in a file name or an excerpt as a visible escape.**
 The report printed names and excerpts from the scanned files as they were,
 so a line feed in a file name started a new report line that read like the

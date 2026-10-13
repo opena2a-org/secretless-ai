@@ -342,7 +342,7 @@ describe('AWSScopeProvider', () => {
     await expect(provider.discover()).rejects.toThrow('STS GetCallerIdentity failed');
   });
 
-  it('handles region from constructor', async () => {
+  it('signs for us-east-1 when the constructor names another region', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       text: async () => stsGetCallerIdentityXml(),
@@ -351,8 +351,10 @@ describe('AWSScopeProvider', () => {
     const provider = new AWSScopeProvider(FAKE_ACCESS_KEY, FAKE_SECRET_KEY, undefined, 'eu-west-1');
     await provider.healthCheck();
 
-    // Verify the request was made (region affects SigV4 signing, not URL for global STS)
+    // sts.amazonaws.com is a global endpoint: AWS scopes its signatures to us-east-1
     expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, requestOpts] = mockFetch.mock.calls[0];
+    expect(requestOpts.headers.Authorization).toContain('/us-east-1/sts/aws4_request');
   });
 
   it('empty policy documents return empty permissions', async () => {
@@ -397,5 +399,78 @@ describe('AWSScopeProvider', () => {
     const provider = new AWSScopeProvider(FAKE_ACCESS_KEY, FAKE_SECRET_KEY);
     const permissions = await provider.discover();
     expect(permissions).toEqual([]);
+  });
+});
+
+describe('AWSScopeProvider signing region', () => {
+  // sts.amazonaws.com and iam.amazonaws.com are global endpoints, and AWS
+  // scopes a signature for either host to us-east-1. A signature scoped to
+  // another region is rejected, and the IAM steps read a 403 as a permission
+  // the key does not hold.
+  const REGION_ENV = ['AWS_REGION', 'AWS_DEFAULT_REGION'];
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const name of REGION_ENV) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const name of REGION_ENV) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  });
+
+  it.each([
+    ['AWS_REGION', 'eu-west-1'],
+    ['AWS_DEFAULT_REGION', 'ap-southeast-2'],
+  ])('signs every STS and IAM request for us-east-1 when %s is %s', async (name, region) => {
+    process.env[name] = region;
+    const policyDoc = JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 'bedrock:InvokeModel', Resource: '*' }],
+    });
+
+    // An assumed-role ARN names no user, so discovery also calls IAM GetUser:
+    // each of the five request kinds is sent once.
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => stsGetCallerIdentityXml('123456789012', 'arn:aws:sts::123456789012:assumed-role/test-role/session'),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => iamGetUserXml(),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => iamListAttachedPoliciesXml(['arn:aws:iam::123456789012:policy/TestPolicy']),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => iamGetPolicyXml('v1'),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => iamGetPolicyVersionXml(policyDoc),
+    });
+
+    const provider = new AWSScopeProvider(FAKE_ACCESS_KEY, FAKE_SECRET_KEY);
+    expect(await provider.discover()).toEqual(['bedrock:InvokeModel']);
+
+    const sent = mockFetch.mock.calls.map(([url, init]) => ({
+      host: new URL(url).hostname,
+      action: /Action=([A-Za-z]+)/.exec(init.body)?.[1],
+      scope: /Credential=[^/]+\/\d{8}\/([^,]+),/.exec(init.headers.Authorization)?.[1],
+    }));
+    expect(sent).toEqual([
+      { host: 'sts.amazonaws.com', action: 'GetCallerIdentity', scope: 'us-east-1/sts/aws4_request' },
+      { host: 'iam.amazonaws.com', action: 'GetUser', scope: 'us-east-1/iam/aws4_request' },
+      { host: 'iam.amazonaws.com', action: 'ListAttachedUserPolicies', scope: 'us-east-1/iam/aws4_request' },
+      { host: 'iam.amazonaws.com', action: 'GetPolicy', scope: 'us-east-1/iam/aws4_request' },
+      { host: 'iam.amazonaws.com', action: 'GetPolicyVersion', scope: 'us-east-1/iam/aws4_request' },
+    ]);
   });
 });
