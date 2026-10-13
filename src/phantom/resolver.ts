@@ -11,7 +11,7 @@
 
 import { parseSecretRef, isSecretRef, type SecretRef, type SecretBackend } from './ref';
 import { SecretStore } from '../secret-store';
-import { createBackend, UnreachableBackendError } from '../backends/factory';
+import { createBackend, hasKeychainImplementation, UnreachableBackendError } from '../backends/factory';
 import type { WritableSecretBackend } from '../backends/types';
 
 export interface ResolveResult {
@@ -38,7 +38,8 @@ export interface ResolveError {
  * Resolution order per backend:
  * - env:       process.env[path]
  * - local:     SecretStore (AES-256-GCM encrypted local storage)
- * - keychain:  macOS Keychain / Linux Secret Service
+ * - keychain:  macOS Keychain / Linux Secret Service; refused on a platform
+ *              with neither, where the local store is not read in its place
  * - vault:     HashiCorp Vault HTTP API
  * - 1password: 1Password CLI
  */
@@ -124,6 +125,20 @@ async function resolveFromLocal(ref: SecretRef): Promise<string | undefined> {
 /** Resolve from the backend the reference names (keychain, vault, 1password). */
 async function resolveFromBackend(ref: SecretRef, uri: string): Promise<string | undefined> {
   let backend: WritableSecretBackend;
+  const unreachable = (reason: string): RefResolutionError =>
+    new RefResolutionError(
+      `Backend "${ref.backend}" named by ${uri} is not reachable${reason}. No other store was read in its place.`,
+      uri,
+      ref.backend,
+    );
+
+  // On a platform with no OS keychain implementation the factory builds the
+  // local encrypted file for `keychain`. The reference is refused before the
+  // factory is asked: that file answered it with its own value for the same
+  // name, reported as the keychain's (#376).
+  if (ref.backend === 'keychain' && !hasKeychainImplementation()) {
+    throw unreachable(`: OS keychain is not supported on ${process.platform}`);
+  }
 
   try {
     // Use the ref's backend type, not the configured default. It is named for
@@ -142,12 +157,7 @@ async function resolveFromBackend(ref: SecretRef, uri: string): Promise<string |
     // configured backend (#372). The error names the URI, so a caller of
     // resolveEnvRefs can tell which reference failed, and the reason, without
     // the `--backend` wording of the factory's message.
-    const reason = err instanceof UnreachableBackendError ? `: ${err.reason}` : '';
-    throw new RefResolutionError(
-      `Backend "${ref.backend}" named by ${uri} is not reachable${reason}. No other store was read in its place.`,
-      uri,
-      ref.backend,
-    );
+    throw unreachable(err instanceof UnreachableBackendError ? `: ${err.reason}` : '');
   }
 
   try {

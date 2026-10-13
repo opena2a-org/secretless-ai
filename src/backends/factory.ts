@@ -509,6 +509,16 @@ export function effectiveBackendName(type: SelectableBackendType): string {
   }
 }
 
+/**
+ * Whether `createKeychainBackend` has an OS keychain to build on this platform.
+ * Where it has none it builds the local encrypted file for `keychain`, with a
+ * line on stderr. A caller for which that file is not an answer to `keychain`
+ * asks this first, as the `secret://` resolver does (#376).
+ */
+export function hasKeychainImplementation(): boolean {
+  return process.platform === 'darwin' || process.platform === 'linux';
+}
+
 function createKeychainBackend(config?: Record<string, unknown>): WritableSecretBackend {
   const platform = process.platform;
 
