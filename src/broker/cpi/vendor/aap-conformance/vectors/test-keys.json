@@ -1,0 +1,80 @@
+{
+  "warning": "TEST KEYS with published seeds \u2014 fixture reproduction only, never production use",
+  "keys": [
+    {
+      "kid": "registry-key-1",
+      "ed25519SeedHex": "8f7a1c2e4b6d8091a3c5e7f90b2d4f6a8c0e1f3a5b7d9e0c2a4b6d8f0a1c3e5f",
+      "publicJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "TtqNIzIHZVLkAhWGW4qpfZJodw1rrdmNIbWaxHQSUVs",
+        "kid": "registry-key-1",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    },
+    {
+      "kid": "broker-key-1",
+      "ed25519SeedHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "publicJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+        "kid": "broker-key-1",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    },
+    {
+      "kid": "broker-key-2",
+      "ed25519SeedHex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "publicJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+        "kid": "broker-key-2",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    },
+    {
+      "kid": "broker-pqc-1",
+      "mlDsa65SeedHex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "publicJwk": {
+        "kty": "AKP",
+        "pub": "wPSEhkmzuOZh3rHQ9TrIdvMr1Q64Eqq4ICH9pl8_FfpCFcStCLgp-mC_YKWTOLD4U85ZP4YUf0LANghRZFaYBCjHha-cADiAxB_jtH-ADv8wM6i2Mz1BvWwblnnlbFAcnTq9SVc6xOIDJ_0YKgMX-7n1XawrA8brw2QmPY7iTTwy3lJY0OOX9ADucCJKFx8xLjW-JhzBjRT_ab2vETe9k2wGCagW_xvk3eqcOtXXlA5F0at6BgJIssRZCvyYLQ0RqEDuUP4ysxd7gbrJgS8c9CPRa3QE_2yxobd_IS25FJW3V_bss2A1n3BPafhz0OYDHS55c71y3Gf4MVNRmPqAFqDOUPZcxZ3Tm3dykCz1bFMGV-HTu7w-BtWDcmSkrB1DwdftbK1cg6vHTObON51OnTbM_d3V8XcNfepz1i3OaLYhltGxdb2TpIO3J0wpSyvULHXMBdYJVsl9nxFktMEVFXpYWtIxM05a_Zn65FbroZ5XwWfzOUjdlR-mAM98gPXUlVDZccaT56gf3x3ULxyfODzt5QuGVGmThayr-qu94jLqygXlhhiVGQ831g9gU_AbwkrRDkq44ut2eyq75sc1CdZ6e_psE2ZGXl0-0tjaiDaf0Bzg4KHOrQHZO53qt6W1L46FFykcOTl_3WlTCn2HXOOWSyG_bDokzPXFLCFaAQ3SES0sWNfNeM4__5DrMu9nSQGPcHFwmlJRBHC4eqREBTy8F2LmL7QYBDUWwCMsFQk2qMxvJWQ96lsZYr53AdLd_QgRwJndOzEUQ_0cIt7NjHfrDIaau5aum3br3T4ET1P8zIMouk_XOFfFLOQvqqurklt9wtpbvS6Ly-8upTXCb1PZpobMxMzmKHmB3PQeq0A8sY0iTF8k5WQXSW8KFVa7Nb9iIZPtvBGw8zuLTbghjLs811aTqKtJhNiQ4qoErc2gmcrgfyQdcGz4uPsWuJPJ0AEf6LIZM5yP4abWMF2Ga8CRN_zcMTjJ94RVWDXyKqI4JL-lF70L-yQnSC87spcWovqIU0xW_EXmg9MicIlER2sJxqz9H9_8pffaisTjTTzAelryNuMLHKz25xbl_mUmf-oLdQ4krgn6hMrPZUN4ouctN2LUtn7PgiCml49Lntme2s3kXWHDSVzcE4I9GxPpWVKpXi_w3pky-cdg_rT7J8WZoOdGsijLhdtbgkaT-TWJpaK-AaqeTMsl6aGmHvQf3jJ0PwE8KnpbXzpPAa18QR4pqWyWkvLBu86NC3I2jPdapT3wqksm2qxIr7NeZL4dNXVbSTVLCKOyuAai-Z_8jsppRLFGxSZFYlk6dM7bz7RnNI2JBEL2LmIC7YpCjtM-IHXVkX4ZOiAsDenyXt4B00HIznIvTmCJFhBjSwMU6TY6Wk8L6D04bP0EIH716ElEwYm-Smztgmxb6tUP08auSJKx0sx2hNLMPb4xBPGGWQHQI2LjT_LnZJ7TbN7wcQFbzGK1BLZYe8zSqzey_Sv2ACbJEPytqotR0WwOzmVSeUc6ZLpamQsLafhRCD25pA9jOpRUCpDdhSGtCli3kdOZaZtDKdLBg_5uYLnfRMJIBcSEdA4HYpJRV5EkwAg3rDcEB_Of4_yvBshvqCSPMKMIuOTLNIPxR8TT5ne_VCW8XkqziXO4dVySEGgUFvALk6TF3mKyMjrPbE4XPg_CQCJGtXjsrm8F_khUmm1L8R83pBMhPjXfVEjwX-OqwQ8KdCSdzvM-6czEfuiaO-3vfRfTtpQPe3aloLn8Zj42U7Z9Y5o4bw0XfP3bYjOMkUyV_QHoOSG_4GmLIK3sDajd7D8s4TgZnFdjBDsC4zvJF2WSIikzeJpBgZU1sqaVyw-lodbhMaaON2LIcDWpmn7Zc7bek1GvEAxIROSISMYov9l0uDsORorXpIsDOtSR3XNgF3LdFGfsGiiegVFe-hcJvSO_QgD8nsqYWhnvZkRVBwz9oTSJ7Qa8nCVcG12uL1YLXv-kNTmj8t894BrP3_vREu1MScFcPbxjIfaSdH2oXzPhKb1lXGmLePtgj8wCbO6GVHYBH4934Unsmj2HgqbSNAwNtpIgBK9Z09tKx_2IHvZHyPiHdDmlAzbHAgm5NzSxTU_yiUVHGzH8MrAw8iJA0sonFKSCw5yjbUZGfEhN-5ZruDVIpFcQvarO4DtNNTK1QdFvSCIrnMkdRzgR8wHpE4P7V5V4wwUD7pEmLK7sL3Sv0pMRLQ-C8F8ruFsfLlELrRAeIbAFpuoc2u31QeAw_KvLMVIiOihXZ4WhxJy8nLLI20znq4KPp2kN6QXRw43-aKRNgGHOSpN2M1zQAB2Lil0fgZ6RnyvFLl87JaJPqGLNlKIFLrqe1BYU1LB7OBZbdoRthCgvPfkg0M4Zr4sf8YiQ6XF_2eJVaBhaZjzKy4Ri8WxHHvyZ87SJK66F7nFDTlniS9oDBV-wPsBXx3AHml3c_i3VQYYgLSA65LtDNVQ8sF7GwsqC5iNIifpEwKGLWcZZp-MOrryag5WuQGpwfRVlTRQo2WR6TgPIqpj0vEng0iQNd4jcByyGkw7FoxAzMFZV1wbd7uJXfppdM1v7YBSyBVEufaQyfM6S2Z4T282A8yw",
+        "kid": "broker-pqc-1",
+        "use": "sig",
+        "alg": "ML-DSA-65"
+      }
+    },
+    {
+      "kid": "agent-key-1",
+      "role": "presenter",
+      "ed25519SeedHex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "publicJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "F0VTtFbd38aQjsqxwQH-arIeK6oGF3lbfUOmNIKZP9U",
+        "kid": "agent-key-1",
+        "use": "sig",
+        "alg": "EdDSA"
+      },
+      "jkt": "HlHgCcjrhbeyw80VMef51yPwhyRqjiwLdwSLRqo7hSI"
+    },
+    {
+      "kid": "agent-key-2",
+      "role": "presenter",
+      "ed25519SeedHex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "publicJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "zRSzf5VulTGU_3-3Oz2B3MVh1hp1OAlLfD4aZD7l86o",
+        "kid": "agent-key-2",
+        "use": "sig",
+        "alg": "EdDSA"
+      },
+      "jkt": "qI__BOccgAhhH9wob_G7gFVHLKIkS4CutvoSx0bMCY8"
+    }
+  ]
+}
