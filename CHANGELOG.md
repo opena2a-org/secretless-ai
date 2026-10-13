@@ -939,6 +939,17 @@ file cap clears. `init notes.txt/sub`, where `notes.txt` is a file, said
 now names the file and suggests `init` on the directory that holds it.
 Detection, the report's "files not opened" list and exit codes are unchanged.
 
+**The broker's assertion mint functions refuse a binding TTL outside 1 to 43200 seconds.**
+`mintBrokerAssertion`, `mintBrokerAssertionMlDsa65` and
+`mintHybridBrokerAssertion` take a resource binding directly, and a binding
+built in code never passes `GrantPolicy`. They added whatever `ttlSeconds`
+held to the issue time: an absent TTL or `NaN` minted `"exp": null`, the
+string `"300"` minted a thirteen-digit `exp`, and `1e21` minted one trillions
+of years out. Each now throws, naming the value, unless `ttlSeconds` is a
+whole number from 1 to 43200, the same range `GrantPolicy` loads.
+`ExchangeProvider.resolve` mints before it calls the authorization server, so
+a refused binding sends no token-exchange request.
+
 **A grant binding's `resolve.ttlSeconds` may be at most twelve hours.**
 `GrantPolicy` required a whole number of seconds greater than zero and set no
 upper bound, so `ttlSeconds: 1e21` loaded and minted a broker assertion whose
