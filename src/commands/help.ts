@@ -1,4 +1,4 @@
-import { VERSION, CLI, IS_EMBEDDED } from './utils';
+import { VERSION, DESCRIPTION, CLI, IS_EMBEDDED, wrapList } from './utils';
 
 /**
  * Subcommands whose runner handles `--help` itself, as its first statement and
@@ -16,10 +16,13 @@ export function printHelp(): void {
   // When embedded under a host CLI (SECRETLESS_CLI_PREFIX set), suppress the
   // standalone `Secretless v<version>` brand+version line — it shows
   // secretless's own version, which is misleading under the host's umbrella.
-  // The tagline stays. Standalone keeps the banner exactly as before.
+  // The description stays. Standalone keeps the banner exactly as before.
   const banner = IS_EMBEDDED ? '' : `  Secretless v${VERSION}\n`;
+  // The package description, not a line written here: it says where the read
+  // gate is enforced and what is not blocked, and a test holds it to the README.
+  const description = wrapList(DESCRIPTION.trim().split(/\s+/), '  ').join('\n');
   console.log(`
-${banner}  Keep secrets out of AI context.
+${banner}${description}
 
   Quick start:
     ${CLI} scan       Find hardcoded credentials

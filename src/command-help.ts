@@ -19,7 +19,7 @@
  * (SECRETLESS_CLI_PREFIX) renders natively. No line here may spell the
  * standalone bin name literally.
  */
-import { VERSION, CLI, IS_EMBEDDED } from './commands/utils';
+import { VERSION, CLI, IS_EMBEDDED, wrapList } from './commands/utils';
 import { printHelp } from './commands/help';
 import { VERBS } from './argv';
 import {
@@ -57,9 +57,6 @@ interface VerbDoc {
 const BACKENDS = 'local, keychain, 1password, vault, gcp-sm';
 const JSON_DOC = 'Machine-readable JSON output (for CI)';
 
-/** Help lines stay inside an 80-column terminal, counting the 4-space notes indent. */
-const NOTE_WIDTH = 76;
-
 /**
  * The file the telemetry setting is kept in, as `scan --help` names it. The
  * package that reads and creates it is an ES module loaded in cli.ts, so the
@@ -68,26 +65,6 @@ const NOTE_WIDTH = 76;
  */
 const TELEMETRY_SETTING_FILE = '~/.config/opena2a/telemetry.json';
 const TELEMETRY_SETTING_FILE_XDG = '$XDG_CONFIG_HOME/opena2a/telemetry.json';
-
-/**
- * Pack `items` into lines no wider than NOTE_WIDTH. The first line starts with
- * `lead`, the rest with `indent`; pass both the same length.
- */
-function wrapList(items: readonly string[], indent: string, sep = ' ', lead = indent): string[] {
-  const lines: string[] = [];
-  let line = '';
-  for (const item of items) {
-    const next = line ? `${line}${sep}${item}` : item;
-    if (line && indent.length + next.length > NOTE_WIDTH) {
-      lines.push((lines.length ? indent : lead) + line);
-      line = item;
-    } else {
-      line = next;
-    }
-  }
-  if (line) lines.push((lines.length ? indent : lead) + line);
-  return lines;
-}
 
 /**
  * What each source-walk skip reason covers, keyed like `SOURCE_SKIP_REASONS`.
