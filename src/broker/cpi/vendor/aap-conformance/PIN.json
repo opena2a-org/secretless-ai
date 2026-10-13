@@ -1,0 +1,27 @@
+{
+  "source": "https://github.com/opena2a-standards/aap-conformance",
+  "commit": "99e213ad98286d50b76a26b8a4f1c35f30c96b93",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "vectors/test-keys.json",
+      "sha256": "a942607b1c8e1062d872e5b4d333857d25cf4aa6372a056f82f1e805e5dd16f5",
+      "stored": "verbatim"
+    },
+    {
+      "path": "fixtures/cgt-compact-valid.json",
+      "sha256": "fdcb6f930254e7f098bdd6f664ad1a56a61f2ecba7a44bf852c6c2d9aaefc2ce",
+      "stored": "token-withheld"
+    },
+    {
+      "path": "fixtures/cgt-mldsa65-compact-valid.json",
+      "sha256": "f3fb73c7b5b7a83e229401cf23efa413086dc1c6b8e05115d15697fd41381d40",
+      "stored": "token-withheld"
+    },
+    {
+      "path": "fixtures/cgt-hybrid-general-valid.json",
+      "sha256": "bfa94f0560a09b7ae437204471b7c16d991ba5a6624503e3a55e4256a82ea4ea",
+      "stored": "token-withheld"
+    }
+  ]
+}

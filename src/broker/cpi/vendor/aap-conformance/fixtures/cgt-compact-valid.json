@@ -1,0 +1,56 @@
+{
+  "$schema": "https://aap.opena2a.org/schemas/fixture-v1.json",
+  "name": "aap-v1/cgt-compact-valid",
+  "description": "The spec repo's generated CGT (examples/tokens/cgt-v1.jwt), ratified byte-for-byte from the Secretless reference broker assertion: a compact EdDSA JWT with the §4.2 claim set, signed by broker-key-1. Verifier MUST ACCEPT.",
+  "fixtureType": "cgt",
+  "tokenForm": "compact",
+  "spec": [
+    {
+      "id": "AAP",
+      "ref": "https://github.com/opena2a-standards/agent-authorization-protocol/blob/main/AAP-SPEC.md",
+      "section": "§4.2 Token Structure"
+    },
+    {
+      "id": "AAP",
+      "ref": "https://github.com/opena2a-standards/agent-authorization-protocol/blob/main/AAP-SPEC.md",
+      "section": "§9.1 Canonical Form"
+    },
+    {
+      "id": "AAP",
+      "ref": "https://github.com/opena2a-standards/agent-authorization-protocol/blob/main/AAP-SPEC.md",
+      "section": "§9.3 Compact Serialization"
+    },
+    {
+      "id": "RFC 7515",
+      "ref": "https://datatracker.ietf.org/doc/html/rfc7515",
+      "section": "JSON Web Signature"
+    },
+    {
+      "id": "RFC 8032",
+      "ref": "https://datatracker.ietf.org/doc/html/rfc8032",
+      "section": "Ed25519 (published test-key seeds in vectors/test-keys.json)"
+    }
+  ],
+  "verifierState": {
+    "clockNumericDate": 1780315230,
+    "keys": [
+      {
+        "kid": "broker-key-1",
+        "publicJwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+          "kid": "broker-key-1",
+          "use": "sig",
+          "alg": "EdDSA"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "verifyResult": "ACCEPT"
+  },
+  "schemaValid": true,
+  "headerSchemaValid": true,
+  "token": "{{minted:token}}"
+}
