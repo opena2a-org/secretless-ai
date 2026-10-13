@@ -180,6 +180,19 @@ export function quotePathForDisplay(p: string, sep: string = path.sep): string {
 }
 
 /**
+ * Quote a path for a shell command we PRINT for the user to copy.
+ *
+ * The paths here are filenames from a scanned repository, i.e. attacker
+ * controlled, and the whole point of a `Fix:` line is that it gets pasted into a
+ * terminal. A link named `a"; id; echo "b` interpolated raw produced a command
+ * that closed the quote and ran `id`. Single quotes with the standard
+ * `'\''` escape make every byte literal.
+ */
+export function shellQuote(p: string): string {
+  return /^[A-Za-z0-9_./-]+$/.test(p) ? p : `'${p.split("'").join("'\\''")}'`;
+}
+
+/**
  * An excerpt of a file's content, as lines to print one by one under the
  * caller's own prefix, each with its hazards escaped.
  *

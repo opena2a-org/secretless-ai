@@ -27,32 +27,32 @@ Expected output for a project whose `.env` holds a Stripe key, a database URL an
   │ .env:3
   │ OPENAI_API_KEY=[OpenAI Project Key REDACTED]
   │ Confidence: high (0.98)
-  │ Fix: Move to env var OPENAI_API_KEY. Rotate at platform.openai.com > API Keys.
+  │ Fix: Store it with npx secretless-ai import .env, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate at platform.openai.com > API Keys.
 
   │ CRITICAL  PostgreSQL Connection String
   │ .env:2
   │ DATABASE_URL=[PostgreSQL Connection String REDACTED]
   │ Confidence: high (0.97)
-  │ Fix: Move to env var DATABASE_URL. Rotate the database password.
+  │ Fix: Store it with npx secretless-ai import .env, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate the database password.
 
   │ CRITICAL  Redis Connection String
   │ .env.local:2
   │ REDIS_URL=[Redis Connection String REDACTED]
   │ Confidence: high (0.96)
-  │ Fix: Move to env var REDIS_URL. Rotate the Redis password (requirepass or ACL user).
+  │ Fix: Store it with npx secretless-ai import .env.local, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate the Redis password (requirepass or ACL user).
 
   │ CRITICAL  Stripe Live Key
   │ .env:1
   │ STRIPE_KEY=[Stripe Live Key REDACTED]
   │ Confidence: high (0.95)
-  │ Fix: Move to env var STRIPE_SECRET_KEY. Rotate at dashboard.stripe.com > Developers > API Keys.
+  │ Fix: Store it with npx secretless-ai import .env, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate at dashboard.stripe.com > Developers > API Keys.
 
   ── Next Steps ──────────────────────────────────────────────
   Protect now:        npx secretless-ai init
   Full security scan: npx hackmyagent secure
 ```
 
-The scan names each credential's file and line, never its value, and does not modify anything. Findings are listed most severe first, then by confidence, which depends on the value, so the numbers on your project can differ. The Sentry DSN is not reported.
+The scan names each credential's file and line, never its value, and does not modify anything. A key in a `.env` file gets a Fix that names `import` for that file; Step 2 imports every `.env` file at once. Findings are listed most severe first, then by confidence, which depends on the value, so the numbers on your project can differ. The Sentry DSN is not reported.
 
 ## Step 2: Import secrets into secure storage
 

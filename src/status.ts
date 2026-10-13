@@ -338,7 +338,67 @@ function sameFile(a: string, b: string): boolean {
  * directory.
  */
 export async function status(projectDir: string, options?: { homeDir?: string }): Promise<StatusResult> {
-  const homeDir = options?.homeDir ?? os.homedir();
+  const result = await readProtection(projectDir, options?.homeDir ?? os.homedir());
+
+  // Scan for secrets (project-level only for status report)
+  const scanStats = newScanStats();
+  const findings = scan(projectDir, { scanGlobal: false }, scanStats);
+  result.secretsFound = findings.length;
+  result.scanIncomplete = coverageIncomplete(scanStats);
+
+  // Transcript protection metrics
+  try {
+    const transcripts = discoverTranscripts();
+    const jsonlFiles = transcripts.filter(f => f.endsWith('.jsonl'));
+    result.transcriptProtection.transcriptFiles = jsonlFiles.length;
+    result.transcriptProtection.watcherRunning = isWatchRunning();
+
+    // Sample the most recent transcripts so `status` stays sub-second — a full
+    // pass over every transcript takes tens of seconds and belongs in `clean`.
+    // `discoverTranscripts` sorts by mtime descending, so these really are the
+    // most recent. The count of what was read is recorded and reported: a zero
+    // over three files is not a statement about the other 8847.
+    const recentFiles = jsonlFiles.slice(0, TRANSCRIPT_SAMPLE_SIZE);
+    for (const file of recentFiles) {
+      const { findings: transcriptFindings } = scanTranscriptFile(file, true);
+      result.transcriptProtection.transcriptSecretsFound += transcriptFindings.length;
+      result.transcriptProtection.transcriptFilesScanned += 1;
+    }
+  } catch {
+    // Transcript scanning is best-effort
+  }
+
+  try {
+    result.exposuresOpen = needsRotation(readAnnotations(defaultAnnotationsPath())).length;
+  } catch {
+    // Left null: the metadata file exists but could not be read.
+  }
+
+  return result;
+}
+
+/**
+ * Whether `status` reports this project protected, by what, and for which
+ * detected tools, read from the same settings, hook and instruction files
+ * without the secret scan, transcript sample and exposure records `status`
+ * adds. `scan` reads it to decide whether its Next Steps send the user to
+ * `init`.
+ */
+export async function protection(
+  projectDir: string,
+  options?: { homeDir?: string },
+): Promise<Pick<StatusResult, 'isProtected' | 'enforcement' | 'detectedTools'>> {
+  const result = await readProtection(projectDir, options?.homeDir ?? os.homedir());
+  return { isProtected: result.isProtected, enforcement: result.enforcement, detectedTools: result.detectedTools };
+}
+
+/**
+ * Every `StatusResult` field that settings, hook and instruction files decide,
+ * `isProtected` and `enforcement` among them. The measured fields
+ * (`secretsFound`, `scanIncomplete`, the transcript counts, `exposuresOpen`)
+ * are left at their initial values for `status` to fill.
+ */
+async function readProtection(projectDir: string, homeDir: string): Promise<StatusResult> {
   const result: StatusResult = {
     isProtected: false,
     protectionScope: null,
@@ -457,40 +517,6 @@ export async function status(projectDir: string, options?: { homeDir?: string })
     } catch {
       // Skip
     }
-  }
-
-  // Scan for secrets (project-level only for status report)
-  const scanStats = newScanStats();
-  const findings = scan(projectDir, { scanGlobal: false }, scanStats);
-  result.secretsFound = findings.length;
-  result.scanIncomplete = coverageIncomplete(scanStats);
-
-  // Transcript protection metrics
-  try {
-    const transcripts = discoverTranscripts();
-    const jsonlFiles = transcripts.filter(f => f.endsWith('.jsonl'));
-    result.transcriptProtection.transcriptFiles = jsonlFiles.length;
-    result.transcriptProtection.watcherRunning = isWatchRunning();
-
-    // Sample the most recent transcripts so `status` stays sub-second — a full
-    // pass over every transcript takes tens of seconds and belongs in `clean`.
-    // `discoverTranscripts` sorts by mtime descending, so these really are the
-    // most recent. The count of what was read is recorded and reported: a zero
-    // over three files is not a statement about the other 8847.
-    const recentFiles = jsonlFiles.slice(0, TRANSCRIPT_SAMPLE_SIZE);
-    for (const file of recentFiles) {
-      const { findings: transcriptFindings } = scanTranscriptFile(file, true);
-      result.transcriptProtection.transcriptSecretsFound += transcriptFindings.length;
-      result.transcriptProtection.transcriptFilesScanned += 1;
-    }
-  } catch {
-    // Transcript scanning is best-effort
-  }
-
-  try {
-    result.exposuresOpen = needsRotation(readAnnotations(defaultAnnotationsPath())).length;
-  } catch {
-    // Left null: the metadata file exists but could not be read.
   }
 
   // Protected if hook is installed OR instructions are present in at least one tool

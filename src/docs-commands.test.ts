@@ -77,6 +77,12 @@ const FENCE = /^\s*(```|~~~)/;
  * and every token after it, up to a shell operator or a comment. Inside a fenced
  * block the whole line is code; outside one, only backticked spans are.
  *
+ * A comma that ends a token ends the invocation: `scan` prints a Fix that names
+ * two commands in one sentence (`Store it with npx secretless-ai import .env,
+ * delete the line, and start the app with npx secretless-ai run -- <command>.`),
+ * and a capture of it is code that holds prose. A comma inside a token
+ * (`--only=aws,stripe`) stays part of it.
+ *
  * `commandReferences` above answers "is the verb real". This answers "would the
  * CLI accept the rest of the line", which needs the flags as well, and a fenced
  * line at column 0 — the shape a reader copies most — is exactly the one that
@@ -87,7 +93,7 @@ function documentedInvocations(line: string, inFence: boolean): string[][] {
   const invocations: string[][] = [];
   for (const snippet of snippets) {
     if (/npm\s+\w+\s+secretless-ai/.test(snippet)) continue;
-    for (const m of snippet.matchAll(/(?:^|[$\s(])(?:npx\s+)?secretless-ai\s+([a-z][a-z-]*)((?:\s+[^\s|;&#>`)]+)*)/g)) {
+    for (const m of snippet.matchAll(/(?:^|[$\s(])(?:npx\s+)?secretless-ai\s+([a-z][a-z-]*)((?:\s+[^\s|;&#>`),]+(?:,[^\s|;&#>`),]+)*)*)/g)) {
       invocations.push([m[1], ...m[2].split(/\s+/).filter(Boolean)]);
     }
   }
@@ -318,6 +324,14 @@ describe('documented commands exist', () => {
     // Outside a fence, an unquoted mention is prose, and an npm invocation is never ours.
     expect(documentedInvocations('secretless-ai scan --nope is prose here', false)).toEqual([]);
     expect(documentedInvocations('npm view secretless-ai dist.attestations --json', true)).toEqual([]);
+    // A captured Fix names two commands in a sentence: a trailing comma ends the
+    // first, and a comma inside a token does not end anything.
+    expect(documentedInvocations(
+      '  │ Fix: Store it with npx secretless-ai import .env.local, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate the key.',
+      true,
+    )).toEqual([['import', '.env.local'], ['run', '--', '<command']]);
+    expect(documentedInvocations('npx secretless-ai scan --only=aws,stripe --json', true))
+      .toEqual([['scan', '--only=aws,stripe', '--json']]);
 
     // And the check below can fire: the line #240 reported is refused.
     const [argv] = documentedInvocations('npx secretless-ai clean --dryrun --path ./transcripts', true);
