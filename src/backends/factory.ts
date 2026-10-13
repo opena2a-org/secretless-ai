@@ -64,6 +64,14 @@ import type { SelectableBackendType } from './config';
  *                 the same way and is built with this role (#369); its
  *                 resolver reports an unreachable backend against the
  *                 reference and never shows the `--backend` wording.
+ *                 'destination' is the store `migrate --to` writes to, which
+ *                 the migration then configures. `local` is the encrypted
+ *                 file, never the keychain upgrade: once configured, `local`
+ *                 means the file (#327), so a copy into the keychain left the
+ *                 configured store empty. It is built without the cache layer,
+ *                 as a source is: it is not the configured backend while the
+ *                 copy runs. An unreachable-backend error names it as the
+ *                 destination and offers no migration.
  */
 export function createBackend(
   type: SelectableBackendType,
@@ -73,14 +81,14 @@ export function createBackend(
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
   const role: BackendRole = options?.role ?? 'configured';
-  const uncached = role === 'source' || (role === 'named' && !isConfiguredStore(type));
+  const uncached = role === 'source' || role === 'destination' || (role === 'named' && !isConfiguredStore(type));
   const cacheTtl = (): number => (uncached ? 0 : readCacheTtl());
 
   // When callers request the default 'local', prefer keychain if the platform
   // supports it. Use the prompt-free Likely check here — this path runs from
   // MCP wrappers, brokers, and resolvers that must not trigger Touch ID. Real
   // auth happens lazily on the first secret read/write.
-  if (role !== 'named' && upgradesToKeychain(type, config)) {
+  if (role !== 'named' && role !== 'destination' && upgradesToKeychain(type, config)) {
     const keychainStatus = isKeychainLikely();
     if (keychainStatus.available) {
       try {
@@ -168,9 +176,24 @@ export function createBackend(
 
 /**
  * Whether a backend is this machine's configured store, one read alongside it,
- * or one named for a single run in its place.
+ * one named for a single run in its place, or the one `migrate` copies into.
  */
-export type BackendRole = 'configured' | 'source' | 'named';
+export type BackendRole = 'configured' | 'source' | 'named' | 'destination';
+
+/**
+ * The error `unavailableBackendError` builds. `reason` is why the backend could
+ * not be reached, on one line, for a caller that reports it in words of its own.
+ */
+export class UnreachableBackendError extends Error {
+  readonly backendType: SelectableBackendType;
+  readonly reason: string;
+
+  constructor(message: string, backendType: SelectableBackendType, reason: string) {
+    super(message);
+    this.backendType = backendType;
+    this.reason = reason;
+  }
+}
 
 /**
  * Build the error raised when a user-configured backend cannot be reached.
@@ -189,27 +212,32 @@ export function unavailableBackendError(
   fixes: string[],
   verifyCmd: string,
   role: BackendRole = 'configured',
-): Error {
+): UnreachableBackendError {
   // `why` is the `.message` of a caught error and can carry newlines. Left as
   // is, it breaks the block apart and the Verify/Fix lines stop reading as a
   // list — the recovery instructions are the whole point of this message.
   const reason = why.replace(/\s+/g, ' ').trim();
+  const refuse = (lines: string[]) => new UnreachableBackendError(lines.join('\n'), type, reason);
 
   const heading = {
     source: `Source backend "${type}" is not reachable: ${reason}`,
+    destination: `Destination backend "${type}" is not reachable: ${reason}`,
     named: `Backend "${type}", named with --backend, is not reachable: ${reason}`,
     configured: `Configured backend "${type}" is not reachable: ${reason}`,
   }[role];
-  const assurance = role === 'source'
-    ? '  Nothing was read from it, and nothing on this machine was changed.'
-    : '  Your secrets are safe. Nothing was read from or written to another store.';
+  const assurance = {
+    source: '  Nothing was read from it, and nothing on this machine was changed.',
+    destination: '  Nothing was copied, and the configured backend is unchanged.',
+    named: '  Your secrets are safe. Nothing was read from or written to another store.',
+    configured: '  Your secrets are safe. Nothing was read from or written to another store.',
+  }[role];
   const lines = [heading, '', assurance, '', `  Verify:  ${verifyCmd}`];
   for (const fix of fixes) {
     lines.push(`  Fix:     ${fix}`);
   }
   // A source is not the store secrets are written to, so there is nothing to
-  // migrate away from.
-  if (role === 'source') return new Error(lines.join('\n'));
+  // migrate away from. A destination is the store a migration was moving to.
+  if (role === 'source' || role === 'destination') return refuse(lines);
   // Neither is a store named for one run: the configured one is unchanged.
   if (role === 'named') {
     lines.push(
@@ -217,16 +245,16 @@ export function unavailableBackendError(
       `  --backend chose "${type}" for this run only; the configured backend is`,
       `  unchanged. To use it, run the command again without --backend.`,
     );
-    return new Error(lines.join('\n'));
+    return refuse(lines);
   }
   lines.push(
     '',
     `  Secretless will not silently use a different store, because a secret`,
     `  written to the wrong one looks like success and is found by nothing.`,
     `  To move to a different backend deliberately:`,
-    `    secretless-ai backend migrate --from ${type} --to local`,
+    `    secretless-ai migrate --from ${type} --to local`,
   );
-  return new Error(lines.join('\n'));
+  return refuse(lines);
 }
 
 /**

@@ -116,8 +116,16 @@ export class VaultBackend implements WritableSecretBackend {
       return {};
     }
 
+    // Only a 404 means nothing is stored under the prefix. A refused LIST
+    // answered as an empty store made `migrate --from vault` report that
+    // there was nothing to migrate and exit 0, while a refused GET on the
+    // same path throws (#372).
+    if (listResponse.status === 403) {
+      throw new Error(`Vault: permission denied listing "${prefix}"`);
+    }
+
     if (!listResponse.ok) {
-      return {};
+      throw new Error(`Vault: list failed (HTTP ${listResponse.status})`);
     }
 
     const listBody = await listResponse.json() as {

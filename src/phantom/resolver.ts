@@ -11,8 +11,7 @@
 
 import { parseSecretRef, isSecretRef, type SecretRef, type SecretBackend } from './ref';
 import { SecretStore } from '../secret-store';
-import { createBackend } from '../backends/factory';
-import { readBackendConfig } from '../backends/config';
+import { createBackend, UnreachableBackendError } from '../backends/factory';
 import type { WritableSecretBackend } from '../backends/types';
 
 export interface ResolveResult {
@@ -59,7 +58,7 @@ export async function resolveRef(uri: string): Promise<ResolveResult> {
     case 'keychain':
     case 'vault':
     case '1password':
-      value = await resolveFromBackend(ref);
+      value = await resolveFromBackend(ref, uri);
       break;
   }
 
@@ -123,8 +122,7 @@ async function resolveFromLocal(ref: SecretRef): Promise<string | undefined> {
 }
 
 /** Resolve from the backend the reference names (keychain, vault, 1password). */
-async function resolveFromBackend(ref: SecretRef): Promise<string | undefined> {
-  const configuredBackend = readBackendConfig();
+async function resolveFromBackend(ref: SecretRef, uri: string): Promise<string | undefined> {
   let backend: WritableSecretBackend;
 
   try {
@@ -136,18 +134,20 @@ async function resolveFromBackend(ref: SecretRef): Promise<string | undefined> {
     // backend had cached answered the reference in the named backend's
     // place (#369).
     backend = createBackend(ref.backend as any, undefined, true, { role: 'named' });
-  } catch {
-    // Backend not available (e.g., 1password CLI not installed).
-    // Try the configured backend as fallback — which can be unavailable too,
-    // and now throws when it is. Both unreachable means this ref cannot be
-    // resolved, which is `undefined`: resolveRef() turns that into a
-    // RefResolutionError naming the URI. Letting the throw escape instead
-    // would replace that message with a bare backend error carrying no ref.
-    try {
-      backend = createBackend(configuredBackend ?? 'local');
-    } catch {
-      return undefined;
-    }
+  } catch (err) {
+    // Backend not available (e.g., VAULT_ADDR unset, 1password CLI not
+    // installed). The configured backend is not asked in its place: it
+    // answered with its own value for the same name, reported as the named
+    // backend's, which is the substitution `createBackend` refuses for a
+    // configured backend (#372). The error names the URI, so a caller of
+    // resolveEnvRefs can tell which reference failed, and the reason, without
+    // the `--backend` wording of the factory's message.
+    const reason = err instanceof UnreachableBackendError ? `: ${err.reason}` : '';
+    throw new RefResolutionError(
+      `Backend "${ref.backend}" named by ${uri} is not reachable${reason}. No other store was read in its place.`,
+      uri,
+      ref.backend,
+    );
   }
 
   try {

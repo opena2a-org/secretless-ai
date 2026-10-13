@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as http from 'http';
+import * as net from 'net';
 import type { AddressInfo } from 'net';
 import * as path from 'path';
 import * as os from 'os';
@@ -35,17 +35,35 @@ function runCli(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } 
  * local stub that holds nothing: every read and list is a 404, which the
  * backend reports as an empty store. The stub counts requests, so a test can
  * prove the store was consulted rather than refused.
+ *
+ * It answers on a plain socket, not an http.Server: Node's HTTP parser answers
+ * a method it does not know, such as Vault's LIST, with 400 before any handler
+ * runs, and the backend reports a refused LIST as an error, not as an empty
+ * store. Each request gets one 404 and the connection is closed.
  */
 interface EmptyVaultStub { addr: string; requests: () => number; close: () => Promise<void> }
 
 function startEmptyVaultStub(): Promise<EmptyVaultStub> {
   let count = 0;
-  const server = http.createServer((req, res) => {
-    count += 1;
-    req.resume();
-    res.statusCode = 404;
-    res.setHeader('Content-Type', 'application/json');
-    res.end('{"errors":[]}');
+  const body = '{"errors":[]}';
+  const server = net.createServer((socket) => {
+    let head = '';
+    let answered = false;
+    socket.on('error', () => {});
+    socket.on('data', (chunk) => {
+      if (answered) return;
+      head += chunk.toString('latin1');
+      if (!head.includes('\r\n\r\n')) return;
+      answered = true;
+      count += 1;
+      socket.end(
+        'HTTP/1.1 404 Not Found\r\n'
+        + 'Content-Type: application/json\r\n'
+        + `Content-Length: ${Buffer.byteLength(body)}\r\n`
+        + 'Connection: close\r\n\r\n'
+        + body,
+      );
+    });
   });
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
