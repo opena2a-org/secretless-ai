@@ -26,7 +26,7 @@
  */
 
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
-import type { CpiMode, ResourceBinding } from './cpi/types';
+import { MAX_GRANT_TTL_SECONDS, type CpiMode, type ResourceBinding } from './cpi/types';
 import { isGrantRef } from '../grant';
 import { nearestMatch } from '../near-miss';
 
@@ -148,19 +148,11 @@ const OVERWRITTEN_RESOLVE_KEYS = new Map<string, string>([
 const CPI_MODES = new Set<string>(['retrieve', 'assume', 'exchange']);
 
 /**
- * The longest `resolve.ttlSeconds` a binding may carry: twelve hours.
- *
- * The TTL is added to the issue time to form the broker assertion's `exp`, and it is the life
- * the exchange site reports for the scoped credential when the authorization server states none.
- * A whole number has no upper bound of its own: `1e21` passes `Number.isInteger` and mints an
- * `exp` some thirty trillion years out, which a downstream verifier reads as no expiry at all,
- * the same outcome as the `"exp": null` the lower bound exists to prevent.
- *
- * Twelve hours is the longest assumed-role session the major cloud security-token services issue,
- * and the assertion this TTL governs is the identity proof Assume mode presents to one
- * (./cpi/assume.ts). A binding asking for longer asks for a life those services would not grant.
+ * The longest `resolve.ttlSeconds` a binding may carry. Defined beside `ResourceBinding`
+ * (./cpi/types), where the assertion builder holds a binding that never passed through this
+ * class to the same bound.
  */
-export const MAX_GRANT_TTL_SECONDS = 12 * 60 * 60;
+export { MAX_GRANT_TTL_SECONDS };
 
 export class GrantPolicy {
   private readonly bindings: readonly GrantBinding[];

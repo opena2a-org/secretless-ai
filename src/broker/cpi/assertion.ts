@@ -25,7 +25,7 @@
 
 import * as crypto from 'crypto';
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
-import type { ResourceBinding } from './types';
+import { MAX_GRANT_TTL_SECONDS, type ResourceBinding } from './types';
 
 // @noble/post-quantum is ESM-only; this package compiles to CommonJS, so the
 // module loads via require(esm) — supported since Node 20.19 (the package
@@ -116,6 +116,28 @@ function buildAssertionClaims(
         'the grant resolver injects it from the matched policy clause',
     );
   }
+  // The TTL is bounded here, where it is added to the issue time, and not only where grant
+  // policy loads: the mint functions are exported and take a binding directly, and one built in
+  // code never passed the loader. Unchecked, an absent TTL or NaN serialises to `"exp": null`,
+  // a string concatenates into a thirteen-digit `exp`, zero or a negative mints an assertion
+  // already expired at issue, and a whole number above the ceiling reads downstream as no expiry
+  // at all. Same accept-set as the loader. Read once, so the value checked is the value used.
+  const ttlSeconds: unknown = binding.ttlSeconds;
+  if (
+    typeof ttlSeconds !== 'number' ||
+    !Number.isInteger(ttlSeconds) ||
+    ttlSeconds <= 0 ||
+    ttlSeconds > MAX_GRANT_TTL_SECONDS
+  ) {
+    const got =
+      typeof ttlSeconds === 'number' || ttlSeconds == null
+        ? String(ttlSeconds)
+        : `a ${typeof ttlSeconds}`;
+    throw new Error(
+      'broker assertion minting: binding.ttlSeconds must be a whole number of seconds from 1 ' +
+        `to ${MAX_GRANT_TTL_SECONDS} (12 hours), not ${got}; \`exp\` is the issue time plus it`,
+    );
+  }
   return {
     iss: issuer,
     sub: ctx.agentDid,
@@ -126,7 +148,7 @@ function buildAssertionClaims(
     issuer_chain: ctx.issuerChain,
     trust_level: ctx.trustLevel,
     iat: nowSeconds,
-    exp: nowSeconds + binding.ttlSeconds,
+    exp: nowSeconds + ttlSeconds,
     jti,
   };
 }

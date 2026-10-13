@@ -20,6 +20,25 @@ import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-
 export type CpiMode = 'retrieve' | 'assume' | 'exchange';
 
 /**
+ * The longest `ttlSeconds` a resource binding may carry: twelve hours.
+ *
+ * The TTL is added to the issue time to form the broker assertion's `exp`, and it is the life
+ * the exchange site reports for the scoped credential when the authorization server states none.
+ * A whole number has no upper bound of its own: `1e21` passes `Number.isInteger` and mints an
+ * `exp` some thirty trillion years out, which a downstream verifier reads as no expiry at all,
+ * the same outcome as the `"exp": null` the lower bound exists to prevent.
+ *
+ * Twelve hours is the longest assumed-role session the major cloud security-token services issue,
+ * and the assertion this TTL governs is the identity proof Assume mode presents to one
+ * (./assume.ts). A binding asking for longer asks for a life those services would not grant.
+ *
+ * The bound is enforced at two sites with one accept-set: where grant policy loads
+ * (../grant-policy.ts) and where the assertion is minted (./assertion.ts), so a binding built
+ * in code, which never passes the loader, meets the same bound.
+ */
+export const MAX_GRANT_TTL_SECONDS = 12 * 60 * 60;
+
+/**
  * A resource binding comes from local broker policy (configuration). It maps a grant to
  * a concrete CPI mode, provider, downstream scope, audience, and TTL. It NEVER travels
  * on the wire and is never returned to the agent.
@@ -33,7 +52,10 @@ export interface ResourceBinding {
   scope: string;
   /** Downstream audience / resource (e.g. "https://api.orders.internal"). */
   audience: string;
-  /** Lifetime of the minted/scoped credential in seconds. */
+  /**
+   * Lifetime of the minted/scoped credential in seconds: a whole number from 1 to
+   * MAX_GRANT_TTL_SECONDS.
+   */
   ttlSeconds: number;
   /**
    * Trust class (ATX capability, e.g. "orders:read") the grant was matched under.
