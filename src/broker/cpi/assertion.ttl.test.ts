@@ -156,3 +156,100 @@ describe('ExchangeProvider: a binding the mint refuses never reaches the authori
     });
   }
 });
+
+/**
+ * The mint checks the TTL before the request goes out, and the reported life is formed after
+ * the response comes back. The caller's binding object can change in between, so the TTL that
+ * caps the reported life has to be the one the mint checked, not a second read of the object.
+ */
+describe('ExchangeProvider: the reported life is capped by the TTL the assertion was minted with', () => {
+  const YEAR = 86400 * 365;
+
+  /**
+   * Resolves `b` while `during` runs inside the token exchange. Returns the life of the assertion
+   * that was sent (`exp - iat`) and the life reported for the scoped credential.
+   */
+  async function resolveWith(
+    b: ResourceBinding,
+    expiresIn: number | undefined,
+    during: () => void = () => {},
+  ): Promise<{ minted: number; reported: unknown }> {
+    let minted = NaN;
+    const transport: TokenExchangeTransport = {
+      async exchange(req) {
+        const claims = claimsOf(req.params.subject_token.split('.')[1]);
+        minted = (claims.exp as number) - (claims.iat as number);
+        during();
+        return { access_token: 'not-a-real-token', expires_in: expiresIn };
+      },
+    };
+    const provider = new ExchangeProvider({ tokenEndpoint: 'https://idp.example/token' }, ED_KEY, transport);
+    const cred = await provider.resolve(CTX, b);
+    return { minted, reported: cred.expiresInSeconds };
+  }
+
+  for (const later of [...REFUSED, MAX_GRANT_TTL_SECONDS]) {
+    it(`a 300s binding that becomes ${label(later)} during the exchange still reports at most 300s`, async () => {
+      for (const [expiresIn, reported] of [[undefined, 300], [YEAR, 300], [120, 120]] as const) {
+        const b = bindingWith(300);
+        const change = () => {
+          (b as unknown as Record<string, unknown>).ttlSeconds = later;
+        };
+        expect(await resolveWith(b, expiresIn, change), `expires_in ${expiresIn}`).toEqual({
+          minted: 300,
+          reported,
+        });
+      }
+    });
+  }
+
+  it('reads ttlSeconds once, and reports the life that read minted', async () => {
+    let reads = 0;
+    const b = {
+      ...bindingWith(300),
+      get ttlSeconds() {
+        reads += 1;
+        return reads === 1 ? 300 : 1e21;
+      },
+    };
+    expect(await resolveWith(b, undefined)).toEqual({ minted: 300, reported: 300 });
+    expect(reads).toBe(1);
+  });
+
+  // The provider's copy reads members by name, not by spreading own properties, so a binding
+  // that keeps them on its prototype resolves as it did before the copy existed.
+  it('resolves a binding whose members live on its prototype', async () => {
+    const b = Object.create(bindingWith(300)) as ResourceBinding;
+    expect(await resolveWith(b, YEAR)).toEqual({ minted: 300, reported: 300 });
+  });
+
+  it('requests the scope and audience the assertion carries', async () => {
+    const reads = { scope: 0, audience: 0 };
+    const b = {
+      ...bindingWith(300),
+      get scope() {
+        reads.scope += 1;
+        return reads.scope === 1 ? 'orders.read' : 'orders.write';
+      },
+      get audience() {
+        reads.audience += 1;
+        return reads.audience === 1 ? 'https://api.orders.internal' : 'https://api.other.internal';
+      },
+    };
+    let sent: Record<string, string> = {};
+    const transport: TokenExchangeTransport = {
+      async exchange(req) {
+        sent = req.params;
+        return { access_token: 'not-a-real-token' };
+      },
+    };
+    const provider = new ExchangeProvider({ tokenEndpoint: 'https://idp.example/token' }, ED_KEY, transport);
+    await provider.resolve(CTX, b);
+    const claims = claimsOf(sent.subject_token.split('.')[1]);
+    expect({ scope: sent.scope, audience: sent.audience }).toEqual({
+      scope: claims.scope,
+      audience: claims.aud,
+    });
+    expect(reads).toEqual({ scope: 1, audience: 1 });
+  });
+});
