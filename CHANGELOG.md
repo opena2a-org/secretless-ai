@@ -18,6 +18,40 @@ the configured backend is cached as before, as is one that names `keychain` on
 a machine with no backend configured where a keychain is detected (macOS, or
 Linux with `secret-tool` on PATH).
 
+**`migrate` copies what `--from` holds, and removes the value cache when it
+ends (#370).** `migrate --from <backend>` read its source through the value
+cache, one file keyed by secret name alone that answers whichever backend
+asks. Until the cache TTL ran out (5 minutes by default) after a command that
+read the whole store, such as `secret list`, the migration copied what was
+cached instead of what the source held. With `keychain` configured,
+`migrate --from vault --to local` copied the keychain's secrets, not Vault's,
+to the encrypted file and counted them as migrated; a value rotated in the
+source since that read was copied as it was before the rotation; and after a
+listing of an empty store, the migration printed `No secrets found to
+migrate.` for a source that held secrets. `--from` is now read directly, as
+the source of `secret sync` is.
+The cache file was also left in place when the migration ended, still holding
+the previous backend's entries: after a migration whose writes to `--to` all
+failed, a read through the new backend was answered with the previous
+backend's entries until the TTL ran out. `migrate` now removes the file when
+it ends, whether it migrated, found nothing, failed in part or stopped on an
+error, and it copies the `secret/` entries and then the `mcp/` entries instead
+of both at once, so nothing is still being written when it does. The next read
+asks the backend itself, which on the keychain or 1Password is one more unlock
+prompt.
+A `--from` backend that cannot be reached is reported as `Source backend
+"1password" is not reachable`, with `Nothing was read from it, and nothing on
+this machine was changed.`, where it was called the configured backend and
+given `backend migrate --from 1password --to local` as the way out.
+Who is affected: a migration run within the TTL of such a read whose `--from`
+was `keychain`, `1password`, `vault` or `gcp-sm`, the backends the cache is
+used for, or `local` on a machine with no backend configured, where `local` is
+the platform keychain when one is detected. Running the same `migrate` again
+copies what the source holds now and deletes nothing from it;
+`npx secretless-ai backend list` then names what `--to` holds. Verify after
+any `migrate` with `ls ~/.secretless-ai/cache/.secret-cache` (`No such file or
+directory`).
+
 **The broker audit log is signed, and `verifyAuditLog` checks it (#259).**
 The AAP broker profile requires every verification, decision, resolution and
 denial to be written to a signed audit log, and the reference test for it

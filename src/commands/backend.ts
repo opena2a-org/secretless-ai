@@ -4,6 +4,7 @@ import { isGCPAvailable } from '../backends/gcp-sm';
 import { readBackendConfig, writeBackendConfig, resolveBackendType, readCacheTtl, writeCacheTtl, parseDuration, formatTtl } from '../backends/config';
 import { clearCacheFile } from '../backends/cache';
 import { migrateSecrets } from '../backends/migrate';
+import type { MigrateResult } from '../backends/migrate';
 import type { SelectableBackendType } from '../backends/config';
 import { nearestMatch } from '../near-miss';
 import { escapeForDisplay } from '../display-safe';
@@ -325,7 +326,13 @@ export async function runMigrate(args: string[]): Promise<number> {
   console.log(`  From: ${fromType}`);
   console.log(`  To:   ${toType}\n`);
 
-  const source = createBackend(fromType, undefined, true);
+  // `--from` is read in the source role, without the cache layer. The value
+  // cache is one file keyed by entry name alone, and it answers whichever
+  // backend asks. Through it this command copied what was cached under a name
+  // instead of what `--from` holds: the configured backend's value for the same
+  // name, or the source's own value from before a rotation. A cached empty
+  // listing made it report that there was nothing to migrate (#370).
+  const source = createBackend(fromType, undefined, true, { role: 'source' });
   const destination = createBackend(toType, undefined, true);
 
   // Migrate all known prefixes. Some backends (keychain, 1password) return nothing
@@ -333,9 +340,13 @@ export async function runMigrate(args: string[]): Promise<number> {
   const PREFIXES = ['secret', 'mcp'];
 
   try {
-    const perPrefix = await Promise.all(
-      PREFIXES.map(p => migrateSecrets(source, destination, { deleteFromSource: false, prefix: p }))
-    );
+    // One prefix after the other, so that when a read fails nothing is still
+    // being copied, and the cache file removed below is not written again
+    // through the destination's cache layer after this command has returned.
+    const perPrefix: MigrateResult[] = [];
+    for (const prefix of PREFIXES) {
+      perPrefix.push(await migrateSecrets(source, destination, { deleteFromSource: false, prefix }));
+    }
     const result = perPrefix.reduce(
       (acc, r) => ({
         migrated: acc.migrated + r.migrated,
@@ -367,6 +378,15 @@ export async function runMigrate(args: string[]): Promise<number> {
   } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
+  } finally {
+    // The cache holds what was read from the backend configured before this
+    // command, and `--to` adds what it wrote. Once the configured backend has
+    // changed, or a migration has stopped part-way, an entry there is no longer
+    // known to be the configured backend's value: after a migration whose
+    // writes all failed, the new backend was answered for from the old one's
+    // entries. The file is removed on every way out of the migration: nothing
+    // found, migrated, partly failed, or stopped on an error (#370).
+    clearCacheFile();
   }
 }
 
