@@ -1,4 +1,4 @@
-export type { SecretBackend, WritableSecretBackend, BackendHealth, BackendConfig, BackendType, AccessAuditEntry } from './types';
+export type { SecretBackend, WritableSecretBackend, ResolveOptions, BackendHealth, BackendConfig, BackendType, AccessAuditEntry } from './types';
 export { LocalBackend } from './local';
 export { MacOSKeychainBackend } from './keychain-macos';
 export { LinuxKeychainBackend } from './keychain-linux';

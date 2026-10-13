@@ -188,6 +188,21 @@ describe('CachedBackend', () => {
     expect(inner.resolveCalls).toBe(2);
   });
 
+  // #375: the wrapped backend decides what an exact read does, so it has to
+  // be told. A cache miss and a disabled cache are the two places it is asked.
+  it.each([
+    ['on a cache miss', 60_000],
+    ['with the cache disabled', 0],
+  ])('passes the resolve options to the inner backend %s', async (_when, ttlMs) => {
+    const inner = createMockBackend({});
+    const resolve = vi.spyOn(inner, 'resolve');
+    const cached = new CachedBackend(inner, { ttlMs, storeDir: dir });
+
+    await cached.resolve('secret/MISSING_NAME', { exact: true });
+
+    expect(resolve.mock.calls).toEqual([['secret/MISSING_NAME', { exact: true }]]);
+  });
+
   it('encrypts the cache file', async () => {
     const inner = createMockBackend({ 'secret/KEY': 'sensitive_value' });
     const cached = new CachedBackend(inner, { ttlMs: 60_000, storeDir: dir });

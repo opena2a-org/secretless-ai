@@ -128,6 +128,26 @@ describe('VaultBackend', () => {
       expect(mockFetch.mock.calls[1][1].method).toBe('LIST');
     });
 
+    // #375: an exact read asks for one entry. Its 404 was followed by a LIST
+    // of the same path as a prefix, and a refused LIST threw.
+    it('an exact read answered 404 returns nothing and sends no LIST', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 403 });
+
+      const vault = createVault();
+      await expect(vault.resolve('secret/MISSING_NAME', { exact: true })).resolves.toEqual({});
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0][1].method).toBe('GET');
+    });
+
+    it('an exact read answered 403 throws, as a read without the option does', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 403 });
+
+      const vault = createVault();
+      await expect(vault.resolve('secret/MY_KEY', { exact: true }))
+        .rejects.toThrow('Vault: permission denied reading "secret/MY_KEY"');
+    });
+
     it('throws on 403', async () => {
       mockFetch.mockResolvedValueOnce({ ok: false, status: 403 });
 

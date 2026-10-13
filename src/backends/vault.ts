@@ -8,7 +8,7 @@
  * Engine: KV v2 (most common) -- secrets at /v1/{mount}/data/{key}.
  */
 
-import type { WritableSecretBackend, BackendHealth } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
 import { boundedFetch, describeRequest, type BoundedResponse } from './bounded-fetch';
 
 const DEFAULT_MOUNT_PATH = 'secret';
@@ -73,8 +73,10 @@ export class VaultBackend implements WritableSecretBackend {
    * Matches the LocalBackend contract:
    * - resolve("secret/KEY") returns { "secret/KEY": "value" }
    * - resolve("secret") returns all keys under the "secret/" prefix
+   * - resolve("secret/KEY", { exact: true }) reads that one entry: a 404
+   *   returns {} and no LIST is sent
    */
-  async resolve(path: string): Promise<Record<string, string>> {
+  async resolve(path: string, options?: ResolveOptions): Promise<Record<string, string>> {
     this.ensureConfigured();
 
     // Try direct read first
@@ -96,8 +98,14 @@ export class VaultBackend implements WritableSecretBackend {
       throw new Error(`Vault: permission denied reading "${path}"`);
     }
 
-    // 404 on direct read -- try listing keys under this prefix
     if (readResponse.status === 404) {
+      // An exact read asked for this one entry, and the 404 is its answer.
+      // Listing the path as a prefix made a read of one name that is not
+      // stored depend on the list capability, and a token without it got
+      // `permission denied listing` where the name was simply absent (#375).
+      if (options?.exact) return {};
+
+      // 404 on direct read -- try listing keys under this prefix
       return this.listPrefix(path);
     }
 

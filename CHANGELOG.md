@@ -46,6 +46,21 @@ the path, its length in bytes and the limit, with a Verify line that counts
 the bytes and a Fix line that starts the broker under a `HOME` whose path is
 short enough (77 bytes on macOS, 81 on Linux).
 
+**A Vault token that may not list can read one secret name that is not stored
+(#375).** A read of one name answered a 404 of `secret/NAME` by listing that
+name as a prefix, and since a refused LIST is reported (#372, below) that LIST
+failed the read. With a token that may read `secret/data/*` and may not list
+`secret/metadata/*`, `secret show MISSING_NAME` printed `Error: Vault:
+permission denied listing "secret/MISSING_NAME"`, the broker's credential
+lookup threw `permission denied listing` before its environment-variable
+fallback, and a sync from Vault recorded the name as failed. A read of one
+name now takes the 404 as its answer and sends no LIST: `secret show
+MISSING_NAME` prints `Secret not found: MISSING_NAME` and, with `--json`,
+`"stored": false`; the broker lookup goes on to the environment variable; and
+the sync records the name as not found. Storing a name that has an open
+exposure reads its previous value the same way. Reading a prefix, as listing
+the stored names does, still reports a refused LIST.
+
 **The unreachable-backend message offers `migrate`, a command that exists
 (#372).** When the configured backend could not be reached, the message gave
 `secretless-ai backend migrate --from <backend> --to local` as the way to move
