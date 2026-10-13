@@ -939,6 +939,18 @@ file cap clears. `init notes.txt/sub`, where `notes.txt` is a file, said
 now names the file and suggests `init` on the directory that holds it.
 Detection, the report's "files not opened" list and exit codes are unchanged.
 
+**In Exchange mode the life reported for a scoped credential is capped by the TTL its assertion was minted with.**
+`ExchangeProvider.resolve` checked the binding's TTL when it minted the broker
+assertion, then read `ttlSeconds` from the caller's binding object a second
+time, after the authorization server answered, to cap the reported life. A
+binding object changed while the token exchange was in flight (a configuration
+reload that edits bindings in place, for example) was reported with the later
+value: an assertion minted with 300 seconds came back as a credential life of
+`1e21`, of one year when the server stated one, or of `NaN`. The provider now
+reads each member of the binding once, before it mints, and uses that copy for
+the assertion, the token-exchange request and the reported life, so the
+`scope` and `audience` it requests are also the ones the assertion carries.
+
 **The broker's assertion mint functions refuse a binding TTL outside 1 to 43200 seconds.**
 `mintBrokerAssertion`, `mintBrokerAssertionMlDsa65` and
 `mintHybridBrokerAssertion` take a resource binding directly, and a binding

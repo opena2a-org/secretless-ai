@@ -59,20 +59,32 @@ export class ExchangeProvider implements CredentialProvider {
   ) {}
 
   async resolve(ctx: ResolutionContext, binding: ResourceBinding): Promise<ScopedCredential> {
-    if (binding.mode !== 'exchange') {
-      throw new Error(`ExchangeProvider received non-exchange binding (${binding.mode})`);
+    // Each member is read once, into a copy this call owns, and the copy is what is minted, sent
+    // and reported. The caller's object can change while the token exchange is in flight, and
+    // the TTL that caps the reported life in step 3 has to be the one the mint checked in step 1,
+    // not whatever the object holds afterwards.
+    const bound: ResourceBinding = {
+      mode: binding.mode,
+      providerId: binding.providerId,
+      scope: binding.scope,
+      audience: binding.audience,
+      ttlSeconds: binding.ttlSeconds,
+      trustClass: binding.trustClass,
+    };
+    if (bound.mode !== 'exchange') {
+      throw new Error(`ExchangeProvider received non-exchange binding (${bound.mode})`);
     }
 
     // 1. Mint the broker assertion from verified ATX claims (never from agent input).
-    const assertion = mintBrokerAssertion(ctx, binding, this.signingKey);
+    const assertion = mintBrokerAssertion(ctx, bound, this.signingKey);
 
     // 2. RFC 8693 token exchange for a scoped downstream token.
     const params: Record<string, string> = {
       grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
       subject_token: assertion,
       subject_token_type: this.config.subjectTokenType ?? SUBJECT_TOKEN_TYPE_JWT,
-      scope: binding.scope,
-      audience: binding.audience,
+      scope: bound.scope,
+      audience: bound.audience,
       requested_token_type: this.config.requestedTokenType ?? REQUESTED_TOKEN_TYPE_ACCESS,
     };
 
@@ -87,14 +99,15 @@ export class ExchangeProvider implements CredentialProvider {
     //    The binding's TTL is the operator's ceiling on the credential's life, and the
     //    server's `expires_in` (RFC 6749 §5.1) can only shorten it: a longer stated life, or a
     //    NaN, does not raise the ceiling, and a negative one reads as already expired.
+    //    `bound.ttlSeconds` is the value the mint accepted, a whole number inside its range.
     const stated = res.expires_in;
     return {
       token: res.access_token,
       tokenType: res.token_type ?? 'Bearer',
       expiresInSeconds:
         typeof stated === 'number' && !Number.isNaN(stated)
-          ? Math.max(0, Math.min(stated, binding.ttlSeconds))
-          : binding.ttlSeconds,
+          ? Math.max(0, Math.min(stated, bound.ttlSeconds))
+          : bound.ttlSeconds,
     };
   }
 }
