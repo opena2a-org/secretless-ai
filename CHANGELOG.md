@@ -52,6 +52,17 @@ copies what the source holds now and deletes nothing from it;
 any `migrate` with `ls ~/.secretless-ai/cache/.secret-cache` (`No such file or
 directory`).
 
+**`--help` opens with the package description.** Top-level help opened with
+"Keep secrets out of AI context." The README and the package description are
+narrower: a hook and deny rules enforce the read gate in Claude Code, the
+other tools get instruction or ignore files that nothing enforces, and a
+command that prints its own credential is not blocked. Help now prints that
+description in place of the old line, wrapped inside 80 columns, standalone and
+under a host CLI that sets `SECRETLESS_CLI_PREFIX`. It is read from
+`package.json`, and a test holds the opening of help to it. The name and
+release line above it, and every command, flag and exit code, are unchanged.
+The line `init` prints under its release line is unchanged too.
+
 **The package description says what the README says.** `npm search`,
 `npm view` and the registry listing showed "One command to keep secrets out of
 AI. Works with Claude Code, Cursor, Copilot, Windsurf, and any AI coding

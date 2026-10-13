@@ -201,9 +201,10 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
     // and bare `secretless-ai <verb>`.
     expect(out).not.toMatch(/npx secretless-ai/);
     expect(out).not.toMatch(/^\s*secretless-ai\s/m);
-    // Brand+version banner is suppressed under the host umbrella; tagline stays.
+    // Brand+version banner is suppressed under the host umbrella; the
+    // description stays (src/help-description.test.ts holds its full text).
     expect(out).not.toMatch(/Secretless v/);
-    expect(out).toMatch(/Keep secrets out of AI context\./);
+    expect(out).toMatch(/^ {2}Secretless stores API keys outside your project files/m);
   });
 
   itIfBuilt('SET: error hint rebrands to the prefix', () => {

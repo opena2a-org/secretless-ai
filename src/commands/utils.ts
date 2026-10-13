@@ -2,6 +2,14 @@
 export const VERSION: string = require('../../package.json').version;
 
 /**
+ * What the package says it does: the `description` in package.json, which a
+ * test holds to the README's opening paragraph. Top-level help prints it, so
+ * the README, the registry listing and `--help` say the same sentences.
+ */
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+export const DESCRIPTION: string = require('../../package.json').description;
+
+/**
  * Command-invocation prefix used in all user-facing citations (help text,
  * error hints). Defaults to `npx secretless-ai` — the canonical standalone
  * invocation. When secretless is embedded under another CLI (e.g. opena2a-cli
@@ -25,6 +33,30 @@ export const CLI_BARE: string = process.env.SECRETLESS_CLI_PREFIX ?? 'secretless
  * the host's).
  */
 export const IS_EMBEDDED: boolean = process.env.SECRETLESS_CLI_PREFIX != null;
+
+/** Help lines stay inside an 80-column terminal, counting their indent (4 spaces for notes). */
+export const NOTE_WIDTH = 76;
+
+/**
+ * Pack `items` into lines no wider than NOTE_WIDTH. The first line starts with
+ * `lead`, the rest with `indent`; pass both the same length. An item is never
+ * split, so one wider than the limit gets a line of its own.
+ */
+export function wrapList(items: readonly string[], indent: string, sep = ' ', lead = indent): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const item of items) {
+    const next = line ? `${line}${sep}${item}` : item;
+    if (line && indent.length + next.length > NOTE_WIDTH) {
+      lines.push((lines.length ? indent : lead) + line);
+      line = item;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push((lines.length ? indent : lead) + line);
+  return lines;
+}
 
 /** Format seconds into a human-readable uptime string. */
 export function formatUptime(seconds: number): string {
