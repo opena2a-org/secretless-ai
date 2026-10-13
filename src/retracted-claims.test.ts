@@ -738,7 +738,7 @@ describe("neither the source nor the tarball packed from it carries a retracted 
       "CONTRIBUTING.md",
       "docs/install.md",
       "docs/how-it-works.md",
-      "docs/secrets.md",
+      "docs/managing-secrets.md",
       "docs/commands.md",
     ]) {
       for (const { claim, line } of mod.retractedClaimsIn(

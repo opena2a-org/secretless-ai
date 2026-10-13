@@ -1,6 +1,6 @@
 # Commands
 
-The scan command, MCP server protection, the flags for triaging findings, exit codes, and running Secretless through `opena2a-cli`. Commands for stored secrets are in [Store and use secrets](secrets.md).
+The scan command, MCP server protection, the flags for triaging findings, exit codes, and running Secretless through `opena2a-cli`. Commands for stored secrets are in [Store and use secrets](managing-secrets.md).
 
 ## Scan for hardcoded credentials
 

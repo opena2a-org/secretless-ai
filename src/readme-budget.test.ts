@@ -42,14 +42,14 @@ const MOVED_SECTIONS: Array<[heading: string, page: string]> = [
   ['Supported tools', 'docs/how-it-works.md'],
   ['Storage backends', 'docs/how-it-works.md'],
   ['NanoMind integration', 'docs/how-it-works.md'],
-  ['Store secrets and use them in AI sessions', 'docs/secrets.md'],
-  ['Record what a credential is for', 'docs/secrets.md'],
-  ['Move secrets to another machine', 'docs/secrets.md'],
-  ['Track an exposed key until it is rotated', 'docs/secrets.md'],
-  ['Give git a stored token over HTTPS', 'docs/secrets.md'],
-  ['Ask your AI assistant to use a secret', 'docs/secrets.md'],
-  ['What the guard cannot see', 'docs/secrets.md'],
-  ['Push secrets to a cloud secret store', 'docs/secrets.md'],
+  ['Store secrets and use them in AI sessions', 'docs/managing-secrets.md'],
+  ['Record what a credential is for', 'docs/managing-secrets.md'],
+  ['Move secrets to another machine', 'docs/managing-secrets.md'],
+  ['Track an exposed key until it is rotated', 'docs/managing-secrets.md'],
+  ['Give git a stored token over HTTPS', 'docs/managing-secrets.md'],
+  ['Ask your AI assistant to use a secret', 'docs/managing-secrets.md'],
+  ['What the guard cannot see', 'docs/managing-secrets.md'],
+  ['Push secrets to a cloud secret store', 'docs/managing-secrets.md'],
   ['MCP server protection', 'docs/commands.md'],
   ['Triage helpers', 'docs/commands.md'],
   ['Exit codes and scan coverage', 'docs/commands.md'],
@@ -287,7 +287,7 @@ describe('the README task list', () => {
   }
 
   it('finds the first code line of a section, and none where the section has no code', () => {
-    const secrets = path.join(REPO_ROOT, 'docs', 'secrets.md');
+    const secrets = path.join(REPO_ROOT, 'docs', 'managing-secrets.md');
     expect(firstCodeLineAt(secrets, 'move-secrets-to-another-machine')).toMatch(/^npx secretless-ai export /);
     expect(firstCodeLineAt(secrets, 'what-the-guard-cannot-see')).toBeNull();
     expect(firstCodeLineAt(secrets, 'no-such-heading')).toBeNull();
