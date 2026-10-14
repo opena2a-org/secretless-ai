@@ -114,11 +114,20 @@ describe('the recorded walkthrough and its sidecar', () => {
     expect(line).not.toMatch(/!\[[^\]]*\]\(docs\/vhs\/init\.gif\)/);
   });
 
+  it('keeps the recording that the README published with 0.23.0 embeds', () => {
+    // The README published with 0.23.0 embeds this file by a path relative to
+    // the repository:
+    //   npm view secretless-ai@0.23.0 readme | grep -n secretless-ai-demo.gif
+    // It can go once a version whose README does not embed it is published,
+    // which is when this prints 0:
+    //   npm view secretless-ai readme | grep -c secretless-ai-demo.gif
+    expect(fs.existsSync(path.join(REPO_ROOT, 'docs/secretless-ai-demo.gif'))).toBe(true);
+  });
+
   it('was rendered from the tape, the fixture and the patch the repository carries', () => {
     const s = sidecar();
     expect(s.tape).toBe(TAPE);
     expect(s.tapeSha256, `${TAPE} changed after the render: run docs/vhs/record-init.sh`).toBe(sha256(TAPE));
-    expect(s.scriptSha256).toBe(s.tapeSha256);
     expect(s.fixtureScript).toBe(FIXTURE_SCRIPT);
     expect(s.fixtureSha, `${FIXTURE_SCRIPT} changed after the render: run docs/vhs/record-init.sh`).toBe(sha256(FIXTURE_SCRIPT));
     expect(s.fixtureUncommittedChanges).toBe(0);
@@ -126,6 +135,21 @@ describe('the recorded walkthrough and its sidecar', () => {
     expect(s.environment.vhs.patchSha256).toBe(s.vhsPatchSha256);
     expect(s.outputs.gif).toEqual({ path: RECORDING, bytes: bytes(RECORDING) });
     expect(s.outputs.capture).toBe(CAPTURE);
+  });
+
+  it('holds the digest of the tape under tapeSha256 and under no other field', () => {
+    // A digest is read as the digest of the file its field names, so the
+    // tape's digest under another name says that file is the tape.
+    const tapeDigest = sha256(TAPE);
+    const holders: string[] = [];
+    const walk = (value: unknown, at: string): void => {
+      if (value === tapeDigest) holders.push(at);
+      else if (value && typeof value === 'object') {
+        for (const [key, inner] of Object.entries(value)) walk(inner, at ? `${at}.${key}` : key);
+      }
+    };
+    walk(sidecar(), '');
+    expect(holders).toEqual(['tapeSha256']);
   });
 
   it('names one build: the published package by its integrity, or the commit it was packed from', () => {
@@ -179,7 +203,7 @@ describe('the recorded walkthrough and its sidecar', () => {
   it('carries every field a reader of a sidecar looks for', () => {
     const s = sidecar();
     const fields = [
-      'tape', 'tapeSha256', 'scriptSha256', 'commands', 'tool', 'version', 'ranAtUtc',
+      'tape', 'tapeSha256', 'commands', 'tool', 'version', 'ranAtUtc',
       'fixture', 'fixtureSha', 'fixtureUncommittedChanges', 'fixturePath', 'hostname',
       'columns', 'rows', 'framerate', 'gifsicle', 'gifFrames', 'gifFullScreenFrames',
       'renderedPixelSize', 'outputs', 'durationSeconds', 'wallClockSeconds',
