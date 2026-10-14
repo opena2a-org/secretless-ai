@@ -16,9 +16,24 @@ and the output files; `docs/vhs/init-capture.txt` is the same two commands as
 text. The test suite compares the sidecar with the tape, the fixture script
 and the version in `package.json`, and checks every command a tape types
 against the commands and flags the CLI registers, so a release or a tape edit
-that is not followed by a render fails a test. `docs/demo.tape` and
-`docs/secretless-ai-demo.gif` are removed. No command, flag, output or exit
-code changed.
+that is not followed by a render fails a test. `docs/demo.tape` is removed.
+No command, flag, output or exit code changed.
+
+**`docs/vhs/record-init.sh` counts uncommitted changes to the fixture script
+with `git status` and refuses to render when there is one, and the sidecar
+drops `scriptSha256`, which held the tape's digest (#379).** The script wrote
+`fixtureUncommittedChanges` as the literal `0` and wrote the digest of
+`docs/vhs/init.tape` under both `tapeSha256` and `scriptSha256`. It now counts
+the lines `git status --porcelain -- docs/vhs/setup-fixture.sh` prints, before
+any `docker` call, and exits 1 with a message that starts `record-init.sh: git
+status reports uncommitted changes to docs/vhs/setup-fixture.sh` when the count
+is not 0, for an unstaged and for a staged edit. The script passes the count to
+the container as `FIXTURE_UNCOMMITTED_CHANGES`, and its step inside the
+container compares that value with `0` before the render and writes the field
+from it. `docs/secretless-ai-demo.gif` is
+back in the repository: the README published with 0.23.0 embeds it (line 40 of
+`npm view secretless-ai@0.23.0 readme`). No command, flag, output or exit code
+of the CLI changed.
 
 **A `secret://keychain/` reference is not answered by the encrypted file on a
 platform with no OS keychain implementation (#376).** With `process.platform`

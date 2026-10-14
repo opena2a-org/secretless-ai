@@ -1,7 +1,6 @@
 {
   "tape": "docs/vhs/init.tape",
   "tapeSha256": "5e65d475a39327aa8a595d632e785b01488ac1ec56a6cc7658ac1104064d6af2",
-  "scriptSha256": "5e65d475a39327aa8a595d632e785b01488ac1ec56a6cc7658ac1104064d6af2",
   "commands": [
     "npx secretless-ai init",
     "npx secretless-ai verify"

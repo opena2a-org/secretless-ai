@@ -59,6 +59,10 @@ render_in_container() {
     echo "record-init.sh: setup-fixture.sh changed after its hash was taken; not recording." >&2
     exit 1
   fi
+  if [ "${FIXTURE_UNCOMMITTED_CHANGES:-}" != "0" ]; then
+    echo "record-init.sh: FIXTURE_UNCOMMITTED_CHANGES is '${FIXTURE_UNCOMMITTED_CHANGES:-}', not the 0 that git status gives a committed setup-fixture.sh; not recording." >&2
+    exit 1
+  fi
   if ! grep -qF "setup-fixture.sh $FIXTURE_PROJECT $FIXTURE_HOME && cd $FIXTURE_PROJECT && export HOME=$FIXTURE_HOME" "$TAPE"; then
     echo "record-init.sh: the hidden setup of $TAPE does not create and enter $FIXTURE_PROJECT with HOME=$FIXTURE_HOME." >&2
     exit 1
@@ -130,7 +134,6 @@ const build = env.NPM_INTEGRITY
 const out = {
   tape: env.TAPE,
   tapeSha256: sha(env.TAPE),
-  scriptSha256: sha(env.TAPE),
   commands: env.COMMANDS.split("\n"),
   tool: env.TOOL,
   version: env.VERSION,
@@ -140,7 +143,8 @@ const out = {
   fixtureScript: "docs/vhs/setup-fixture.sh",
   // The sha256 of the fixture script as the tape ran it; the render refuses a script that differs from it.
   fixtureSha: env.FIXTURE_SHA,
-  fixtureUncommittedChanges: 0,
+  // The number of lines `git status --porcelain` printed for the fixture script on the host, after its hash was taken.
+  fixtureUncommittedChanges: Number(env.FIXTURE_UNCOMMITTED_CHANGES),
   fixturePath: env.FIXTURE_PROJECT,
   fixtureHome: env.FIXTURE_HOME,
   keychain: "none",
@@ -187,6 +191,19 @@ if [ -n "${ANTHROPIC_API_KEY+set}" ] || [ -n "${OPENAI_API_KEY+set}" ]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# The tape runs the fixture script from the working tree. Its hash is taken first and git's count of
+# uncommitted changes to it second, so an edit made between the two is counted, and the container
+# refuses a script that no longer matches the hash. A render with any uncommitted change is refused.
+FIXTURE_SCRIPT="docs/vhs/setup-fixture.sh"
+FIXTURE_SHA="$(sha256_of "$REPO_ROOT/$FIXTURE_SCRIPT")"
+FIXTURE_STATUS="$(git -C "$REPO_ROOT" status --porcelain -- "$FIXTURE_SCRIPT")"
+FIXTURE_UNCOMMITTED_CHANGES="$(printf '%s' "$FIXTURE_STATUS" | grep -c . || true)"
+if [ "$FIXTURE_UNCOMMITTED_CHANGES" != "0" ]; then
+  echo "record-init.sh: git status reports uncommitted changes to $FIXTURE_SCRIPT ($FIXTURE_STATUS); commit them and run again." >&2
+  exit 1
+fi
+
 DOCKER="${DOCKER:-docker}"
 VERSION="$(node -p "require(process.argv[1]).version" "$REPO_ROOT/package.json")"
 IMAGE="${SECRETLESS_VHS_IMAGE:-secretless-vhs:$VERSION}"
@@ -219,7 +236,8 @@ fi
 "$DOCKER" build -t "$IMAGE" \
   --build-arg TOOL="$TOOL" --build-arg VERSION="$VERSION" --build-arg TARBALL="$TARBALL" "$CONTEXT"
 "$DOCKER" run --rm --hostname laptop --shm-size=1g \
-  -e FIXTURE_SHA="$(sha256_of "$REPO_ROOT/docs/vhs/setup-fixture.sh")" \
+  -e FIXTURE_SHA="$FIXTURE_SHA" \
+  -e FIXTURE_UNCOMMITTED_CHANGES="$FIXTURE_UNCOMMITTED_CHANGES" \
   -e NPM_INTEGRITY="$NPM_INTEGRITY" \
   -e PACKED_FROM_COMMIT="$PACKED_FROM_COMMIT" \
   -e PACKED_TARBALL_SHA256="$PACKED_TARBALL_SHA256" \
