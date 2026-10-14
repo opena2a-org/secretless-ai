@@ -1,13 +1,15 @@
-# secretless-ai
+# Secretless AI
 
-[![Status: stable](https://img.shields.io/badge/status-stable-green)](./STATUS.md)
+[![Status: stable](https://img.shields.io/badge/status-stable-green)](STATUS.md)
 [![npm version](https://img.shields.io/npm/v/secretless-ai.svg)](https://www.npmjs.com/package/secretless-ai)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/opena2a-org/secretless-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/opena2a-org/secretless-ai/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
+> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · **Secretless** · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/ai-browserguard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
 
-Secretless stores API keys outside your project files and sets up AI coding tools not to read credential files. In Claude Code a hook and deny rules enforce that; Cursor, GitHub Copilot, Windsurf, Cline and Aider get instruction or ignore files that nothing enforces. A command that prints its own credential is not blocked. Apache 2.0.
+[Website](https://opena2a.org/secretless) · [Discord](https://discord.gg/uRZa3KXgEn)
+
+Secretless stores API keys outside your project files and sets up AI coding tools not to read credential files. In Claude Code a hook and deny rules enforce that; Cursor, GitHub Copilot, Windsurf, Cline and Aider get instruction or ignore files that nothing enforces. A command that prints its own credential is not blocked.
 
 ## Quick start
 
