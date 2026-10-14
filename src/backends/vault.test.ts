@@ -319,6 +319,92 @@ describe('VaultBackend', () => {
   });
 });
 
+/**
+ * #384: the key was placed in the request URL as it was, and the URL resolved
+ * its dot segments, so `secret/../../../sys/policies/acl` was sent to
+ * `/v1/sys/policies/acl` with the token.
+ */
+describe('VaultBackend: a key cannot move a request outside the KV mount (#384)', () => {
+  const ESCAPE = 'secret/../../../sys/policies/acl';
+
+  it('a key with a ".." segment is refused by every method, and no request is sent', async () => {
+    const vault = createVault();
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ['resolve', () => vault.resolve(ESCAPE)],
+      ['resolve exact', () => vault.resolve(ESCAPE, { exact: true })],
+      ['store', () => vault.store(ESCAPE, 'value')],
+      ['storeVersion', () => vault.storeVersion(ESCAPE, 'value')],
+      ['hasEntry', () => vault.hasEntry(ESCAPE)],
+      ['delete', () => vault.delete(ESCAPE)],
+    ];
+    for (const [name, call] of calls) {
+      await expect(call(), name).rejects.toThrow(
+        'Vault: refused the key "secret/../../../sys/policies/acl": a "." or ".." segment is resolved away '
+        + 'in a request URL and can send the request outside the "secret" KV mount. The request was not sent.',
+      );
+    }
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('a key with a "." segment is refused, and no request is sent', async () => {
+    await expect(createVault().resolve('secret/./MY_KEY')).rejects.toThrow('Vault: refused the key "secret/./MY_KEY"');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('a listed name of ".." is refused before its read', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { keys: ['..'] } }),
+    });
+
+    await expect(createVault().resolve('secret')).rejects.toThrow('Vault: refused the key "secret/.."');
+    expect(mockFetch.mock.calls.map(([, opts]) => opts.method)).toEqual(['GET', 'LIST']);
+  });
+
+  // Forms the URL reads as dot segments or as the end of the path: "%2e" is
+  // ".", "\" is "/", a tab or newline is dropped, "?" starts the query, "#"
+  // the fragment. "%2f" is an escaped "/".
+  const DISGUISED = [
+    'secret/%2e%2e/%2E%2e/%2e./sys/policies/acl',
+    'secret/..\\..\\..\\sys\\policies\\acl',
+    'secret/.\t./.\n./.\r./sys/policies/acl',
+    'secret/a%2f..%2f..%2f..%2fsys',
+    'secret/KEY?list=true',
+    'secret/KEY#fragment',
+  ];
+
+  for (const key of DISGUISED) {
+    it(`${JSON.stringify(key)}: every request names that key under the mount`, async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 404 });
+
+      expect(await createVault().resolve(key)).toEqual({});
+
+      const requests = mockFetch.mock.calls.map(([url, opts]) => ({ method: opts.method, url: new URL(url) }));
+      expect(requests.map((r) => r.method)).toEqual(['GET', 'LIST']);
+      const [read, list] = requests.map((r) => r.url);
+      for (const url of [read, list]) {
+        expect(url.origin).toBe(TEST_ADDR);
+        expect(url.search).toBe('');
+        expect(url.hash).toBe('');
+      }
+      expect(read.pathname.startsWith('/v1/secret/data/secret/')).toBe(true);
+      expect(decodeURIComponent(read.pathname.slice('/v1/secret/data/'.length))).toBe(key);
+      expect(list.pathname.startsWith('/v1/secret/metadata/secret/')).toBe(true);
+      expect(decodeURIComponent(list.pathname.slice('/v1/secret/metadata/'.length))).toBe(key);
+    });
+  }
+
+  it('a key of letters, digits, "_", "-" and "/" is sent as it is', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204 });
+
+    await createVault({ mountPath: 'kv' }).delete('mcp/claude/github-server/GITHUB_TOKEN_2');
+
+    expect(mockFetch.mock.calls[0][0]).toBe(`${TEST_ADDR}/v1/kv/data/mcp/claude/github-server/GITHUB_TOKEN_2`);
+  });
+});
+
 describe('VaultBackend: every request is bounded end to end', () => {
   const VALUE = 'planted-vault-value-7c1e';
 

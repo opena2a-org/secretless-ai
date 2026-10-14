@@ -80,7 +80,7 @@ export class VaultBackend implements WritableSecretBackend {
     this.ensureConfigured();
 
     // Try direct read first
-    const readUrl = `${this.addr}/v1/${this.mountPath}/data/${path}`;
+    const readUrl = this.kvUrl('data', path);
     const readResponse = await this.request('GET', readUrl);
 
     if (readResponse.ok) {
@@ -117,7 +117,7 @@ export class VaultBackend implements WritableSecretBackend {
    * Uses the KV v2 metadata LIST endpoint.
    */
   private async listPrefix(prefix: string): Promise<Record<string, string>> {
-    const listUrl = `${this.addr}/v1/${this.mountPath}/metadata/${prefix}`;
+    const listUrl = this.kvUrl('metadata', prefix);
     const listResponse = await this.request('LIST', listUrl);
 
     if (listResponse.status === 404) {
@@ -148,7 +148,7 @@ export class VaultBackend implements WritableSecretBackend {
       if (key.endsWith('/')) continue;
 
       const fullPath = `${prefix}/${key}`;
-      const readUrl = `${this.addr}/v1/${this.mountPath}/data/${fullPath}`;
+      const readUrl = this.kvUrl('data', fullPath);
       const readResponse = await this.request('GET', readUrl);
 
       if (readResponse.ok) {
@@ -177,7 +177,7 @@ export class VaultBackend implements WritableSecretBackend {
   async storeVersion(key: string, value: string): Promise<number> {
     this.ensureConfigured();
 
-    const url = `${this.addr}/v1/${this.mountPath}/data/${key}`;
+    const url = this.kvUrl('data', key);
     const response = await this.request('POST', url, {
       data: { value },
     });
@@ -203,7 +203,7 @@ export class VaultBackend implements WritableSecretBackend {
   async hasEntry(key: string): Promise<boolean> {
     this.ensureConfigured();
 
-    const url = `${this.addr}/v1/${this.mountPath}/metadata/${key}`;
+    const url = this.kvUrl('metadata', key);
     const response = await this.request('GET', url);
 
     if (response.status === 404) return false;
@@ -237,7 +237,7 @@ export class VaultBackend implements WritableSecretBackend {
   async delete(key: string): Promise<boolean> {
     this.ensureConfigured();
 
-    const url = `${this.addr}/v1/${this.mountPath}/data/${key}`;
+    const url = this.kvUrl('data', key);
     const response = await this.request('DELETE', url);
 
     if (response.status === 404) {
@@ -317,6 +317,29 @@ export class VaultBackend implements WritableSecretBackend {
     if (!this.token) {
       throw new Error('Vault backend not configured: VAULT_TOKEN is not set');
     }
+  }
+
+  /**
+   * The request URL for `key` under the KV mount's `data` or `metadata` path.
+   * A URL resolves a "." or ".." segment away, and a key holding ".." segments
+   * was sent outside the mount with the token:
+   * `secret://vault/../../../sys/policies/acl` became
+   * `GET /v1/sys/policies/acl` (#384). A key with a "." or ".." segment is
+   * refused before its request. Every other segment is percent-encoded, so a
+   * "%2e", "\", tab, line feed or carriage return in a key cannot form a dot
+   * segment, and a "?" or "#" cannot end the path.
+   */
+  private kvUrl(section: 'data' | 'metadata', key: string): string {
+    const segments = key.split('/');
+    if (segments.some((segment) => segment === '.' || segment === '..')) {
+      throw new Error(
+        `Vault: refused the key ${JSON.stringify(key)}: a "." or ".." segment is resolved away ` +
+        `in a request URL and can send the request outside the "${this.mountPath}" KV mount. ` +
+        'The request was not sent.',
+      );
+    }
+    const encoded = segments.map((segment) => encodeURIComponent(segment)).join('/');
+    return `${this.addr}/v1/${this.mountPath}/${section}/${encoded}`;
   }
 
   /**
