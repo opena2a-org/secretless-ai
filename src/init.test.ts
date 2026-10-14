@@ -610,7 +610,7 @@ describe('init', { timeout: 30_000 }, () => {
     });
   });
 
-  // SLS-03: the Bash secret-file deny was a dead end — a generic "blocked
+  // The Bash secret-file deny was a dead end — a generic "blocked
   // command that reads secret files" with no path forward, even when the
   // command was a committed template read (`cat .env.example`) or a search
   // pattern that merely contains a secret-file token. The guard itself must
@@ -625,11 +625,11 @@ describe('init', { timeout: 30_000 }, () => {
       return execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
     }
 
-    it('SLS-03.AC1 deny output for a Bash secret-file read names the Read/Grep-tool path, not only the block reason', () => {
+    it('deny output for a Bash secret-file read names the Read/Grep-tool path, not only the block reason', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
-      // Both dead-end shapes from the contract: a committed template read, and
+      // Both dead-end shapes named above: a committed template read, and
       // a search pattern that merely contains a secret-file token. A plain grep's
       // pattern no longer reaches the arms (guard-command-operation.test.ts), so
       // the pattern shape is a search the hook does not parse.
@@ -651,7 +651,7 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    it('SLS-03.AC2 the decision set is unchanged: same denies, same allows, only the message text differs', () => {
+    it('the decision set is unchanged: same denies, same allows, only the message text differs', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
@@ -696,17 +696,17 @@ describe('init', { timeout: 30_000 }, () => {
     });
   });
 
-  // QGF-119: the hook's path rule was keyed on the bare substring `credentials`,
+  // The hook's path rule was keyed on the bare substring `credentials`,
   // so it denied any path that merely NAMES the topic. Measured over the whole
   // tree, exactly one tracked file matched it and it holds no credential: this
   // repository's own use-case page `docs/use-cases/protect-my-credentials.md`,
   // the first row of the README use-case table. The canonical list already spelled
   // the rule as a STORE — `credentials/` in patterns.ts — and the two generated
   // lists had drifted from it, by a missing slash in the hook's fragments and by a
-  // prefix `*` in the native `Grep()` deny rule. Same unit, second half: two
+  // prefix `*` in the native `Grep()` deny rule. Same change, second half: two
   // command-text arms fired on commands that only DESCRIBE the shape they search
   // for, and refused in one clause with no way forward.
-  describe('QGF-119 the credentials rule is keyed on a store, not on the topic word', () => {
+  describe('the credentials rule is keyed on a store, not on the topic word', () => {
     function runHook(hookPath: string, filePath: string): boolean {
       const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: filePath } });
       const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
@@ -737,7 +737,7 @@ describe('init', { timeout: 30_000 }, () => {
       '.npmrc', 'terraform.tfstate', 'main.tfvars',
     ];
 
-    it('QGF-119.AC1 the guard hook allows a page that merely names credentials in its path', () => {
+    it('the guard hook allows a page that merely names credentials in its path', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
@@ -746,7 +746,7 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    it('QGF-119.AC2 the guard hook still denies every real credential store and secret file', () => {
+    it('the guard hook still denies every real credential store and secret file', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
@@ -755,7 +755,7 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    it('QGF-119.AC3 the native Grep deny rule names the credentials store, not the credentials prefix', () => {
+    it('the native Grep deny rule names the credentials store, not the credentials prefix', () => {
       init(dir);
       const deny: string[] = JSON.parse(
         fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'),
@@ -767,7 +767,7 @@ describe('init', { timeout: 30_000 }, () => {
       expect(deny).toContain('Read(.aws/credentials)');
     });
 
-    it('QGF-119.AC4 every command arm that can fire on a search pattern names the ambiguity and the Read/Grep-tool route', () => {
+    it('every command arm that can fire on a search pattern names the ambiguity and the Read/Grep-tool route', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
@@ -798,7 +798,7 @@ describe('init', { timeout: 30_000 }, () => {
       }
     });
 
-    it('QGF-119.AC5 the decision set moves in one direction only and the package version is untouched', () => {
+    it('the decision set moves in one direction only and the package version is untouched', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
@@ -814,9 +814,10 @@ describe('init', { timeout: 30_000 }, () => {
         expect(runHook(hookPath, inStore), `expected hook to BLOCK ${inStore}`).toBe(true);
       }
 
-      // The pinned command corpus of the SLS-03 message change, re-checked here:
-      // no command that denied is allowed now, including the deliberate
-      // `cat .env.example` over-block, and nothing allowed is newly blocked.
+      // The pinned command corpus of the Bash secret-file deny message change,
+      // re-checked here: no command that denied is allowed now, including the
+      // deliberate `cat .env.example` over-block, and nothing allowed is newly
+      // blocked.
       for (const c of [
         'cat .env', 'cat .env.example', 'head -5 prod.env', 'grep AWS_SECRET .env',
         'git grep -n "dotenv(.env)"', 'xxd server.key', 'sed -n 1p client.pem',
@@ -3113,5 +3114,24 @@ describe('generated instructions state what happens to a credential in the conve
     expect(s.configuredTools).toEqual(
       expect.arrayContaining(['claude-code', 'cursor', 'copilot', 'windsurf', 'cline']),
     );
+  });
+});
+
+// A test is named by the behaviour it checks. A name that opens with a
+// tracker-style identifier (capitals, a dash, digits, an optional `.AC<n>`)
+// points at a ticket this repository does not hold, and tells a reader of a
+// failing run nothing about what broke.
+describe('test names in this file', () => {
+  it('none begins with a ticket-style identifier', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'init.test.ts'), 'utf-8');
+    const names = [
+      ...source.matchAll(/\b(?:describe|it)\b(?:\.\w+)*\)?\(\s*(['"`])((?:(?!\1)[^\\]|\\.)*)\1/g),
+    ].map((m) => m[2]);
+
+    // The extractor reaches names inside nested blocks and behind `it.skip`.
+    expect(names).toContain('the guard hook still denies every real credential store and secret file');
+    expect(names).toContain('a quote before a secret-read no longer evades the hook');
+
+    expect(names.filter((n) => /^[A-Z]{2,}-\d+(?:\.AC\d+)?\b/.test(n))).toEqual([]);
   });
 });
