@@ -85,3 +85,43 @@ describe('resolveRef when backends are unreachable', () => {
     ]);
   });
 });
+
+/**
+ * #383: a backend's resolve() returns the entry under its key and the entries
+ * stored under `key/`. The resolver took the first of them, so an entry stored
+ * under the name answered a reference to the name.
+ */
+describe('resolveRef takes only the entry the reference names (#383)', () => {
+  /** A backend whose resolve() returns `held` in this order. */
+  function backendHolding(held: Record<string, string>) {
+    const resolve = vi.fn(async () => ({ ...held }));
+    mockCreateBackend.mockReturnValue({
+      name: '1password',
+      resolve,
+      store: async () => {},
+      delete: async () => false,
+      healthCheck: async () => ({ healthy: true, latencyMs: 0, message: '' }),
+    } as never);
+    return resolve;
+  }
+
+  beforeEach(() => {
+    mockCreateBackend.mockReset();
+    mockReadBackendConfig.mockReset();
+  });
+
+  it('fails a name the backend does not hold when it returns an entry stored under that name', async () => {
+    const resolve = backendHolding({ 'secret/DB/replica': 'value-of-the-replica-entry' });
+
+    // Before the fix this resolved to 'value-of-the-replica-entry'.
+    await expect(resolveRef('secret://1password/DB')).rejects.toThrow('Secret not found: secret://1password/DB');
+    expect(resolve.mock.calls).toEqual([['secret/DB', { exact: true }]]);
+  });
+
+  it('answers with the named entry when an entry stored under it comes first', async () => {
+    backendHolding({ 'secret/DB/replica': 'value-of-the-replica-entry', 'secret/DB': 'value-of-the-db-entry' });
+
+    // Before the fix this resolved to 'value-of-the-replica-entry'.
+    expect((await resolveRef('secret://1password/DB')).value).toBe('value-of-the-db-entry');
+  });
+});
