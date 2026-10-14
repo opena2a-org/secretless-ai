@@ -160,14 +160,15 @@ async function resolveFromBackend(ref: SecretRef, uri: string): Promise<string |
     throw unreachable(err instanceof UnreachableBackendError ? `: ${err.reason}` : '');
   }
 
+  const key = `secret/${ref.path}`;
   try {
-    const result = await backend.resolve(`secret/${ref.path}`);
-    // resolve() returns a Record<string, string> — extract the value
-    const keys = Object.keys(result);
-    if (keys.length > 0) {
-      return result[keys[0]];
-    }
-    return undefined;
+    // The reference names one entry, so it is asked as an exact read and only
+    // the value under its own key answers it. resolve() also returns entries
+    // stored under `key/`: Vault lists the path as a prefix when it holds no
+    // entry there, and the first entry of that listing answered the reference
+    // with a different secret's value (#383).
+    const result = await backend.resolve(key, { exact: true });
+    return Object.prototype.hasOwnProperty.call(result, key) ? result[key] : undefined;
   } catch {
     return undefined;
   }

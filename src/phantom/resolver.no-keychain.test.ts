@@ -140,7 +140,7 @@ describe('resolveRef: a reference naming the keychain (#376)', () => {
         );
       });
 
-      expect(asked.mock.calls).toEqual([['secret/STRIPE_KEY']]);
+      expect(asked.mock.calls).toEqual([['secret/STRIPE_KEY', { exact: true }]]);
       expect(outcome).toBeInstanceOf(RefResolutionError);
       expect((outcome as RefResolutionError).message).toBe(`Secret not found: ${URI}`);
       expect(stderrText()).not.toContain(FALLBACK_LINE);

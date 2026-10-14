@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+**A `secret://vault/NAME` reference is not answered by an entry stored under
+`secret/NAME/` (#383).** For a `keychain`, `vault` or `1password` reference,
+`resolveRef` and `resolveEnvRefs` asked the backend for `secret/NAME` and took
+the first entry it returned, and a backend returns the entries stored under
+`secret/NAME/` beside `secret/NAME` itself. With a KV v2 mount `secret` holding
+`secret/DB/replica` and no `secret/DB`, and a token that may list,
+`resolveRef('secret://vault/DB')` read `secret/DB`, got a 404, listed it as a
+prefix, and resolved to the value of `secret/DB/replica`. The reference is now
+asked as an exact read and answered only by the entry under its own key: that
+case sends one GET of `secret/data/secret/DB`, no LIST, and fails with `Secret
+not found: secret://vault/DB`. A backend that returns `secret/DB/replica`
+before `secret/DB` answers `secret://<backend>/DB` with the value of
+`secret/DB`, where it answered with the value of `secret/DB/replica`.
+
 **The recorded walkthrough shows `npx secretless-ai init` and then
 `npx secretless-ai verify`, and is rendered from a committed tape.** The
 recording the README linked showed `scan`, had last been rendered six months
