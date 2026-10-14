@@ -90,6 +90,25 @@ the sync records the name as not found. Storing a name that has an open
 exposure reads its previous value the same way. Reading a prefix, as listing
 the stored names does, still reports a refused LIST.
 
+**A Vault key with a `.` or `..` segment is refused before its request, where
+a `secret://vault/` reference holding `..` sent the Vault token to paths
+outside the KV mount (#384).** The Vault backend placed the key in the request
+URL as it was, and the URL resolved its dot segments:
+`resolveRef('secret://vault/../../../sys/policies/acl')` sent `GET
+/v1/sys/policies/acl` with `X-Vault-Token` set. The same reference written with
+`%2e%2e`, with `\` as the separator, or with each `..` split by a tab, a line
+feed or a carriage return sent `GET /v1/sys/policies/acl` as well. `resolve`, `store`, `storeVersion`,
+`hasEntry` and `delete` now throw `Vault: refused the key "<key>": a "." or
+".." segment is resolved away in a request URL and can send the request
+outside the "<mount>" KV mount. The request was not sent.` for a key with a
+`.` or `..` segment, and `resolveRef` answers such a reference `Secret not
+found: <uri>`. Every other segment of a key is percent-encoded in the request
+URL: those three references are sent under `/v1/secret/data/secret/` with
+`%252e`, `%5C`, `%09`, `%0A` and `%0D` in the path, and a `?` or `#` in a key
+is sent as `%3F` or `%23`, where `secret/KEY?list=true` was read from
+`/v1/secret/data/secret/KEY` with the query `?list=true`. A key made of
+letters, digits, `_`, `-` and `/` is sent as before.
+
 **The unreachable-backend message offers `migrate`, a command that exists
 (#372).** When the configured backend could not be reached, the message gave
 `secretless-ai backend migrate --from <backend> --to local` as the way to move
