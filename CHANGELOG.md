@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+**Step 2 of `docs/use-cases/protect-my-credentials.md` shows what `verify`
+prints.** Its sample showed lines `verify` does not print: `Checking
+protections...`, a `blocked` row for `.env`, `.aws/credentials` and `*.key,
+*.pem`, `hidden from AI, usable via $ENV` beside each variable, and `All
+secrets protected.` Its prose said `verify` confirms that AI tools cannot read
+the credential files; `verify` does not check the deny rules or the guard hook.
+The sample is now the output of `verify` in the project from Step 1, in a shell
+that sets `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`, and the prose names what
+`verify` reads: the credential variables the shell sets, a fixed list of
+project files, two files in `~/.claude`, and the five most recent transcript
+files under `~/.claude/projects`. `src/docs-sample-output.test.ts` runs `init`
+and then `verify` in such a project and compares what `verify` prints with the
+sample.
+
 **Every `Fix:` line the `secret` commands print runs as printed.**
 `secret set NAME=VALUE --from-clipboard` printed `secret set NAME
 --from-clipboard` before it checked the name: for `9z=...` that line was

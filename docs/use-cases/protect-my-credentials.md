@@ -39,27 +39,29 @@ For Claude Code, `init` adds deny rules to `.claude/settings.json`, writes instr
 
 ## Step 2: Verify protection
 
-Confirm that your secrets are protected and still usable:
+Confirm that your API keys are still set for your code and that no credential value sits in the files AI tools read:
 
 ```bash
 npx secretless-ai verify
 ```
 
-Expected output:
+Expected output in the project from Step 1, in a shell that sets `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` and no other variable `verify` knows:
 
 ```
-  Checking protections...
+  Secretless Verify
 
-  .env                     blocked
-  .aws/credentials         blocked
-  *.key, *.pem             blocked
-  ANTHROPIC_API_KEY         hidden from AI, usable via $ENV
-  OPENAI_API_KEY            hidden from AI, usable via $ENV
+  Scope: this project + global AI config (~/.claude) + current-shell env vars
 
-  All secrets protected.
+  │ + ANTHROPIC_API_KEY
+  │ + OPENAI_API_KEY
+    44 known env vars not set (use --all to list)
+
+  AI context: clean (no credentials found)
+
+  PASS Secrets accessible via env vars, hidden from AI context.
 ```
 
-The `verify` command confirms two things: AI tools cannot read your credential files, and your credentials are still available as environment variables for your code to use.
+`verify` names each credential variable it knows that your shell sets, without its value, and counts the ones your shell does not set; `verify --all` lists those too. It then looks for credential values in a fixed list of project files, among them `CLAUDE.md`, `.claude/settings.json`, `.cursorrules`, the MCP configs and `.env`, in `~/.claude/CLAUDE.md` and `~/.claude/settings.json`, and in the five most recent transcript files under `~/.claude/projects`. `PASS` means at least one of those variables is set and no value was found; otherwise `verify` exits 1 and prints the command to run next. It does not check the deny rules or the guard hook: `status` in Step 3 reports on those.
 
 ## Step 3: Check status anytime
 

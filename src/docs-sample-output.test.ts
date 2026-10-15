@@ -98,6 +98,7 @@ vi.mock('readline', async (importOriginal) => {
 
 import { runProtectMcp } from './commands/mcp';
 import { runImport, runSetupCommand } from './commands/env-run';
+import { CREDENTIAL_PATTERNS } from './patterns';
 
 fixture.wrapperPath = path.join(REPO_ROOT, 'dist', 'mcp-wrapper.js');
 
@@ -198,13 +199,16 @@ function envFor(home: string, extraPath?: string): NodeJS.ProcessEnv {
 }
 
 /** Run the built CLI; stdout and stderr share one file, so their order is the terminal's. */
-function cli(args: string[], opts: { home: string; cwd?: string; extraPath?: string }): { status: number | null; output: string } {
+function cli(
+  args: string[],
+  opts: { home: string; cwd?: string; extraPath?: string; env?: NodeJS.ProcessEnv },
+): { status: number | null; output: string } {
   const outFile = path.join(tempDir(), 'output');
   const fd = fs.openSync(outFile, 'w');
   try {
     const res = spawnSync(process.execPath, [CLI_PATH, ...args], {
       cwd: opts.cwd ?? opts.home,
-      env: envFor(opts.home, opts.extraPath),
+      env: opts.env ?? envFor(opts.home, opts.extraPath),
       stdio: ['ignore', fd, fd],
       timeout: 20_000,
     });
@@ -345,6 +349,26 @@ describe('reading the samples out of the docs', () => {
 });
 
 describe('protect-my-credentials.md', () => {
+  itIfBuilt('`verify` after `init` in a project Claude Code and Cursor use, in a shell that sets two key variables', () => {
+    const home = tempDir();
+    const project = tempDir();
+    fs.mkdirSync(path.join(project, '.claude'));
+    fs.mkdirSync(path.join(project, '.cursor'));
+    expect(cli(['init'], { home, cwd: project }).status).toBe(0);
+
+    // `verify` lists the variables it knows that the shell sets and counts the
+    // rest, so the run sets the two the guide names and none of the others the
+    // test process may carry. It prints names only; the values are placeholders.
+    const env = envFor(home);
+    for (const name of new Set(CREDENTIAL_PATTERNS.map(p => p.envPrefix))) delete env[name];
+    env.ANTHROPIC_API_KEY = 'not-a-real-key';
+    env.OPENAI_API_KEY = 'not-a-real-key';
+
+    const res = cli(['verify'], { home, cwd: project, env });
+    expect(res.status).toBe(0);
+    expect(normalize(res.output, home)).toBe(sampleAfter(PROTECT_GUIDE, 'verify'));
+  }, TEST_TIMEOUT_MS);
+
   itIfBuilt('`status` after `init` in a project Claude Code and Cursor use', () => {
     const home = tempDir();
     const project = tempDir();
