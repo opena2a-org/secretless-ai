@@ -689,7 +689,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   for (const configFile of configWalk.files) {
     if (ignore && ignore.matches(configFile)) continue;
     const fullPath = path.join(projectDir, configFile);
-    if (!fs.existsSync(fullPath)) continue;
+    // Was `!fs.existsSync`, which is also false for EACCES: a config file in a
+    // directory this user can list but not search was dropped as absent, so it
+    // was neither read nor listed (#392). Any failure other than absence
+    // reaches the read below, whose catch lists the file.
+    if (isAbsent(fullPath)) continue;
     scannedConfigFiles.push(configFile);
 
     try {
@@ -1345,6 +1349,22 @@ function realpathOrNull(p: string): string | null {
     } catch {
       return null;
     }
+  }
+}
+
+/**
+ * True only when nothing is at `p`: `stat` failed with ENOENT, or with ENOTDIR
+ * (a name on the way to it is not a directory). `fs.existsSync` is false for
+ * every failed lookup, EACCES and ELOOP included, where something is there
+ * that this user cannot reach.
+ */
+function isAbsent(p: string): boolean {
+  try {
+    fs.statSync(p);
+    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
   }
 }
 

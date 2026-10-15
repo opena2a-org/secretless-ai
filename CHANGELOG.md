@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**`scan` lists a config file inside a directory this user can list but not
+search.** For `t/nosearch/config.json` under a `t/nosearch` of mode `0600`,
+`scan t --json` listed the file under neither `findings` nor
+`unreadableFiles` and exited 0: an existence check read the permission
+failure as absence and dropped the file before the read that lists it. The
+check now passes over a file only when `stat` fails with `ENOENT` or
+`ENOTDIR`. On that tree `scan t` lists `t/nosearch/config.json: inside a
+directory this user cannot search` under "1 path could not be read", with
+`Fix: chmod +x t/nosearch`; `--json` carries it in `unreadableFiles` and
+`unreadableReasons`, and both exit 1.
+
 **Step 2 of `docs/use-cases/protect-my-credentials.md` shows what `verify`
 prints.** Its sample showed lines `verify` does not print: `Checking
 protections...`, a `blocked` row for `.env`, `.aws/credentials` and `*.key,
