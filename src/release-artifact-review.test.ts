@@ -48,11 +48,13 @@ import {
  * advisoryReadOf holds consumer-closure's advisories read on this machine, so
  * it spends none of the per-address rate limit unauthenticated reads share,
  * and the read that failed to fetch is reported as not measured. Where the
- * read cannot be held it is sent, and a refusal (HTTP 403 or 429) is reported
- * the same way. That exempts no release: the script's verdict is unchanged,
- * and the release `review` job runs it with GH_TOKEN set. The
- * deprecated-dependency case takes no exception: the script keeps the
- * deprecation it found when the advisories read after it fails.
+ * read can be neither sent with a token nor held, the cases that reach it are
+ * skipped with a note that says why: no case sends the read without a token,
+ * so a refusal (HTTP 403 or 429) fails the case like any other precondition.
+ * That exempts no release: the script's verdict is unchanged, and the release
+ * `review` job runs it with GH_TOKEN set. The deprecated-dependency case takes
+ * no exception: the script keeps the deprecation it found when the advisories
+ * read after it fails.
  */
 
 /** The checks whose verdict needs no network reading. */
@@ -90,15 +92,6 @@ const memo = new Map<string, Run>();
 function reviewOf(name: string, make: () => Run): Run {
   if (!memo.has(name)) memo.set(name, make());
   return memo.get(name)!;
-}
-
-/** How a review that reaches the advisories endpoint sends its read; logged when it goes without a token. */
-async function advisoryRead() {
-  const read = await advisoryReadOf();
-  if (read.mode === "unauthenticated") {
-    console.log(`advisories read sent without GH_TOKEN: ${read.reason}`);
-  }
-  return read;
 }
 
 const healthyRun = () =>
@@ -414,7 +407,11 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   it(
     "a dependency on a deprecated hackmyagent version is caught by consumer-closure",
     { timeout: 600_000 },
-    async () => {
+    async (ctx) => {
+      // The review reaches the advisories read after the deprecation probes.
+      const read = await advisoryReadOf();
+      if (read.mode === "skip") return ctx.skip(read.note);
+
       // Named at test time from the registry's own answer: the version the script
       // probes (KNOWN_DEPRECATED, read from its source so the two cannot drift) must
       // read as deprecated via `npm view` right now, or this test cannot run.
@@ -445,7 +442,6 @@ describe("each blocking class is caught by name, and the delivered tree passes",
           dependencies: { hackmyagent: version },
         }),
       };
-      const read = await advisoryRead();
       const run = reviewOf("poison-deprecated", () =>
         runReview(["--tarball", buildTarball("poison-deprecated.tgz", files)], {
           env: read.env,
@@ -494,9 +490,14 @@ describe("each blocking class is caught by name, and the delivered tree passes",
   );
 
   it(
-    "the tarball packed from the delivered tree passes every no-network check, with no precondition but consumer-closure's advisories read held or refused on a run with no GH_TOKEN",
+    "the tarball packed from the delivered tree passes every no-network check, with no precondition but consumer-closure's advisories read held on a run with no GH_TOKEN",
     { timeout: 600_000 },
-    async () => {
+    async (ctx) => {
+      // The delivered tree's closure holds own copies, so the review reaches
+      // the advisories read.
+      const read = await advisoryReadOf();
+      if (read.mode === "skip") return ctx.skip(read.note);
+
       const packDir = fs.mkdtempSync(path.join(tmpRoot, "pack-"));
       const pack = spawnSync(
         "npm",
@@ -513,13 +514,12 @@ describe("each blocking class is caught by name, and the delivered tree passes",
         pack.stdout.trim().split("\n").pop()!,
       );
 
-      const read = await advisoryRead();
       const run = runReview(["--tarball", tarball], { env: read.env });
 
       // A check that could not run here is a test failure: the publish path
       // itself runs outside CI, so an unrunnable check must surface loudly.
-      // The one exception is an advisories read held or refused with no
-      // GH_TOKEN, reported as not measured (see notMeasuredReason).
+      // The one exception is an advisories read held with no GH_TOKEN,
+      // reported as not measured (see notMeasuredReason).
       let closureNotMeasured = false;
       for (const { check, detail } of preconditionsOf(run)) {
         const reason = notMeasuredReason(

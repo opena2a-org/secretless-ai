@@ -11,12 +11,13 @@ import {
 /**
  * The delivered-tarball case of src/release-artifact-review.test.ts fails on
  * every precondition but one: the GitHub advisories read, on a run that sends
- * no GH_TOKEN, refused or held on this machine by advisoryReadOf.
- * Unauthenticated reads share a per-address rate limit, so a shared CI runner
- * hit it on a change that touched nothing near the review, and the required
- * check failed. That one precondition is reported as not measured. The
- * script's verdict is unchanged, so the release `review` job, which sends
- * GH_TOKEN, still blocks on it.
+ * no GH_TOKEN, held on this machine by advisoryReadOf. Unauthenticated reads
+ * share a per-address rate limit, so a shared CI runner hit it on a change
+ * that touched nothing near the review, and the required check failed. That
+ * one precondition is reported as not measured. Where the read cannot be
+ * held, the case is skipped and the read is not sent, so a refused read fails
+ * the case. The script's verdict is unchanged, so the release `review` job,
+ * which sends GH_TOKEN, still blocks on it.
  *
  * These cases spawn nothing: each run is built from lines in the script's
  * output format, as the delivered-tarball case reads them.
@@ -38,7 +39,7 @@ const RATE_LIMITED_429 =
 const HELD =
   "check consumer-closure: precondition: advisories endpoint unreadable for opena2a-org/opena2a (states: all): fetch failed:   } | } |  | Node.js v26.7.0";
 
-describe("a refused advisories read with no GH_TOKEN is not measured; every other precondition fails the delivered-tarball case", () => {
+describe("an advisories read held with no GH_TOKEN is not measured; every other precondition, a refused read included, fails the delivered-tarball case", () => {
   it("reads each precondition and its detail from the script's output", () => {
     const run = runOf([
       "check entry-allowlist: pass",
@@ -58,19 +59,18 @@ describe("a refused advisories read with no GH_TOKEN is not measured; every othe
     ]);
   });
 
-  it("the advisories read refused with HTTP 403 or 429 and no GH_TOKEN is not measured, and the reason names GH_TOKEN", () => {
+  it("an advisories read refused with HTTP 403 or 429 fails the case with no GH_TOKEN too: no case sends the read without a token", () => {
     for (const line of [RATE_LIMITED_403, RATE_LIMITED_429]) {
       const [precondition] = preconditionsOf(runOf([line]));
-      const reason = notMeasuredReason(precondition, {});
-      expect(reason, line).not.toBeNull();
-      expect(reason).toContain("GH_TOKEN");
-      expect(reason).toContain("opena2a-org/opena2a");
+      expect(notMeasuredReason(precondition, {}), line).toBeNull();
+      expect(notMeasuredReason(precondition, {}, true), line).toBeNull();
+      expect(notMeasuredReason(precondition, { GH_TOKEN: "" }, true), line).toBeNull();
     }
   });
 
   it("an empty GH_TOKEN sends no authorization, so it counts as no token", () => {
-    const [precondition] = preconditionsOf(runOf([RATE_LIMITED_403]));
-    expect(notMeasuredReason(precondition, { GH_TOKEN: "" })).not.toBeNull();
+    const [precondition] = preconditionsOf(runOf([HELD]));
+    expect(notMeasuredReason(precondition, { GH_TOKEN: "" }, true)).not.toBeNull();
   });
 
   it("with GH_TOKEN set, a refused advisories read fails the case", () => {
@@ -133,9 +133,10 @@ describe("a refused advisories read with no GH_TOKEN is not measured; every othe
     }
   });
 
-  it("the script still words a refused advisories read the way notMeasuredReason reads it", () => {
-    // Reworded, the exception would stop matching and a rate limit would fail
-    // the gate on unrelated changes again.
+  it("the script still words a held and a refused advisories read the way these cases write them", () => {
+    // Reworded, a held read would stop matching notMeasuredReason and fail the
+    // case on unrelated changes, and the refused lines above would no longer
+    // be lines the script prints.
     const source = fs.readFileSync(SCRIPT, "utf-8");
     expect(source).toContain(
       "`advisories endpoint unreadable for ${repo} (states: ${advisoryStates}): ${response.error ?? 'not an advisory list'}`",

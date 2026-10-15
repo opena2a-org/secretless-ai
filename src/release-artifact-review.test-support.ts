@@ -186,22 +186,19 @@ export function preconditionsOf(run: Run): Precondition[] {
   );
 }
 
-const REFUSED_ADVISORY_READ =
-  /^advisories endpoint unreadable for (\S+) \(states: [a-z]+\): rate-limited or forbidden \(HTTP (403|429)\)$/;
-
 const UNSENT_ADVISORY_READ =
   /^advisories endpoint unreadable for (\S+) \(states: [a-z]+\): fetch failed: /;
 
 /**
  * Why a precondition on the delivered tarball is reported as not measured, or
  * null when it fails the test. One precondition qualifies, on a run that
- * sends no GH_TOKEN: consumer-closure's GitHub advisories read refused with
- * HTTP 403 or 429, or, when `readHeld` says advisoryReadOf held the read on
- * this machine, failing to fetch. Unauthenticated reads share a per-address
- * rate limit, which a shared CI runner can exhaust on a change that touched
- * nothing near the review. The script's verdict is unchanged: the check is
- * still a precondition and the script still exits non-zero, so the release
- * `review` job, which sends GH_TOKEN, still blocks on it.
+ * sends no GH_TOKEN and whose read advisoryReadOf held on this machine
+ * (`readHeld`): consumer-closure's GitHub advisories read failing to fetch.
+ * With no GH_TOKEN the read is held or the case is skipped, never sent, so a
+ * read refused with HTTP 403 or 429 fails the test like any other
+ * precondition. The script's verdict is unchanged: the check is still a
+ * precondition and the script still exits non-zero, so the release `review`
+ * job, which sends GH_TOKEN, still blocks on it.
  */
 export function notMeasuredReason(
   precondition: Precondition,
@@ -211,10 +208,6 @@ export function notMeasuredReason(
   if (precondition.check !== "consumer-closure") return null;
   // The advisory fetch sends authorization only for a non-empty GH_TOKEN.
   if (env.GH_TOKEN) return null;
-  const refused = REFUSED_ADVISORY_READ.exec(precondition.detail);
-  if (refused !== null) {
-    return `the unauthenticated advisories read for ${refused[1]} was refused (HTTP ${refused[2]}); set GH_TOKEN to measure it`;
-  }
   const unsent = readHeld ? UNSENT_ADVISORY_READ.exec(precondition.detail) : null;
   if (unsent !== null) {
     return `with no GH_TOKEN the advisories read for ${unsent[1]} was held on this machine; set GH_TOKEN to measure it`;
@@ -263,24 +256,27 @@ export function fetchHonoursProxy(proxy: string): boolean {
  * local port, which the script's fetch child honours (it starts with
  * NODE_USE_ENV_PROXY=1), and NO_PROXY names the npm registry host, so npm
  * still reaches the registry. Unauthenticated reads share one per-address
- * rate limit, which repeated runs of these tests used up. The read is sent
- * without a token only where it cannot be held: `reason` says why.
+ * rate limit, which repeated runs of these tests used up. Where the read can
+ * be neither sent with a token nor held, it is not sent: the case that would
+ * send it skips with `note`, which says why and names GH_TOKEN. That mode
+ * carries no variables for runReview, so a case cannot run the review with it.
+ * `honoursProxy` is the probe of this node's fetch.
  */
 export type AdvisoryRead =
   | { mode: "authenticated"; env: Record<string, string> }
   | { mode: "held"; env: Record<string, string> }
-  | { mode: "unauthenticated"; env: Record<string, string>; reason: string };
+  | { mode: "skip"; note: string };
 
 const PROXY_VARIABLES = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
 
 export async function advisoryReadOf(
   env: Record<string, string | undefined> = process.env,
+  honoursProxy: (proxy: string) => boolean = fetchHonoursProxy,
 ): Promise<AdvisoryRead> {
   if (env.GH_TOKEN) return { mode: "authenticated", env: {} };
   const unheld = (reason: string): AdvisoryRead => ({
-    mode: "unauthenticated",
-    env: {},
-    reason,
+    mode: "skip",
+    note: `not measured: ${reason}; with no GH_TOKEN the advisories read could only be sent without a token, so it is not sent; set GH_TOKEN to measure it`,
   });
 
   // A configured proxy is how npm reaches the registry here; exempting the
@@ -316,7 +312,7 @@ export async function advisoryReadOf(
   }
 
   const proxy = `http://127.0.0.1:${await closedPort()}`;
-  if (!fetchHonoursProxy(proxy)) {
+  if (!honoursProxy(proxy)) {
     return unheld("this node's fetch ignores HTTPS_PROXY");
   }
   return {
