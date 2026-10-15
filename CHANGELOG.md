@@ -142,6 +142,23 @@ back in the repository: the README published with 0.23.0 embeds it (line 40 of
 `npm view secretless-ai@0.23.0 readme`). No command, flag, output or exit code
 of the CLI changed.
 
+**`docs/vhs/record-init.sh` runs `docker build` and `docker run` with a docker
+configuration of its own, and ends a render with the sidecar's hash.** The
+script ran docker with the caller's configuration, which can name a credential
+helper; Docker Desktop's helper keeps registry credentials in the OS keychain.
+It now creates a configuration directory that names no credential helper and
+holds no registry credentials, only the caller's plugin directory as
+`cliPluginsExtraDirs` so that buildx is found, and removes it when the script
+ends. It reads the endpoint of the docker context in use with `docker context
+inspect`, before that configuration is replaced, and passes it as
+`DOCKER_HOST`; a `DOCKER_HOST` the caller set is kept, and when docker names no
+endpoint the script exits 1 before `docker build`. A render ends with the line
+`sidecar: docs/vhs/init.json sha256 <hash>, version <version>, meteredCostUsd
+<cost>, wallClockSeconds <seconds>`, and exits 1 when the render wrote no
+sidecar. `--dry-run` names the docker configuration. `docs/vhs/init.gif` and
+`docs/vhs/init.json` are rendered again; `docs/vhs/init-capture.txt` is
+unchanged. No command, flag, output or exit code of the CLI changed.
+
 **A `secret://keychain/` reference is not answered by the encrypted file on a
 platform with no OS keychain implementation (#376).** With `process.platform`
 reported as `win32` or `freebsd`, `createBackend` builds the local encrypted

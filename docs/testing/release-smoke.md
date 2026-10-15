@@ -431,15 +431,24 @@ with `npm view` and packs HEAD only when the answer is E404; any other failure,
 such as a registry npm cannot reach, stops the script and its dry run with exit
 1 and npm's error code.
 
+`docker build` and `docker run` use a docker configuration directory the script
+creates and removes, which names no credential helper and holds no registry
+credentials, so a render does not go through the credential helper of your own
+docker configuration (Docker Desktop's keeps registry credentials in the OS
+keychain). The base images are public. The script reads the endpoint of your
+docker context with `docker context inspect` and passes it as `DOCKER_HOST`; a
+`DOCKER_HOST` you set is kept.
+
 ```bash
-docs/vhs/record-init.sh --dry-run   # image, base images, build, tape, fixture, files written; runs npm view, git status, git rev-parse and node, no docker, build or pack
+docs/vhs/record-init.sh --dry-run   # image, base images, build, tape, fixture, files written, docker configuration; runs npm view, git status, git rev-parse and node, no docker, build or pack
 docs/vhs/record-init.sh             # needs Docker; exits 2 if ANTHROPIC_API_KEY or OPENAI_API_KEY is set
-shasum -a 256 docs/vhs/init.json    # put this hash in the release record
 ```
 
-Commit `docs/vhs/init.gif`, `docs/vhs/init-capture.txt` and
+The render's last line is `sidecar: docs/vhs/init.json sha256 <hash>, version
+<version>, meteredCostUsd <cost>, wallClockSeconds <seconds>`; put that line in
+the release record. Commit `docs/vhs/init.gif`, `docs/vhs/init-capture.txt` and
 `docs/vhs/init.json`. The MP4 the render writes to `docs/vhs/out/` is ignored
-and never committed. Check that `meteredCostUsd` in the sidecar is `0` and that
+and never committed. Check that `meteredCostUsd` on that line is `0` and that
 `version` is the version you are tagging.
 
 ---

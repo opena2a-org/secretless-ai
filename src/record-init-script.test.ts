@@ -132,6 +132,7 @@ describe('record-init.sh --dry-run', () => {
     for (const file of [s.outputs.gif.path, s.outputs.capture, SIDECAR, s.outputs.mp4.path]) {
       expect(r.stdout).toContain(file);
     }
+    expect(r.stdout).toContain("docker    a configuration of the script's own, with no credential helper and no registry credentials");
     expect(writtenFiles()).toEqual(before);
   });
 
