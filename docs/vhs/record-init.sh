@@ -3,6 +3,11 @@
 #
 #   docs/vhs/record-init.sh
 #   DOCKER=<path to the docker binary> docs/vhs/record-init.sh
+#   docs/vhs/record-init.sh --dry-run
+#
+# --dry-run prints the image, its base images, the build, the tape, the fixture and the files a
+# render writes, then exits 0. It asks npm whether the version is published and calls nothing else:
+# no docker, no build, no pack, and no file is written.
 #
 # The container (docs/vhs/docker/Dockerfile) carries VHS 0.12.0 with its encode regression patched,
 # ffmpeg, ttyd, Chromium, JetBrains Mono, gifsicle, Node 22 and secretless-ai installed globally, so
@@ -25,6 +30,7 @@ set -euo pipefail
 
 TOOL="secretless-ai"
 TAPE="docs/vhs/init.tape"
+OUTPUTS="docs/vhs/init.gif docs/vhs/init-capture.txt docs/vhs/init.json docs/vhs/out/init.mp4"
 FIXTURE_PROJECT="/work/project"
 FIXTURE_HOME="/work/new-home"
 MAX_WALL_CLOCK_SECONDS=60
@@ -68,7 +74,8 @@ render_in_container() {
     exit 1
   fi
   # A render that stops part way leaves no output and no sidecar from an earlier one.
-  rm -f docs/vhs/init.gif docs/vhs/init.json docs/vhs/init-capture.txt docs/vhs/out/init.mp4
+  # shellcheck disable=SC2086
+  rm -f $OUTPUTS
   mkdir -p docs/vhs/out
 
   RAN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -190,6 +197,16 @@ if [ -n "${ANTHROPIC_API_KEY+set}" ] || [ -n "${OPENAI_API_KEY+set}" ]; then
   exit 2
 fi
 
+DRY_RUN=0
+case "$#:${1:-}" in
+  0:) ;;
+  1:--dry-run) DRY_RUN=1 ;;
+  *)
+    echo "usage: docs/vhs/record-init.sh [--dry-run]" >&2
+    exit 1
+    ;;
+esac
+
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # The tape runs the fixture script from the working tree. Its hash is taken first and git's count of
@@ -208,21 +225,38 @@ DOCKER="${DOCKER:-docker}"
 VERSION="$(node -p "require(process.argv[1]).version" "$REPO_ROOT/package.json")"
 IMAGE="${SECRETLESS_VHS_IMAGE:-secretless-vhs:$VERSION}"
 
+NPM_INTEGRITY="$(npm view "$TOOL@$VERSION" dist.integrity 2>/dev/null || true)"
+if [ -z "$NPM_INTEGRITY" ] && [ ! -d "$REPO_ROOT/node_modules" ]; then
+  echo "record-init.sh: $TOOL@$VERSION is not on npm and node_modules is missing; run npm ci first." >&2
+  exit 1
+fi
+
+if [ "$DRY_RUN" = 1 ]; then
+  if [ -n "$NPM_INTEGRITY" ]; then
+    BUILD="$TOOL@$VERSION from npm ($NPM_INTEGRITY)"
+  else
+    BUILD="npm pack of commit $(git -C "$REPO_ROOT" rev-parse HEAD) ($TOOL@$VERSION is not on npm)"
+  fi
+  echo "record-init.sh --dry-run: nothing is built, run or written."
+  echo "  image     $IMAGE, built with $DOCKER from docs/vhs/docker/Dockerfile"
+  echo "  bases     $(sed -n -E 's/^FROM ([^ ]+).*/\1/p' "$REPO_ROOT/docs/vhs/docker/Dockerfile" | paste -s -d ' ' -)"
+  echo "  build     $BUILD"
+  echo "  tape      $TAPE"
+  echo "  fixture   docs/vhs/setup-fixture.sh"
+  echo "  writes    $OUTPUTS"
+  exit 0
+fi
+
 CONTEXT="$(mktemp -d)"
 cleanup_context() { rm -rf "$CONTEXT"; }
 trap cleanup_context EXIT
 cp "$REPO_ROOT/docs/vhs/docker/Dockerfile" "$REPO_ROOT/docs/vhs/docker/vhs-0.12.0-render-context.patch" "$CONTEXT/"
 
-NPM_INTEGRITY="$(npm view "$TOOL@$VERSION" dist.integrity 2>/dev/null || true)"
 TARBALL=""
 PACKED_FROM_COMMIT=""
 PACKED_TARBALL_SHA256=""
 if [ -z "$NPM_INTEGRITY" ]; then
   # Not on npm: pack the committed tree, so an edit not yet committed is never in the recorded build.
-  if [ ! -d "$REPO_ROOT/node_modules" ]; then
-    echo "record-init.sh: $TOOL@$VERSION is not on npm and node_modules is missing; run npm ci first." >&2
-    exit 1
-  fi
   PACKED_FROM_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   mkdir "$CONTEXT/tree"
   git -C "$REPO_ROOT" archive HEAD | tar -x -C "$CONTEXT/tree"

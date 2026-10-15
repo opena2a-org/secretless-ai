@@ -419,6 +419,28 @@ only which documented command names still parse.
 
 ---
 
+## 10c. Recorded walkthrough
+
+The README links `docs/vhs/init.gif`, rendered from `docs/vhs/init.tape`. The
+sidecar beside it, `docs/vhs/init.json`, names the version the recording shows,
+and `src/recording-sidecar.test.ts` fails while that version differs from the one
+in `package.json`. A version bump is therefore followed by a render. Commit the
+bump first: while the version is not on npm, the render installs `npm pack` of
+the committed tree at HEAD, not the working tree.
+
+```bash
+docs/vhs/record-init.sh --dry-run   # image, base images, build, tape, fixture, files written; runs nothing else
+docs/vhs/record-init.sh             # needs Docker; exits 2 if ANTHROPIC_API_KEY or OPENAI_API_KEY is set
+shasum -a 256 docs/vhs/init.json    # put this hash in the release record
+```
+
+Commit `docs/vhs/init.gif`, `docs/vhs/init-capture.txt` and
+`docs/vhs/init.json`. The MP4 the render writes to `docs/vhs/out/` is ignored
+and never committed. Check that `meteredCostUsd` in the sidecar is `0` and that
+`version` is the version you are tagging.
+
+---
+
 ## 11. Cleanup
 
 ```bash

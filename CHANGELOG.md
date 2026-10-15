@@ -30,7 +30,13 @@ and the output files; `docs/vhs/init-capture.txt` is the same two commands as
 text. The test suite compares the sidecar with the tape, the fixture script
 and the version in `package.json`, and checks every command a tape types
 against the commands and flags the CLI registers, so a release or a tape edit
-that is not followed by a render fails a test. `docs/demo.tape` is removed.
+that is not followed by a render fails a test. `docs/vhs/record-init.sh
+--dry-run` prints the image, its base images, the build, the tape, the fixture
+and the files a render writes, and exits 0 without running docker, building or
+packing; with `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` set, the script exits 2
+before it calls npm or docker. The release smoke test (section 10c of
+`docs/testing/release-smoke.md`) renders again after a version bump and
+records the sidecar's hash. `docs/demo.tape` is removed.
 No command, flag, output or exit code changed.
 
 **`docs/vhs/record-init.sh` counts uncommitted changes to the fixture script
