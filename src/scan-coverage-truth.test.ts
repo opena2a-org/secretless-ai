@@ -101,11 +101,11 @@ const TREE: Record<string, { cell: string; entry: Entry }> = {
  * reads, not in what it says, so it is left for a change to the walk and named
  * here so this test fails when that change lands:
  * - a config file inside a directory this user cannot search is dropped by an
- *   existence check that reads "cannot search" as "absent";
- * - a config file with a backslash in its name is opened under a path with `/`
- *   in place of the backslash, which does not exist, and is dropped the same way.
+ *   existence check that reads "cannot search" as "absent".
+ * A config file with a backslash in its name was here too: it was opened under
+ * a path with `/` in place of the backslash, which does not exist (#393).
  */
-const NEITHER_READ_NOR_LISTED = ['nosearch/config.json', '.env.back\\slash'];
+const NEITHER_READ_NOR_LISTED = ['nosearch/config.json'];
 
 const made: string[] = [];
 function build(): string {
@@ -378,5 +378,11 @@ describe.skipIf(process.getuid?.() === 0)('every path scan lists as unread is a 
       missing.push(rel);
     }
     expect(missing.sort()).toEqual([...NEITHER_READ_NOR_LISTED].sort());
+  });
+
+  it('reads a config file whose name holds a backslash, and names it with the backslash (#393)', () => {
+    const files = doc.findings.map((f) => f.file);
+    expect(files).toContain('.env.back\\slash');
+    expect(files).not.toContain('.env.back/slash');
   });
 });
