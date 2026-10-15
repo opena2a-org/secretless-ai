@@ -1166,6 +1166,9 @@ const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
 // `sudo\tcat .env` the same way. With python3 the escape is literal text, and
 // `printf 'x\ncat .env' | sh` runs that read too.
 const READER_VERB_START = '(^|[^A-Za-z0-9_.-]|\\\\[nt])';
+// A change to this list, or to any rule of the guard hook, updates the
+// snapshot src/fixtures/guard-verdicts.txt as src/guard-verdict-snapshot.test.ts
+// describes, and the snapshot diff shows each command whose verdict it changes.
 const FILE_READERS =
   '(g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[acefhrsuv]?grep)|(pcre2?|zip|pdf)grep|(lol|c|md|so|net)cat|(md|j)less|(g|multi|color|log|x)?tail|g?head|[gmn]?awk|g?sed|g?strings|xxd';
 
@@ -2946,6 +2949,11 @@ try:
 except Exception:
     pass`;
 
+// src/guard-verdict-snapshot.test.ts runs the script this returns over every
+// command in src/fixtures/guard-corpus.txt, with and without python3, and fails
+// when a verdict differs from src/fixtures/guard-verdicts.txt. A change to the
+// script updates that snapshot, and the snapshot diff shows the verdicts the
+// change moves.
 function generateClaudeHookScript(customRules?: CustomRules | null): string {
   // Three categories of secret-file signals. Each matches differently:
   //  - extensions: suffix match on basename, e.g. `server.key`, `prod.env`, `id_rsa.pem`.
