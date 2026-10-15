@@ -7,9 +7,9 @@
   ],
   "tool": "secretless-ai",
   "version": "0.23.1",
-  "packedFromCommit": "5e5a1669435944a25958a961c89330bc011882de",
-  "packedTarballSha256": "68e61eccc1af5b9b2c24a873d1001e614e03b69264786fa6da713641616ce12c",
-  "ranAtUtc": "2026-10-13T17:36:17Z",
+  "packedFromCommit": "3c9537b2dbfd61752b5a57e21d67f8a324d1aca6",
+  "packedTarballSha256": "9ae39fc7626b07d641745273a71634b173587d96a04da4debd05cc9ada67562d",
+  "ranAtUtc": "2026-10-15T19:03:41Z",
   "fixture": "a new project directory holding an empty .claude/ directory, and a new empty home directory",
   "fixtureScript": "docs/vhs/setup-fixture.sh",
   "fixtureSha": "b58039f5a42ef69863ac4445906bfee492b001b48ecd992f541b08f3473df576",
@@ -22,7 +22,7 @@
   "rows": 40,
   "framerate": 10,
   "gifsicle": "-O3 --lossy=40 --batch",
-  "gifFrames": 28,
+  "gifFrames": 29,
   "gifFullScreenFrames": 0,
   "gifScrollInSpan": null,
   "renderedPixelSize": {
@@ -32,18 +32,18 @@
   "outputs": {
     "gif": {
       "path": "docs/vhs/init.gif",
-      "bytes": 59694
+      "bytes": 59930
     },
     "mp4": {
       "path": "docs/vhs/out/init.mp4",
-      "bytes": 121917,
-      "sha256": "1b25ff2f7ff0bf5c4a089b3210293ab26ed635965881ca58d315d628cf668b05",
+      "bytes": 122367,
+      "sha256": "f95ac22b2fdc56d1d5b8b501b2d64bf5c09e5587563e1b9f1009c0bdeff91c84",
       "committed": false
     },
     "frames": [],
     "capture": "docs/vhs/init-capture.txt"
   },
-  "durationSeconds": 15,
+  "durationSeconds": 15.3,
   "wallClockSeconds": 27.1,
   "meteredCostUsd": 0,
   "exitCodes": [

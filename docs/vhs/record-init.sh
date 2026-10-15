@@ -5,9 +5,9 @@
 #   DOCKER=<path to the docker binary> docs/vhs/record-init.sh
 #   docs/vhs/record-init.sh --dry-run
 #
-# --dry-run prints the image, its base images, the build, the tape, the fixture and the files a
-# render writes, then exits 0. It runs npm view, git status, node and, when it would pack,
-# git rev-parse: no docker, no build, no pack, and no file is written.
+# --dry-run prints the image, its base images, the build, the tape, the fixture, the files a
+# render writes and the docker configuration, then exits 0. It runs npm view, git status, node
+# and, when it would pack, git rev-parse: no docker, no build, no pack, and no file is written.
 #
 # The container (docs/vhs/docker/Dockerfile) carries VHS 0.12.0 with its encode regression patched,
 # ffmpeg, ttyd, Chromium, JetBrains Mono, gifsicle, Node 22 and secretless-ai installed globally, so
@@ -25,6 +25,14 @@
 # creates the fixture again, runs the typed commands once more with NO_COLOR=1 into init-capture.txt
 # (the text version of the recording), optimises the GIF, and writes init.json. The MP4 goes to
 # docs/vhs/out/, which is not committed.
+#
+# docker build and docker run use a configuration directory of this script's own, removed when the
+# script ends, which names no credential helper and holds no registry credentials; the base images
+# are public. The caller's docker configuration can name a helper,
+# and Docker Desktop's helper keeps registry credentials in the OS keychain. The endpoint of the
+# docker context in use is carried over as DOCKER_HOST, and the plugin directory of the caller's
+# configuration as cliPluginsExtraDirs, so buildx is still found. A render ends with one line that
+# names the sidecar's sha256, the version, meteredCostUsd and wallClockSeconds.
 #
 # Nothing metered is called: the script refuses to start with a model API key in its environment.
 # A render over the budgets below writes no sidecar.
@@ -263,13 +271,30 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  tape      $TAPE"
   echo "  fixture   docs/vhs/setup-fixture.sh"
   echo "  writes    $OUTPUTS"
+  echo "  docker    a configuration of the script's own, with no credential helper and no registry credentials"
   exit 0
 fi
 
 CONTEXT="$(mktemp -d)"
-cleanup_context() { rm -rf "$CONTEXT"; }
+OWN_DOCKER_CONFIG="$(mktemp -d)"
+cleanup_context() { rm -rf "$CONTEXT" "$OWN_DOCKER_CONFIG"; }
 trap cleanup_context EXIT
 cp "$REPO_ROOT/docs/vhs/docker/Dockerfile" "$REPO_ROOT/docs/vhs/docker/vhs-0.12.0-render-context.patch" "$CONTEXT/"
+
+# The docker configuration of this script's own (see the header). The endpoint and the plugin
+# directory are read with the caller's configuration, before it is replaced.
+CALLER_PLUGINS="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins"
+if [ -z "${DOCKER_HOST:-}" ]; then
+  DOCKER_HOST="$("$DOCKER" context inspect --format '{{.Endpoints.docker.Host}}')" || DOCKER_HOST=""
+  if [ -z "$DOCKER_HOST" ]; then
+    echo "record-init.sh: $DOCKER context inspect named no endpoint for the docker context in use; set DOCKER_HOST and run again." >&2
+    exit 1
+  fi
+fi
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cliPluginsExtraDirs: [process.argv[2]] }, null, 2) + "\n")' \
+  "$OWN_DOCKER_CONFIG/config.json" "$CALLER_PLUGINS"
+export DOCKER_HOST
+export DOCKER_CONFIG="$OWN_DOCKER_CONFIG"
 
 TARBALL=""
 PACKED_FROM_COMMIT=""
@@ -297,3 +322,16 @@ fi
   -v "$REPO_ROOT/docs/vhs":/work/docs/vhs \
   --entrypoint bash "$IMAGE" docs/vhs/record-init.sh --in-container
 echo "rendered: $(cd "$REPO_ROOT" && ls -la docs/vhs/init.* docs/vhs/out/init.mp4 | awk '{print $5, $9}' | tr '\n' ';')"
+
+# The line a release record or a task log keeps: which sidecar this render wrote, by its hash.
+SIDECAR="$REPO_ROOT/docs/vhs/init.json"
+if [ ! -f "$SIDECAR" ]; then
+  echo "record-init.sh: the render wrote no docs/vhs/init.json." >&2
+  exit 1
+fi
+# shellcheck disable=SC2016
+node -e '
+  const [file, digest] = process.argv.slice(1);
+  const s = JSON.parse(require("fs").readFileSync(file, "utf8"));
+  console.log(`sidecar: docs/vhs/init.json sha256 ${digest}, version ${s.version}, meteredCostUsd ${s.meteredCostUsd}, wallClockSeconds ${s.wallClockSeconds}`);
+' "$SIDECAR" "$(sha256_of "$SIDECAR")"
