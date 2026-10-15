@@ -160,6 +160,14 @@ describe('the recorded walkthrough and its sidecar', () => {
     else expect(s.packedFromCommit).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it('names the commit the render started from, whichever build it shows, and a packed build was packed from it', () => {
+    // A render of the published package names no packed commit, so without
+    // this field nothing in the sidecar says which checkout ran the tape.
+    const s = sidecar();
+    expect(s.commit).toMatch(/^[0-9a-f]{40}$/);
+    if (s.packedFromCommit) expect(s.packedFromCommit).toBe(s.commit);
+  });
+
   it('records the terminal the tape sets, on a host named laptop with no keychain', () => {
     const s = sidecar();
     const set = (name: string) => Number(read(TAPE).match(new RegExp(`^Set ${name} (\\d+)$`, 'm'))![1]);
@@ -203,7 +211,7 @@ describe('the recorded walkthrough and its sidecar', () => {
   it('carries every field a reader of a sidecar looks for', () => {
     const s = sidecar();
     const fields = [
-      'tape', 'tapeSha256', 'commands', 'tool', 'version', 'ranAtUtc',
+      'tape', 'tapeSha256', 'commands', 'tool', 'version', 'commit', 'ranAtUtc',
       'fixture', 'fixtureSha', 'fixtureUncommittedChanges', 'fixturePath', 'hostname',
       'columns', 'rows', 'framerate', 'gifsicle', 'gifFrames', 'gifFullScreenFrames',
       'renderedPixelSize', 'outputs', 'durationSeconds', 'wallClockSeconds',

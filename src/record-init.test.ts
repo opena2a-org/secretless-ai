@@ -81,7 +81,24 @@ function git(...args: string[]): void {
   expect(result.status, result.stderr).toBe(0);
 }
 
-const record = (env: NodeJS.ProcessEnv = {}) =>
+/** The commit HEAD names in the test repository. */
+const head = () => spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { env: childEnv(), encoding: 'utf-8' }).stdout.trim();
+
+/**
+ * A stand-in for `npm` when the version is not published: `npm view --json`
+ * answers E404, `npm run build` succeeds, and `npm pack --pack-destination DIR`
+ * writes an empty tarball under the name npm gives it.
+ */
+const NPM_NOT_PUBLISHED = `#!/bin/sh
+case "$1" in
+  view) echo '{"error":{"code":"E404","summary":"No match found for version 0.0.0"}}'; exit 1 ;;
+  run) exit 0 ;;
+  pack) [ "$2" = --pack-destination ] && : > "$3/secretless-ai-0.0.0.tgz" && exit 0 ;;
+esac
+exit 1
+`;
+
+const record =(env: NodeJS.ProcessEnv = {}) =>
   spawnSync('bash', [path.join(repo, SCRIPT)], { cwd: repo, env: { ...childEnv(), ...env }, encoding: 'utf-8' });
 
 /** The arguments of each `docker` call, in order. */
@@ -135,6 +152,32 @@ describe('docs/vhs/record-init.sh on the host', () => {
     expect(passedVariables(run!)).toEqual(expect.arrayContaining([
       `FIXTURE_SHA=${fixtureSha}`,
       'FIXTURE_UNCOMMITTED_CHANGES=0',
+    ]));
+  });
+
+  it('passes the container the commit HEAD names when the build shown is the published one', () => {
+    const result = record();
+    expect(result.status, result.stderr).toBe(0);
+    const run = dockerCalls().find(call => call[0] === 'run');
+    expect(run, 'docker run was called').toBeDefined();
+    expect(passedVariables(run!)).toEqual(expect.arrayContaining([
+      'NPM_INTEGRITY=sha512-FAKE-INTEGRITY',
+      'PACKED_FROM_COMMIT=',
+      `COMMIT=${head()}`,
+    ]));
+  });
+
+  it('passes the container the commit HEAD names as the commit and as the packed commit when the version is not on npm', () => {
+    write(path.join(base, 'bin', 'npm'), NPM_NOT_PUBLISHED, 0o755);
+    fs.mkdirSync(path.join(repo, 'node_modules'));
+    const result = record();
+    expect(result.status, result.stderr).toBe(0);
+    const run = dockerCalls().find(call => call[0] === 'run');
+    expect(run, 'docker run was called').toBeDefined();
+    expect(passedVariables(run!)).toEqual(expect.arrayContaining([
+      'NPM_INTEGRITY=',
+      `PACKED_FROM_COMMIT=${head()}`,
+      `COMMIT=${head()}`,
     ]));
   });
 
@@ -245,6 +288,12 @@ describe('docs/vhs/record-init.sh inside the recording image (read from the scri
     const script = read(SCRIPT);
     expect(script).toContain('fixtureUncommittedChanges: Number(env.FIXTURE_UNCOMMITTED_CHANGES),');
     expect(script).toContain('if [ "${FIXTURE_UNCOMMITTED_CHANGES:-}" != "0" ]; then');
+  });
+
+  it('writes commit from the commit the host passed, and records no render without one', () => {
+    const script = read(SCRIPT);
+    expect(script).toContain('commit: env.COMMIT,');
+    expect(script).toContain('if ! [[ "${COMMIT:-}" =~ ^[0-9a-f]{40}$ ]]; then');
   });
 
   it('hashes the tape into one field only', () => {

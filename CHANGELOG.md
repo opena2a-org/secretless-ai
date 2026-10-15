@@ -213,6 +213,19 @@ sidecar. `--dry-run` names the docker configuration. `docs/vhs/init.gif` and
 `docs/vhs/init.json` are rendered again; `docs/vhs/init-capture.txt` is
 unchanged. No command, flag, output or exit code of the CLI changed.
 
+**The recording's sidecar names the commit the render started from, for the
+published build as well as for a packed one.** `docs/vhs/init.json` named a
+commit only when the render packed HEAD (`packedFromCommit`): run with a
+stand-in npm that answers with a published integrity, `docs/vhs/record-init.sh`
+passed the container `NPM_INTEGRITY` and an empty `PACKED_FROM_COMMIT`, and no
+other variable named a commit. The script now reads `git rev-parse HEAD` once,
+passes it to the container as `COMMIT` for both builds, and packs a build that
+is not on npm from that commit. Its step inside the container compares `COMMIT`
+with `^[0-9a-f]{40}$` before the render and exits 1 when it does not match, and
+the sidecar writes it as `commit`. `docs/vhs/init.gif` and `docs/vhs/init.json`
+are rendered again; `docs/vhs/init-capture.txt` is unchanged. No command, flag,
+output or exit code of the CLI changed.
+
 **A `secret://keychain/` reference is not answered by the encrypted file on a
 platform with no OS keychain implementation (#376).** With `process.platform`
 reported as `win32` or `freebsd`, `createBackend` builds the local encrypted

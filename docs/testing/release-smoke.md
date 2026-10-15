@@ -422,7 +422,8 @@ only which documented command names still parse.
 ## 10c. Recorded walkthrough
 
 The README links `docs/vhs/init.gif`, rendered from `docs/vhs/init.tape`. The
-sidecar beside it, `docs/vhs/init.json`, names the version the recording shows,
+sidecar beside it, `docs/vhs/init.json`, names the version the recording shows
+and, as `commit`, the commit HEAD named when the render started,
 and `src/recording-sidecar.test.ts` fails while that version differs from the one
 in `package.json`. A version bump is therefore followed by a render. Commit the
 bump first: while the version is not on npm, the render installs `npm pack` of
