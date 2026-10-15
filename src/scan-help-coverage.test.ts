@@ -7,6 +7,8 @@ import {
   emptySkips,
   isEnvFile,
   SOURCE_SKIP_REASONS,
+  HIDDEN_CACHE_DIRS,
+  WORKTREE_DIRS,
   TEST_DIRS,
   TEST_FILE_GLOBS,
   KEY_FILE_EXTENSIONS,
@@ -96,14 +98,17 @@ describe('the walk reports exactly the skip reasons scan --help explains', () =>
       '.secretlessignore': 'ignored/\nskip-me.ts\n',
       'ignored/a.ts': 'export const t = 1;\n',
       'skip-me.ts': 'export const t = 1;\n',
+      // Entered, so not listed (#144).
       '.claude/agent.ts': 'export const t = 1;\n',
+      '.turbo/a.ts': 'export const t = 1;\n',
+      '.worktrees/x/a.ts': 'export const t = 1;\n',
       'node_modules/pkg/index.js': 'module.exports = 1;\n',
       '.git/config': '[core]\n',
     });
-    // The two hidden directories the key and config walks do not read inside:
-    // a link out of the root, and one this user cannot open.
-    fs.symlinkSync(tree({ 'settings.json': '{}\n' }), path.join(dir, '.linked'));
-    const locked = path.join(dir, '.locked');
+    // The two hidden cache directories the key and config walks do not read
+    // inside: a link out of the root, and one this user cannot open.
+    fs.symlinkSync(tree({ 'settings.json': '{}\n' }), path.join(dir, '.cache'));
+    const locked = path.join(dir, '.yarn');
     fs.mkdirSync(locked);
     fs.chmodSync(locked, 0o000);
     let reasons: Record<string, string>;
@@ -121,9 +126,10 @@ describe('the walk reports exactly the skip reasons scan --help explains', () =>
       'test': SOURCE_SKIP_REASONS.testDir,
       'ignored': SOURCE_SKIP_REASONS.ignoreRule,
       'skip-me.ts': SOURCE_SKIP_REASONS.ignoreRule,
-      '.claude': SOURCE_SKIP_REASONS.hiddenDir,
-      '.linked': SOURCE_SKIP_REASONS.hiddenDirOutsideRoot,
-      '.locked': SOURCE_SKIP_REASONS.hiddenDirClosed,
+      '.turbo': SOURCE_SKIP_REASONS.hiddenCache,
+      '.worktrees': SOURCE_SKIP_REASONS.worktrees,
+      '.cache': SOURCE_SKIP_REASONS.hiddenDirOutsideRoot,
+      '.yarn': SOURCE_SKIP_REASONS.hiddenDirClosed,
       'node_modules': SOURCE_SKIP_REASONS.buildOutput,
       '.git': SOURCE_SKIP_REASONS.gitMetadata,
     });
@@ -169,6 +175,33 @@ describe('the walk reports exactly the skip reasons scan --help explains', () =>
       expect(skipped(dir)).toEqual({ [name]: SOURCE_SKIP_REASONS.buildOutput });
     },
   );
+
+  it.each([...HIDDEN_CACHE_DIRS])('the help hidden cache directory %s/ is skipped as hidden cache or build output', (name) => {
+    const dir = tree({ [`${name}/a.ts`]: 'export const t = 1;\n' });
+    expect(skipped(dir)).toEqual({ [name]: SOURCE_SKIP_REASONS.hiddenCache });
+  });
+
+  it.each([...WORKTREE_DIRS])('the help worktree directory %s/ is skipped as linked git worktrees', (name) => {
+    const dir = tree({ [`${name}/x/a.ts`]: 'export const t = 1;\n' });
+    expect(skipped(dir)).toEqual({ [name]: SOURCE_SKIP_REASONS.worktrees });
+  });
+
+  it('prunes only dot-directory names there, none of them already in the shared skip set', () => {
+    for (const name of [...HIDDEN_CACHE_DIRS, ...WORKTREE_DIRS]) {
+      expect(name.startsWith('.'), name).toBe(true);
+      expect(SOURCE_SKIP_DIRS.has(name), name).toBe(false);
+    }
+  });
+
+  it.each(['.claude', '.github', '.vscode', '.cursor', '.husky', '.devcontainer', '.idea'])(
+    'enters %s/ and reads a source file in it (#144)',
+    (name) => {
+      const dir = tree({ [`${name}/a.ts`]: 'export const t = 1;\n' });
+      expect(skipped(dir)).toEqual({});
+      const found = tree({ [`${name}/a.ts`]: `const t = "${TOKEN}";\n` });
+      expect(scan(found, { scanGlobal: false }).map((f) => [f.file, f.severity])).toEqual([[`${name}/a.ts`, 'high']]);
+    },
+  );
 });
 
 describe('scan --help names what a directory scan does not open', () => {
@@ -194,6 +227,7 @@ describe('scan --help names what a directory scan does not open', () => {
       ...TEST_FILE_GLOBS,
       ...[...TEST_DIRS].map((d) => `${d}/`),
       ...[...SOURCE_SKIP_DIRS].map((d) => `${d}/`),
+      ...[...HIDDEN_CACHE_DIRS, ...WORKTREE_DIRS].map((d) => `${d}/`),
     ];
     const missing = expected.filter((t) => !tokens.has(t));
     expect(missing).toEqual([]);

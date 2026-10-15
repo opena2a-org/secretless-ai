@@ -55,12 +55,12 @@ type Entry =
 /** Every path in the tree, by the way it goes unread (or, for a control, is read). */
 const TREE: Record<string, { cell: string; entry: Entry }> = {
   'src/app.js': { cell: 'control: a source file that is read', entry: { kind: 'file', content: () => JS } },
-  '.hidden/server.key': { cell: 'hidden directory', entry: { kind: 'file', content: pemKey } },
-  '.hidden/config.json': { cell: 'hidden directory', entry: { kind: 'file', content: () => JSON_CONFIG } },
-  '.hidden/app.js': { cell: 'hidden directory', entry: { kind: 'file', content: () => JS } },
-  '.linked-hidden': { cell: 'hidden directory linked outside the root', entry: { kind: 'link', target: '<outside>' } },
-  '.locked-hidden/config.json': { cell: 'hidden directory that cannot be listed', entry: { kind: 'file', content: () => JSON_CONFIG } },
-  '.locked-hidden': { cell: 'hidden directory that cannot be listed', entry: { kind: 'dir-mode', mode: 0o000 } },
+  '.cache/server.key': { cell: 'hidden cache directory', entry: { kind: 'file', content: pemKey } },
+  '.cache/config.json': { cell: 'hidden cache directory', entry: { kind: 'file', content: () => JSON_CONFIG } },
+  '.cache/app.js': { cell: 'hidden cache directory', entry: { kind: 'file', content: () => JS } },
+  '.turbo': { cell: 'hidden cache directory linked outside the root', entry: { kind: 'link', target: '<outside>' } },
+  '.yarn/config.json': { cell: 'hidden cache directory that cannot be listed', entry: { kind: 'file', content: () => JSON_CONFIG } },
+  '.yarn': { cell: 'hidden cache directory that cannot be listed', entry: { kind: 'dir-mode', mode: 0o000 } },
   '.secretlessignore': { cell: 'ignore rule (the file holding it)', entry: { kind: 'file', content: () => `# ${TXT}ignored-dir/\nignored.js\n` } },
   'ignored-dir/app.js': { cell: 'ignore rule', entry: { kind: 'file', content: () => JS } },
   'ignored-dir/config.json': { cell: 'ignore rule', entry: { kind: 'file', content: () => JSON_CONFIG } },
@@ -232,7 +232,7 @@ describe.skipIf(process.getuid?.() === 0)('every path scan lists as unread is a 
   it(`builds ${Object.keys(TREE).length} paths, one or more for each way a path goes unread`, () => {
     const cells = new Set(Object.values(TREE).map((t) => t.cell));
     for (const cell of [
-      'hidden directory', 'ignore rule', 'size cap', '--max-files cap', 'binary file', 'unreadable mode',
+      'hidden cache directory', 'ignore rule', 'size cap', '--max-files cap', 'binary file', 'unreadable mode',
       'unsearchable directory', 'broken link', 'link loop', 'link whose target lies under an unsearchable directory',
       'name with a control character', 'name with a backslash', 'non-ASCII name',
     ]) expect(cells, cell).toContain(cell);
@@ -265,11 +265,11 @@ describe.skipIf(process.getuid?.() === 0)('every path scan lists as unread is a 
     for (const d of doc.notEnteredDirs) {
       if (closed.has(d.path)) expect(d.reason, d.path).not.toMatch(/still read/);
     }
-    // The three hidden directories, one per answer the filesystem gives.
+    // The three hidden cache directories, one per answer the filesystem gives.
     const reasonOf = (p: string) => doc.notEnteredDirs.find((d) => d.path === p)?.reason;
-    expect(reasonOf('.hidden')).toMatch(/still read/);
-    expect(reasonOf('.linked-hidden')).toMatch(/outside the scan root/);
-    expect(reasonOf('.locked-hidden')).toMatch(/cannot open/);
+    expect(reasonOf('.cache')).toMatch(/still read/);
+    expect(reasonOf('.turbo')).toMatch(/outside the scan root/);
+    expect(reasonOf('.yarn')).toMatch(/cannot open/);
   });
 
   it('prints every listed name through one rule, and the text lists exactly the paths --json lists', () => {
@@ -307,7 +307,7 @@ describe.skipIf(process.getuid?.() === 0)('every path scan lists as unread is a 
     const expected: Record<string, RegExp> = {
       'locked.js': /cannot read/,
       'locked-dir': /cannot list/,
-      '.locked-hidden': /cannot list/,
+      '.yarn': /cannot list/,
       'nosearch/app.js': /cannot search/,
       'nosearch/config.json': /cannot search/,
       'nosearch/server.key': /cannot search/,

@@ -932,6 +932,31 @@ function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFind
 export const TEST_DIRS: ReadonlySet<string> = new Set(['__tests__', '__mocks__', 'test', 'tests', 'fixtures', '__fixtures__']);
 
 /**
+ * Hidden cache and build-output directories the SOURCE walk does not enter.
+ *
+ * Every other dot-directory is entered, `.claude/`, `.github/` and `.vscode/`
+ * among them. The source walk used to prune every name starting with `.`, so a
+ * token in `.claude/agent.ts` went unreported while its byte-identical copy in
+ * `src/app.ts` was a finding (#144). These names stay pruned: they hold
+ * generated or downloaded files, not source a user wrote.
+ *
+ * Kept here rather than in `SOURCE_SKIP_DIRS`, which must equal the shared
+ * pattern catalog. The key and config walks enter these directories, and
+ * naming one scans it.
+ */
+export const HIDDEN_CACHE_DIRS: ReadonlySet<string> = new Set([
+  '.netlify', '.open-next', '.turbo', '.playwright-mcp', '.yarn', '.pnpm-store',
+  '.cache', '.terraform', '.parcel-cache', '.angular', '.serverless',
+]);
+
+/**
+ * Directories of linked git worktrees, which the SOURCE walk does not enter.
+ * A linked worktree holds a `.git` FILE, so the `.git` prune does not stop a
+ * walk inside one, and each one is another checkout of a repository.
+ */
+export const WORKTREE_DIRS: ReadonlySet<string> = new Set(['.worktrees']);
+
+/**
  * The names `isTestFile` matches, written as globs for `scan --help`. Kept
  * beside the function because they are two statements of one rule; a test
  * walks a file named after each glob and checks the walk skips it as a test
@@ -1008,9 +1033,9 @@ interface WalkResult {
  * said we would read something and did not.
  *
  * The reason travels with the path because the count alone is not actionable.
- * On this repository the raw count is dominated by dependency and build output,
- * which every user already expects to be skipped; the entry that matters is a
- * hidden directory, and it is invisible inside a single total.
+ * The raw count is dominated by dependency and build output, which every user
+ * already expects to be skipped; an entry a user does not expect is invisible
+ * inside a single total.
  */
 export interface CoverageSkips {
   /** Directories not descended into: `{ path, reason }`, capped. */
@@ -1032,11 +1057,11 @@ export interface CoverageSkips {
  * apart. A new reason added to the walk as a bare string would print a skip the
  * help never explained.
  *
- * A hidden directory has three, because what the other walks do inside it
- * depends on the filesystem: the key and config walks read inside one they can
- * open, and nothing inside one they cannot open or that links out of the root.
- * One reason for all three either claimed reads that never happened or hid the
- * findings that did come from inside.
+ * A hidden cache or worktree directory has more than one, because what the
+ * other walks do inside it depends on the filesystem: the key and config walks
+ * read inside one they can open, and nothing inside one they cannot open or
+ * that links out of the root. One reason for all three either claimed reads
+ * that never happened or hid the findings that did come from inside.
  */
 export const SOURCE_SKIP_REASONS = {
   unsupportedType: 'unsupported file type',
@@ -1044,7 +1069,8 @@ export const SOURCE_SKIP_REASONS = {
   testFile: 'test file (--include-tests)',
   testDir: 'test directory (--include-tests)',
   ignoreRule: 'ignore rule (--no-ignore)',
-  hiddenDir: 'hidden directory; config and key files inside are still read',
+  hiddenCache: 'hidden cache or build output; config and key files inside are still read',
+  worktrees: 'linked git worktrees; config and key files inside are still read',
   hiddenDirOutsideRoot: 'hidden directory linked outside the scan root; nothing inside is read',
   hiddenDirClosed: 'hidden directory this user cannot open; nothing inside is read',
   buildOutput: 'dependency or build output',
@@ -1113,13 +1139,13 @@ export function coverageReason(rule: null, facts: PathFacts): UnreadReason;
 export function coverageReason(rule: SkipReason | null, facts: PathFacts): CoverageReason {
   const { lstat, stat, access, insideRoot } = facts;
   if (rule !== null) {
-    if (rule !== 'hiddenDir') return rule;
+    if (rule !== 'hiddenCache' && rule !== 'worktrees') return rule;
     // The key and config walks stop at a directory link out of the root before
     // they try to list it, so that answer comes first.
     if (typeof lstat !== 'string' && lstat.isSymbolicLink() && typeof stat !== 'string' && !insideRoot) {
       return 'hiddenDirOutsideRoot';
     }
-    return typeof stat === 'string' || !access ? 'hiddenDirClosed' : 'hiddenDir';
+    return typeof stat === 'string' || !access ? 'hiddenDirClosed' : rule;
   }
   // `lstat` itself fails only on the way TO the path: a directory above it
   // that cannot be searched, or a loop among the links above it.
@@ -1585,9 +1611,9 @@ function walkKeyFiles(
   ignore: IgnoreMatcher | null,
 ): WalkResult {
   return walkTree(dir, maxFiles, {
-    // Unlike source files, key files commonly live in HIDDEN directories (`.ssh/`,
-    // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
-    // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
+    // Key files commonly live in HIDDEN directories (`.ssh/`, `.certs/`, `.aws/`),
+    // so this walk enters the hidden caches the source walk prunes too. We still
+    // skip the heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
     // This walk discloses nothing, so these values are never printed; they
     // come from the same set so a walk cannot return a free-form reason.
     skipDir: (name, rel) =>
@@ -1639,18 +1665,23 @@ function walkSourceFiles(
     // `.git` is tested BEFORE the build-output set purely so the disclosure
     // names it accurately: it is in SOURCE_SKIP_DIRS, so without this arm it
     // reported as "dependency or build output", which it is not. The set that
-    // skips is unchanged; only the reason differs. A hidden directory an
-    // ignore rule covers is entered by no walk (the key and config walks apply
-    // the rule too), so it falls through to the ignore rule's reason. One no
-    // ignore rule covers is `hiddenDir`, which `coverageReason` narrows by
-    // what the filesystem says: the key and config walks read inside it, but
-    // not through a link out of the root or into a directory they cannot open.
-    skipDir: (name, rel) =>
-      (name === '.git' && 'gitMetadata')
-      || (SOURCE_SKIP_DIRS.has(name) && 'buildOutput')
-      || (name.startsWith('.') && !(ignore && ignore.matches(rel + '/.')) && 'hiddenDir')
-      || (!includeTests && TEST_DIRS.has(name) && 'testDir')
-      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignoreRule'),
+    // skips is unchanged; only the reason differs. Every other dot-directory
+    // is entered (#144) except the hidden caches and worktree directories,
+    // which this walk alone prunes. One an ignore rule covers is entered by
+    // no walk (the key and config walks apply the rule too), so it falls
+    // through to the ignore rule's reason. One no ignore rule covers is
+    // `hiddenCache` or `worktrees`, which `coverageReason` narrows by what the
+    // filesystem says: the key and config walks read inside it, but not
+    // through a link out of the root or into a directory they cannot open.
+    skipDir: (name, rel) => {
+      const ignored = !!(ignore && ignore.matches(rel + '/.'));
+      return (name === '.git' && 'gitMetadata')
+        || (SOURCE_SKIP_DIRS.has(name) && 'buildOutput')
+        || (!ignored && HIDDEN_CACHE_DIRS.has(name) && 'hiddenCache')
+        || (!ignored && WORKTREE_DIRS.has(name) && 'worktrees')
+        || (!includeTests && TEST_DIRS.has(name) && 'testDir')
+        || (ignored && 'ignoreRule');
+    },
     // The config walk reads these (it applies the ignore rule itself). So does
     // the key walk, under the test-file and ignore rules this walk applies,
     // in every directory this walk enters: a `.secretless-bundle` it reported

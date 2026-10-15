@@ -230,18 +230,20 @@ describe('scan prints names and excerpts from the repository escaped', () => {
     return runScan(dir, options);
   }
 
-  it('a line feed in a hidden directory name prints escaped and quoted, and no Scan one: names it', async () => {
-    const dir = tree({ [path.join(FORGED_DIR, 'a.ts')]: 'export {};\n' });
+  // A dot-directory is entered (#144), so an ignore rule is what keeps each
+  // hostile directory below out of the walk and puts its name in the list.
+  it('a line feed in an ignored directory name prints escaped and quoted, and no Scan one: names it', async () => {
+    const dir = tree({ [path.join(FORGED_DIR, 'a.ts')]: 'export {};\n', '.secretlessignore': '.x*/\n' });
     await scanFromParent(dir);
 
     expectNoControlBytes();
     expect(out.join(LF)).not.toContain(FORGED_DIR);
     // The only directory listed cannot be printed as itself, so no command is
-    // offered for it.
-    expect(scanOneLines()).toEqual([]);
+    // offered for it. The one Scan one: line names the ignore file.
+    expect(scanOneLines().map((l) => l.trim())).toEqual([`Scan one: npx secretless-ai scan ${path.basename(dir)}/.secretlessignore`]);
     // The name is still listed, as a visible escape inside quotes that end it.
     expect(printedLines()).toContain(
-      `    $'${path.basename(dir)}/.x\\n  Scan one: npx secretless-ai scan elsewhere': hidden directory; config and key files inside are still read`,
+      `    $'${path.basename(dir)}/.x\\n  Scan one: npx secretless-ai scan elsewhere': ignore rule (--no-ignore)`,
     );
   });
 
@@ -260,12 +262,12 @@ describe('scan prints names and excerpts from the repository escaped', () => {
   });
 
   it('an escaped name holding ": " is quoted, so it cannot pass for the separator before the reason', async () => {
-    const dir = tree({ [path.join(COLON_DIR, 'a.ts')]: 'export {};\n' });
+    const dir = tree({ [path.join(COLON_DIR, 'a.ts')]: 'export {};\n', '.secretlessignore': '.a*/\n' });
     await scanFromParent(dir);
 
     expectNoControlBytes();
     expect(printedLines()).toContain(
-      `    $'${path.basename(dir)}/.a\\e: test directory (--include-tests)': hidden directory; config and key files inside are still read`,
+      `    $'${path.basename(dir)}/.a\\e: test directory (--include-tests)': ignore rule (--no-ignore)`,
     );
   });
 
@@ -391,6 +393,7 @@ describe('scan prints names and excerpts from the repository escaped', () => {
     const dir = tree({
       [path.join(FORGED_DIR, 'a.ts')]: 'export {};\n',
       [path.join(OSC_DIR, 'app.ts')]: `const t = "${TOKEN}";\n`,
+      '.secretlessignore': '.x*/\n',
     });
     await runScan(dir, { json: true });
 

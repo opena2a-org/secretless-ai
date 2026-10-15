@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { scan, KEY_FILE_EXTENSIONS } from './scan';
+import { scan, KEY_FILE_EXTENSIONS, HIDDEN_CACHE_DIRS, WORKTREE_DIRS } from './scan';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES } from './patterns';
 
 /**
@@ -28,7 +28,7 @@ const SCAN_DOC = fs.readFileSync(path.join(REPO_ROOT, SCAN_DOC_PATH), 'utf8');
 
 const TEXT_DRIFT =
   `${HOW_DOC_PATH} step 1, the ${SCAN_DOC_PATH} paragraph beginning "A directory scan checks", ` +
-  `the ${SCAN_DOC_PATH} paragraph beginning "Dot-directories are among" and the scan line of --help ` +
+  `the ${SCAN_DOC_PATH} paragraph beginning "Dot-directories are read" and the scan line of --help ` +
   '(src/commands/help.ts) say a directory scan does not open this file; update them in the ' +
   'same change that starts opening it.';
 
@@ -124,13 +124,43 @@ describe('README claims about what a directory scan opens', () => {
   });
 
   it('the paragraph names --include-config, which reads the config-format files it names', () => {
-    expect(directoryScanParagraph()).toContain('`scan --include-config` also reads config-format files outside dot-directories, such as `values.yaml` and `main.tf`');
+    expect(directoryScanParagraph()).toContain('`scan --include-config` also reads config-format files, such as `values.yaml` and `main.tf`, in every directory it reads source files in');
     const dir = tmpProject();
     try {
       const findings = scan(dir, { scanGlobal: false, includeConfig: true });
       const root = fs.realpathSync(dir);
       const files = [...new Set(findings.map(f => path.relative(root, fs.realpathSync(path.resolve(dir, f.file)))))].sort();
-      expect(files).toEqual(['control.js', 'deploy/values.yaml', 'infra/main.tf']);
+      // The workflow is config-format and sits in a dot-directory the source
+      // walk enters, so the flag reads it too (#144).
+      expect(files).toEqual(['.github/workflows/deploy.yml', 'control.js', 'deploy/values.yaml', 'infra/main.tf']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the dot-directory paragraph names every directory the source walk prunes, and the walk reads the ones it names as read', () => {
+    const para = SCAN_DOC.split('\n').filter(l => l.startsWith('Dot-directories are read'));
+    expect(para, `${SCAN_DOC_PATH} must hold exactly one paragraph beginning "Dot-directories are read"`).toHaveLength(1);
+    const pruned = [...HIDDEN_CACHE_DIRS, ...WORKTREE_DIRS];
+    for (const name of pruned) expect(para[0], name).toContain(`\`${name}/\``);
+    // The paragraph counts them in words, so a name added to either set
+    // changes that count too.
+    expect(pruned).toHaveLength(12);
+    expect(para[0]).toContain('Those last twelve are in the `notEntered` group');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'readme-claims-'));
+    try {
+      const files: Record<string, string> = {
+        '.claude/agent.js': `const key = "${VALUE}";\n`,
+        '.github/scripts/x.js': `const key = "${VALUE}";\n`,
+      };
+      for (const name of pruned) files[`${name}/x/app.js`] = `const key = "${VALUE}";\n`;
+      for (const [rel, content] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+        fs.writeFileSync(path.join(dir, rel), content);
+      }
+      const found = scan(dir, { scanGlobal: false }).map(f => f.file).sort();
+      expect(found).toEqual(['.claude/agent.js', '.github/scripts/x.js']);
+      for (const name of pruned) expect(scan(path.join(dir, name), { scanGlobal: false }).length, name).toBe(1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
