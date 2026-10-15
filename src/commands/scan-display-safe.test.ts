@@ -241,7 +241,7 @@ describe('scan prints names and excerpts from the repository escaped', () => {
     expect(scanOneLines()).toEqual([]);
     // The name is still listed, as a visible escape inside quotes that end it.
     expect(printedLines()).toContain(
-      `    $'${path.basename(dir)}/.x\\n  Scan one: npx secretless-ai scan elsewhere': hidden directory`,
+      `    $'${path.basename(dir)}/.x\\n  Scan one: npx secretless-ai scan elsewhere': hidden directory; config and key files inside are still read`,
     );
   });
 
@@ -265,7 +265,7 @@ describe('scan prints names and excerpts from the repository escaped', () => {
 
     expectNoControlBytes();
     expect(printedLines()).toContain(
-      `    $'${path.basename(dir)}/.a\\e: test directory (--include-tests)': hidden directory`,
+      `    $'${path.basename(dir)}/.a\\e: test directory (--include-tests)': hidden directory; config and key files inside are still read`,
     );
   });
 
@@ -310,7 +310,7 @@ describe('scan prints names and excerpts from the repository escaped', () => {
     await scanFromParent(dir);
 
     const lines = printedLines();
-    expect(lines).toContain('  1 symlink points outside the scan root, so not followed.');
+    expect(lines).toContain('  1 directory outside the scan root is linked from inside it, so not followed. One link to each:');
     expect(lines).toContain(`    '${path.basename(dir)}/l\\nk'`);
     const fix = lines.find((l) => l.startsWith('  Fix:    npx secretless-ai scan '));
     expect(fix).toContain(path.basename(outside));
@@ -459,9 +459,9 @@ describe('a Verify: or Fix: command never names a path that cannot be printed as
         const lines = out.flatMap((l) => l.split(LF));
 
         expect(out.join('\u0000')).not.toContain(name);
-        expect(lines).toContain(`    $'${path.basename(dir)}/lock\\ned.js'`);
+        expect(lines).toContain(`    $'${path.basename(dir)}/lock\\ned.js': this user cannot read the file`);
         expect(lines).toContain('  Verify: ls -ld <path>');
-        expect(lines).toContain('  Fix:    chmod +rx <path>   # if the cause is permissions');
+        expect(lines).toContain('  Fix:    chmod +r <path>');
       } finally {
         fs.chmodSync(locked, 0o644);
       }

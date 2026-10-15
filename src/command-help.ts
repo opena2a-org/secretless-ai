@@ -98,7 +98,15 @@ function skipReasonDetails(): Record<keyof typeof SOURCE_SKIP_REASONS, string[]>
       `${at}a path in .secretlessignore or in the default-ignore list,`,
       `${at}which also holds ${ignoreOnly.join(' ')}`,
     ],
-    hiddenDir: [`${at}source files under .claude/, .vscode/ or any other dot-directory`],
+    hiddenDir: [
+      `${at}source files under .claude/, .vscode/ or any other dot-directory;`,
+      `${at}the config and key files named above are read inside it`,
+    ],
+    hiddenDirOutsideRoot: [
+      `${at}a dot-directory that is a link out of the scanned directory, which`,
+      `${at}no walk follows`,
+    ],
+    hiddenDirClosed: [`${at}a dot-directory this user cannot list or search`],
     buildOutput: [...wrapList(buildDirs, at), `${at}no flag enters these`],
     gitMetadata: [`${at}.git/`],
   };

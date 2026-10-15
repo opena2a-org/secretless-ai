@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips, SOURCE_SKIP_REASONS, type ScanFinding } from '../scan';
+import { scan, emptySkips, unreadReason, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
 import { status, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
@@ -789,6 +789,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         unscannedConfig: stats.unscannedConfig.count,
       },
       unreadableFiles: stats.unreadable,
+      // The cause of each, as `lstat`, `stat` and `access` report it: the same
+      // text the human report prints beside the path.
+      unreadableReasons: stats.unreadable.map((p) => ({ path: p, reason: unreadReason(projectDir, p) })),
       outOfRootLinks: stats.outOfRoot,
       oversizeFiles: stats.oversize,
       // Samples, capped. The counts above carry the magnitude; these carry the
@@ -850,6 +853,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     const p = fromCwd(rel);
     return hasDisplayHazard(p) ? quotePathForDisplay(p) : shellQuote(p);
   };
+  // Every listed path prints through this line, in every block: the name as
+  // `shown` renders it, then `: <reason>` or ` (<size>)`.
+  const listLine = (rel: string, after = '') => console.log(`  ${c.dim(`  ${shown(rel)}${after}`)}`);
   // The first candidate that prints as itself, quoted for pasting, or null. A
   // name that cannot be printed as itself cannot be an operand: the raw form is
   // the hazard and the escaped form names a different file. `toPath` runs only
@@ -895,27 +901,37 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     if (stats.unreadable.length > 0) {
       const n = stats.unreadable.length;
       console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} could not be read`)}, so not known to be clean.`);
-      for (const f of stats.unreadable.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${shown(f)}`)}`);
-      }
+      // Each path carries its own cause, measured from `lstat`, `stat` and
+      // `access`. One line of possible causes for the whole list named a
+      // broken link, which is never listed, and its `chmod` named the first
+      // path whatever its cause: on a link into a directory that cannot be
+      // searched, `chmod` fails just as the scan did.
+      const shownUnreadable = stats.unreadable.slice(0, 10).map((p) => ({ path: p, reason: unreadReason(projectDir, p) }));
+      for (const u of shownUnreadable) listLine(u.path, `: ${u.reason}`);
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
-      // Do NOT assert the cause. "Unreadable" covers permissions, a symlink
-      // loop (ELOOP) and a too-many-open-files failure, and `chmod +r` is a dead
-      // end for the last two — a Fix that cannot work is worse than none.
-      // `ls -ld` distinguishes them, so it leads. `+rx` not `+r`: a directory
-      // needs the execute bit to be traversed, so `+r` alone leaves the scan
-      // still unable to enter it.
-      console.log(`  ${c.dim('Cause differs by path: permissions, a broken or looping symlink, or an I/O error.')}`);
-      const target = operand(stats.unreadable.slice(0, 10));
-      console.log(`  ${c.cyan('Verify:')} ls -ld ${target}`);
-      console.log(`  ${c.cyan('Fix:')}    chmod +rx ${target}   ${c.dim('# if the cause is permissions')}\n`);
+      // The Fix names the first path a `chmod` can repair, with the mode that
+      // repairs it: read on a file, read and search on a directory, search on
+      // the directory above. A loop, a link to a path out of reach and an I/O
+      // error have no `chmod` that works, so they get the `Verify:` alone.
+      const repair = (u: { path: string; reason: string }): { at: string; mode: string } | null => {
+        if (u.reason === UNREAD_REASONS.fileNotReadable) return { at: u.path, mode: '+r' };
+        if (u.reason === UNREAD_REASONS.dirNotListable) return { at: u.path, mode: '+rx' };
+        if (u.reason === UNREAD_REASONS.parentNotSearchable) return { at: nodePath.dirname(u.path), mode: '+x' };
+        return null;
+      };
+      const repairs = shownUnreadable.map(repair).filter((r) => r !== null);
+      const fix = repairs.find((r) => firstOperand([r.at]) !== null) ?? repairs[0] ?? null;
+      console.log(`  ${c.cyan('Verify:')} ls -ld ${fix ? operand([fix.at]) : operand(stats.unreadable.slice(0, 10))}`);
+      if (fix) console.log(`  ${c.cyan('Fix:')}    chmod ${fix.mode} ${operand([fix.at])}`);
+      console.log();
     }
     if (stats.outOfRoot.length > 0) {
       const n = stats.outOfRoot.length;
-      console.log(`  ${c.boldYellow(`${n} symlink${n > 1 ? 's' : ''} ${n > 1 ? 'point' : 'points'} outside the scan root`)}, so not followed.`);
-      for (const f of stats.outOfRoot.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${shown(f)}`)}`);
-      }
+      // The list holds one link per directory it reaches, so the count is of
+      // directories: "1 symlink points outside" over two links to one
+      // directory counted the list, not the links.
+      console.log(`  ${c.boldYellow(`${n} director${n > 1 ? 'ies' : 'y'} outside the scan root`)} ${n > 1 ? 'are' : 'is'} linked from inside it, so not followed. One link to each:`);
+      for (const f of stats.outOfRoot.slice(0, 10)) listLine(f);
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       console.log(`  ${c.dim('Following them would let a link to $HOME pull the whole home directory into the scan.')}`);
       // No `$(...)` here: the path is attacker-controlled (it is a filename in a
@@ -926,9 +942,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     if (stats.oversize.length > 0) {
       const n = stats.oversize.length;
       console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} skipped for size`)}, so not known to be clean.`);
-      for (const f of stats.oversize.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${shown(f.path)} (${formatSizeOverCap(f.bytes, f.capBytes)})`)}`);
-      }
+      for (const f of stats.oversize.slice(0, 10)) listLine(f.path, ` (${formatSizeOverCap(f.bytes, f.capBytes)})`);
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       // The cap is a resource guard, not a judgement — the same bytes under it
       // produce a finding, so an 11 MB config with a key on line 1 scanned to
@@ -945,9 +959,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     if (stats.unscannedConfig.count > 0) {
       const n = stats.unscannedConfig.count;
       console.log(`  ${c.boldYellow(`${n} config file${n > 1 ? 's' : ''} not scanned`)}: ${n > 1 ? 'their names are' : 'its name is'} not on the built-in config list, so not known to be clean.`);
-      for (const f of stats.unscannedConfig.files.slice(0, 10)) {
-        console.log(`  ${c.dim(`  ${shown(f)}`)}`);
-      }
+      for (const f of stats.unscannedConfig.files.slice(0, 10)) listLine(f);
       if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
       console.log(`  ${c.cyan('Fix:')}      npx secretless-ai scan ${operand(['.'])} --include-config`);
       // As in the boundary blocks below: a name that cannot be printed as
@@ -968,13 +980,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // followed by the command that scans it, so naming a gap is never a dead
     // end. These are the source walk's boundaries: the key and config walks
     // can still enter a hidden directory listed here, so a finding can come
-    // from one.
+    // from one, and the reason beside it says whether they do.
     if (stats.skips.dirCount > 0) {
       const n = stats.skips.dirCount;
       console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered for source files`)}: declared boundaries, not findings.`);
-      for (const d of stats.skips.dirs.slice(0, 8)) {
-        console.log(`  ${c.dim(`  ${shown(d.path)}: ${d.reason}`)}`);
-      }
+      for (const d of stats.skips.dirs.slice(0, 8)) listLine(d.path, `: ${d.reason}`);
       if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
       // As for files below: a name that cannot be printed as itself is listed
       // in visible form but never offered as the command.
@@ -988,12 +998,12 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // there, a tree with no pruned directory printed nothing about a file it
     // never opened, so a planted AWS key in `notes.txt` read as "No hardcoded
     // credentials found." with no qualification. Naming a file scans it
-    // whatever its type, so `Scan one:` names a file, not a flag. Like the
-    // directory heading, this one does not say the files went unscanned: the
-    // key walk still checks a `.pem`, `.key`, `.crt`, `.p12`, `.pfx` or
-    // export bundle listed here as an unsupported file type, and a finding can
-    // come from one. One that an ignore or test-file rule keeps from the key
-    // walk too is listed with that rule.
+    // whatever its type, so `Scan one:` names a file, not a flag. A key file
+    // the key walk reads is not listed here; one that an ignore or
+    // test-file rule keeps from the key walk too is listed with that rule.
+    // The heading says "not read for credentials", not "not opened": the scan
+    // opens `.secretlessignore`, listed here as an unsupported file type, for
+    // its rules.
     //
     // A config file off the built-in list is left out here: the block above
     // names it under a heading that says it is not known to be clean, and
@@ -1003,13 +1013,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     const notOpenedCount = stats.skips.fileCount - stats.unscannedConfig.count;
     if (notOpenedCount > 0) {
       const n = notOpenedCount;
-      console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not opened`)}: declared boundaries, not findings.`);
+      console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not read for credentials`)}: declared boundaries, not findings.`);
       // The sample is shared with the config files left out above, so it can
       // hold fewer than eight of these while more exist, or none at all.
       const listed = notOpened.slice(0, 8);
-      for (const f of listed) {
-        console.log(`  ${c.dim(`  ${shown(f.path)}: ${f.reason}`)}`);
-      }
+      for (const f of listed) listLine(f.path, `: ${f.reason}`);
       if (listed.length > 0 && n > listed.length) console.log(`  ${c.dim(`  … and ${n - listed.length} more`)}`);
       // A name that cannot be printed as itself cannot be copied as it reads, so
       // it is listed but never offered as the command.

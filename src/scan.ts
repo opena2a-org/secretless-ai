@@ -201,7 +201,8 @@ export interface ScanStats {
    * Symlinks whose target resolves outside the scan root. These are NOT
    * followed — otherwise `link -> $HOME` makes `scan .` traverse the whole home
    * directory — but they are reported, because silently skipping them would be
-   * the same fail-open in a new place.
+   * the same fail-open in a new place. One link per directory reached: a
+   * second link to the same directory is not added.
    */
   outOfRoot?: string[];
   /**
@@ -1009,9 +1010,9 @@ interface WalkResult {
  */
 export interface CoverageSkips {
   /** Directories not descended into: `{ path, reason }`, capped. */
-  dirs: Array<{ path: string; reason: string }>;
+  dirs: Array<{ path: string; reason: SkipReasonText }>;
   /** Files enumerated but not opened: `{ path, reason }`, capped. */
-  files: Array<{ path: string; reason: string }>;
+  files: Array<{ path: string; reason: SkipReasonText }>;
   /** True counts, which keep rising after the samples above stop growing. */
   dirCount: number;
   fileCount: number;
@@ -1026,6 +1027,12 @@ export interface CoverageSkips {
  * that produces every one, so the walk, this catalog and the help cannot drift
  * apart. A new reason added to the walk as a bare string would print a skip the
  * help never explained.
+ *
+ * A hidden directory has three, because what the other walks do inside it
+ * depends on the filesystem: the key and config walks read inside one they can
+ * open, and nothing inside one they cannot open or that links out of the root.
+ * One reason for all three either claimed reads that never happened or hid the
+ * findings that did come from inside.
  */
 export const SOURCE_SKIP_REASONS = {
   unsupportedType: 'unsupported file type',
@@ -1033,10 +1040,102 @@ export const SOURCE_SKIP_REASONS = {
   testFile: 'test file (--include-tests)',
   testDir: 'test directory (--include-tests)',
   ignoreRule: 'ignore rule (--no-ignore)',
-  hiddenDir: 'hidden directory',
+  hiddenDir: 'hidden directory; config and key files inside are still read',
+  hiddenDirOutsideRoot: 'hidden directory linked outside the scan root; nothing inside is read',
+  hiddenDirClosed: 'hidden directory this user cannot open; nothing inside is read',
   buildOutput: 'dependency or build output',
   gitMetadata: 'git metadata',
 } as const;
+
+/**
+ * Why a path the scan meant to read could not be read: the strings printed
+ * beside each path in `unreadable`. Each one is what `lstat`, `stat` and
+ * `access` say about that path, so the cause is measured per path instead of
+ * listed as a set of possibilities, one of which (a broken link) the walk
+ * never reports: a link to nothing has nothing to read.
+ */
+export const UNREAD_REASONS = {
+  fileNotReadable: 'this user cannot read the file',
+  dirNotListable: 'this user cannot list the directory',
+  parentNotSearchable: 'inside a directory this user cannot search',
+  linkLoop: 'symbolic link in a loop, or in a chain too long to follow',
+  linkTargetUnreachable: 'symbolic link to a path this user cannot reach',
+  readError: 'opening it failed with an error other than permissions',
+} as const;
+
+export type SkipReason = keyof typeof SOURCE_SKIP_REASONS;
+export type UnreadReason = keyof typeof UNREAD_REASONS;
+/** Every reason a listed path can carry. One value each, one text per value. */
+export type CoverageReason = SkipReason | UnreadReason;
+export type SkipReasonText = (typeof SOURCE_SKIP_REASONS)[SkipReason];
+export type UnreadReasonText = (typeof UNREAD_REASONS)[UnreadReason];
+
+/** What the filesystem says about one path, gathered without opening it. */
+export interface PathFacts {
+  /** `lstat` of the path itself, or the error code it failed with. */
+  lstat: fs.Stats | string;
+  /** `stat`, which follows a link, or the error code it failed with. */
+  stat: fs.Stats | string;
+  /** `access` for reading, and for searching too when `stat` found a directory. */
+  access: boolean;
+  /** The real path lies inside the scan root. */
+  insideRoot: boolean;
+}
+
+export function readPathFacts(absPath: string, rootReal: string): PathFacts {
+  const codeOf = (err: unknown) => (err as NodeJS.ErrnoException)?.code ?? 'EIO';
+  let lstat: fs.Stats | string;
+  let stat: fs.Stats | string;
+  try { lstat = fs.lstatSync(absPath); } catch (err) { lstat = codeOf(err); }
+  try { stat = fs.statSync(absPath); } catch (err) { stat = codeOf(err); }
+  let access = false;
+  if (typeof stat !== 'string') {
+    const mode = stat.isDirectory() ? fs.constants.R_OK | fs.constants.X_OK : fs.constants.R_OK;
+    try { fs.accessSync(absPath, mode); access = true; } catch { /* access stays false */ }
+  }
+  const real = realpathOrNull(absPath);
+  return { lstat, stat, access, insideRoot: real !== null && isWithinRoot(real, rootReal) };
+}
+
+/**
+ * The reason a listed path carries. `rule` is the walk rule that skipped it,
+ * or null for a path the walk meant to read and could not.
+ *
+ * Every reason the scan prints comes out of here, so a reason cannot say more
+ * than the walk rule and the filesystem do.
+ */
+export function coverageReason(rule: SkipReason, facts: PathFacts): SkipReason;
+export function coverageReason(rule: null, facts: PathFacts): UnreadReason;
+export function coverageReason(rule: SkipReason | null, facts: PathFacts): CoverageReason {
+  const { lstat, stat, access, insideRoot } = facts;
+  if (rule !== null) {
+    if (rule !== 'hiddenDir') return rule;
+    // The key and config walks stop at a directory link out of the root before
+    // they try to list it, so that answer comes first.
+    if (typeof lstat !== 'string' && lstat.isSymbolicLink() && typeof stat !== 'string' && !insideRoot) {
+      return 'hiddenDirOutsideRoot';
+    }
+    return typeof stat === 'string' || !access ? 'hiddenDirClosed' : 'hiddenDir';
+  }
+  // `lstat` itself fails only on the way TO the path: a directory above it
+  // that cannot be searched, or a loop among the links above it.
+  if (typeof lstat === 'string') {
+    if (lstat === 'EACCES') return 'parentNotSearchable';
+    return lstat === 'ELOOP' ? 'linkLoop' : 'readError';
+  }
+  if (typeof stat === 'string') {
+    if (stat === 'ELOOP') return 'linkLoop';
+    return stat === 'EACCES' ? 'linkTargetUnreachable' : 'readError';
+  }
+  if (!access) return stat.isDirectory() ? 'dirNotListable' : 'fileNotReadable';
+  return 'readError';
+}
+
+/** The reason text for a path in `unreadable`, as listed relative to `projectDir`. */
+export function unreadReason(projectDir: string, listedPath: string): UnreadReasonText {
+  const rootReal = realpathOrNull(projectDir) ?? path.resolve(projectDir);
+  return UNREAD_REASONS[coverageReason(null, readPathFacts(path.resolve(projectDir, listedPath), rootReal))];
+}
 
 /** Samples are for a human; the counts carry the magnitude. */
 const SKIP_SAMPLE_CAP = 20;
@@ -1274,19 +1373,20 @@ function compareCodePoints(a: string, b: string): number {
 /** Per-walk behaviour: which directories to descend, which files to keep. */
 interface WalkSpec {
   /**
-   * A REASON string to skip this directory, or false to descend.
+   * The rule that skips this directory, or false to descend.
    *
    * It returns the reason rather than a boolean so the disclosure and the
    * decision come from the same expression. A separate `skipReason` predicate
    * beside a boolean `skipDir` would be two statements of one rule, free to
    * drift — and a disclosure that disagrees with the walk is worse than none.
+   * The text printed for it is `coverageReason`'s.
    */
-  skipDir(name: string, relFromRoot: string): string | false;
+  skipDir(name: string, relFromRoot: string): SkipReason | false;
   /**
-   * A REASON string to reject this file, or false to keep it. Same rule.
+   * The rule that rejects this file, or false to keep it. Same rule.
    * `listedFromRoot` is the path as a report lists it (see `walkTree`).
    */
-  rejectFile(name: string, relFromRoot: string, listedFromRoot: string): string | false;
+  rejectFile(name: string, relFromRoot: string, listedFromRoot: string): SkipReason | false;
   /**
    * True when another walk reads this file, so this one leaves it out WITHOUT
    * disclosing it: `config.json` is read by the config walk, and counting it
@@ -1344,6 +1444,10 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   // and offered as `Scan one:`, as `n/x.txt`. A listed path changes only the
   // platform's own separator.
   const listed = (p: string) => withSlashSeparators(path.relative(dir, p));
+  // The text of a disclosed skip. Only the sampled entries pay for the
+  // filesystem calls, so the count can keep rising without them.
+  const reasonText = (rule: SkipReason, entryPath: string): SkipReasonText =>
+    SOURCE_SKIP_REASONS[coverageReason(rule, readPathFacts(entryPath, rootReal))];
 
   // `truncated` is a claim about FILES: a candidate that passed every filter
   // and was dropped because the cap was full. Reaching the cap with directories
@@ -1401,7 +1505,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (skipReason) {
           if (spec.discloseSkips) {
             skips.dirCount++;
-            if (skips.dirs.length < SKIP_SAMPLE_CAP) skips.dirs.push({ path: listedFromRoot, reason: skipReason });
+            if (skips.dirs.length < SKIP_SAMPLE_CAP) skips.dirs.push({ path: listedFromRoot, reason: reasonText(skipReason, entryPath) });
           }
           continue;
         }
@@ -1422,7 +1526,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (rejectReason) {
           if (spec.discloseSkips) {
             skips.fileCount++;
-            if (skips.files.length < SKIP_SAMPLE_CAP) skips.files.push({ path: listedFromRoot, reason: rejectReason });
+            if (skips.files.length < SKIP_SAMPLE_CAP) skips.files.push({ path: listedFromRoot, reason: reasonText(rejectReason, entryPath) });
           }
           continue;
         }
@@ -1458,15 +1562,17 @@ function walkKeyFiles(
     // Unlike source files, key files commonly live in HIDDEN directories (`.ssh/`,
     // `.certs/`, `.aws/`), so we do NOT blanket-skip dot-dirs here. We still skip the
     // heavy/irrelevant ones (node_modules, .git) and honor the ignore matcher.
+    // This walk discloses nothing, so these values are never printed; they
+    // come from the same set so a walk cannot return a free-form reason.
     skipDir: (name, rel) =>
-      (SOURCE_SKIP_DIRS.has(name) && 'dependency or build output')
-      || (name === '.git' && 'git metadata')
-      || (!includeTests && TEST_DIRS.has(name) && 'test directory')
-      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule'),
+      (SOURCE_SKIP_DIRS.has(name) && 'buildOutput')
+      || (name === '.git' && 'gitMetadata')
+      || (!includeTests && TEST_DIRS.has(name) && 'testDir')
+      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignoreRule'),
     rejectFile: (name, rel) =>
-      (!KEY_FILE_EXTENSIONS.has(path.extname(name).toLowerCase()) && 'not a key file')
-      || (!(includeTests || !isTestFile(name)) && 'test file')
-      || (!!(ignore && ignore.matches(rel)) && 'ignore rule'),
+      (!KEY_FILE_EXTENSIONS.has(path.extname(name).toLowerCase()) && 'unsupportedType')
+      || (!(includeTests || !isTestFile(name)) && 'testFile')
+      || (!!(ignore && ignore.matches(rel)) && 'ignoreRule'),
     collect: (entryPath) => entryPath,
   });
 }
@@ -1479,14 +1585,15 @@ function walkConfigFiles(
 ): WalkResult {
   const matcher = buildConfigNameMatcher();
   return walkTree(dir, maxFiles, {
+    // Never printed, like the key walk's.
     skipDir: (name, rel) =>
-      (SOURCE_SKIP_DIRS.has(name) && 'dependency or build output')
-      || (name === '.git' && 'git metadata')
-      || (!includeTests && TEST_DIRS.has(name) && 'test directory')
-      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignore rule'),
+      (SOURCE_SKIP_DIRS.has(name) && 'buildOutput')
+      || (name === '.git' && 'gitMetadata')
+      || (!includeTests && TEST_DIRS.has(name) && 'testDir')
+      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignoreRule'),
     rejectFile: (name, rel) =>
-      (!matchesConfigName(name, rel, matcher) && 'not a recognised config file')
-      || (!!(ignore && ignore.matches(rel)) && 'ignore rule'),
+      (!matchesConfigName(name, rel, matcher) && 'unsupportedType')
+      || (!!(ignore && ignore.matches(rel)) && 'ignoreRule'),
     collect: (_entryPath, rel) => rel,
   });
 }
@@ -1509,15 +1616,15 @@ function walkSourceFiles(
     // skips is unchanged; only the reason differs. A hidden directory an
     // ignore rule covers is entered by no walk (the key and config walks apply
     // the rule too), so it falls through to the ignore rule's reason. One no
-    // ignore rule covers gets the bare reason: the key and config walks may
-    // still read inside it, but not through a link out of the root or into a
-    // directory that cannot be read, which this arm cannot tell.
+    // ignore rule covers is `hiddenDir`, which `coverageReason` narrows by
+    // what the filesystem says: the key and config walks read inside it, but
+    // not through a link out of the root or into a directory they cannot open.
     skipDir: (name, rel) =>
-      (name === '.git' && SOURCE_SKIP_REASONS.gitMetadata)
-      || (SOURCE_SKIP_DIRS.has(name) && SOURCE_SKIP_REASONS.buildOutput)
-      || (name.startsWith('.') && !(ignore && ignore.matches(rel + '/.')) && SOURCE_SKIP_REASONS.hiddenDir)
-      || (!includeTests && TEST_DIRS.has(name) && SOURCE_SKIP_REASONS.testDir)
-      || (!!(ignore && ignore.matches(rel + '/.')) && SOURCE_SKIP_REASONS.ignoreRule),
+      (name === '.git' && 'gitMetadata')
+      || (SOURCE_SKIP_DIRS.has(name) && 'buildOutput')
+      || (name.startsWith('.') && !(ignore && ignore.matches(rel + '/.')) && 'hiddenDir')
+      || (!includeTests && TEST_DIRS.has(name) && 'testDir')
+      || (!!(ignore && ignore.matches(rel + '/.')) && 'ignoreRule'),
     // The config walk reads these (it applies the ignore rule itself). So does
     // the key walk, under the test-file and ignore rules this walk applies,
     // in every directory this walk enters: a `.secretless-bundle` it reported
@@ -1547,17 +1654,17 @@ function walkSourceFiles(
         // rule is why no walk opened it, and its flag is the one that does:
         // "unsupported file type" named a type the key walk reads.
         if (KEY_FILE_EXTENSIONS.has(ext)) {
-          if (!(includeTests || !isTestFile(name))) return SOURCE_SKIP_REASONS.testFile;
-          if (ignore && ignore.matches(rel)) return SOURCE_SKIP_REASONS.ignoreRule;
+          if (!(includeTests || !isTestFile(name))) return 'testFile';
+          if (ignore && ignore.matches(rel)) return 'ignoreRule';
         }
-        return SOURCE_SKIP_REASONS.unsupportedType;
+        return 'unsupportedType';
       }
-      if (!(includeTests || !isTestFile(name))) return SOURCE_SKIP_REASONS.testFile;
-      if (ignore && ignore.matches(rel)) return SOURCE_SKIP_REASONS.ignoreRule;
+      if (!(includeTests || !isTestFile(name))) return 'testFile';
+      if (ignore && ignore.matches(rel)) return 'ignoreRule';
       if (configShaped && !includeConfig) {
         unscannedConfig.count++;
         if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(listedRel);
-        return SOURCE_SKIP_REASONS.configNotListed;
+        return 'configNotListed';
       }
       return false;
     },

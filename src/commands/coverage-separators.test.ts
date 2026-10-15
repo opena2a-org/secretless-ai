@@ -82,7 +82,7 @@ afterEach(() => {
 });
 
 describe('the coverage section prints no em dash', () => {
-  it('scan: every header, the cause line and the not-entered and not-opened lines', async () => {
+  it('scan: every header, the cause beside an unreadable path, and the not-entered and not-read lines', async () => {
     const { runScan } = await load();
     const dir = treeWithEveryGap(300);
     // From the directory above the tree a listed path reads `<tree>/<name>`.
@@ -99,16 +99,16 @@ describe('the coverage section prints no em dash', () => {
     expect(out).toContain('Scan incomplete: stopped at the 1-file cap, so files were left unscanned.');
     if (canLock) {
       expect(out).toContain('1 path could not be read, so not known to be clean.');
-      expect(out).toContain('Cause differs by path: permissions, a broken or looping symlink, or an I/O error.');
+      expect(out).toContain('locked.js: this user cannot read the file');
     }
-    expect(out).toContain('1 symlink points outside the scan root, so not followed.');
+    expect(out).toContain('1 directory outside the scan root is linked from inside it, so not followed. One link to each:');
     expect(out).toContain('1 file skipped for size, so not known to be clean.');
     expect(out).toContain('1 directory not entered for source files: declared boundaries, not findings.');
     expect(out).toContain('node_modules: dependency or build output');
     expect(out).toContain('1 config file not scanned: its name is not on the built-in config list, so not known to be clean.');
     // `secrets.json` is listed once, in the block above; `notes.txt` is the one
     // file left here.
-    expect(out).toContain('1 file not opened: declared boundaries, not findings.');
+    expect(out).toContain('1 file not read for credentials: declared boundaries, not findings.');
     expect(out).toContain('notes.txt: unsupported file type');
 
     expect(out.split(EM_DASH).length - 1).toBe(0);
