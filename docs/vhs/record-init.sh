@@ -16,7 +16,8 @@
 # when the registry answers that it is not (E404), it is `npm pack` of the committed tree at HEAD
 # (the sidecar records packedFromCommit), built with the dependencies `npm ci` installed here. When
 # npm view fails any other way, as when the registry cannot be reached, the script and its dry run
-# stop with exit 1 and npm's error code.
+# stop with exit 1 and npm's error code. For either build the sidecar records commit, the commit
+# HEAD names when the render starts; a packed build is packed from that commit.
 #
 # The hostname is `laptop`. The tape's hidden setup creates the fixture with setup-fixture.sh, a new
 # project directory and a new empty home directory, and the tool runs in them. The image carries no
@@ -77,6 +78,10 @@ render_in_container() {
   fi
   if [ "${FIXTURE_UNCOMMITTED_CHANGES:-}" != "0" ]; then
     echo "record-init.sh: FIXTURE_UNCOMMITTED_CHANGES is '${FIXTURE_UNCOMMITTED_CHANGES:-}', not the 0 that git status gives a committed setup-fixture.sh; not recording." >&2
+    exit 1
+  fi
+  if ! [[ "${COMMIT:-}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "record-init.sh: COMMIT is '${COMMIT:-}', not the commit git rev-parse HEAD names on the host; not recording." >&2
     exit 1
   fi
   if ! grep -qF "setup-fixture.sh $FIXTURE_PROJECT $FIXTURE_HOME && cd $FIXTURE_PROJECT && export HOME=$FIXTURE_HOME" "$TAPE"; then
@@ -154,6 +159,8 @@ const out = {
   commands: env.COMMANDS.split("\n"),
   tool: env.TOOL,
   version: env.VERSION,
+  // The commit HEAD named on the host when the render started, whichever build the recording shows.
+  commit: env.COMMIT,
   ...build,
   ranAtUtc: env.RAN_AT,
   fixture: "a new project directory holding an empty .claude/ directory, and a new empty home directory",
@@ -296,14 +303,16 @@ node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cliPlugin
 export DOCKER_HOST
 export DOCKER_CONFIG="$OWN_DOCKER_CONFIG"
 
+# The sidecar names this commit for either build; a packed build is packed from it.
+COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 TARBALL=""
 PACKED_FROM_COMMIT=""
 PACKED_TARBALL_SHA256=""
 if [ -z "$NPM_INTEGRITY" ]; then
   # Not on npm: pack the committed tree, so an edit not yet committed is never in the recorded build.
-  PACKED_FROM_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  PACKED_FROM_COMMIT="$COMMIT"
   mkdir "$CONTEXT/tree"
-  git -C "$REPO_ROOT" archive HEAD | tar -x -C "$CONTEXT/tree"
+  git -C "$REPO_ROOT" archive "$COMMIT" | tar -x -C "$CONTEXT/tree"
   ln -s "$REPO_ROOT/node_modules" "$CONTEXT/tree/node_modules"
   (cd "$CONTEXT/tree" && npm run build >/dev/null && npm pack --pack-destination "$CONTEXT" >/dev/null 2>&1)
   rm -rf "$CONTEXT/tree"
@@ -316,6 +325,7 @@ fi
 "$DOCKER" run --rm --hostname laptop --shm-size=1g \
   -e FIXTURE_SHA="$FIXTURE_SHA" \
   -e FIXTURE_UNCOMMITTED_CHANGES="$FIXTURE_UNCOMMITTED_CHANGES" \
+  -e COMMIT="$COMMIT" \
   -e NPM_INTEGRITY="$NPM_INTEGRITY" \
   -e PACKED_FROM_COMMIT="$PACKED_FROM_COMMIT" \
   -e PACKED_TARBALL_SHA256="$PACKED_TARBALL_SHA256" \
