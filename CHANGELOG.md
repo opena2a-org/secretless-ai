@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+**Without python3 the guard hook reads a payload with a space after a colon,
+and its secret-file rule reads a long command in less time.** Without python3
+the hook read `tool_name`, `file_path`, `path` and `command` with greps that
+took no blank on either side of the colon, so a payload with a space after it,
+as `JSON.stringify(payload, null, 2)` writes it, left each field empty there:
+`{"tool_name": "Bash", "tool_input": {"command": "cat .env"}}` and
+`{"tool_name": "Read", "tool_input": {"file_path": ".env"}}` were admitted. The
+greps now take spaces or tabs on each side of the colon, and both are refused.
+A line break between a key and its colon is still not read without python3.
+
+The secret-file rule matched its reader-verb pattern over the whole of each of
+the three texts the hook derives from a command, and once more to quote the
+match; with macOS grep that pattern takes seconds per pass over a line of a few
+MB. It now matches the pattern only on the lines that name a secret file, and
+not again on a text the same as one it already matched. Measured on macOS with
+bash 5.3 and python3: for a 4 MB command of `cat x` lines ending in `cat .env`,
+the rule took about 26 s of the hook's 31.2 s and takes 0.3 s; for a command of
+one 4 MB line ending in `; cat .env`, the hook took 21.5 s and takes 11.7 s,
+because the rule still matches that line twice, once to decide and once to
+quote it. Without python3 the hook reads the command as one line of JSON, and
+the first command took 38.3 s and takes 20.8 s.
+
+The rule also tested each text with `echo` piped into `grep -q`. On a long
+command whose secret read came on an early line, grep matched and exited
+before echo had written the rest, echo was killed, and under the hook's
+`pipefail` the test failed: with python3, `cat .env` followed by 100,000 lines
+of `echo x` was admitted. Neither grep of the rule stops early now, and that
+command is refused. The 986 commands of `src/fixtures/guard-corpus.txt` keep
+their recorded verdicts, with python3 and without.
+
 **`scan` lists a config file inside a directory this user can list but not
 search.** For `t/nosearch/config.json` under a `t/nosearch` of mode `0600`,
 `scan t --json` listed the file under neither `findings` nor

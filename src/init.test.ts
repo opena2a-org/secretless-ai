@@ -1399,10 +1399,21 @@ describe('init', { timeout: 30_000 }, () => {
     // programs the hook calls, and no python3, so the hook takes the command
     // from the raw JSON payload.
     function decideWithoutPython3(hookPath: string): (command: string) => { decision: string; reason: string } {
+      const decide = decidePayloadWithoutPython3(hookPath);
+      return (command: string) => decide(JSON.stringify({ tool_name: 'Bash', tool_input: { command } }));
+    }
+
+    // The same host, given the payload as written, and with the program `grep`
+    // names in place of the system grep when it is given.
+    function decidePayloadWithoutPython3(
+      hookPath: string,
+      grep?: string,
+    ): (input: string) => { decision: string; reason: string } {
       const bin = path.join(dir, 'bin-without-python3');
       fs.mkdirSync(bin);
       for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
-        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
+        const target = tool === 'grep' && grep ? grep : execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim();
+        fs.symlinkSync(target, path.join(bin, tool));
       }
       const bash = path.join(bin, 'bash');
       const env = { ...process.env, PATH: bin };
@@ -1410,8 +1421,7 @@ describe('init', { timeout: 30_000 }, () => {
         () => execSync('command -v python3', { env, shell: bash, stdio: 'ignore' }),
         'python3 must not be reachable on the test PATH',
       ).toThrow();
-      return (command: string) => {
-        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      return (input: string) => {
         const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
         if (!out.trim()) return { decision: 'allow', reason: '' };
         const hso = JSON.parse(out).hookSpecificOutput;
@@ -1664,6 +1674,121 @@ describe('init', { timeout: 30_000 }, () => {
 
       // The reason quotes the text as the payload carries it, a quote as `\"`.
       expect(decide('sudo cat "/srv/app/.env"').reason).toContain('Matched `cat \\"/srv/app/.env\\"`');
+    });
+
+    // Without python3 the hook read tool_name, file_path, path and command with
+    // greps that took no blank on either side of the colon, as in
+    // '"tool_name":"Bash"'. A payload with a space after the colon, as a
+    // pretty-printer writes it, left each field empty there: the Bash branch and
+    // the file guard were skipped, and each payload below that is refused was
+    // admitted. The greps now take spaces or tabs on each side of the colon.
+    it('without python3 a payload with spaces or tabs around a colon is read', () => {
+      init(dir);
+      const decide = decidePayloadWithoutPython3(path.join(dir, '.claude', 'hooks', 'secretless-guard.sh'));
+
+      const mustBlock: Array<[string, string]> = [
+        ['{"tool_name": "Bash", "tool_input": {"command": "cat .env"}}', 'Matched `cat .env`'],
+        [JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'cat .env' } }, null, 2), 'Matched `cat .env`'],
+        ['{"tool_name"\t:\t"Bash", "tool_input" : {"command"  :  "cat .env"}}', 'Matched `cat .env`'],
+        ['{"tool_name": "Bash", "tool_input": {"command": "cat .env:1"}}', 'Matched `cat .env:1`'],
+        ['{"tool_name": "Bash", "tool_input": {"command": "x=\\"\\"; cat .env"}}', 'Matched `cat .env`'],
+        ['{"tool_name": "Bash", "tool_input": {"command": "echo \\"$GITHUB_TOKEN\\""}}', 'exposes secret environment variables'],
+        ['{"tool_name": "Read", "tool_input": {"file_path": "/srv/app/.env"}}', 'blocked access to secret file'],
+        ['{"tool_name": "Grep", "tool_input": {"pattern": "x", "path": "/srv/app/.env"}}', 'blocked access to secret file'],
+      ];
+      for (const [input, reason] of mustBlock) {
+        const d = decide(input);
+        expect(d.decision, `expected hook without python3 to BLOCK: ${input}`).toBe('deny');
+        expect(d.reason, `deny reason without python3 for: ${input}`).toContain(reason);
+      }
+
+      const mustAllow = [
+        '{"tool_name": "Bash", "tool_input": {"command": "ls -la"}}',
+        '{"tool_name": "Bash", "tool_input": {"command": "echo \\"a: b\\""}}',
+        '{"tool_name": "Read", "tool_input": {"file_path": "/srv/app/README.md"}}',
+      ];
+      for (const input of mustAllow) {
+        expect(decide(input).decision, `expected hook without python3 to ALLOW: ${input}`).toBe('allow');
+      }
+    });
+
+    // The secret-file rule tested each text with echo piped into grep -q. On a
+    // long command whose secret read came on an early line, grep matched and
+    // exited, echo was killed writing the rest, and under the hook's pipefail
+    // the test failed, so the read was admitted: with python3, `cat .env`
+    // followed by 1,000 lines of `echo x` was refused, and followed by 100,000
+    // lines it was admitted.
+    it('a secret-file read on an early line of a long command is refused, with python3 and without', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'cat .env\n' + 'echo x\n'.repeat(150_000) } });
+
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8' });
+      expect(out, 'with python3').toContain('blocked command that reads secret files. Matched `cat .env`');
+      const d = decidePayloadWithoutPython3(hookPath)(input);
+      expect(d.decision, 'without python3').toBe('deny');
+      expect(d.reason, 'without python3').toContain('blocked command that reads secret files');
+    });
+
+    // The secret-file rule matched its reader-verb pattern, which macOS grep
+    // takes seconds to match over a line of a few MB, on each of three texts
+    // and again to quote the match: four passes over the whole of each command
+    // below that reads .env. The pattern now reads only the lines that name a
+    // secret file, and a
+    // text the same as one already matched is not matched again. A grep on
+    // PATH that logs how many bytes each reader-verb grep reads checks both.
+    it('the reader-verb pattern reads only lines that name a secret file, and one text once', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const realGrep = execSync('command -v grep', { encoding: 'utf-8' }).trim();
+      const log = path.join(dir, 'reader-verb-greps.log');
+      const shim = path.join(dir, 'bin-counting-grep');
+      fs.mkdirSync(shim);
+      // The reader-verb pattern is the only grep argument that holds `xxd|type)`.
+      fs.writeFileSync(path.join(shim, 'grep'), [
+        '#!/bin/bash',
+        'case "$*" in',
+        "  *'xxd|type)'*)",
+        '    input=$(cat; printf x); input=${input%x}',
+        `    printf '%s\\n' "\${#input}" >> ${JSON.stringify(log)}`,
+        `    printf '%s' "$input" | ${JSON.stringify(realGrep)} "$@"; exit $? ;;`,
+        'esac',
+        `exec ${JSON.stringify(realGrep)} "$@"`,
+      ].join('\n') + '\n', { mode: 0o755 });
+      const bytesRead = (): number[] => {
+        const sizes = fs.existsSync(log) ? fs.readFileSync(log, 'utf-8').split('\n').filter(Boolean).map(Number) : [];
+        fs.rmSync(log, { force: true });
+        return sizes;
+      };
+      const withPython3 = (input: string): string => {
+        const out = execSync(`bash ${JSON.stringify(hookPath)}`, {
+          input, encoding: 'utf-8', env: { ...process.env, PATH: `${shim}${path.delimiter}${process.env.PATH}` },
+        });
+        return out.trim() ? JSON.parse(out).hookSpecificOutput.permissionDecision : 'allow';
+      };
+      const withoutPython3 = decidePayloadWithoutPython3(hookPath, path.join(shim, 'grep'));
+
+      const atEnd = 'echo x\n'.repeat(30_000) + 'cat .env';
+      const oneLine = 'echo ' + 'a'.repeat(200_000) + '; cat .env';
+      const noSecretName = 'cat x\n'.repeat(30_000);
+      for (const [host, decide] of [
+        ['with python3', withPython3],
+        ['without python3', (input: string) => withoutPython3(input).decision],
+      ] as Array<[string, (input: string) => string]>) {
+        for (const [command, decision] of [[atEnd, 'deny'], [oneLine, 'deny'], [noSecretName, 'allow']]) {
+          const label = `${host}, ${JSON.stringify(command.slice(0, 20))}... of ${command.length} characters`;
+          expect(decide(JSON.stringify({ tool_name: 'Bash', tool_input: { command } })), label).toBe(decision);
+          const sizes = bytesRead();
+          // Once to decide and once to quote the match.
+          expect(sizes.filter((n) => n >= command.length).length, `${label}: whole-text passes`).toBeLessThanOrEqual(2);
+          // With no secret-file name the pattern reads nothing. python3 hands
+          // the rules the command with its line breaks, so of atEnd it reads
+          // the last line only; without python3 the command is one line of JSON.
+          if (command === noSecretName || (command === atEnd && host === 'with python3')) {
+            expect(Math.max(0, ...sizes), `${label}: bytes the reader-verb pattern read`).toBeLessThan(100);
+          }
+        }
+      }
     });
 
     // Node names the environment `process.env`, which ends in `.env`, so the rule

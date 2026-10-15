@@ -3036,13 +3036,14 @@ INPUT=$(cat)
 # every Bash call died at the FILE_PATH line (grep found no file_path) before any
 # command guard ran. Regression: release-test 2026-07-16.
 # Parse tool_name with a real JSON parser when one is available, for the same
-# reason the command extraction below does. The grep form requires COMPACT JSON:
-# it matches '"tool_name":"…"' with no space after the colon, so a client that
-# pretty-prints its hook payload yields an empty TOOL_NAME, the Bash branch below
-# is skipped entirely, and every command guard silently fails OPEN. That is the
-# same dead-branch class as the 2026-07-16 FILE_PATH regression, reached through
-# formatting rather than through \`set -euo pipefail\`. The grep remains as the
-# fallback for hosts without python3.
+# reason the command extraction below does. The grep is the fallback for hosts
+# without python3, and it takes spaces or tabs on each side of the colon. It
+# matched only '"tool_name":"…"', so a payload with a space after the colon, as
+# a pretty-printer writes it, gave an empty TOOL_NAME there, the Bash branch
+# below was skipped, and every command guard failed OPEN. That is the same
+# dead-branch class as the 2026-07-16 FILE_PATH regression, reached through
+# formatting rather than through \`set -euo pipefail\`. A line break between a
+# key and its colon is still not read without python3.
 TOOL_NAME=""
 if command -v python3 >/dev/null 2>&1; then
   # Emit ONLY a non-empty string. str() of a number, bool or dict would produce
@@ -3056,13 +3057,14 @@ except Exception:
     pass' 2>/dev/null || true)
 fi
 if [ -z "$TOOL_NAME" ]; then
-  TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  TOOL_NAME=$(echo "$INPUT" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 fi
 
 # Extract file path from tool input (handles Read, Grep, Glob, Edit, Write).
 # Same compact-JSON brittleness as TOOL_NAME above: a pretty-printed payload
-# leaves FILE_PATH empty and the file guard never runs. Parse properly when
-# python3 is available, keep the greps as the fallback.
+# left FILE_PATH empty and the file guard never ran. Parse properly when
+# python3 is available, keep the greps as the fallback, and let them take
+# spaces or tabs on each side of the colon as the TOOL_NAME grep does.
 # Collect EVERY candidate path, not just the first. The structured parse reads
 # the documented top-level fields; the greps additionally sweep the whole
 # payload, so a nested shape (MultiEdit-style edit lists, MCP tool payloads)
@@ -3089,8 +3091,8 @@ except Exception:
 fi
 FILE_PATH_CANDIDATES=$(printf '%s\\n%s\\n%s\\n' \
   "$FILE_PATH_CANDIDATES" \
-  "$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | cut -d'"' -f4 || true)" \
-  "$(echo "$INPUT" | grep -o '"path":"[^"]*"' | cut -d'"' -f4 || true)" \
+  "$(echo "$INPUT" | grep -oE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4 || true)" \
+  "$(echo "$INPUT" | grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4 || true)" \
   | grep -v '^$' | sort -u || true)
 FILE_PATH=$(printf '%s' "$FILE_PATH_CANDIDATES" | head -1 || true)
 
@@ -3132,11 +3134,15 @@ except Exception:
   # first \`\\"\`, and \`echo "$GITHUB_TOKEN"\` or \`x=""; cat .env\` reached the
   # rules below as \`echo \\\` and \`x=\\\`. The escapes stay as the payload writes
   # them: a quote is \`\\"\`, a line break \`\\n\`, a tab \`\\t\`, a backslash \`\\\\\`.
-  # The key and the closing quote are cut off by parameter expansion, so this
-  # needs no program beyond grep and head.
+  # Spaces or tabs may stand on each side of the colon, as for TOOL_NAME. The
+  # key, the colon and the quotes are cut off by parameter expansion: through
+  # the first colon, which the key and the blanks before it do not hold, then
+  # through the next quote, the one that opens the value, and the closing quote
+  # last, so this needs no program beyond grep and head.
   if [ -z "$COMMAND" ]; then
-    COMMAND=$(echo "$INPUT" | grep -oE '"command":"([^"\\\\]|\\\\.)*"' | head -1 || true)
-    COMMAND=\${COMMAND#'"command":"'}
+    COMMAND=$(echo "$INPUT" | grep -oE '"command"[[:space:]]*:[[:space:]]*"([^"\\\\]|\\\\.)*"' | head -1 || true)
+    COMMAND=\${COMMAND#*:}
+    COMMAND=\${COMMAND#*'"'}
     COMMAND=\${COMMAND%'"'}
   fi
   if [ -z "$FILE_READ_SCAN" ]; then
@@ -3287,11 +3293,29 @@ SECRETLESS_ANALYZER
   # remove only text that names no file the command opens, so a match any one
   # of them removes was never a file read. The reason quotes the match in the
   # command as written, not in the analyzer's reduced text.
-  if echo "$FILE_READ_COMMAND" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' \\
-    && echo "$SCAN_TEXT" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' \\
-    && echo "$FILE_READ_SCAN" | grep -qiE '${READER_VERB_START}(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}'; then
+  #
+  # The reader-verb pattern is the slow part of this rule: over one line of a
+  # few MB, macOS grep takes seconds per pass, while a grep for the secret-file
+  # name alone takes a small part of that. secret_read_lines prints the lines of
+  # $1 this rule matches. Its first grep keeps the lines that name a secret
+  # file, which every line the rule matches does, so the reader verb is matched
+  # on those lines only, and the reason is quoted from them. A text the same as
+  # one already matched is not matched again. Neither grep takes -q: each reads
+  # its input to the end, so echo is never cut off by a grep that stopped early.
+  # With grep -q, a long command whose secret read came on an early line was
+  # admitted: grep matched and exited, echo was killed writing the rest, and
+  # under pipefail the test failed.
+  secret_read_lines() {
+    echo "$1" | grep -iE '${SECRET_FILE_EXT}' \\
+      | grep -iE '${READER_VERB_START}(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' || true
+  }
+  FILE_READ_MATCH=$(secret_read_lines "$FILE_READ_SCAN")
+  if [ -n "$FILE_READ_MATCH" ] \\
+    && { [ "$FILE_READ_COMMAND" = "$FILE_READ_SCAN" ] || [ -n "$(secret_read_lines "$FILE_READ_COMMAND")" ]; } \\
+    && { [ "$SCAN_TEXT" = "$FILE_READ_SCAN" ] || [ "$SCAN_TEXT" = "$FILE_READ_COMMAND" ] \\
+      || [ -n "$(secret_read_lines "$SCAN_TEXT")" ]; }; then
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. Matched \`%s\`: a reader verb, then a secret-file name. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash. To write a note that names a secret file, use cat > FILE with a single-quoted heredoc delimiter, or printf or echo of single-quoted text into a file."}}\\n' \\
-      "$(matched_text '${READER_VERB_START}' '(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' "$FILE_READ_SCAN")"
+      "$(matched_text '${READER_VERB_START}' '(${FILE_READERS}|type)${VERB_GAP}.*${SECRET_FILE_EXT}' "$FILE_READ_MATCH")"
     exit 0
   fi
   # Block python/node one-liners that read secret files. Same dead-end as the arm
