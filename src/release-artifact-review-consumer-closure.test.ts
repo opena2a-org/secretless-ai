@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { spawnSync } from "child_process";
 import * as fs from "fs";
-import * as net from "net";
 import * as path from "path";
 import {
   BLIND_SCANNER,
   SCRIPT,
   buildTarball,
+  closedPort,
   expectDeprecatedDependencyCaught,
+  fetchHonoursProxy,
   fixturePackageJson,
   healthyFiles,
   relocatedScript,
@@ -76,40 +76,6 @@ function npmStandIn(deprecated: string[]): string {
   fs.writeFileSync(path.join(dir, "npm"), source);
   fs.chmodSync(path.join(dir, "npm"), 0o755);
   return dir;
-}
-
-/** A local port nothing listens on: bound, read and closed again. */
-function closedPort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as net.AddressInfo;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-/**
- * Whether this node's fetch sends a request through `proxy` when started with
- * NODE_USE_ENV_PROXY=1, as the script's advisories read is. A node that
- * ignores it (Node 20) would send the read to api.github.com.
- */
-function fetchHonoursProxy(proxy: string): boolean {
-  const probe = spawnSync(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      "try { await fetch('https://proxy-probe.invalid/'); } catch (e) { console.log(e.cause?.code ?? ''); }",
-    ],
-    {
-      env: { PATH: process.env.PATH ?? "", NODE_USE_ENV_PROXY: "1", HTTPS_PROXY: proxy },
-      encoding: "utf-8",
-      timeout: 30_000,
-    },
-  );
-  return (probe.stdout ?? "").trim() === "ECONNREFUSED";
 }
 
 async function offlineReview(name: string, deprecated: string[]) {
