@@ -937,6 +937,15 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     }
   });
 
+  it('a BROKEN symlink to a config name is not listed as unreadable', () => {
+    // A link to nothing has nothing to read: absence is still skipped.
+    const dir = tmpdir('scan-symbroken-unread-');
+    fs.symlinkSync(path.join(dir, 'does-not-exist.json'), path.join(dir, 'config.json'));
+    const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+    expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+    expect(stats.unreadable).toEqual([]);
+  });
+
   it('a BROKEN symlink does not throw and does not report a finding', () => {
     const dir = tmpdir('scan-symbroken-');
     fs.symlinkSync(path.join(dir, 'does-not-exist.json'), path.join(dir, 'config.json'));
@@ -991,6 +1000,23 @@ describe('scan() — an unreadable file is not reported as clean (#116 P2-1)', (
       expect(stats.unreadable.length).toBe(1);
     } finally {
       fs.chmodSync(file, 0o644);
+    }
+  });
+
+  it.skipIf(!canDenyReads)('flags a config file in a directory this user can list but not search (#392)', () => {
+    // Read without search permission: `readdir` returns the names, and every
+    // lookup under the directory fails with EACCES. An existence check read
+    // that as "absent", so the file was neither read nor listed.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-nosearch-'));
+    fs.mkdirSync(path.join(dir, 'nosearch'));
+    fs.writeFileSync(path.join(dir, 'nosearch/config.json'), '{"token":"not-a-real-token"}\n');
+    fs.chmodSync(path.join(dir, 'nosearch'), 0o600);
+    try {
+      const stats = { placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[] };
+      expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+      expect(stats.unreadable).toEqual(['nosearch/config.json']);
+    } finally {
+      fs.chmodSync(path.join(dir, 'nosearch'), 0o755);
     }
   });
 

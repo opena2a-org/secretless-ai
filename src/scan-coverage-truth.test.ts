@@ -99,13 +99,13 @@ const TREE: Record<string, { cell: string; entry: Entry }> = {
 /**
  * Files the scan neither reads nor lists. Each is a defect in what the scan
  * reads, not in what it says, so it is left for a change to the walk and named
- * here so this test fails when that change lands:
- * - a config file inside a directory this user cannot search is dropped by an
- *   existence check that reads "cannot search" as "absent".
- * A config file with a backslash in its name was here too: it was opened under
- * a path with `/` in place of the backslash, which does not exist (#393).
+ * here so this test fails when that change lands. The list is empty: a config
+ * file inside a directory this user cannot search was here, dropped by an
+ * existence check that read "cannot search" as "absent" (#392), and a config
+ * file with a backslash in its name was here too, opened under a path with `/`
+ * in place of the backslash, which does not exist (#393).
  */
-const NEITHER_READ_NOR_LISTED = ['nosearch/config.json'];
+const NEITHER_READ_NOR_LISTED: string[] = [];
 
 const made: string[] = [];
 function build(): string {
@@ -309,6 +309,7 @@ describe.skipIf(process.getuid?.() === 0)('every path scan lists as unread is a 
       'locked-dir': /cannot list/,
       '.locked-hidden': /cannot list/,
       'nosearch/app.js': /cannot search/,
+      'nosearch/config.json': /cannot search/,
       'nosearch/server.key': /cannot search/,
       'nosearch/sub': /cannot search/,
       'loop-a.js': /loop/,
