@@ -1394,8 +1394,14 @@ interface WalkSpec {
    * skipped (#124).
    */
   coveredElsewhere?(name: string, relFromRoot: string): boolean;
-  /** What to push into `files` — an absolute path or a root-relative one. */
-  collect(entryPath: string, relFromRoot: string): string;
+  /**
+   * What to push into `files` — an absolute path or a root-relative one.
+   * The root-relative one is `listedFromRoot`, never `relFromRoot`: a caller
+   * opens it, and `relFromRoot` names a different path for a file whose name
+   * holds a backslash. The config walk collected it, so `.env.back\slash` was
+   * opened as `.env.back/slash`, found absent, and neither read nor listed.
+   */
+  collect(entryPath: string, listedFromRoot: string): string;
   /**
    * Record what was skipped. Only the SOURCE walk sets this: all three walks
    * prune `node_modules` and friends, so disclosing every walk would treble the
@@ -1539,7 +1545,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         // Checked AFTER the filters, so only a real candidate trips the cap.
         eligible += 1;
         if (files.length >= maxFiles) { truncated = true; continue; }
-        files.push(spec.collect(entryPath, relFromRoot));
+        files.push(spec.collect(entryPath, listedFromRoot));
       }
     }
   }
@@ -1594,7 +1600,7 @@ function walkConfigFiles(
     rejectFile: (name, rel) =>
       (!matchesConfigName(name, rel, matcher) && 'unsupportedType')
       || (!!(ignore && ignore.matches(rel)) && 'ignoreRule'),
-    collect: (_entryPath, rel) => rel,
+    collect: (_entryPath, listedRel) => listedRel,
   });
 }
 

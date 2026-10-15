@@ -16,6 +16,16 @@ files under `~/.claude/projects`. `src/docs-sample-output.test.ts` runs `init`
 and then `verify` in such a project and compares what `verify` prints with the
 sample.
 
+**`scan` reads a config file whose name holds a backslash (#393).** Where the
+path separator is `/` (measured on macOS), the config walk opened such a file
+under a path with `/` in place of the backslash. That path does not exist, so
+a file named `.env.back\slash` was neither read nor listed as unread: `scan
+--json` named it under neither `findings` nor `unreadableFiles`. The walk now
+hands the config scan the path with only the platform's own separator changed,
+which is the path it already lists for an unread file, so the file is read and
+a finding from it names `.env.back\slash`. Where the separator is `\`, the path
+it hands over is the same as before.
+
 **Every `Fix:` line the `secret` commands print runs as printed.**
 `secret set NAME=VALUE --from-clipboard` printed `secret set NAME
 --from-clipboard` before it checked the name: for `9z=...` that line was
