@@ -26,6 +26,8 @@ import { GCPSecretManagerBackend } from '../backends/gcp-sm';
 import { needsRotation, parseExposureTime } from '../secret-exposure';
 import type { NeedsRotation } from '../secret-exposure';
 import type { RotationOutcome } from '../secret-store';
+import { fixCommand, NAME_PLACEHOLDER, PLACEHOLDER_NAME } from '../fix-command';
+import type { FixNames } from '../fix-command';
 
 /**
  * Ensure the shell profile has the eval hook for auto-loading secrets.
@@ -149,6 +151,11 @@ function printable(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '?');
 }
 
+/** A name a Fix gives `secret set`, printed as `<name>` when `secret set` refuses it. */
+function settable(name: string): FixNames {
+  return { names: [name], accepts: isSettableSecretName };
+}
+
 /** `key=value` lines for display, in key order. */
 function metaLines(meta: Record<string, string>): string[] {
   return Object.keys(meta).sort().map((k) => printable(`${k}=${meta[k]}`));
@@ -180,7 +187,7 @@ function annotationJson(name: string, annotation: SecretAnnotation | undefined):
  * `setCommand` is the form the user ran, so the Fix line repeats it. Both
  * callers are `secret set` itself, after it checked `name`.
  */
-function reportRotation(name: string, rotation: RotationOutcome, setCommand = `${CLI_BARE} secret set ${name}`): void {
+function reportRotation(name: string, rotation: RotationOutcome, setCommand = fixCommand(['secret', 'set', settable(name)], CLI_BARE)): void {
   switch (rotation.kind) {
     case 'closed':
       console.log(`  Rotated: the exposure recorded ${printable(rotation.exposure.exposedAt)} is closed (rotatedAt ${rotation.rotatedAt}).`);
@@ -312,12 +319,13 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       if (fromClipboard) {
         if (eqIdx !== -1) {
           console.error('\n  --from-clipboard reads the value from the clipboard, so NAME=VALUE cannot also give one. Nothing was stored.');
-          console.error(`  Fix:     ${CLI_BARE} secret set ${nameArg.slice(0, eqIdx)} --from-clipboard\n`);
+          console.error(`  Fix:     ${fixCommand(['secret', 'set', settable(nameArg.slice(0, eqIdx)), '--from-clipboard'], CLI_BARE)}\n`);
           return 2;
         }
         if ((options.stdinIsPiped ?? stdinIsPiped)()) {
           console.error('\n  --from-clipboard reads the value from the clipboard, but stdin is a pipe or a file that may carry another one. Nothing was stored.');
-          console.error(`  Fix:     run ${CLI_BARE} secret set ${nameArg} --from-clipboard without a pipe or redirect,`);
+          // Two spaces set the command apart from the words around it.
+          console.error(`  Fix:     run  ${fixCommand(['secret', 'set', settable(nameArg), '--from-clipboard'], CLI_BARE)}  without a pipe or redirect,`);
           console.error('           or drop --from-clipboard to store what is piped in.\n');
           return 2;
         }
@@ -702,7 +710,7 @@ function listNeedsRotation(
     if (annotation?.description !== undefined) console.log(`      ${printable(annotation.description)}`);
   }
   console.log('\n  A redacted or deleted copy does not end an exposure; a new value does.');
-  console.log(`  Fix:     replace each key at its provider, then  ${CLI_BARE} secret set NAME  with the new value\n`);
+  console.log(`  Fix:     replace each key at its provider, then  ${fixCommand(['secret', 'set', NAME_PLACEHOLDER], CLI_BARE)}  with the new value\n`);
   return 1;
 }
 
@@ -816,7 +824,8 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
       if (manifestArg === undefined) {
         console.error('\n  No .secretless manifest in this directory, so no names were chosen to sync.');
         console.error('  Nothing was read or written.\n');
-        console.error(`  Fix:     ${CLI} secret sync --from ${fromType} --only NAME1,NAME2`);
+        // The Fix of a dry run is a dry run too, as `secret push`'s is.
+        console.error(`  Fix:     ${fixCommand(['secret', 'sync', '--from', fromType, ...(dryRun ? ['--dry-run'] : []), '--only', NAME_PLACEHOLDER])}`);
         console.error(`  Or:      ${CLI} secret sync --from ${fromType} --manifest <path to .secretless>\n`);
         return 2;
       }
@@ -896,7 +905,8 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
 
   if (conflicts.length > 0) {
     console.log(`  The local value of ${conflicts.join(', ')} differs from ${fromName}'s and was left as is.`);
-    console.log(`  Fix:     ${CLI} secret sync --from ${fromType} --only ${conflicts.join(',')} --force   (replace it with ${fromName}'s)\n`);
+    const conflicting: FixNames = { names: conflicts, accepts: isValidSecretName };
+    console.log(`  Fix:     ${fixCommand(['secret', 'sync', '--from', fromType, '--only', conflicting, '--force', ...(dryRun ? ['--dry-run'] : [])])}   (replace it with ${fromName}'s)\n`);
   }
   if (missing.length > 0) {
     console.log(`  Not in ${fromName} and not stored on this machine: ${missing.join(', ')}`);
@@ -910,8 +920,8 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
     }
     const verify = SOURCE_VERIFY[fromType];
     if (verify) console.log(`  Verify:  ${verify}`);
-    const settable = missing.find((name) => isSettableSecretName(name));
-    console.log(settable === undefined ? '' : `  Fix:     ${CLI} secret set ${settable}   (or add it to ${fromName} and sync again)\n`);
+    const first = missing.find((name) => isSettableSecretName(name));
+    console.log(first === undefined ? '' : `  Fix:     ${fixCommand(['secret', 'set', settable(first)])}   (or add it to ${fromName} and sync again)\n`);
   }
   if (result.dryRun && writes > 0) {
     console.log(`  Apply:   ${CLI} secret sync ${[...rerun, ...(force ? ['--force'] : [])].join(' ')}\n`);
@@ -972,15 +982,6 @@ function createPushTarget(type: PushTargetType, vaultName: string | undefined): 
     case 'gcp-sm': return new GcpPushTarget(new GCPSecretManagerBackend());
   }
 }
-
-/**
- * An `--as` name still in the `<name>` form a Fix prints for the user to fill
- * in, or in another `<word>` spelling of it, such as the `<names>` the usage
- * line prints. No push target accepts '<' or '>' in a name, and the form
- * prints as given, so it needs no escaping. A Fix quotes it, so a shell does
- * not read its brackets as redirections.
- */
-const PLACEHOLDER_NAME = /^<[A-Za-z][A-Za-z0-9_-]*>$/;
 
 /**
  * An `--as` name in angle brackets that is not a placeholder, such as `<2fa>`,
@@ -1103,15 +1104,15 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
     return 1;
   }
 
-  const tail = [`--to ${toType}`, ...(vaultName !== undefined ? [`--vault ${vaultName}`] : [])];
+  const tail = ['--to', toType, ...(vaultName !== undefined ? ['--vault', vaultName] : [])];
   // The Fix of a dry run is a dry run too, so running it as printed writes
   // nothing. `--dry-run` comes before `--as`, so the names to fill in end the
-  // line. Each `<name>` is quoted: unquoted, a shell reads `<name>,a_b` as
-  // input from a file `name` and output to a file `,a_b`. Pasted unedited,
-  // the line is refused for naming a placeholder, and nothing is written.
-  const asOperand = (r: string): string => (PLACEHOLDER_NAME.test(r) ? `'${r}'` : r);
-  const fixLine = (operands: readonly string[]): string =>
-    `  Fix:     ${CLI} secret push ${names.join(',')} ${tail.join(' ')}${dryRun ? ' --dry-run' : ''} --as ${operands.map(asOperand).join(',')}\n`;
+  // line. Each `<name>` is quoted (fixCommand). Pasted unedited, the line is
+  // refused for naming a placeholder, and nothing is written.
+  const fixLine = (operands: readonly string[]): string => `  Fix:     ${fixCommand([
+    'secret', 'push', { names, accepts: isValidSecretName }, ...tail, ...(dryRun ? ['--dry-run'] : []),
+    '--as', { names: operands, accepts: (r) => target.nameProblem(r) === undefined },
+  ])}\n`;
   const problems = remotes.map((r) => target.nameProblem(r));
   // Every given name passed `isValidSecretName` and the --as names passed the
   // target's `nameProblem`, so none holds a character `escapeForDisplay`
@@ -1245,8 +1246,8 @@ export async function runSecretPush(args: string[], deps: SecretPushDeps = {}): 
       }
       console.error('  Nothing was pushed.\n');
       console.error(`  Verify:  ${CLI} secret list`);
-      const settable = err.names.find((name) => isSettableSecretName(name));
-      if (settable !== undefined) console.error(`  Fix:     ${CLI} secret set ${settable}`);
+      const first = err.names.find((name) => isSettableSecretName(name));
+      if (first !== undefined) console.error(`  Fix:     ${fixCommand(['secret', 'set', settable(first)])}`);
       console.error();
       return 1;
     }
@@ -1323,7 +1324,7 @@ async function storeFromClipboard(
   createStore: () => SecretStore,
   afterSet: () => void,
 ): Promise<number> {
-  const rerun = `${CLI_BARE} secret set ${name} --from-clipboard`;
+  const rerun = fixCommand(['secret', 'set', settable(name), '--from-clipboard'], CLI_BARE);
   const read = clipboard.read();
   if (!read.ok) {
     if (read.reason === 'no-tool') {

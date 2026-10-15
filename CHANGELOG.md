@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+**Every `Fix:` line the `secret` commands print runs as printed.**
+`secret set NAME=VALUE --from-clipboard` printed `secret set NAME
+--from-clipboard` before it checked the name: for `9z=...` that line was
+refused with `Invalid secret name`, for `a b=...` it stored a secret named `a`,
+and for `$HOME=...` or `<name>=...` a shell expanded or redirected it. The Fix
+of the piped-stdin refusal printed the name the same way, and ran on into the
+words `without a pipe or redirect`. A name `secret set` refuses is now printed
+as `'<name>'`, each word is quoted for a POSIX shell, and a command inside a
+sentence is set apart by two spaces. `secret sync --dry-run` printed its Fix
+lines without `--dry-run`, so `--only API_KEY --force` wrote when run as
+printed; both sync Fix lines now repeat it. `secret sync` with no manifest
+offered `--only NAME1,NAME2`, and `secret list --needs-rotation` offered
+`secret set NAME`, which synced or stored secrets of those names; both now
+print `'<name>'`. One function, `fixCommand` in `src/fix-command.ts`, builds
+every Fix line that gives a `secret` command, and
+`src/fix-lines-runnable.test.ts` runs each line printed for a generated set of
+inputs through the same entry point: 458 distinct lines. Before this change,
+53 of those inputs printed a Fix line that failed (25 of `secret set` and
+`secret list`, 28 of `secret sync`, none of `secret push`). What each command
+stores, pushes, syncs and exits with is unchanged.
+
 **A `secret://vault/NAME` reference is not answered by an entry stored under
 `secret/NAME/` (#383).** For a `keychain`, `vault` or `1password` reference,
 `resolveRef` and `resolveEnvRefs` asked the backend for `secret/NAME` and took
