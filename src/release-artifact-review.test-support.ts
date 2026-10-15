@@ -1,6 +1,7 @@
 import { afterAll, expect } from "vitest";
 import { spawnSync } from "child_process";
 import * as fs from "fs";
+import * as net from "net";
 import * as path from "path";
 import * as zlib from "zlib";
 
@@ -188,26 +189,145 @@ export function preconditionsOf(run: Run): Precondition[] {
 const REFUSED_ADVISORY_READ =
   /^advisories endpoint unreadable for (\S+) \(states: [a-z]+\): rate-limited or forbidden \(HTTP (403|429)\)$/;
 
+const UNSENT_ADVISORY_READ =
+  /^advisories endpoint unreadable for (\S+) \(states: [a-z]+\): fetch failed: /;
+
 /**
  * Why a precondition on the delivered tarball is reported as not measured, or
- * null when it fails the test. One precondition qualifies: consumer-closure's
- * GitHub advisories read refused with HTTP 403 or 429 on a run that sends no
- * GH_TOKEN. Unauthenticated reads share a per-address rate limit, which a
- * shared CI runner can exhaust on a change that touched nothing near the
- * review. The script's verdict is unchanged: the check is still a
- * precondition and the script still exits non-zero, so the release `review`
- * job, which sends GH_TOKEN, still blocks on it.
+ * null when it fails the test. One precondition qualifies, on a run that
+ * sends no GH_TOKEN: consumer-closure's GitHub advisories read refused with
+ * HTTP 403 or 429, or, when `readHeld` says advisoryReadOf held the read on
+ * this machine, failing to fetch. Unauthenticated reads share a per-address
+ * rate limit, which a shared CI runner can exhaust on a change that touched
+ * nothing near the review. The script's verdict is unchanged: the check is
+ * still a precondition and the script still exits non-zero, so the release
+ * `review` job, which sends GH_TOKEN, still blocks on it.
  */
 export function notMeasuredReason(
   precondition: Precondition,
   env: Record<string, string | undefined>,
+  readHeld = false,
 ): string | null {
   if (precondition.check !== "consumer-closure") return null;
   // The advisory fetch sends authorization only for a non-empty GH_TOKEN.
   if (env.GH_TOKEN) return null;
   const refused = REFUSED_ADVISORY_READ.exec(precondition.detail);
-  if (refused === null) return null;
-  return `the unauthenticated advisories read for ${refused[1]} was refused (HTTP ${refused[2]}); set GH_TOKEN to measure it`;
+  if (refused !== null) {
+    return `the unauthenticated advisories read for ${refused[1]} was refused (HTTP ${refused[2]}); set GH_TOKEN to measure it`;
+  }
+  const unsent = readHeld ? UNSENT_ADVISORY_READ.exec(precondition.detail) : null;
+  if (unsent !== null) {
+    return `with no GH_TOKEN the advisories read for ${unsent[1]} was held on this machine; set GH_TOKEN to measure it`;
+  }
+  return null;
+}
+
+/** A local port nothing listens on: bound, read and closed again. */
+export function closedPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as net.AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * Whether this node's fetch sends a request through `proxy` when started with
+ * NODE_USE_ENV_PROXY=1, as the script's advisories read is. A node that
+ * ignores it (Node 20) would send the read to api.github.com.
+ */
+export function fetchHonoursProxy(proxy: string): boolean {
+  const probe = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      "try { await fetch('https://proxy-probe.invalid/'); } catch (e) { console.log(e.cause?.code ?? ''); }",
+    ],
+    {
+      env: { PATH: process.env.PATH ?? "", NODE_USE_ENV_PROXY: "1", HTTPS_PROXY: proxy },
+      encoding: "utf-8",
+      timeout: 30_000,
+    },
+  );
+  return (probe.stdout ?? "").trim() === "ECONNREFUSED";
+}
+
+/**
+ * How a review run sends its GitHub advisories read, and the variables
+ * runReview adds for it. With GH_TOKEN set the read is sent with the token.
+ * With none, the read is held on this machine: HTTPS_PROXY names a closed
+ * local port, which the script's fetch child honours (it starts with
+ * NODE_USE_ENV_PROXY=1), and NO_PROXY names the npm registry host, so npm
+ * still reaches the registry. Unauthenticated reads share one per-address
+ * rate limit, which repeated runs of these tests used up. The read is sent
+ * without a token only where it cannot be held: `reason` says why.
+ */
+export type AdvisoryRead =
+  | { mode: "authenticated"; env: Record<string, string> }
+  | { mode: "held"; env: Record<string, string> }
+  | { mode: "unauthenticated"; env: Record<string, string>; reason: string };
+
+const PROXY_VARIABLES = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
+
+export async function advisoryReadOf(
+  env: Record<string, string | undefined> = process.env,
+): Promise<AdvisoryRead> {
+  if (env.GH_TOKEN) return { mode: "authenticated", env: {} };
+  const unheld = (reason: string): AdvisoryRead => ({
+    mode: "unauthenticated",
+    env: {},
+    reason,
+  });
+
+  // A configured proxy is how npm reaches the registry here; exempting the
+  // registry from a closed proxy would take that route away.
+  const proxyVariable = PROXY_VARIABLES.find((name) => env[name]);
+  if (proxyVariable !== undefined) {
+    return unheld(`${proxyVariable} is set, and holding the read would route npm around that proxy`);
+  }
+  const config = spawnSync(
+    "npm",
+    ["config", "get", "registry", "proxy", "https-proxy"],
+    { env, encoding: "utf-8", timeout: 60_000 },
+  );
+  if (config.status !== 0) {
+    return unheld(`npm config get exited ${config.status}, so the registry host is unknown`);
+  }
+  const settings = new Map<string, string>();
+  for (const line of (config.stdout ?? "").split("\n")) {
+    const at = line.indexOf("=");
+    if (at > 0) settings.set(line.slice(0, at), line.slice(at + 1).trim());
+  }
+  for (const key of ["proxy", "https-proxy"]) {
+    const value = settings.get(key);
+    if (value !== undefined && value !== "null" && value !== "") {
+      return unheld(`npm config sets ${key}, and holding the read would route npm around that proxy`);
+    }
+  }
+  let registryHost: string;
+  try {
+    registryHost = new URL(settings.get("registry") ?? "").hostname;
+  } catch {
+    return unheld("npm config get printed no registry URL");
+  }
+
+  const proxy = `http://127.0.0.1:${await closedPort()}`;
+  if (!fetchHonoursProxy(proxy)) {
+    return unheld("this node's fetch ignores HTTPS_PROXY");
+  }
+  return {
+    mode: "held",
+    env: {
+      HTTPS_PROXY: proxy,
+      https_proxy: proxy,
+      NO_PROXY: registryHost,
+      no_proxy: registryHost,
+    },
+  };
 }
 
 /**
