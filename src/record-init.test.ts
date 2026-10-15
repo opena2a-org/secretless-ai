@@ -70,7 +70,8 @@ beforeEach(() => {
   fs.mkdirSync(path.join(base, 'home'));
   fs.mkdirSync(path.join(base, 'tmp'));
   write(path.join(base, 'bin', 'docker'), '#!/bin/sh\nfor arg in "$@"; do printf \'%s\\n\' "$arg"; done >> "$DOCKER_LOG"\necho --end-- >> "$DOCKER_LOG"\n', 0o755);
-  write(path.join(base, 'bin', 'npm'), '#!/bin/sh\nif [ "$1" = view ]; then echo sha512-FAKE-INTEGRITY; exit 0; fi\nexit 1\n', 0o755);
+  // `npm view --json` prints a published version's integrity as a JSON string.
+  write(path.join(base, 'bin', 'npm'), '#!/bin/sh\nif [ "$1" = view ]; then echo \'"sha512-FAKE-INTEGRITY"\'; exit 0; fi\nexit 1\n', 0o755);
 
   write(path.join(repo, SCRIPT), read(SCRIPT), 0o755);
   write(path.join(repo, FIXTURE_SCRIPT), read(FIXTURE_SCRIPT), 0o755);
