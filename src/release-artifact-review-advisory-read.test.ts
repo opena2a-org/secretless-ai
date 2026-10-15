@@ -15,7 +15,8 @@ import {
  * advisoryReadOf decides how the review tests that reach consumer-closure's
  * GitHub advisories read send it. With no GH_TOKEN the read is held on this
  * machine, so repeated runs spend none of the per-address rate limit
- * unauthenticated reads share; npm keeps its route to the registry.
+ * unauthenticated reads share; npm keeps its route to the registry. Where it
+ * cannot be held, the case is skipped and the read is not sent.
  *
  * Each environment below starts from PATH and an empty HOME, so no user npm
  * configuration or proxy variable of the machine running the tests decides
@@ -62,8 +63,10 @@ describe("advisoryReadOf holds the advisories read on this machine when no GH_TO
         );
       }
       const env = bareEnv();
-      const read = await advisoryReadOf(env);
-      expect(read.mode, JSON.stringify(read)).toBe("held");
+      const advisoryRead = await advisoryReadOf(env);
+      expect(advisoryRead.mode, JSON.stringify(advisoryRead)).toBe("held");
+      if (advisoryRead.mode !== "held") return;
+      const read = advisoryRead;
 
       const proxy = /^http:\/\/127\.0\.0\.1:(\d+)$/.exec(read.env.HTTPS_PROXY);
       expect(proxy, read.env.HTTPS_PROXY).not.toBeNull();
@@ -99,21 +102,22 @@ describe("advisoryReadOf holds the advisories read on this machine when no GH_TO
     },
   );
 
-  it("a proxy variable already set is kept: the read is sent without a token, and the reason names the variable", async () => {
+  it("a proxy variable already set is kept: the read is not sent, the case is skipped, and the note names the variable and GH_TOKEN", async () => {
     for (const name of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) {
       const read = await advisoryReadOf(
         bareEnv({ [name]: "http://127.0.0.1:9" }),
       );
-      expect(read.mode, name).toBe("unauthenticated");
-      expect(read.env, name).toEqual({});
-      expect(read.mode === "unauthenticated" && read.reason, name).toContain(
-        `${name} is set`,
-      );
+      expect(read, name).not.toHaveProperty("env");
+      expect(read.mode, name).toBe("skip");
+      const note = read.mode === "skip" ? read.note : "";
+      expect(note, name).toMatch(/^not measured: /);
+      expect(note, name).toContain(`${name} is set`);
+      expect(note, name).toContain("set GH_TOKEN to measure it");
     }
   });
 
   it(
-    "a proxy npm is configured with is kept the same way, and the reason names the setting, not its value",
+    "a proxy npm is configured with is kept the same way, and the note names the setting, not its value",
     { timeout: 120_000 },
     async () => {
       for (const [variable, key] of [
@@ -123,12 +127,42 @@ describe("advisoryReadOf holds the advisories read on this machine when no GH_TO
         const read = await advisoryReadOf(
           bareEnv({ [variable]: "http://127.0.0.1:9" }),
         );
-        expect(read.mode, variable).toBe("unauthenticated");
-        expect(read.env, variable).toEqual({});
-        const reason = read.mode === "unauthenticated" ? read.reason : "";
-        expect(reason, variable).toContain(`npm config sets ${key},`);
-        expect(reason, variable).not.toContain("127.0.0.1");
+        expect(read, variable).not.toHaveProperty("env");
+        expect(read.mode, variable).toBe("skip");
+        const note = read.mode === "skip" ? read.note : "";
+        expect(note, variable).toContain(`npm config sets ${key},`);
+        expect(note, variable).toContain("set GH_TOKEN to measure it");
+        expect(note, variable).not.toContain("127.0.0.1");
       }
     },
   );
+
+  it(
+    "on a node whose fetch ignores HTTPS_PROXY the read is not sent: the case is skipped, and the note says why",
+    { timeout: 120_000 },
+    async () => {
+      const probed: string[] = [];
+      const read = await advisoryReadOf(bareEnv(), (proxy) => {
+        probed.push(proxy);
+        return false;
+      });
+      expect(probed).toHaveLength(1);
+      expect(probed[0]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(read).not.toHaveProperty("env");
+      expect(read.mode).toBe("skip");
+      const note = read.mode === "skip" ? read.note : "";
+      expect(note).toContain("this node's fetch ignores HTTPS_PROXY");
+      expect(note).toContain("set GH_TOKEN to measure it");
+    },
+  );
+
+  it("with GH_TOKEN set the proxy probe is not run, whatever it would answer", async () => {
+    const read = await advisoryReadOf(
+      bareEnv({ GH_TOKEN: "fixture-token-not-a-secret", HTTPS_PROXY: "http://127.0.0.1:9" }),
+      () => {
+        throw new Error("probed");
+      },
+    );
+    expect(read).toEqual({ mode: "authenticated", env: {} });
+  });
 });
