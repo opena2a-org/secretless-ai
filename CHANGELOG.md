@@ -23,6 +23,34 @@ inputs through the same entry point: 458 distinct lines. Before this change,
 `secret list`, 28 of `secret sync`, none of `secret push`). What each command
 stores, pushes, syncs and exits with is unchanged.
 
+**`scan` prints beside each path it could not read the cause that holds for
+that path, and every reason it gives for an unread path is one value of a
+closed set.** Each path under "could not be read" now carries one of `this user
+cannot read the file`, `this user cannot list the directory`, `inside a
+directory this user cannot search`, `symbolic link in a loop, or in a chain too
+long to follow`, `symbolic link to a path this user cannot reach` or `opening
+it failed with an error other than permissions`, from what `lstat`, `stat` and
+`access` report for it. The line "Cause differs by path: permissions, a broken
+or looping symlink, or an I/O error." is removed: the scan never lists a broken
+link, which has nothing behind it to read. The `Fix:` is `chmod +r` on a file,
+`chmod +rx` on a directory or `chmod +x` on the directory above, for the first
+listed path a `chmod` can repair; it was `chmod +rx` on the first listed path
+whatever its cause, and on a link into a directory that cannot be searched
+that `chmod` fails. `--json` adds `unreadableReasons`, a `{ path,
+reason }` entry for each path in `unreadableFiles`. A hidden directory the scan
+does not enter for source files is listed as `hidden directory; config and key
+files inside are still read`, `hidden directory linked outside the scan root;
+nothing inside is read` or `hidden directory this user cannot open; nothing
+inside is read`, where all three printed `hidden directory`, the first beside
+findings from inside it. Two links to one directory outside the scan root
+printed "1 symlink points outside the scan root"; the heading now counts the
+directories: "1 directory outside the scan root is linked from inside it, so
+not followed. One link to each:". The heading over files not searched reads "N
+files not read for credentials", where "N files not opened" stood over
+`.secretlessignore`, which the scan opens for its rules. No `--json` field is
+renamed, and which files are read, every finding and every exit code are as
+before.
+
 **A `secret://vault/NAME` reference is not answered by an entry stored under
 `secret/NAME/` (#383).** For a `keychain`, `vault` or `1password` reference,
 `resolveRef` and `resolveEnvRefs` asked the backend for `secret/NAME` and took

@@ -272,9 +272,9 @@ describe('the human report names a file it did not open', () => {
     const { text, code } = await report(dir);
 
     expect(text).toContain('No hardcoded credentials found.');
-    expect(text).toMatch(/1 file not opened: declared boundaries, not findings\./);
+    expect(text).toMatch(/1 file not read for credentials: declared boundaries, not findings\./);
     expect(text).toMatch(/notes\.txt: unsupported file type/);
-    const scanOne = /Scan one: npx secretless-ai scan (\S+)/.exec(text.slice(text.indexOf('file not opened')));
+    const scanOne = /Scan one: npx secretless-ai scan (\S+)/.exec(text.slice(text.indexOf('file not read for credentials')));
     expect(scanOne).not.toBeNull();
     expect(path.basename(scanOne![1])).toBe('notes.txt');
     expect(code, 'a declared boundary must not gate CI').toBe(0);
@@ -327,7 +327,7 @@ describe('the human report names a file it did not open', () => {
   it('CONTROL: a tree with nothing skipped prints no file block', async () => {
     const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
     const { text } = await report(dir);
-    expect(text).not.toMatch(/not opened/);
+    expect(text).not.toMatch(/not read for credentials/);
   });
 
   it('does not call a hidden directory unentered while reporting a finding from inside it', async () => {
@@ -338,7 +338,7 @@ describe('the human report names a file it did not open', () => {
     expect(code).toBe(1);
     expect(text).toMatch(/1 directory not entered for source files: declared boundaries, not findings\./);
     expect(text).not.toMatch(/director(y|ies) not entered[:,]/);
-    expect(text).toMatch(/\.github: hidden directory$/m);
+    expect(text).toMatch(/\.github: hidden directory; config and key files inside are still read$/m);
   });
 
   it('does not call a key file uncovered while reporting a finding from it', async () => {
@@ -363,7 +363,7 @@ describe('the human report names a file it did not open', () => {
     expect(text).toContain('Secretless Encrypted Bundle');
     expect(text).toMatch(/backup\.secretless-bundle:1$/m);
     expect(code).toBe(1);
-    expect(text).not.toMatch(/not opened/);
+    expect(text).not.toMatch(/not read for credentials/);
     expect(text).not.toMatch(/unsupported file type/);
     expect(text).not.toContain('Scan one:');
     expect(text).not.toMatch(/not covered by the scan result/);
@@ -431,16 +431,16 @@ describe('the human report names a file it did not open', () => {
     expect(text).toContain(`\n    ${base}/secrets.json\n`);
     expect(text).toContain(`Scan one: npx secretless-ai scan ${base}/secrets.json`);
     expect(text.match(/secrets\.json/g)).toHaveLength(2);
-    expect(text).toContain('1 file not opened: declared boundaries, not findings.');
+    expect(text).toContain('1 file not read for credentials: declared boundaries, not findings.');
     expect(text).toMatch(/notes\.txt: unsupported file type$/m);
     expect(text).toContain(`Scan one: npx secretless-ai scan ${base}/notes.txt`);
   });
 
-  it('CONTROL: a tree whose only unopened file is such a config file prints no "not opened" block', async () => {
+  it('CONTROL: a tree whose only unopened file is such a config file prints no "not read for credentials" block', async () => {
     const dir = tree({ 'config.json': '{}\n', 'secrets.json': '{}\n' });
     const { text } = await report(dir);
     expect(text).toContain('1 config file not scanned');
-    expect(text).not.toMatch(/not opened/);
+    expect(text).not.toMatch(/not read for credentials/);
     expect(text.match(/Scan one:/g)).toHaveLength(1);
   });
 
@@ -454,8 +454,8 @@ describe('the human report names a file it did not open', () => {
     expect(text).toContain('21 config files not scanned');
     expect(text).not.toMatch(/c\d\d\.json: config file not on the built-in list/);
     // The heading carries the count; no "… and 2 more" hangs under it.
-    const block = text.slice(text.indexOf('2 files not opened'));
-    expect(block.split('\n\n')[0]).toBe('2 files not opened: declared boundaries, not findings.');
+    const block = text.slice(text.indexOf('2 files not read for credentials'));
+    expect(block.split('\n\n')[0]).toBe('2 files not read for credentials: declared boundaries, not findings.');
   });
 
   it('gives the ignore rule, not "still scanned", for a hidden directory an ignore rule covers', async () => {
@@ -489,9 +489,9 @@ describe('the human report names a file it did not open', () => {
     const { text, code } = await report(dir);
 
     expect(text).toContain('No hardcoded credentials found.');
-    expect(text).toMatch(/1 symlink points outside the scan root, so not followed\./);
+    expect(text).toMatch(/1 directory outside the scan root is linked from inside it, so not followed\. One link to each:/);
     expect(code).toBe(0);
-    expect(text).toMatch(/\.claude: hidden directory$/m);
+    expect(text).toMatch(/\.claude: hidden directory linked outside the scan root; nothing inside is read$/m);
     expect(text).not.toMatch(/still scanned/);
   });
 
@@ -505,7 +505,7 @@ describe('the human report names a file it did not open', () => {
     try {
       const { text } = await report(dir);
       expect(text).toMatch(/1 path could not be read, so not known to be clean\./);
-      expect(text).toMatch(/\.locked: hidden directory$/m);
+      expect(text).toMatch(/\.locked: hidden directory this user cannot open; nothing inside is read$/m);
       expect(text).not.toMatch(/still scanned/);
     } finally {
       fs.chmodSync(locked, 0o755);

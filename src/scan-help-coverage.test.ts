@@ -84,7 +84,9 @@ afterEach(() => {
 });
 
 describe('the walk reports exactly the skip reasons scan --help explains', () => {
-  it('a tree that triggers every skip produces each catalogued reason, and no other', () => {
+  // A directory with no permissions is readable to root, so the reason for one
+  // this user cannot open is not produced there.
+  it.skipIf(process.getuid?.() === 0)('a tree that triggers every skip produces each catalogued reason, and no other', () => {
     const dir = tree({
       'src/app.ts': 'export const ok = 1;\n',
       'notes.txt': 'x\n',
@@ -98,8 +100,20 @@ describe('the walk reports exactly the skip reasons scan --help explains', () =>
       'node_modules/pkg/index.js': 'module.exports = 1;\n',
       '.git/config': '[core]\n',
     });
+    // The two hidden directories the key and config walks do not read inside:
+    // a link out of the root, and one this user cannot open.
+    fs.symlinkSync(tree({ 'settings.json': '{}\n' }), path.join(dir, '.linked'));
+    const locked = path.join(dir, '.locked');
+    fs.mkdirSync(locked);
+    fs.chmodSync(locked, 0o000);
+    let reasons: Record<string, string>;
+    try {
+      reasons = skipped(dir);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
 
-    expect(skipped(dir)).toEqual({
+    expect(reasons).toEqual({
       'notes.txt': SOURCE_SKIP_REASONS.unsupportedType,
       'notes.toml': SOURCE_SKIP_REASONS.configNotListed,
       '.secretlessignore': SOURCE_SKIP_REASONS.unsupportedType,
@@ -108,10 +122,12 @@ describe('the walk reports exactly the skip reasons scan --help explains', () =>
       'ignored': SOURCE_SKIP_REASONS.ignoreRule,
       'skip-me.ts': SOURCE_SKIP_REASONS.ignoreRule,
       '.claude': SOURCE_SKIP_REASONS.hiddenDir,
+      '.linked': SOURCE_SKIP_REASONS.hiddenDirOutsideRoot,
+      '.locked': SOURCE_SKIP_REASONS.hiddenDirClosed,
       'node_modules': SOURCE_SKIP_REASONS.buildOutput,
       '.git': SOURCE_SKIP_REASONS.gitMetadata,
     });
-    const seen = new Set(Object.values(skipped(dir)));
+    const seen = new Set(Object.values(reasons));
     expect([...seen].sort()).toEqual(Object.values(SOURCE_SKIP_REASONS).sort());
   });
 
