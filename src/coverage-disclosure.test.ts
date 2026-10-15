@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runScan, shellQuote } from './commands/core';
+import { SOURCE_SKIP_REASONS } from './scan';
 
 /**
  * What the scan did NOT look at, disclosed beside what it did.
@@ -16,9 +17,10 @@ import { runScan, shellQuote } from './commands/core';
  *   summary : { truncated:false, unreadable:0, outOfRoot:0, oversize:0 }
  *
  * `.claude/agent.ts` — byte-identical to `src/app.ts` — was absent, because the
- * SOURCE walk blanket-prunes dot-directories while the config and key walks
- * deliberately do not (`scan.ts`, and the comment on the key walker says so
- * outright). A user reading a finding from inside `.claude/` alongside four
+ * SOURCE walk blanket-pruned dot-directories while the config and key walks
+ * deliberately did not. The source walk now enters them and prunes only the
+ * hidden caches, build output and worktree directories named in `scan.ts`
+ * (#144). A user reading a finding from inside `.claude/` alongside four
  * zeros concludes the directory was read. The disclosure has to sit where the
  * loss happens, or it endorses the wrong conclusion instead of qualifying it.
  *
@@ -39,6 +41,8 @@ function tree(files: Record<string, string>): string {
 
 const TOKEN = ['ghp_', 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'].join('');
 
+interface Finding { file: string; severity: string; confidenceTier: string }
+
 describe('the summary discloses what was not looked at', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -49,25 +53,27 @@ describe('the summary discloses what was not looked at', () => {
     return { doc: JSON.parse(lines.join('\n')), code };
   }
 
-  it('names a pruned hidden directory instead of implying it was read', async () => {
+  it('reads a source file in .claude/ like its byte-identical copy in src/, and does not list .claude (#144)', async () => {
     const dir = tree({
       'src/app.ts': `const t = "${TOKEN}";\n`,
       '.claude/agent.ts': `const t = "${TOKEN}";\n`,
       '.claude/settings.json': `{"env":{"GITHUB_TOKEN":"${TOKEN}"}}\n`,
     });
-    const { doc } = await scanned(dir);
+    const { doc, code } = await scanned(dir);
 
-    // The pre-fix shape: a finding from inside `.claude/` and four zeros.
-    const files = doc.findings.map((f: { file: string }) => f.file);
-    expect(files).toContain('.claude/settings.json');
-    expect(files).not.toContain('.claude/agent.ts');
-
-    // The disclosure that stops that reading as full coverage.
-    expect(doc.summary.notEntered).toBeGreaterThan(0);
-    const dirs = doc.notEnteredDirs.map((d: { path: string }) => d.path);
-    expect(dirs).toContain('.claude');
-    const claude = doc.notEnteredDirs.find((d: { path: string }) => d.path === '.claude');
-    expect(claude.reason).toMatch(/hidden/);
+    // The pre-fix shape: a finding from inside `.claude/`, `.claude/agent.ts`
+    // absent, and `.claude` listed as a directory not entered.
+    const byFile = new Map<string, Finding>(doc.findings.map((f: Finding) => [f.file, f]));
+    expect([...byFile.keys()].sort()).toEqual(['.claude/agent.ts', '.claude/settings.json', 'src/app.ts']);
+    // A source file in a dot-directory is a source file: the same severity
+    // and confidence tier as the copy in `src/`. The settings file is still a
+    // config file.
+    expect(byFile.get('.claude/agent.ts')!.severity).toBe('high');
+    expect(byFile.get('.claude/agent.ts')!.confidenceTier).toBe(byFile.get('src/app.ts')!.confidenceTier);
+    expect(byFile.get('.claude/settings.json')!.severity).toBe('critical');
+    expect(doc.notEnteredDirs.map((d: { path: string }) => d.path)).not.toContain('.claude');
+    expect(doc.summary.notEntered).toBe(0);
+    expect(code).toBe(1);
   });
 
   it('CONTROL: the missed file IS detectable — the gap is coverage, not the pattern', async () => {
@@ -182,6 +188,99 @@ describe('the summary discloses what was not looked at', () => {
     expect(doc.skippedUnsupportedFiles).toEqual([
       { path: 'backup.test.secretless-bundle', reason: 'test file (--include-tests)' },
     ]);
+  });
+});
+
+describe('the source walk enters dot-directories and prunes only hidden caches, build output and worktrees (#144)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const PLANTED = `const t = "${TOKEN}";\n`;
+
+  async function scanned(dir: string, options?: Parameters<typeof runScan>[1]) {
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
+    const code = await runScan(dir, { ...options, json: true });
+    return { doc: JSON.parse(lines.join('\n')), code };
+  }
+
+  it('reports a source file under .github/', async () => {
+    const dir = tree({ '.github/scripts/x.js': PLANTED });
+    const { doc, code } = await scanned(dir);
+    expect(doc.findings.map((f: Finding) => [f.file, f.severity])).toEqual([['.github/scripts/x.js', 'high']]);
+    expect(doc.summary.notEntered).toBe(0);
+    expect(code).toBe(1);
+  });
+
+  it('reads a config-format file in a dot-directory with --include-config, and counts it as unscanned without', async () => {
+    const dir = tree({
+      'src/values.yaml': `token: ${TOKEN}\n`,
+      '.claude/values.yaml': `token: ${TOKEN}\n`,
+    });
+    const without = await scanned(dir);
+    expect(without.doc.findings).toEqual([]);
+    expect(without.doc.summary.unscannedConfig).toBe(2);
+    expect([...without.doc.unscannedConfigFiles].sort()).toEqual(['.claude/values.yaml', 'src/values.yaml']);
+
+    const withFlag = await scanned(dir, { includeConfig: true });
+    expect(withFlag.doc.findings.map((f: Finding) => f.file).sort()).toEqual(['.claude/values.yaml', 'src/values.yaml']);
+    expect(withFlag.doc.summary.unscannedConfig).toBe(0);
+  });
+
+  it('leaves a source file in a pruned directory unreported, and lists the directory with its reason', async () => {
+    const dir = tree({
+      'src/app.ts': 'export const x = 1;\n',
+      '.venv/x.py': PLANTED,
+      '.next/x.js': PLANTED,
+      '.worktrees/x/y.ts': PLANTED,
+      '.yarn/cache/x.js': PLANTED,
+      '.git/x.js': PLANTED,
+    });
+    const { doc, code } = await scanned(dir);
+    expect(doc.findings).toEqual([]);
+    expect(code).toBe(0);
+    const reasons = Object.fromEntries(doc.notEnteredDirs.map((d: { path: string; reason: string }) => [d.path, d.reason]));
+    expect(reasons).toEqual({
+      '.git': SOURCE_SKIP_REASONS.gitMetadata,
+      '.next': SOURCE_SKIP_REASONS.buildOutput,
+      '.venv': SOURCE_SKIP_REASONS.buildOutput,
+      '.worktrees': SOURCE_SKIP_REASONS.worktrees,
+      '.yarn': SOURCE_SKIP_REASONS.hiddenCache,
+    });
+    // Nothing under `.git` is named in any list.
+    expect(JSON.stringify(doc)).not.toContain('.git/x.js');
+  });
+
+  it('CONTROL: the planted value in each pruned directory is found when that directory is named', async () => {
+    const dir = tree({ '.worktrees/x/y.ts': PLANTED, '.yarn/cache/x.js': PLANTED });
+    for (const sub of ['.worktrees', '.yarn']) {
+      const { doc } = await scanned(path.join(dir, sub));
+      expect(doc.findings.length, sub).toBe(1);
+    }
+  });
+
+  it('lists a dot-directory linked outside the root as a link not followed, not as a directory not entered', async () => {
+    const outside = tree({ 'agent.ts': PLANTED });
+    const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
+    fs.symlinkSync(outside, path.join(dir, '.claude'), 'dir');
+    const { doc, code } = await scanned(dir);
+    expect(doc.findings).toEqual([]);
+    expect(doc.outOfRootLinks).toEqual(['.claude']);
+    expect(doc.notEnteredDirs).toEqual([]);
+    expect(code).toBe(0);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('lists a dot-directory this user cannot open as unreadable, not as a directory not entered', async () => {
+    const dir = tree({ 'src/app.ts': 'export const x = 1;\n', '.locked/agent.ts': PLANTED });
+    const locked = path.join(dir, '.locked');
+    fs.chmodSync(locked, 0o000);
+    try {
+      const { doc, code } = await scanned(dir);
+      expect(doc.unreadableFiles).toEqual(['.locked']);
+      expect(doc.notEnteredDirs).toEqual([]);
+      expect(code).toBe(1);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
   });
 });
 
@@ -330,15 +429,24 @@ describe('the human report names a file it did not open', () => {
     expect(text).not.toMatch(/not read for credentials/);
   });
 
-  it('does not call a hidden directory unentered while reporting a finding from inside it', async () => {
+  it('does not call a hidden cache directory unentered while reporting a finding from inside it', async () => {
+    const dir = tree({ '.cache/workflows/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n` });
+    const { text, code } = await report(dir);
+
+    expect(text).toContain('.cache/workflows/config.yml');
+    expect(code).toBe(1);
+    expect(text).toMatch(/1 directory not entered for source files: declared boundaries, not findings\./);
+    expect(text).not.toMatch(/director(y|ies) not entered[:,]/);
+    expect(text).toMatch(/\.cache: hidden cache or build output; config and key files inside are still read$/m);
+  });
+
+  it('CONTROL: a dot-directory outside the pruned set is entered, so the report lists no directory', async () => {
     const dir = tree({ '.github/workflows/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n` });
     const { text, code } = await report(dir);
 
     expect(text).toContain('.github/workflows/config.yml');
     expect(code).toBe(1);
-    expect(text).toMatch(/1 directory not entered for source files: declared boundaries, not findings\./);
-    expect(text).not.toMatch(/director(y|ies) not entered[:,]/);
-    expect(text).toMatch(/\.github: hidden directory; config and key files inside are still read$/m);
+    expect(text).not.toMatch(/not entered for source files/);
   });
 
   it('does not call a key file uncovered while reporting a finding from it', async () => {
@@ -480,32 +588,32 @@ describe('the human report names a file it did not open', () => {
     expect(code).toBe(1);
   });
 
-  it('does not say "still scanned" for a hidden directory linked outside the root', async () => {
+  it('does not say "still scanned" for a hidden cache directory linked outside the root', async () => {
     // No walk follows a directory link out of the root, so the key and config
-    // walks never read the settings file behind `.claude`.
-    const outside = tree({ 'settings.json': `{"env":{"GITHUB_TOKEN":"${TOKEN}"}}\n` });
+    // walks never read the config file behind `.cache`.
+    const outside = tree({ 'config.json': `{"env":{"GITHUB_TOKEN":"${TOKEN}"}}\n` });
     const dir = tree({ 'src/app.ts': 'export const x = 1;\n' });
-    fs.symlinkSync(outside, path.join(dir, '.claude'), 'dir');
+    fs.symlinkSync(outside, path.join(dir, '.cache'), 'dir');
     const { text, code } = await report(dir);
 
     expect(text).toContain('No hardcoded credentials found.');
     expect(text).toMatch(/1 directory outside the scan root is linked from inside it, so not followed\. One link to each:/);
     expect(code).toBe(0);
-    expect(text).toMatch(/\.claude: hidden directory linked outside the scan root; nothing inside is read$/m);
+    expect(text).toMatch(/\.cache: hidden directory linked outside the scan root; nothing inside is read$/m);
     expect(text).not.toMatch(/still scanned/);
   });
 
-  it.skipIf(process.getuid?.() === 0)('does not say "still scanned" for a hidden directory that cannot be read', async () => {
+  it.skipIf(process.getuid?.() === 0)('does not say "still scanned" for a hidden cache directory that cannot be read', async () => {
     const dir = tree({
       'src/app.ts': 'export const x = 1;\n',
-      '.locked/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n`,
+      '.cache/config.yml': `aws_access_key_id: ${AWS_KEY_ID}\n`,
     });
-    const locked = path.join(dir, '.locked');
+    const locked = path.join(dir, '.cache');
     fs.chmodSync(locked, 0o000);
     try {
       const { text } = await report(dir);
       expect(text).toMatch(/1 path could not be read, so not known to be clean\./);
-      expect(text).toMatch(/\.locked: hidden directory this user cannot open; nothing inside is read$/m);
+      expect(text).toMatch(/\.cache: hidden directory this user cannot open; nothing inside is read$/m);
       expect(text).not.toMatch(/still scanned/);
     } finally {
       fs.chmodSync(locked, 0o755);

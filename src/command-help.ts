@@ -32,6 +32,8 @@ import {
 import { DEFAULT_IGNORE_PATTERNS, IGNORE_FILENAME } from './secretlessignore';
 import {
   SOURCE_SKIP_REASONS,
+  HIDDEN_CACHE_DIRS,
+  WORKTREE_DIRS,
   TEST_DIRS,
   TEST_FILE_GLOBS,
   KEY_FILE_EXTENSIONS,
@@ -98,15 +100,21 @@ function skipReasonDetails(): Record<keyof typeof SOURCE_SKIP_REASONS, string[]>
       `${at}a path in .secretlessignore or in the default-ignore list,`,
       `${at}which also holds ${ignoreOnly.join(' ')}`,
     ],
-    hiddenDir: [
-      `${at}source files under .claude/, .vscode/ or any other dot-directory;`,
-      `${at}the config and key files named above are read inside it`,
+    hiddenCache: [
+      ...wrapList([...HIDDEN_CACHE_DIRS].map((d) => `${d}/`), at),
+      `${at}source files are not read inside these; the config and key files`,
+      `${at}named above are. Every other dot-directory, .claude/ and .github/`,
+      `${at}among them, is read like any other directory`,
+    ],
+    worktrees: [
+      ...wrapList([...WORKTREE_DIRS].map((d) => `${d}/`), at),
+      `${at}source files are not read inside it; the config and key files are`,
     ],
     hiddenDirOutsideRoot: [
-      `${at}a dot-directory that is a link out of the scanned directory, which`,
-      `${at}no walk follows`,
+      `${at}one of the directories in the two entries above that is a link out`,
+      `${at}of the scanned directory, which no walk follows`,
     ],
-    hiddenDirClosed: [`${at}a dot-directory this user cannot list or search`],
+    hiddenDirClosed: [`${at}one of those directories that this user cannot list or search`],
     buildOutput: [...wrapList(buildDirs, at), `${at}no flag enters these`],
     gitMetadata: [`${at}.git/`],
   };

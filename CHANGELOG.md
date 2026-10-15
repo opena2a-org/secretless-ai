@@ -32,6 +32,30 @@ of `echo x` was admitted. Neither grep of the rule stops early now, and that
 command is refused. The 986 commands of `src/fixtures/guard-corpus.txt` keep
 their recorded verdicts, with python3 and without.
 
+**`scan` reads source files in dot-directories (#144).** A token in
+`.claude/agent.ts` went unreported while its byte-identical copy in
+`src/app.ts` was a finding: the source walk entered no directory whose name
+starts with `.`, and listed each one as `hidden directory; config and key
+files inside are still read`. It now enters them, `.claude/`, `.github/` and
+`.vscode/` included, and reports a source file there with severity `high`, as
+in any other directory. It still reads no source file in `.git/`, in the
+dependency and build directories it skipped before (such as `.next/` and
+`.venv/`), or in these hidden cache and worktree directories: `.netlify/`,
+`.open-next/`, `.turbo/`, `.playwright-mcp/`, `.yarn/`, `.pnpm-store/`,
+`.cache/`, `.terraform/`, `.parcel-cache/`, `.angular/`, `.serverless/` and
+`.worktrees/`. Each of those twelve is listed under "not entered for source
+files" as `hidden cache or build output; config and key files inside are
+still read` or `linked git worktrees; config and key files inside are still
+read`, and naming one scans it. `scan --include-config` now reads a
+config-format file such as `.claude/values.yaml` in a dot-directory the walk
+enters, and without the flag counts it in `unscannedConfig`. A dot-directory
+linked outside the scan root is listed only among the links not followed, and
+one this user cannot open only among the paths that could not be read. A tree
+whose only credential is in `.claude/agent.ts` exited 0 and now exits 1. The
+files read in dot-directories count toward `--max-files`. On shallow clones of
+`axios/axios` and `psf/requests` the scan reports 0 findings and exits 0
+before and after this change, with and without `--include-config`.
+
 **`scan` lists a config file inside a directory this user can list but not
 search.** For `t/nosearch/config.json` under a `t/nosearch` of mode `0600`,
 `scan t --json` listed the file under neither `findings` nor
