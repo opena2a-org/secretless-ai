@@ -6,15 +6,17 @@
 #   docs/vhs/record-init.sh --dry-run
 #
 # --dry-run prints the image, its base images, the build, the tape, the fixture and the files a
-# render writes, then exits 0. It asks npm whether the version is published and calls nothing else:
-# no docker, no build, no pack, and no file is written.
+# render writes, then exits 0. It runs npm view, git status, node and, when it would pack,
+# git rev-parse: no docker, no build, no pack, and no file is written.
 #
 # The container (docs/vhs/docker/Dockerfile) carries VHS 0.12.0 with its encode regression patched,
 # ffmpeg, ttyd, Chromium, JetBrains Mono, gifsicle, Node 22 and secretless-ai installed globally, so
 # the typed `npx secretless-ai init` runs that build with no download on screen. The build is the
 # published one when the version in package.json is on npm (the sidecar records npmIntegrity);
-# otherwise it is `npm pack` of the committed tree at HEAD (the sidecar records packedFromCommit),
-# built with the dependencies `npm ci` installed here.
+# when the registry answers that it is not (E404), it is `npm pack` of the committed tree at HEAD
+# (the sidecar records packedFromCommit), built with the dependencies `npm ci` installed here. When
+# npm view fails any other way, as when the registry cannot be reached, the script and its dry run
+# stop with exit 1 and npm's error code.
 #
 # The hostname is `laptop`. The tape's hidden setup creates the fixture with setup-fixture.sh, a new
 # project directory and a new empty home directory, and the tool runs in them. The image carries no
@@ -225,7 +227,24 @@ DOCKER="${DOCKER:-docker}"
 VERSION="$(node -p "require(process.argv[1]).version" "$REPO_ROOT/package.json")"
 IMAGE="${SECRETLESS_VHS_IMAGE:-secretless-vhs:$VERSION}"
 
-NPM_INTEGRITY="$(npm view "$TOOL@$VERSION" dist.integrity 2>/dev/null || true)"
+# npm answers a published version with its integrity and an unpublished one with error code E404.
+# Any other answer, such as a registry npm cannot reach, leaves that unknown, and the script stops
+# rather than pack HEAD under a version that may be published.
+NPM_VIEW_STATUS=0
+NPM_VIEW="$(npm view "$TOOL@$VERSION" dist.integrity --json 2>/dev/null)" || NPM_VIEW_STATUS=$?
+# shellcheck disable=SC2016
+NPM_INTEGRITY="$(node -e '
+  const [status, output, spec] = process.argv.slice(1);
+  let answer;
+  try { answer = JSON.parse(output); } catch {}
+  if (status === "0" && typeof answer === "string" && answer) console.log(answer);
+  else if (status !== "0" && answer?.error?.code === "E404") console.log("");
+  else {
+    const error = answer?.error ? `${answer.error.code}: ${answer.error.summary}`
+      : status === "0" ? "exit 0 with no integrity in its output" : `exit ${status} with no error code in its output`;
+    console.error(`record-init.sh: npm view ${spec} failed (${error}), so it is not known whether ${spec} is published. Nothing was built or packed; resolve the npm error and run again.`);
+    process.exit(1);
+  }' "$NPM_VIEW_STATUS" "$NPM_VIEW" "$TOOL@$VERSION")" || exit 1
 if [ -z "$NPM_INTEGRITY" ] && [ ! -d "$REPO_ROOT/node_modules" ]; then
   echo "record-init.sh: $TOOL@$VERSION is not on npm and node_modules is missing; run npm ci first." >&2
   exit 1
@@ -237,7 +256,7 @@ if [ "$DRY_RUN" = 1 ]; then
   else
     BUILD="npm pack of commit $(git -C "$REPO_ROOT" rev-parse HEAD) ($TOOL@$VERSION is not on npm)"
   fi
-  echo "record-init.sh --dry-run: nothing is built, run or written."
+  echo "record-init.sh --dry-run: runs npm view, git status, node and, when it would pack, git rev-parse; no docker, no build, no pack, and no file is written."
   echo "  image     $IMAGE, built with $DOCKER from docs/vhs/docker/Dockerfile"
   echo "  bases     $(sed -n -E 's/^FROM ([^ ]+).*/\1/p' "$REPO_ROOT/docs/vhs/docker/Dockerfile" | paste -s -d ' ' -)"
   echo "  build     $BUILD"

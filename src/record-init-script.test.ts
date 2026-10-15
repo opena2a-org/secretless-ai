@@ -28,22 +28,40 @@ const packageVersion = () => JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'pa
 let sandbox: string;
 let calls: string;
 
-/** A stand-in that logs its arguments; `npm view` prints `viewOutput` when given one. */
-function standIn(name: string, viewOutput?: string): string {
+/** What `npm view --json` prints and exits with, as npm 10 and 11 answer it. */
+type NpmView = { stdout: string; status: number };
+const PUBLISHED: NpmView = { stdout: '"sha512-FAKE-INTEGRITY"', status: 0 };
+const NOT_PUBLISHED: NpmView = {
+  stdout: JSON.stringify({ error: { code: 'E404', summary: 'No match found for version 0.0.0' } }),
+  status: 1,
+};
+/** The view call the script makes; the stand-ins log it. */
+const npmView = () => `npm view secretless-ai@${packageVersion()} dist.integrity --json`;
+
+/** A stand-in that logs its arguments; `npm view` answers with `view` when given one, else exits 1. */
+function standIn(name: string, view?: NpmView): string {
   const file = path.join(sandbox, 'bin', name);
-  const view = viewOutput === undefined ? '' : `[ "$1" = view ] && { echo "${viewOutput}"; exit 0; }\n`;
-  fs.writeFileSync(file, `#!/bin/sh\necho "${name} $*" >> "${calls}"\n${view}exit 1\n`, { mode: 0o755 });
+  let answer = '';
+  if (view) {
+    const output = path.join(sandbox, `${name}-view.out`);
+    fs.writeFileSync(output, `${view.stdout}\n`);
+    answer = `[ "$1" = view ] && { cat "${output}"; exit ${view.status}; }\n`;
+  }
+  fs.writeFileSync(file, `#!/bin/sh\necho "${name} $*" >> "${calls}"\n${answer}exit 1\n`, { mode: 0o755 });
   return file;
 }
 
 /**
  * Runs the script with an environment built from nothing, so a key set in the
  * shell that runs the tests cannot reach it, and with the stand-ins first on
- * PATH. Returns the exit code, the output and every call the stand-ins logged.
+ * PATH. With `npm` set to 'real npm' there is no npm stand-in and the npm on
+ * PATH answers. Returns the exit code, the output and every call the stand-ins
+ * logged.
  */
-function run(args: string[], extraEnv: Record<string, string> = {}, published?: string) {
+function run(args: string[], extraEnv: Record<string, string> = {}, npm: NpmView | 'real npm' = NOT_PUBLISHED) {
   fs.rmSync(calls, { force: true });
-  standIn('npm', published);
+  if (npm === 'real npm') fs.rmSync(path.join(sandbox, 'bin', 'npm'), { force: true });
+  else standIn('npm', npm);
   const docker = standIn('docker');
   const result = spawnSync('bash', [path.join(REPO_ROOT, SCRIPT), ...args], {
     cwd: REPO_ROOT,
@@ -99,7 +117,7 @@ describe('record-init.sh refuses to start with a model API key in its environmen
 describe('record-init.sh --dry-run', () => {
   it('names the image, the build, the tape, the fixture and the files a render writes, and exits 0', () => {
     const before = writtenFiles();
-    const r = run(['--dry-run'], {}, 'sha512-FAKE-INTEGRITY');
+    const r = run(['--dry-run'], {}, PUBLISHED);
     expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
     const s = sidecar();
@@ -118,17 +136,44 @@ describe('record-init.sh --dry-run', () => {
   });
 
   it('asks npm which build is published and calls nothing else: no docker, no build, no pack', () => {
-    const r = run(['--dry-run'], {}, 'sha512-FAKE-INTEGRITY');
+    const r = run(['--dry-run'], {}, PUBLISHED);
     expect(r.status).toBe(0);
-    expect(r.calls).toEqual([`npm view secretless-ai@${packageVersion()} dist.integrity`]);
+    expect(r.calls).toEqual([npmView()]);
   });
 
-  it('names the commit it would pack when the version is not on npm', () => {
+  it('names the commit it would pack when npm answers E404 for the version', () => {
     const head = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).stdout.trim();
-    const r = run(['--dry-run']);
+    const r = run(['--dry-run'], {}, NOT_PUBLISHED);
+    expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
     expect(r.stdout).toContain(`npm pack of commit ${head}`);
-    expect(r.calls).toEqual([`npm view secretless-ai@${packageVersion()} dist.integrity`]);
+    expect(r.calls).toEqual([npmView()]);
+  });
+});
+
+describe('record-init.sh when npm cannot say whether the version is published', () => {
+  // Port 9 refuses at once, and npm makes no retry, so each run takes well under a second.
+  const unreachable = { npm_config_registry: 'http://127.0.0.1:9/', npm_config_fetch_retries: '0' };
+
+  for (const args of [['--dry-run'], []]) {
+    it(`exits 1 naming the registry error and packs nothing when the registry refuses the connection${args.length ? ', with --dry-run' : ''}`, () => {
+      const before = writtenFiles();
+      const r = run(args, unreachable, 'real npm');
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('ECONNREFUSED');
+      expect(r.stderr).toContain('127.0.0.1:9');
+      expect(r.stdout).not.toContain('npm pack of commit');
+      expect(r.calls).toEqual([]);
+      expect(writtenFiles()).toEqual(before);
+    });
+  }
+
+  it('exits 1 when npm view fails and prints no error code', () => {
+    const r = run(['--dry-run'], {}, { stdout: '', status: 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('npm view secretless-ai@');
+    expect(r.stdout).not.toContain('npm pack of commit');
+    expect(r.calls).toEqual([npmView()]);
   });
 });
 

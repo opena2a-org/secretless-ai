@@ -83,7 +83,10 @@ that is not followed by a render fails a test. `docs/vhs/record-init.sh
 --dry-run` prints the image, its base images, the build, the tape, the fixture
 and the files a render writes, and exits 0 without running docker, building or
 packing; with `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` set, the script exits 2
-before it calls npm or docker. The release smoke test (section 10c of
+before it calls npm or docker. The script packs HEAD only when the registry
+answers E404 for the version; when `npm view` fails any other way, for example
+because the registry cannot be reached, the script and its dry run exit 1,
+name npm's error code and pack nothing. The release smoke test (section 10c of
 `docs/testing/release-smoke.md`) renders again after a version bump and
 records the sidecar's hash. `docs/demo.tape` is removed.
 No command, flag, output or exit code changed.

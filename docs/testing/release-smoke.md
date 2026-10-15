@@ -426,10 +426,13 @@ sidecar beside it, `docs/vhs/init.json`, names the version the recording shows,
 and `src/recording-sidecar.test.ts` fails while that version differs from the one
 in `package.json`. A version bump is therefore followed by a render. Commit the
 bump first: while the version is not on npm, the render installs `npm pack` of
-the committed tree at HEAD, not the working tree.
+the committed tree at HEAD, not the working tree. The script asks the registry
+with `npm view` and packs HEAD only when the answer is E404; any other failure,
+such as a registry npm cannot reach, stops the script and its dry run with exit
+1 and npm's error code.
 
 ```bash
-docs/vhs/record-init.sh --dry-run   # image, base images, build, tape, fixture, files written; runs nothing else
+docs/vhs/record-init.sh --dry-run   # image, base images, build, tape, fixture, files written; runs npm view, git status, git rev-parse and node, no docker, build or pack
 docs/vhs/record-init.sh             # needs Docker; exits 2 if ANTHROPIC_API_KEY or OPENAI_API_KEY is set
 shasum -a 256 docs/vhs/init.json    # put this hash in the release record
 ```
