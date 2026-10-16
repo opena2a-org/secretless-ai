@@ -222,6 +222,18 @@ export interface LoadOptions {
 }
 
 /**
+ * @internal The default-ignore lines `loadSecretlessIgnore` starts from: none
+ * under `skipDefaults`, and none of the test-path defaults under
+ * `includeTests`. The scan matches a path against these alone to tell a path
+ * the scanned tree's own ignore file excluded from one the defaults exclude.
+ */
+export function defaultIgnoreLines(options?: LoadOptions): string[] {
+  if (options?.skipDefaults) return [];
+  const testDefaults = new Set(TEST_DEFAULT_IGNORE_PATTERNS);
+  return DEFAULT_IGNORE_PATTERNS.filter((p) => !(options?.includeTests && testDefaults.has(p)));
+}
+
+/**
  * Build a matcher from `<rootDir>/.secretlessignore` plus the defaults.
  *
  * If the file does not exist, the defaults still apply (unless skipDefaults
@@ -229,14 +241,7 @@ export interface LoadOptions {
  * scanning should never fail because of a malformed ignore file.
  */
 export function loadSecretlessIgnore(rootDir: string, options?: LoadOptions): IgnoreMatcher {
-  const lines: string[] = [];
-  if (!options?.skipDefaults) {
-    const testDefaults = new Set(TEST_DEFAULT_IGNORE_PATTERNS);
-    for (const p of DEFAULT_IGNORE_PATTERNS) {
-      if (options?.includeTests && testDefaults.has(p)) continue;
-      lines.push(p);
-    }
-  }
+  const lines: string[] = defaultIgnoreLines(options);
 
   const filePath = path.join(rootDir, IGNORE_FILENAME);
   if (fs.existsSync(filePath)) {

@@ -2,6 +2,7 @@ import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips, unreadReason, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
+import { IGNORE_FILENAME } from '../secretlessignore';
 import { status, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
@@ -791,7 +792,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
       confidenceSuppressed: 0,
       unscannedConfig: { count: 0, files: [] as string[] },
-      eligibleFiles: 0, walkBudgetExceeded: false,
+      eligibleFiles: 0, walkBudgetExceeded: false, ignoreFileExcluded: 0,
     };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
@@ -824,6 +825,10 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         // Files skipped for size were never opened, so they are coverage lost,
         // not content judged clean.
         oversize: stats.oversize.length,
+        // Paths the scanned tree's own `.secretlessignore` kept from being
+        // read (#414). A gap, unlike the default-ignore list's boundaries: the
+        // tree being judged wrote the rule, so a committed `*` hid the tree.
+        ignoreFileExcluded: stats.ignoreFileExcluded,
         // DECLARED BOUNDARIES, not broken claims — so, like outOfRoot, these do
         // NOT set the exit code. A count that is non-zero on every repository
         // is not a signal; gating on it would turn every clean scan into a
@@ -850,12 +855,13 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       unscannedConfigFiles: stats.unscannedConfig.files,
     }, null, 2));
     // An incomplete scan is not a pass. `total: 0` with `truncated: true`, an
-    // unreadable file, or a file skipped for size means part of the tree was
-    // never read, so exiting 0 would gate CI on a subset. An out-of-root link
-    // is a deliberate, reported boundary rather than a failure, so it does not
-    // by itself set exit 1.
+    // unreadable file, a file skipped for size, or a path the tree's own
+    // ignore file excluded means part of the tree was never read, so exiting
+    // 0 would gate CI on a subset. An out-of-root link is a deliberate,
+    // reported boundary rather than a failure, so it does not by itself set
+    // exit 1.
     return findings.length > 0 || stats.truncated
-      || stats.unreadable.length > 0 || stats.oversize.length > 0 ? 1 : 0;
+      || stats.unreadable.length > 0 || stats.oversize.length > 0 || stats.ignoreFileExcluded > 0 ? 1 : 0;
   }
 
   console.log('\n  Secretless Scanner\n');
@@ -867,7 +873,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
     confidenceSuppressed: 0,
     unscannedConfig: { count: 0, files: [] as string[] },
-    eligibleFiles: 0, walkBudgetExceeded: false,
+    eligibleFiles: 0, walkBudgetExceeded: false, ignoreFileExcluded: 0,
   };
   const findings = scan(projectDir, scanOpts, stats);
   const minConfidence = options?.minConfidence ?? 0;
@@ -999,6 +1005,17 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.log(`  ${c.cyan('Verify:')} head -c 4096 ${operand(stats.oversize.slice(0, 10).map((f) => f.path))}`);
       console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --max-file-size ${Math.ceil(stats.oversize[0].bytes / (1024 * 1024)) + 1}mb\n`);
     }
+    // #414 — the scanned tree's own ignore file decides what this scan reads
+    // of that tree, so a committed `.secretlessignore` holding `*` printed
+    // "No hardcoded credentials found." with every path listed only as a
+    // declared boundary below. Named, with how many paths it kept out.
+    if (stats.ignoreFileExcluded > 0) {
+      const n = stats.ignoreFileExcluded;
+      console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} excluded by ${shown(IGNORE_FILENAME)}`)}, so not known to be clean.`);
+      console.log(`  ${c.dim('Its rules come from the tree being scanned, not from this scanner.')}`);
+      console.log(`  ${c.cyan('Verify:')} cat -v ${operand([IGNORE_FILENAME])}`);
+      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --no-ignore\n`);
+    }
 
     // #124 — a config-format file whose name is not on the built-in list was
     // read by no walk, and a clean scan said nothing: `secrets.json` beside a
@@ -1084,7 +1101,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   // An out-of-root link is a reported boundary, not a gap in what we claimed to
   // cover, so it does not make the result non-clean. A file skipped for size
   // IS such a gap: we said we scan config files, and did not scan that one.
-  const anyCoverageGap = () => stats.truncated || stats.unreadable.length > 0 || stats.oversize.length > 0;
+  // So is a path the scanned tree's own ignore file excluded (#414).
+  const anyCoverageGap = () => stats.truncated || stats.unreadable.length > 0 || stats.oversize.length > 0
+    || stats.ignoreFileExcluded > 0;
 
   // When everything (or a real subset) was hidden as a placeholder, say so and
   // point at the flag that reveals them. A silent "No credentials found" makes a
