@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, isConfigShaped, type CredentialPattern } from './patterns';
 import { redactMatches } from './redact';
-import { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
+import { loadSecretlessIgnore, buildMatcher, defaultIgnoreLines, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceBreakdown, type ConfidenceTier } from './confidence';
 import { BUNDLE_EXTENSION } from './bundle';
 import { withSlashSeparators } from './display-safe';
@@ -248,6 +248,17 @@ export interface ScanStats {
    * number; `files` is a sample capped like the skip samples.
    */
   unscannedConfig?: { count: number; files: string[] };
+  /**
+   * Paths the source walk did not read because the scanned tree's own
+   * `.secretlessignore` matched them and the default-ignore list alone does
+   * not (#414). Each is also counted in `skips`, with the ignore-rule reason.
+   *
+   * Unlike the rest of `skips`, a GAP for `scan`: the rule comes from the tree
+   * being judged, so a committed `.secretlessignore` holding `*` turned a
+   * scan of that tree into "No hardcoded credentials found." with exit 0.
+   * Written only when non-zero, so an absent field is zero.
+   */
+  ignoreFileExcluded?: number;
 }
 
 /**
@@ -263,6 +274,7 @@ export function newScanStats(): Required<ScanStats> {
     placeholdersSuppressed: 0, truncated: false, unreadable: [], outOfRoot: [],
     oversize: [], skips: emptySkips(), confidenceSuppressed: 0,
     unscannedConfig: { count: 0, files: [] }, eligibleFiles: 0, walkBudgetExceeded: false,
+    ignoreFileExcluded: 0,
   };
 }
 
@@ -271,7 +283,8 @@ export function newScanStats(): Required<ScanStats> {
  * a path could not be opened, or a file was skipped for size. The findings are
  * then a subset, so zero of them is not a clean result. Out-of-root links and
  * declared skips are disclosures rather than gaps and do not count, the same
- * split `scan` uses for its exit code.
+ * split `scan` uses for its exit code. `scan` also counts the paths in
+ * `ignoreFileExcluded` as a gap; this function does not.
  */
 export function coverageIncomplete(stats: ScanStats): boolean {
   return stats.truncated
@@ -610,6 +623,13 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     }
   })();
 
+  // The default-ignore list alone, when `ignore` was loaded here from the
+  // scanned tree: a path `ignore` matches and this does not was excluded by
+  // that tree's `.secretlessignore` (#414). Null for a caller's own matcher.
+  const ignoreDefaults: IgnoreMatcher | null = ignore && typeof options?.ignore !== 'object'
+    ? buildMatcher(defaultIgnoreLines({ includeTests: options?.includeTests ?? false }))
+    : null;
+
   // Defaults-only matcher used to flag `--no-ignore` findings whose path is
   // in the default-ignore list. Built lazily because it's only useful when
   // `ignore === null` (otherwise the path is already filtered out).
@@ -791,13 +811,16 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     const configFileSet = new Set(scannedConfigFiles);
     const maxFiles = options?.maxSourceFiles ?? 5000;
     const includeTests = options?.includeTests ?? false;
-    const sourceWalk = walkSourceFiles(projectDir, maxFiles, includeTests, ignore, options?.includeConfig ?? false);
+    const sourceWalk = walkSourceFiles(projectDir, maxFiles, includeTests, ignore, options?.includeConfig ?? false, ignoreDefaults);
     absorbWalk(sourceWalk);
     if (stats?.unscannedConfig) {
       stats.unscannedConfig.count += sourceWalk.unscannedConfig.count;
       for (const f of sourceWalk.unscannedConfig.files) {
         if (stats.unscannedConfig.files.length < SKIP_SAMPLE_CAP) stats.unscannedConfig.files.push(f);
       }
+    }
+    if (stats && sourceWalk.ignoreFileExcluded > 0) {
+      stats.ignoreFileExcluded = (stats.ignoreFileExcluded ?? 0) + sourceWalk.ignoreFileExcluded;
     }
 
     for (const filePath of sourceWalk.files) {
@@ -1726,9 +1749,18 @@ function walkSourceFiles(
   includeTests: boolean,
   ignore: IgnoreMatcher | null,
   includeConfig = false,
-): WalkResult & { unscannedConfig: { count: number; files: string[] } } {
+  ignoreDefaults: IgnoreMatcher | null = null,
+): WalkResult & { unscannedConfig: { count: number; files: string[] }; ignoreFileExcluded: number } {
   const configMatcher = buildConfigNameMatcher();
   const unscannedConfig = { count: 0, files: [] as string[] };
+  // The ignore rule's reason, counted in `ignoreFileExcluded` when the
+  // default-ignore list alone does not match `matched`: then the scanned
+  // tree's own ignore file is what kept the path from being read (#414).
+  let ignoreFileExcluded = 0;
+  const byIgnoreRule = (matched: string): 'ignoreRule' => {
+    if (ignoreDefaults && !ignoreDefaults.matches(matched)) ignoreFileExcluded++;
+    return 'ignoreRule';
+  };
   const walk = walkTree(dir, maxFiles, {
     // Prune whole-tree ignored directories. The matcher's directory patterns
     // end with `/`, so we test the dir path with a trailing segment.
@@ -1753,7 +1785,7 @@ function walkSourceFiles(
         || (!ignored && HIDDEN_CACHE_DIRS.has(name) && 'hiddenCache')
         || (!ignored && WORKTREE_DIRS.has(name) && 'worktrees')
         || (!includeTests && TEST_DIRS.has(name) && 'testDir')
-        || (ignored && 'ignoreRule');
+        || (ignored && byIgnoreRule(rel + '/.'));
     },
     // The config walk reads these (it applies the ignore rule itself). So does
     // the key walk, under the test-file and ignore rules this walk applies,
@@ -1785,12 +1817,16 @@ function walkSourceFiles(
         // "unsupported file type" named a type the key walk reads.
         if (KEY_FILE_EXTENSIONS.has(ext)) {
           if (!(includeTests || !isTestFile(name))) return 'testFile';
-          if (ignore && ignore.matches(rel)) return 'ignoreRule';
+          if (ignore && ignore.matches(rel)) return byIgnoreRule(rel);
         }
+        // Likewise a file the config walk reads by name, such as `.env`:
+        // it reaches here only when the ignore rule stopped that walk, so
+        // "unsupported file type" hid that a rule kept it from being read.
+        if (ignore && ignore.matches(rel) && matchesConfigName(name, rel, configMatcher)) return byIgnoreRule(rel);
         return 'unsupportedType';
       }
       if (!(includeTests || !isTestFile(name))) return 'testFile';
-      if (ignore && ignore.matches(rel)) return 'ignoreRule';
+      if (ignore && ignore.matches(rel)) return byIgnoreRule(rel);
       if (configShaped && !includeConfig) {
         unscannedConfig.count++;
         if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(listedRel);
@@ -1801,5 +1837,5 @@ function walkSourceFiles(
     collect: (entryPath) => entryPath,
     discloseSkips: true,
   });
-  return { ...walk, unscannedConfig };
+  return { ...walk, unscannedConfig, ignoreFileExcluded };
 }

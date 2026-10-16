@@ -150,6 +150,21 @@ a line is not reported when it gives no value or the value opens
 with `$` or a backtick, as in `STRIPE_KEY="$STRIPE_KEY"` or
 `STRIPE_KEY=$(pbpaste)`.
 
+**`scan` counts a path the scanned tree's own `.secretlessignore` excluded
+as a coverage gap (#414).** On a tree holding `app.js`, `src/index.ts` and a
+`.secretlessignore` holding `*`, `scan` printed `No hardcoded credentials
+found.` and exited 0, with both paths listed only as declared boundaries. It
+now prints `No credentials found in the files scanned.` and
+`2 paths excluded by .secretlessignore, so not known to be clean.`, with a
+`cat -v` Verify line and a `--no-ignore` Fix line, and exits 1. `--json`
+reports the count as `summary.ignoreFileExcluded` and exits 1 as well. A
+directory the default-ignore list excludes, such as `examples/`, is still a
+declared boundary at exit 0, also when `.secretlessignore` repeats it. A
+`.env` file the rule kept from being read was listed as `unsupported file
+type`; it is now listed with the ignore rule's reason and counted. A
+`.secretlessignore` that excludes a path the default-ignore list does not
+now makes a scan that finds nothing exit 1; `--no-ignore` reads those paths.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),
