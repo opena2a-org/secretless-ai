@@ -99,6 +99,24 @@ and the usage `vault exec` prints without `--` showed
 `vault exec github -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'`,
 as `docs/how-it-works.md` now does.
 
+**`scan` and `scan-staged` look for the word "example" only in the comment
+text of a line before hiding a value on it as a placeholder, and `scan-staged`
+says how many values it hid (#411).** A value was hidden when its line held
+"example" anywhere and any of `//`, `#`, `/*`, `<!--`, `-->`, `'''` or `"""`, so
+`const token = "<value>"; const docs = "https://example.com";` was not
+reported. "Example" now has to sit inside a comment on the line: a `//` or `#`
+comment, a block, HTML or docstring comment, or a JSDoc line. A `//` right
+after `:` is read as a URL, not a comment. On 13 files each holding one GitHub
+token and differing only in the text after it, `scan --json` reported 2 and
+hid 11; it now reports 6 and hides 7, the 7 whose text after the token is a
+comment that says example (`// Example`, `// https://example.com`,
+`# example`, `/* example */`, `<!-- example -->`, `""" example """` and
+`''' example '''`). With the same 13 files staged, `scan-staged` named 2 and
+printed no count; it now names 6 and prints
+`7 values looked like a placeholder and were hidden.` and
+`See them: npx secretless-ai scan --show-placeholders`, the lines `scan`
+prints. It prints them on a passing check too.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),
