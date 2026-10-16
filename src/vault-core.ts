@@ -411,16 +411,24 @@ export async function vaultRotate(
 
   // Get new credential value
   let credentialValue: string;
-  if (options.value) {
+  if (options.value !== undefined) {
     credentialValue = options.value;
   } else if (options.envVar) {
     const envVal = process.env[options.envVar];
-    if (!envVal) {
+    if (envVal === undefined) {
       throw new Error(`Environment variable ${options.envVar} is not set`);
     }
     credentialValue = envVal;
   } else {
     credentialValue = await readCredentialFromStdin(namespace);
+  }
+
+  // An empty value is refused before the store or the audit log is touched,
+  // so stdin at end of input never replaces a working credential with a blank one.
+  if (credentialValue.trim() === '') {
+    vault.zeroize(edSecretKey);
+    store.lock();
+    throw new Error('no value provided. Pipe the value on stdin, or use --env NAME.');
   }
 
   const credentialBytes = new TextEncoder().encode(credentialValue);
