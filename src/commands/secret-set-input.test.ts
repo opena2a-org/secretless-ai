@@ -262,3 +262,46 @@ describe('secret set NAME at a terminal prompt', () => {
     expect(await store().getSecret('API_KEY')).toBeUndefined();
   });
 });
+
+/**
+ * `secret set NAME=VALUE` puts the value in shell history (README.md), so it
+ * says so in one line, and the empty-store hint recommends the prompt instead
+ * (#413).
+ */
+describe('the NAME=VALUE form and shell history', () => {
+  const NOTE = 'shell history keeps it';
+
+  it('NAME=VALUE stores the value and prints one line naming shell history and the prompt form', async () => {
+    const res = await run(['set', `API_KEY=${TOKEN}`]);
+    expect(res.code, res.err).toBe(0);
+    expect(await store().getSecret('API_KEY')).toBe(TOKEN);
+    const lines = res.err.split('\n').filter((l) => l.includes(NOTE));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('secret set API_KEY` prompts with input hidden.');
+    expect(res.out + res.err).not.toContain(TOKEN);
+  });
+
+  it('CONTROL: NAME at a terminal prompt prints no history note', async () => {
+    const { input } = fakeTty();
+    const pending = run(['set', 'API_KEY'], { stdin: input });
+    input.write(`${TOKEN}\r`);
+    const res = await pending;
+    expect(res.code, res.err).toBe(0);
+    expect(res.err).not.toContain(NOTE);
+  });
+
+  it('CONTROL: NAME --from-clipboard prints no history note', async () => {
+    const { clipboard } = fakeClipboard(TOKEN);
+    const res = await run(['set', 'API_KEY', '--from-clipboard'], { clipboard });
+    expect(res.code, res.err).toBe(0);
+    expect(res.err).not.toContain(NOTE);
+  });
+
+  it('`secret list` on an empty store offers `secret set MY_KEY`, not MY_KEY=my_value', async () => {
+    const res = await run(['list']);
+    expect(res.code, res.err).toBe(0);
+    expect(res.out).toContain('No secrets stored.');
+    expect(res.out).toContain('Store one:    npx secretless-ai secret set MY_KEY   (prompts, input hidden)');
+    expect(res.out).not.toMatch(/MY_KEY=/);
+  });
+});

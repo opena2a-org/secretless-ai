@@ -430,6 +430,10 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
           return 1;
         }
+        // The note `vault register --value` carries in its help, for the
+        // inline form README.md describes as putting the value in shell
+        // history (#413).
+        console.error(`  The value was given as an argument (shell history keeps it); \`${CLI_BARE} secret set ${name}\` prompts with input hidden.`);
       } else {
         // Read value from stdin
         name = nameArg;
@@ -538,7 +542,9 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         if (names.length === 0) {
           console.log('\n  No secrets stored.');
           console.log(scopeNote);
-          console.log(`  Store one:    ${CLI} secret set MY_KEY=my_value`);
+          // The name only: MY_KEY=my_value is the form that leaves the value
+          // in shell history (#413).
+          console.log(`  Store one:    ${CLI} secret set MY_KEY   (prompts, input hidden)`);
           console.log(`  Import .env:  ${CLI} import .env\n`);
           return 0;
         }

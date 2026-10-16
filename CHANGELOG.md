@@ -130,6 +130,26 @@ not written. Unless the profile already has a working hook, `secret set` then
 prints `secretless-ai run --only NAME -- <command>`, which gives one command
 one secret.
 
+**`secret list` on an empty store recommends `secret set MY_KEY` instead of
+the form that puts the value in shell history, `secret set NAME=VALUE` says
+so, and `scan --history` reports that form (#413).** The empty-store hint read
+`Store one:    npx secretless-ai secret set MY_KEY=my_value`; it now reads
+`Store one:    npx secretless-ai secret set MY_KEY   (prompts, input hidden)`.
+`secret set NAME=VALUE` still stores the value, and now also prints one line
+on stderr: `The value was given as an argument (shell history keeps it);`
+followed by the `secret set NAME` command, which prompts with input hidden.
+On a `.bash_history` holding
+`npx secretless-ai secret set STRIPE_KEY=not-a-real-value`, `scan --history`
+printed `No credentials found in shell history.` at exit 0; it now reports
+the line as `cmd-secret-set` with the preview
+`npx secretless-ai secret set STRIPE_KEY=****` at exit 1, and `clean-history`
+rewrites it to `npx secretless-ai [REDACTED:cmd-secret-set]`. A
+three-character value such as `PIN=abc` is reported with the whole value
+masked, flags before the name such as `--meta app=web` are passed over, and
+a line is not reported when it gives no value or the value opens
+with `$` or a backtick, as in `STRIPE_KEY="$STRIPE_KEY"` or
+`STRIPE_KEY=$(pbpaste)`.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),
