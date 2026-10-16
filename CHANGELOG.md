@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+**An install id left by an earlier run is deleted on a run with telemetry
+off (#426).** Since #422 no install id was created while telemetry was off,
+but one already in `~/.config/opena2a/telemetry.json`
+(`$XDG_CONFIG_HOME/opena2a/telemetry.json` when that is set) was kept, and
+`OPENA2A_TELEMETRY=off secretless-ai telemetry on` wrote it back into the
+file. On a run with telemetry off (`OPENA2A_TELEMETRY=off`, a stored
+`telemetry off`, CI or a test runner) the file is now rewritten without the
+install id before the command runs, keeping the stored `enabled` value, so
+an explicit `"enabled": false` stays. `telemetry on` and `telemetry off` on
+such a run store `{"enabled": true}` or `{"enabled": false}` without an id.
+Apart from those two commands, a file with no install id is not written. A
+file that cannot be written does not stop the run: `--version` and
+`telemetry status` exit 0, and the status still prints the id. A run with
+telemetry on keeps and sends the stored id as before. `scan --help` says
+when the file is rewritten. `src/telemetry-install-id.test.ts` covers
+`--version`, a scan, `telemetry status` and `telemetry on` under
+`OPENA2A_TELEMETRY=off`, `CI=true`, a stored `"enabled": false`, a file with
+no `enabled` key, `XDG_CONFIG_HOME`, a read-only file, and a control run
+with telemetry on.
+
 **No install id is written while telemetry is off (#422).** Under
 `OPENA2A_TELEMETRY=off`, `secretless-ai --version` and `secretless-ai scan`
 wrote `{"enabled": true, "installId": "..."}` to

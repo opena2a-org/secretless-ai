@@ -35,6 +35,7 @@ import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } fro
 import { nearestMatch } from './near-miss';
 import {
   automatedRunVariable, optedOutByVariable, OPT_OUT_VARIABLE, telemetrySettingFile, readTelemetrySetting, storeTelemetrySetting,
+  dropStoredInstallId,
 } from './telemetry-gate';
 
 /**
@@ -120,7 +121,18 @@ async function main(): Promise<number> {
   const settingFile = telemetrySettingFile(process.env);
   const telemetryOn = () => !automated && !optedOut && (readTelemetrySetting(settingFile)?.enabled ?? true);
   const sending = telemetryOn();
-  if (sending) await tele.init({ tool: TOOL, version: VERSION });
+  if (sending) {
+    await tele.init({ tool: TOOL, version: VERSION });
+  } else {
+    // An install id an earlier run left in the file is deleted, keeping the
+    // stored setting (#426). Best effort, as the SDK's own write is: a setting
+    // file that cannot be written does not stop the run.
+    try {
+      dropStoredInstallId(settingFile);
+    } catch {
+      // The id stays; `telemetry status` reads the file and still prints it.
+    }
+  }
   const telemetryStatus = () => (telemetryOn() ? tele.status() : {
     enabled: false,
     configPath: settingFile,

@@ -155,10 +155,13 @@ function scanCoverageNotes(): string[] {
     '',
     // "It opens nothing else" was untrue without a scope: a scan, like every
     // command, reads the telemetry setting and creates its file when absent,
-    // on a run with telemetry on (#422).
+    // on a run with telemetry on (#422), and on a run with telemetry off
+    // rewrites it to delete an install id an earlier run stored (#426).
     'It opens nothing else for either. Like every command, scan also reads the',
     'telemetry setting, and creates its file when that is absent and the run',
-    'has telemetry on (not under OPENA2A_TELEMETRY=off, CI or a test runner):',
+    'has telemetry on. With telemetry off (OPENA2A_TELEMETRY=off, a stored',
+    '`telemetry off`, CI or a test runner) it rewrites the file only to delete',
+    'an install id an earlier run stored there:',
     `  ${TELEMETRY_SETTING_FILE}`,
     `  (${TELEMETRY_SETTING_FILE_XDG} when that variable is set)`,
     '',

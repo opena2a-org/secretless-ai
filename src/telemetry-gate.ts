@@ -108,17 +108,33 @@ export function readTelemetrySetting(file: string): TelemetrySetting | null {
   return installId ? { enabled, installId } : { enabled };
 }
 
-/**
- * Store the setting without deriving an install id: `telemetry on|off` on a
- * run with telemetry off, and `telemetry off` on any run. `on` keeps an id
- * already stored; `off` drops it, so none is kept while the setting is off.
- * The SDK derives one on the next run with telemetry on. The file is written
- * as the SDK writes it: directory mode 0700, file mode 0600.
- */
-export function storeTelemetrySetting(file: string, enabled: boolean): TelemetrySetting {
-  const installId = enabled ? readTelemetrySetting(file)?.installId : undefined;
-  const setting: TelemetrySetting = installId ? { enabled, installId } : { enabled };
+/** Write the setting as the SDK writes it: directory mode 0700, file mode 0600. */
+function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, JSON.stringify(setting, null, 2) + '\n', { mode: 0o600 });
+}
+
+/**
+ * Store the setting without an install id: `telemetry on|off` on a run with
+ * telemetry off, and `telemetry off` on any run. Each is a run with telemetry
+ * off, so an id already stored is dropped for `on` as for `off` (#426); the
+ * SDK derives one on the next run with telemetry on.
+ */
+export function storeTelemetrySetting(file: string, enabled: boolean): TelemetrySetting {
+  const setting: TelemetrySetting = { enabled };
+  writeTelemetrySetting(file, setting);
   return setting;
+}
+
+/**
+ * Delete an install id an earlier run left in the setting file, keeping the
+ * stored `enabled` value (#426). cli.ts calls it on every run with telemetry
+ * off, so an id is kept only while telemetry is on. A file with no id is not
+ * written. Returns true when the file was rewritten.
+ */
+export function dropStoredInstallId(file: string): boolean {
+  const setting = readTelemetrySetting(file);
+  if (!setting?.installId) return false;
+  writeTelemetrySetting(file, { enabled: setting.enabled });
+  return true;
 }
