@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runScan } from './commands/core';
+import { scan, newScanStats } from './scan';
 
 /**
  * The walk visits each directory's entries in sorted order, whatever order
@@ -122,5 +123,87 @@ describe('the walk visits each directory in sorted order', () => {
     const doc = await json(dir, true);
     expect(doc.skippedUnsupportedFiles.map((f: { path: string }) => f.path))
       .toEqual(['\uFF21.txt', '\u{1F600}.txt']);
+  });
+});
+
+/**
+ * The source walk enters dot-directories after every other directory (#397).
+ *
+ * Before #144 it entered none. Once it did, a dot-directory sorted ahead of
+ * `src/`, its files filled the cap first, and a capped scan dropped a finding
+ * the previous release reported. The value below is legibly fake, so the
+ * scanner holds it back as a placeholder; `showPlaceholders` reports it.
+ */
+describe('dot-directories reach the file cap last', () => {
+  afterEach(() => {
+    order.reversed = false;
+  });
+
+  const VALUE = ['sk-ant-api03-', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE12'].join('');
+  const SECRET_LINE = `const k = "${VALUE}";\n`;
+
+  function withDotFiles(dotDir: string, count: number, extra: Record<string, string>): string {
+    const files: Record<string, string> = { ...extra };
+    for (let i = 0; i < count; i++) files[`${dotDir}/f${i}.js`] = 'export const x = 1;\n';
+    return tree(files);
+  }
+
+  function capped(dir: string, maxSourceFiles: number) {
+    const stats = newScanStats();
+    const findings = scan(dir, { scanGlobal: false, showPlaceholders: true, maxSourceFiles }, stats);
+    return { files: findings.map((f) => f.file), stats };
+  }
+
+  for (const reversed of [false, true]) {
+    const label = reversed ? 'readdir returns entries reversed' : 'readdir returns entries as listed';
+
+    it(`reports the finding in zzz/app.ts when .foo/ alone exceeds the cap (${label})`, () => {
+      order.reversed = reversed;
+      const dir = withDotFiles('.foo', 5, { 'zzz/app.ts': SECRET_LINE });
+      const { files, stats } = capped(dir, 3);
+      expect(files).toEqual(['zzz/app.ts']);
+      // The cap still stopped the walk: two .foo/ files were left unscanned.
+      expect(stats.truncated).toBe(true);
+      expect(stats.eligibleFiles).toBe(6);
+    });
+
+    it(`reads a deeper file outside dot-directories before a shallower dot-directory (${label})`, () => {
+      order.reversed = reversed;
+      const dir = withDotFiles('.foo', 5, { 'src/a/b/app.ts': SECRET_LINE });
+      const { files, stats } = capped(dir, 3);
+      expect(files).toEqual(['src/a/b/app.ts']);
+      expect(stats.truncated).toBe(true);
+      expect(stats.eligibleFiles).toBe(6);
+    });
+
+    it(`defers a nested dot-directory and everything under it (${label})`, () => {
+      order.reversed = reversed;
+      const dir = withDotFiles('pkg/.gen/code', 5, { 'pkg/z/y/app.ts': SECRET_LINE });
+      const { files, stats } = capped(dir, 3);
+      expect(files).toEqual(['pkg/z/y/app.ts']);
+      expect(stats.truncated).toBe(true);
+      expect(stats.eligibleFiles).toBe(6);
+    });
+  }
+
+  it('still reads dot-directories when the cap leaves room', () => {
+    const dir = withDotFiles('.foo', 5, {
+      '.claude/agent.ts': SECRET_LINE,
+      'zzz/app.ts': SECRET_LINE,
+    });
+    const { files, stats } = capped(dir, 5000);
+    expect(files.sort()).toEqual(['.claude/agent.ts', 'zzz/app.ts']);
+    expect(stats.truncated).toBe(false);
+  });
+
+  it('leaves the dot-directory file unscanned when files outside fill the cap', () => {
+    const dir = tree({
+      '.claude/agent.ts': SECRET_LINE,
+      'src/app.ts': 'export const x = 1;\n',
+    });
+    const { files, stats } = capped(dir, 1);
+    expect(files).toEqual([]);
+    expect(stats.truncated).toBe(true);
+    expect(stats.eligibleFiles).toBe(2);
   });
 });

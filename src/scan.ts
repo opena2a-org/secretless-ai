@@ -1454,6 +1454,19 @@ interface WalkSpec {
    * count and bury the one entry a user needs to see.
    */
   discloseSkips?: boolean;
+  /**
+   * Visit every directory reached without passing through a dot-directory
+   * before any directory at or under one. Only the SOURCE walk sets this.
+   *
+   * That walk pruned every dot-directory until #144. Once it entered them, a
+   * dot-directory sorted ahead of `src/` and its files filled `maxFiles` first,
+   * so a capped scan dropped a finding the previous release reported (#397).
+   * With this set, the files outside dot-directories are collected in the same
+   * order as before #144, and a cap stop drops files inside dot-directories
+   * first. The key and config walks always entered dot-directories, so their
+   * order stays as it was.
+   */
+  hiddenDirsLast?: boolean;
 }
 
 /**
@@ -1484,8 +1497,12 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   let budgetExceeded = false;
 
   const rootReal = realpathOrNull(dir) ?? path.resolve(dir);
-  // Each entry carries the realpath chain of the directories above it.
-  const queue: Array<{ dir: string; ancestors: string[] }> = [{ dir, ancestors: [] }];
+  // Each entry carries the realpath chain of the directories above it, and
+  // whether it is a dot-directory or lies under one. Under `hiddenDirsLast`
+  // those wait in `deferred` until `queue` is empty.
+  type QueuedDir = { dir: string; ancestors: string[]; hidden: boolean };
+  const queue: QueuedDir[] = [{ dir, ancestors: [], hidden: false }];
+  const deferred: QueuedDir[] = [];
   const visitsByReal = new Map<string, number>();
   let dirsVisited = 0;
 
@@ -1509,9 +1526,9 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   // and exit 1 with nothing unscanned (#120). Walking on to the end also gives
   // `eligible`, the count a `--max-files` suggestion is sized from. The extra
   // work is bounded by MAX_DIRS_VISITED, which still truncates.
-  while (queue.length > 0) {
+  while (queue.length > 0 || deferred.length > 0) {
     if (dirsVisited >= dirsVisitedBudget) { truncated = true; budgetExceeded = true; break; }
-    const { dir: current, ancestors } = queue.shift()!;
+    const { dir: current, ancestors, hidden } = (queue.length > 0 ? queue : deferred).shift()!;
 
     const currentReal = realpathOrNull(current);
     if (currentReal === null) { unreadable.push(listed(current)); continue; }
@@ -1571,7 +1588,9 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
           if (!isWithinRoot(target, rootReal)) { outOfRoot.push(listedFromRoot); continue; }
         }
 
-        queue.push({ dir: entryPath, ancestors: childAncestors });
+        const childHidden = hidden || entry.name.startsWith('.');
+        (spec.hiddenDirsLast && childHidden ? deferred : queue)
+          .push({ dir: entryPath, ancestors: childAncestors, hidden: childHidden });
       } else {
         if (spec.coveredElsewhere?.(entry.name, relFromRoot)) continue;
         const rejectReason = spec.rejectFile(entry.name, relFromRoot, listedFromRoot);
@@ -1673,6 +1692,9 @@ function walkSourceFiles(
     // `hiddenCache` or `worktrees`, which `coverageReason` narrows by what the
     // filesystem says: the key and config walks read inside it, but not
     // through a link out of the root or into a directory they cannot open.
+    // Dot-directories are entered after every other directory, so their files
+    // reach the cap last (#397).
+    hiddenDirsLast: true,
     skipDir: (name, rel) => {
       const ignored = !!(ignore && ignore.matches(rel + '/.'));
       return (name === '.git' && 'gitMetadata')

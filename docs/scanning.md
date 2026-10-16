@@ -14,6 +14,8 @@ A directory scan checks source files by extension (`.js`, `.ts`, `.py`, `.go`, `
 
 Dot-directories are read for source files like any other directory, `.claude/` and `.github/` included, apart from `.git/`, the dependency and build directories no walk enters (such as `.next/` and `.venv/`), and these hidden caches and worktree directories: `.netlify/`, `.open-next/`, `.turbo/`, `.playwright-mcp/`, `.yarn/`, `.pnpm-store/`, `.cache/`, `.terraform/`, `.parcel-cache/`, `.angular/`, `.serverless/` and `.worktrees/`. Those last twelve are in the `notEntered` group, and inside them key files and the config files the scan recognizes by name are still scanned; source files and other files are not. Naming one scans it: `npx secretless-ai scan .turbo`.
 
+The source files in an entered dot-directory count toward the file cap (`--max-files`, default 5000). The walk reads every directory that is not hidden before it enters a dot-directory, so a scan that stops at the cap leaves files in dot-directories unscanned before any other file. A large generated dot-directory not in the list above, such as `.nuxt/` or `.svelte-kit/`, can still fill the cap: the scan then reports itself incomplete, and `summary.eligibleFiles` is the `--max-files` value that covers it.
+
 Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed (otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan), and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
 
 ## A flag never widens scope
