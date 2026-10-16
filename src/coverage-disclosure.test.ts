@@ -619,4 +619,76 @@ describe('the human report names a file it did not open', () => {
       fs.chmodSync(locked, 0o755);
     }
   });
+
+  // The block's `Scan one:` line named the first listed directory, which on a
+  // repository is `.git`, so it sent the user to a scan of git metadata (#399).
+  // Each directory a user can act on sits under `x/`, so the walk lists it
+  // after `.git` and `node_modules` and the order alone cannot pick it.
+  function notEnteredBlock(text: string): string {
+    const at = text.indexOf('not entered for source files');
+    expect(at, text).toBeGreaterThan(-1);
+    return text.slice(text.lastIndexOf('\n', at) + 1).split('\n\n')[0];
+  }
+
+  const NOT_OFFERED = {
+    '.git/HEAD': 'ref: refs/heads/main\n',
+    'node_modules/pkg/index.js': 'module.exports = {};\n',
+    'dist/app.js': 'module.exports = {};\n',
+    'src/app.ts': 'export const x = 1;\n',
+  };
+
+  it.each([
+    ['a test directory', 'x/tests', SOURCE_SKIP_REASONS.testDir],
+    ['a hidden cache directory', 'x/.cache', SOURCE_SKIP_REASONS.hiddenCache],
+    ['a worktree directory', 'x/.worktrees', SOURCE_SKIP_REASONS.worktrees],
+    ['an ignore-rule match', 'x/.golden', SOURCE_SKIP_REASONS.ignoreRule],
+  ])('names %s in Scan one:, not .git or a dependency or build directory (#399)', async (_label, offered, reason) => {
+    const dir = tree({ ...NOT_OFFERED, [`${offered}/a.ts`]: 'export {};\n' });
+    const { text } = await report(dir);
+    const block = notEnteredBlock(text);
+    const base = path.basename(dir);
+
+    expect(block).toContain(`${base}/.git: ${SOURCE_SKIP_REASONS.gitMetadata}`);
+    expect(block).toContain(`${base}/node_modules: ${SOURCE_SKIP_REASONS.buildOutput}`);
+    expect(block).toContain(`${base}/dist: ${SOURCE_SKIP_REASONS.buildOutput}`);
+    expect(block).toContain(`${base}/${offered}: ${reason}`);
+    const scanOne = block.split('\n').filter((l) => l.trimStart().startsWith('Scan one:'));
+    expect(scanOne).toEqual([`  Scan one: npx secretless-ai scan ${base}/${offered}`]);
+  });
+
+  it('prints no Scan one: when only .git and dependency or build directories are listed (#399)', async () => {
+    const dir = tree(NOT_OFFERED);
+    const { text, code } = await report(dir);
+    const block = notEnteredBlock(text);
+
+    expect(block).toMatch(/^ {2}3 directories not entered for source files: declared boundaries, not findings\./);
+    expect(block).toContain(`${path.basename(dir)}/.git: ${SOURCE_SKIP_REASONS.gitMetadata}`);
+    expect(text).not.toContain('Scan one:');
+    expect(code).toBe(0);
+  });
+
+  it('does not offer a hidden directory whose reason says nothing inside is read (#399)', async () => {
+    const outside = tree({ 'a.ts': 'export {};\n' });
+    const dir = tree(NOT_OFFERED);
+    fs.symlinkSync(outside, path.join(dir, '.cache'), 'dir');
+    const { text } = await report(dir);
+    const block = notEnteredBlock(text);
+
+    expect(block).toMatch(/\.cache: hidden directory linked outside the scan root; nothing inside is read$/m);
+    expect(block).not.toContain('Scan one:');
+  });
+
+  it.skipIf(process.getuid?.() === 0)('does not offer a hidden directory this user cannot open (#399)', async () => {
+    const dir = tree({ ...NOT_OFFERED, '.cache/a.ts': 'export {};\n' });
+    const locked = path.join(dir, '.cache');
+    fs.chmodSync(locked, 0o000);
+    try {
+      const { text } = await report(dir);
+      const block = notEnteredBlock(text);
+      expect(block).toMatch(/\.cache: hidden directory this user cannot open; nothing inside is read$/m);
+      expect(block).not.toContain('Scan one:');
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+  });
 });

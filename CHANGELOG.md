@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+**`scan` does not offer `.git` or a dependency or build directory as the
+`Scan one:` command under the directories not entered (#399).** The line named
+the first directory in the list, which is sorted by code point, so on a
+repository with no hidden cache directory sorting before `.git` it read
+`Scan one: npx secretless-ai scan <repo>/.git`, a scan of git metadata. It now
+names the first listed directory whose reason is a hidden cache or worktree
+directory, a test directory or an ignore rule. It is left out when the list
+holds only `.git`, dependency and build directories, and hidden directories
+linked outside the scan root or closed to this user. On a tree holding `.git/`,
+`node_modules/` and `tests/`, the line named `<tree>/.git` and now names
+`<tree>/tests`; without `tests/` the block prints no `Scan one:` line.
+
 **Without python3 the guard hook reads a payload with a space after a colon,
 and its secret-file rule reads a long command in less time.** Without python3
 the hook read `tool_name`, `file_path`, `path` and `command` with greps that
