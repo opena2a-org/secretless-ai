@@ -47,6 +47,16 @@ const COMMAND_PATTERNS: Array<{ id: string; name: string; regex: RegExp }> = [
   { id: 'cmd-bearer', name: 'Bearer token in curl', regex: /curl\s+[^\n]*-H\s*["']Authorization:\s*Bearer\s+\S{20,}/i },
   { id: 'cmd-api-key', name: 'API key in command', regex: /--api[_-]?key[=\s]+\S{20,}/i },
   { id: 'cmd-export', name: 'Secret in export', regex: /export\s+[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)[A-Z_]*\s*=\s*['"]?\S{20,}/i },
+  // `secret set NAME=VALUE` (#413). The value was stored as a secret, so it
+  // has no length floor. Flags before the name are passed over, `--description`
+  // and `--meta` together with their argument, so `--meta app=web` is not read
+  // as NAME=VALUE. A value opening with `$` or a backtick is a substitution:
+  // history holds the reference, not the value.
+  {
+    id: 'cmd-secret-set',
+    name: 'Secret in secret set NAME=VALUE',
+    regex: /(?<![\w-])secret\s+set\s+(?:--(?:description|meta)(?:=|\s+)(?:"[^"\n]*"|'[^'\n]*'|\S+)\s+|--(?!(?:description|meta)(?:[=\s]|$))\S+\s+)*[A-Za-z][\w-]*=(?<value>"(?![$`])[^"\n]+"|'[^'\n]+'|(?![$`"'])\S+)/,
+  },
 ];
 
 /**
@@ -74,7 +84,17 @@ function stripZshTimestamp(line: string): string {
  * Replaces the matched credential with asterisks, keeping first/last 4 chars.
  */
 function maskCredential(line: string, regex: RegExp): string {
-  return line.replace(regex, (match) => {
+  return line.replace(regex, (match: string, ...args: unknown[]) => {
+    // A pattern that names its `value` group has all of that group masked:
+    // a `secret set` value can be shorter than the four characters kept below.
+    const groups = args[args.length - 1];
+    const value = typeof groups === 'object' && groups !== null
+      ? (groups as Record<string, string | undefined>).value
+      : undefined;
+    if (value) {
+      const at = match.lastIndexOf(value);
+      return match.slice(0, at) + '****' + match.slice(at + value.length);
+    }
     if (match.length <= 12) {
       return match.slice(0, 4) + '****';
     }

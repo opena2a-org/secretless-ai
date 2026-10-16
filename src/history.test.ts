@@ -178,6 +178,73 @@ describe('scanHistory', () => {
   });
 });
 
+/**
+ * `secret set NAME=VALUE` puts the value in shell history (README.md); the
+ * history scan reports that form whatever the value looks like (#413).
+ */
+describe('scanHistory — secret set NAME=VALUE', () => {
+  const VALUE = 'not-a-real-value';
+
+  it('reports the line as cmd-secret-set and masks the whole value in the preview', async () => {
+    mockHistoryFiles({
+      '.bash_history': ['ls', `npx secretless-ai secret set STRIPE_KEY=${VALUE}`].join('\n'),
+    });
+
+    const result = await scanHistory();
+    expect(result.findingCount).toBe(1);
+    expect(result.findings[0]).toMatchObject({ file: '~/.bash_history', line: 2, patternId: 'cmd-secret-set' });
+    expect(result.findings[0].preview).toBe('npx secretless-ai secret set STRIPE_KEY=****');
+  });
+
+  for (const [label, line, preview] of [
+    ['a zsh timestamp and a short value', ': 1700000000:0;secretless-ai secret set PIN=abc', 'secretless-ai secret set PIN=****'],
+    ['a quoted value with a space', `secretless-ai secret set DB_PASSWORD='two words'`, 'secretless-ai secret set DB_PASSWORD=****'],
+    ['flags before the name', `secretless-ai secret set --description "Stripe key" --meta app=web STRIPE_KEY=${VALUE}`, 'secretless-ai secret set --description "Stripe key" --meta app=web STRIPE_KEY=****'],
+    ['a flag after the value', `secretless-ai secret set STRIPE_KEY=${VALUE} --meta app=web`, 'secretless-ai secret set STRIPE_KEY=**** --meta app=web'],
+  ] as const) {
+    it(`reports it with ${label}, and the preview carries no part of the value`, async () => {
+      mockHistoryFiles({ '.zsh_history': line });
+
+      const result = await scanHistory();
+      expect(result.findingCount).toBe(1);
+      expect(result.findings[0].patternId).toBe('cmd-secret-set');
+      expect(result.findings[0].preview).toBe(preview);
+    });
+  }
+
+  it('CONTROL: no value on the command line is not reported', async () => {
+    mockHistoryFiles({
+      '.bash_history': [
+        'secretless-ai secret set STRIPE_KEY',
+        'secretless-ai secret set STRIPE_KEY --from-clipboard',
+        'secretless-ai secret set STRIPE_KEY --meta app=web',
+        'secretless-ai secret set --meta app=web STRIPE_KEY',
+        'secretless-ai secret set --meta=app=web STRIPE_KEY',
+        'secretless-ai secret set STRIPE_KEY="$STRIPE_KEY"',
+        'secretless-ai secret set STRIPE_KEY=$(pbpaste)',
+        'secretless-ai secret set STRIPE_KEY=`pbpaste`',
+        'secretless-ai secret set STRIPE_KEY=',
+        'secretless-ai secret list',
+      ].join('\n'),
+    });
+
+    const result = await scanHistory();
+    expect(result.findings).toEqual([]);
+  });
+
+  it('cleanHistory redacts the command and leaves no run of the value', async () => {
+    mockHistoryFiles({ '.bash_history': `npx secretless-ai secret set STRIPE_KEY=${VALUE}` });
+    mockWriteFile.mockResolvedValue(undefined);
+
+    const result = await cleanHistory(false);
+    expect(result.linesRedacted).toBe(1);
+    const written = mockWriteFile.mock.calls.find(c => c[0] === '/home/testuser/.bash_history');
+    expect(written, 'the history file was never rewritten').toBeDefined();
+    expect(written![1]).toBe('npx secretless-ai [REDACTED:cmd-secret-set]');
+    expect(leaksAny(written![1] as string, [VALUE])).toBe(false);
+  });
+});
+
 describe('cleanHistory', () => {
   it('redacts credentials in-place', async () => {
     const originalContent = [
