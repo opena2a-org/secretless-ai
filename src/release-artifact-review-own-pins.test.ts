@@ -132,6 +132,7 @@ describe("pinned-first-party-deps refuses a non-exact specifier on an own packag
     ["@nanomind/engine", "^0.1.1"],
     ["hackmyagent", ">=0.11.0"],
     ["arp-guard", "~0.3.0"],
+    ["@opena2a/aim-core", "1.0.0-beta+build.1+build.2"],
   ])("%s %s fails the check, named", { timeout: 120_000 }, (name, spec) => {
     const run = review({ dependencies: { [name]: spec } });
     expectSingleFailure(run, "pinned-first-party-deps");
@@ -191,6 +192,18 @@ describe("pinned-first-party-deps passes exact pins and packages other publisher
           "x-fixture": "npm:@opena2a/aim-core@0.2.0",
         },
         devDependencies: { "arp-guard": "0.0.1-fixture" },
+      });
+      expect(run.census["pinned-first-party-deps"]).toBe("pass");
+      expect(viewedNames(run)).toEqual([]);
+    },
+  );
+
+  it(
+    "an exact pin with a prerelease and then a build suffix passes with no registry read",
+    { timeout: 120_000 },
+    () => {
+      const run = review({
+        dependencies: { "@opena2a/aim-core": "1.0.0-beta+build.1", hackmyagent: "0.33.2-rc.1+build.7" },
       });
       expect(run.census["pinned-first-party-deps"]).toBe("pass");
       expect(viewedNames(run)).toEqual([]);

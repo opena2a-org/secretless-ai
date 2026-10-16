@@ -19,8 +19,11 @@ export const OWN_SCOPES = ['@opena2a/', '@nanomind/'];
 /** The package whose npm maintainers define who can publish an own package. */
 export const REFERENCE_PACKAGE = 'hackmyagent';
 
-/** MAJOR.MINOR.PATCH with an optional prerelease or build suffix, and nothing else. */
-export const EXACT_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$/;
+/**
+ * MAJOR.MINOR.PATCH with an optional prerelease suffix, then an optional build
+ * suffix (semver 2.0.0 allows both, in that order), and nothing else.
+ */
+export const EXACT_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
 
 export const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 

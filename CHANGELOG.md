@@ -100,6 +100,15 @@ member with `hackmyagent`'s. A name the registry answers E404 for fails as
 the review exits non-zero. `src/release-artifact-review-own-pins.test.ts` runs the review
 over fixtures for each case.
 
+**The release review accepts an exact version with both a prerelease and a
+build suffix (#401).** `pinned-first-party-deps` took a version as exact when
+it was `MAJOR.MINOR.PATCH` with one suffix starting `-` or `+`, and that suffix
+could not hold a `+`, so `1.0.0-beta+build.1` on `@opena2a/aim-core` failed as
+a non-exact specifier. A prerelease suffix may now be followed by a build
+suffix, in the order semver 2.0.0 gives: `1.0.0-beta+build.1` on
+`@opena2a/aim-core` and `0.33.2-rc.1+build.7` on `hackmyagent` pass with no
+registry read, and `1.0.0-beta+build.1+build.2` still fails.
+
 **`scan` lists a config file inside a directory this user can list but not
 search.** For `t/nosearch/config.json` under a `t/nosearch` of mode `0600`,
 `scan t --json` listed the file under neither `findings` nor
