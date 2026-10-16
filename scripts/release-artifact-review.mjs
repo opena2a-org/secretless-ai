@@ -32,8 +32,15 @@
  *   no-install-scripts       no preinstall, install or postinstall in the
  *                            packed package.json — nothing runs on the
  *                            consumer's machine
- *   pinned-first-party-deps  no caret or tilde range on any @opena2a/*
- *                            dependency: first-party deps are pinned exactly
+ *   pinned-first-party-deps  no non-exact specifier on an own-package
+ *                            dependency, in any of the four dependency
+ *                            sections: own is a name under @opena2a/ or
+ *                            @nanomind/, or one whose npm maintainers share a
+ *                            member with hackmyagent's (own-package-pins.mjs).
+ *                            Only a non-exact specifier is read from the
+ *                            registry; a name it answers E404 for fails as
+ *                            `pin not served`, and a read with no answer is a
+ *                            precondition
  *   no-retracted-claims      no file in the package carries a sentence listed
  *                            in retracted-claims.mjs: a security claim an
  *                            earlier release shipped and the source withdrew
@@ -71,6 +78,7 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { childEnv, fetchChild, npmChildEnv } from './child-env.mjs';
+import { npmMaintainersReader, ownPackagePins } from './own-package-pins.mjs';
 import { RETRACTED_CLAIMS, retractedClaimsIn } from './retracted-claims.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -327,18 +335,24 @@ function review(tarball, work, advisoryStates, results) {
   if (pkg === null) {
     results.fail('pinned-first-party-deps', 'packed package.json missing or unparseable');
   } else {
-    const loose = [];
-    for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-      for (const [name, range] of Object.entries(pkg[section] ?? {})) {
-        if (name.startsWith(OWN_SCOPE_PREFIX) && /^[\^~]/.test(String(range))) {
-          loose.push(`${section}.${name}=${range}`);
-        }
-      }
-    }
-    if (loose.length > 0) {
-      results.fail('pinned-first-party-deps', `caret/tilde range on first-party dependencies: ${loose.join(', ')}`);
+    const { loose, unserved, unread, classified } = ownPackagePins(
+      pkg,
+      npmMaintainersReader((args) => npm(args, { timeout: 60_000 })),
+    );
+    const unreadText = `no registry answer, so not classified: ${unread.join(', ')}`;
+    const problems = [];
+    if (loose.length > 0) problems.push(`non-exact specifier on an own-package dependency: ${loose.join(', ')}`);
+    if (unserved.length > 0) problems.push(`pin not served: ${unserved.join(', ')}`);
+    if (problems.length > 0) {
+      if (unread.length > 0) problems.push(unreadText);
+      results.fail('pinned-first-party-deps', problems.join('; '));
+    } else if (unread.length > 0) {
+      results.precondition('pinned-first-party-deps', unreadText);
     } else {
-      results.pass('pinned-first-party-deps');
+      results.pass(
+        'pinned-first-party-deps',
+        `every own-package specifier is exact; ${classified} non-exact specifiers read from the registry, none on an own package`,
+      );
     }
   }
 

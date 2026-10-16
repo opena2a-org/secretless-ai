@@ -56,6 +56,21 @@ files read in dot-directories count toward `--max-files`. On shallow clones of
 `axios/axios` and `psf/requests` the scan reports 0 findings and exits 0
 before and after this change, with and without `--include-config`.
 
+**The optional OpenA2A dependencies are pinned to exact versions.**
+`package.json` declared `@opena2a/aim-core` at `>=0.2.0` and
+`@nanomind/engine` and `@nanomind/guard` at `^0.1.1`, so an install could
+resolve each of them to a later release. They are now `0.2.0`, `0.1.1` and
+`0.1.1`, the versions those ranges resolved to on 2026-10-15. The release
+review's `pinned-first-party-deps` check refused only a caret or tilde range
+on an `@opena2a/` name: it passed `*`, `>=0.2.0`, `0.2.x` and `latest` on
+`@opena2a/aim-core`, `^0.1.1` on `@nanomind/engine` and `>=0.11.0` on
+`hackmyagent`. It now refuses a non-exact specifier on an own package: a name
+under `@opena2a/` or `@nanomind/`, or one whose npm maintainers share a
+member with `hackmyagent`'s. A name the registry answers E404 for fails as
+`pin not served`, and a registry read with no answer is a precondition, so
+the review exits non-zero. `src/release-artifact-review-own-pins.test.ts` runs the review
+over fixtures for each case.
+
 **`scan` lists a config file inside a directory this user can list but not
 search.** For `t/nosearch/config.json` under a `t/nosearch` of mode `0600`,
 `scan t --json` listed the file under neither `findings` nor

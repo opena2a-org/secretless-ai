@@ -53,9 +53,9 @@
     "vitest": "^4.1.2"
   },
   "optionalDependencies": {
-    "@nanomind/engine": "^0.1.1",
-    "@nanomind/guard": "^0.1.1",
-    "@opena2a/aim-core": ">=0.2.0"
+    "@nanomind/engine": "0.1.1",
+    "@nanomind/guard": "0.1.1",
+    "@opena2a/aim-core": "0.2.0"
   },
   "dependencies": {
     "@noble/post-quantum": "0.6.1",

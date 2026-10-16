@@ -19,6 +19,7 @@ export const REPO_ROOT = path.resolve(__dirname, "..");
 export const SCRIPT = path.join(REPO_ROOT, "scripts", "release-artifact-review.mjs");
 export const CHILD_ENV_MODULE = path.join(REPO_ROOT, "scripts", "child-env.mjs");
 export const RETRACTED_CLAIMS_MODULE = path.join(REPO_ROOT, "scripts", "retracted-claims.mjs");
+export const OWN_PACKAGE_PINS_MODULE = path.join(REPO_ROOT, "scripts", "own-package-pins.mjs");
 
 export const CHECKS = [
   "entry-allowlist",
@@ -384,6 +385,10 @@ export function relocatedScript(binStub?: { source: string }): {
   fs.copyFileSync(
     RETRACTED_CLAIMS_MODULE,
     path.join(root, "scripts", "retracted-claims.mjs"),
+  );
+  fs.copyFileSync(
+    OWN_PACKAGE_PINS_MODULE,
+    path.join(root, "scripts", "own-package-pins.mjs"),
   );
   if (binStub) {
     const binDir = path.join(root, "node_modules", ".bin");
