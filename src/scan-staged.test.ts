@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { scanStagedFiles } from './scan-staged';
 import { runScanStaged } from './commands/git';
 import { buildMatcher } from './secretlessignore';
+import { KNOWN_EXAMPLE_KEYS } from './patterns';
 
 // Mock child_process to avoid requiring a real git repo
 vi.mock('child_process', () => ({
@@ -220,6 +221,10 @@ describe('runScanStaged outside a git repository', () => {
 // them; the pre-commit path hid the same values with no count at all.
 describe('scan-staged placeholder disclosure (#411)', () => {
   const PAT = ['gh', 'p_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+  // The AWS docs access key id, hidden as a known example whatever its line
+  // says. Taken from the set the scanner checks, so no key shape is spelled
+  // out in this file.
+  const AWS_EXAMPLE_KEY = [...KNOWN_EXAMPLE_KEYS].find(k => k.startsWith('AKIA'))!;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -247,7 +252,7 @@ describe('scan-staged placeholder disclosure (#411)', () => {
     stage({
       'a.js': `const token = "${PAT}"; // example\n`,
       'b.js': `const token = "${PAT}";\n`,
-      'c.js': 'const k = "AKIAIOSFODNN7EXAMPLE";\n',
+      'c.js': `const k = "${AWS_EXAMPLE_KEY}";\n`,
     });
     const result = scanStagedFiles({ noIgnore: true });
     expect(result.findings.map(f => f.file)).toEqual(['b.js']);
@@ -270,7 +275,7 @@ describe('scan-staged placeholder disclosure (#411)', () => {
   it('prints the hidden count beside the findings on a blocked commit', () => {
     stage({
       'a.js': `const token = "${PAT}"; // example\n`,
-      'c.js': 'const k = "AKIAIOSFODNN7EXAMPLE";\n',
+      'c.js': `const k = "${AWS_EXAMPLE_KEY}";\n`,
       'b.js': `const token = "${PAT}";\n`,
     });
     const { code, err } = captureStderr(() => runScanStaged(['--no-ignore']));
