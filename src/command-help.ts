@@ -232,7 +232,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     flags: {
       '--dry-run': 'Report findings without redacting or marking secrets exposed',
       '--last': 'Only clean the most recent session per project',
-      '--path': ['<p>', 'Scan a specific file or directory'],
+      '--path': ['<p>', 'Scan a directory, or one .jsonl or .md file'],
     },
     notes: [
       'A redacted value that matches a stored secret marks that secret exposed',

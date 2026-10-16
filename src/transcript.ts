@@ -100,26 +100,49 @@ const SECRET_ASSIGNMENT_PATTERN: CredentialPattern = {
 };
 
 /**
+ * What `discoverTranscripts` makes of a target path: a directory it walks, a
+ * `.jsonl` or `.md` file it reads as given, or one of the targets it reads
+ * nothing from. A path under a file (`notes.txt/sub`) is `missing`; a lookup
+ * that fails for another reason, such as EACCES, is `unreadable`.
+ */
+export type TranscriptTarget =
+  | { kind: 'directory' }
+  | { kind: 'file' }
+  | { kind: 'missing' }
+  | { kind: 'notTranscript' }
+  | { kind: 'unreadable'; code: string };
+
+export function transcriptTarget(targetPath: string): TranscriptTarget {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(targetPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'unknown error';
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { kind: 'missing' } : { kind: 'unreadable', code };
+  }
+  if (stat.isDirectory()) return { kind: 'directory' };
+  if (stat.isFile() && (targetPath.endsWith('.jsonl') || targetPath.endsWith('.md'))) return { kind: 'file' };
+  return { kind: 'notTranscript' };
+}
+
+/**
  * Discover Claude Code transcript files.
  * Walks ~/.claude/projects/ recursively, finding .jsonl files.
  * Also discovers session-memory/summary.md files.
+ *
+ * A target that is not a directory or a transcript file returns no files. It
+ * used to fall through to the ~/.claude/projects walk, so `--path notes.txt`
+ * reported the transcripts there instead of the file given.
  */
 export function discoverTranscripts(targetPath?: string): string[] {
   const files: Array<{ path: string; mtime: number }> = [];
 
   if (targetPath) {
-    try {
-      const stat = fs.statSync(targetPath);
-      if (stat.isFile() && (targetPath.endsWith('.jsonl') || targetPath.endsWith('.md'))) {
-        return [targetPath];
-      }
-      if (stat.isDirectory()) {
-        walkDir(targetPath, files);
-        return files.sort((a, b) => b.mtime - a.mtime).map(f => f.path);
-      }
-    } catch {
-      return [];
-    }
+    const target = transcriptTarget(targetPath);
+    if (target.kind === 'file') return [targetPath];
+    if (target.kind !== 'directory') return [];
+    walkDir(targetPath, files);
+    return files.sort((a, b) => b.mtime - a.mtime).map(f => f.path);
   }
 
   const transcriptDir = path.join(os.homedir(), '.claude', 'projects');

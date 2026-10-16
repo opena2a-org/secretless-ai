@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+**`clean --path` refuses a path that is not there or a file that is not a
+transcript, and never calls 0 files clean.** `clean --dry-run --path
+transcript.log` and `clean --dry-run --path <missing>` printed `Scanned: 0
+files` and `No credentials found. Transcripts are clean.` at exit 0, and an
+existing file whose name does not end in `.jsonl` or `.md` read the default
+`~/.claude/projects` instead, so `--path notes.txt` inside a project directory
+reported the session beside it. A missing path now prints `Error: <path> was
+not found. Nothing was read.`, a file other than a `.jsonl` or `.md`
+transcript prints `Error: <path> is not a transcript (.jsonl or .md). Nothing
+was read.`, and a path that cannot be looked up names the error code, each on
+stderr at exit 1 with a `Verify:` and a `Fix:` line and before anything is
+read. A run that reads no file, such as one on an empty directory, prints
+`Scanned: 0 files — nothing to report.` instead of calling the transcripts
+clean. `discoverTranscripts` returns no files for such a target rather than
+the default directory's. A directory or a `.jsonl` or `.md` file is read as
+before. `src/transcript.test.ts` and
+`src/commands/transcript.clean-path.test.ts` cover a missing path, a path
+under a file, a `.log` file, a `.txt` file beside a session, an empty
+directory, and a directory and a file that are still read.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),

@@ -26,11 +26,13 @@ A command line the tool cannot bind is refused with exit 2 before anything runs,
 
 `--json` is implemented by `scan`, `status`, `secret list` and `secret show`. Passing it to any other command exits 2 and names the commands that implement it, rather than printing human text and exiting 0. The caller of `--json` is a machine, and a machine reading exit 0 beside prose cannot tell it was ignored.
 
-Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened, or an `init` that left a tool not configured, or a `verify` that found no API key in the environment to check), `2` the command line was refused and nothing ran, such as an unknown command or subcommand, or a flag it could not bind. Gate CI on `2` separately: it means the tool did not answer the question, not that the answer was clean.
+Exit codes: `0` clean, `1` credentials found (or an incomplete scan, or a `scan`, `status` or `verify` target that is missing or cannot be opened, or a `clean --path` that is missing, cannot be opened, or is a file other than a `.jsonl` or `.md` transcript, or an `init` that left a tool not configured, or a `verify` that found no API key in the environment to check), `2` the command line was refused and nothing ran, such as an unknown command or subcommand, or a flag it could not bind. Gate CI on `2` separately: it means the tool did not answer the question, not that the answer was clean.
 
 ```bash
 npx secretless-ai clean --dry-run --path ./transcripts   # reports findings without redacting
 ```
+
+`--path` takes a directory, which is walked for `.jsonl` transcripts and `session-memory/summary.md` files, or one `.jsonl` or `.md` file. Any other target reads nothing: a path that is not there prints `Error: <path> was not found. Nothing was read.`, and a file such as `transcript.log` prints `Error: <path> is not a transcript (.jsonl or .md). Nothing was read.`, each at exit 1. A directory holding no transcript prints `Scanned: 0 files — nothing to report.` rather than calling it clean.
 
 Mistype that flag as `--dryrun` and `clean` does not run. It exits 2 and prints:
 
