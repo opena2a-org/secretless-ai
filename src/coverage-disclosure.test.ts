@@ -734,4 +734,55 @@ describe('the human report names a file it did not open', () => {
     const scanOne = block.split('\n').filter((l) => l.trimStart().startsWith('Scan one:'));
     expect(scanOne).toEqual([`  Scan one: npx secretless-ai scan ${base}/x/notes.txt`]);
   });
+
+  // With `.git` and `.gitignore` passed over, the line named the next listed
+  // file, `.secretlessignore` (the scanner's own ignore file) or
+  // `.gitattributes` (#408). `a/.npmignore` shows an ignore file is matched
+  // by its name in any directory.
+  it.each([
+    ['.secretlessignore', 'dist/\n'],
+    ['.gitattributes', '* text=auto\n'],
+    ['a/.npmignore', 'test/\n'],
+  ])('prints no Scan one: when %s is listed beside .git and .gitignore (#408)', async (name, content) => {
+    const dir = tree({
+      '.git': 'gitdir: /somewhere/.git/worktrees/x\n',
+      '.gitignore': 'node_modules/\n',
+      [name]: content,
+      'src/app.ts': 'export const x = 1;\n',
+    });
+    const { text, code } = await report(dir);
+    const block = notReadBlock(text);
+    const base = path.basename(dir);
+
+    expect(block).toMatch(/^ {2}3 files not read for credentials: declared boundaries, not findings\./);
+    expect(block).toContain(`${base}/${name}: ${SOURCE_SKIP_REASONS.unsupportedType}`);
+    expect(text).not.toContain('Scan one:');
+    expect(code).toBe(0);
+  });
+
+  it('passes over git metadata and ignore files and names .gitmodules in Scan one: (#408)', async () => {
+    const dir = tree({
+      '.dockerignore': 'node_modules\n',
+      '.eslintignore': 'dist/\n',
+      '.git': 'gitdir: /somewhere/.git/worktrees/x\n',
+      '.gitattributes': '* text=auto\n',
+      '.gitignore': 'node_modules/\n',
+      '.gitkeep': '',
+      '.gitmodules': '[submodule "x"]\n\tpath = x\n\turl = ../x.git\n',
+      '.secretlessignore': 'dist/\n',
+    });
+    const { text } = await report(dir);
+    const block = notReadBlock(text);
+    const base = path.basename(dir);
+
+    expect(block).toMatch(/^ {2}8 files not read for credentials: declared boundaries, not findings\./);
+    // Every file listed before `.gitmodules` is passed over.
+    const listedNames = block.split('\n').slice(1, 9).map((l) => l.trim().split(': ')[0]);
+    expect(listedNames).toEqual(
+      ['.dockerignore', '.eslintignore', '.git', '.gitattributes', '.gitignore', '.gitkeep', '.gitmodules', '.secretlessignore']
+        .map((n) => `${base}/${n}`),
+    );
+    const scanOne = block.split('\n').filter((l) => l.trimStart().startsWith('Scan one:'));
+    expect(scanOne).toEqual([`  Scan one: npx secretless-ai scan ${base}/.gitmodules`]);
+  });
 });
