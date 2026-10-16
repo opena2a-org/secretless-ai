@@ -232,6 +232,29 @@ describe('scanHistory — secret set NAME=VALUE', () => {
     expect(result.findings).toEqual([]);
   });
 
+  // A quoted `--meta` argument once matched both the quoted and the unquoted
+  // alternative, so a line of n such arguments and no NAME=VALUE explored 2^n
+  // paths: 24 of them took about a second, 30 about twenty, and a line under
+  // the 4096-character cap never returned.
+  it('matches a line of forty quoted --meta arguments in under 50 ms', async () => {
+    const flags = '--meta "a" '.repeat(40);
+    mockHistoryFiles({
+      '.bash_history': [
+        `secretless-ai secret set ${flags}`,
+        `secretless-ai secret set ${flags}STRIPE_KEY=${VALUE}`,
+      ].join('\n'),
+    });
+
+    const started = performance.now();
+    const result = await scanHistory();
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(50);
+    expect(result.findings.map(f => f.line)).toEqual([2]);
+    expect(result.findings[0].patternId).toBe('cmd-secret-set');
+    expect(result.findings[0].preview).toBe(`secretless-ai secret set ${flags}STRIPE_KEY=****`);
+  });
+
   it('cleanHistory redacts the command and leaves no run of the value', async () => {
     mockHistoryFiles({ '.bash_history': `npx secretless-ai secret set STRIPE_KEY=${VALUE}` });
     mockWriteFile.mockResolvedValue(undefined);

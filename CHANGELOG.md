@@ -148,7 +148,9 @@ three-character value such as `PIN=abc` is reported with the whole value
 masked, flags before the name such as `--meta app=web` are passed over, and
 a line is not reported when it gives no value or the value opens
 with `$` or a backtick, as in `STRIPE_KEY="$STRIPE_KEY"` or
-`STRIPE_KEY=$(pbpaste)`.
+`STRIPE_KEY=$(pbpaste)`. A line of many quoted `--meta` or `--description`
+arguments is matched in one pass, so `scan --history` and `clean-history`
+return on it as fast as on any other line.
 
 **`scan` counts a path the scanned tree's own `.secretlessignore` excluded
 as a coverage gap (#414).** On a tree holding `app.js`, `src/index.ts` and a
