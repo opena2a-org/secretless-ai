@@ -22,6 +22,22 @@ before. `src/transcript.test.ts` and
 under a file, a `.log` file, a `.txt` file beside a session, an empty
 directory, and a directory and a file that are still read.
 
+**`doctor` reports a fresh install with no keys as nothing stored yet, not
+as BROKEN, and exits 0.** With no known API key in the environment or in a
+shell profile, it printed `[ERROR] No API keys found in env vars or shell
+profiles` with `Fix: Add export lines to ~/.zshenv` (on Windows, `setx`),
+then `BROKEN: Keys are not available to subprocesses.` and exited 1, so the
+first run after `verify` pointed at it told a new user to write keys in plain
+text into a profile AI tools can read. It now prints `[INFO] No API keys
+found yet.` with `Fix: Store one: npx secretless-ai secret set NAME`, ends
+with `No keys stored yet. Store one: npx secretless-ai secret set NAME`, and
+exits 0; `--fix` is not offered. When a profile could not be read, the last
+line reads `No keys found in the profiles that were read.` instead. A key
+exported only in an interactive-only profile is still `BROKEN` with exit 1.
+For library callers, `doctor()` returns the new `health` value `'empty'` for
+this state, where it returned `'broken'`. `doctor` reads the environment and
+shell profiles, not the store, so a key held only in the store is not counted.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),
