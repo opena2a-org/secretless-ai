@@ -6,6 +6,7 @@ import * as path from 'path';
 import { printCommandHelp } from './command-help';
 import { pathOperand, runInit, shellQuote } from './commands/core';
 import { escapePathForDisplay } from './display-safe';
+import { AUTOMATED_RUN_VARIABLES } from './telemetry-gate';
 
 /**
  * Follow-ups to #275 (#276): `scan`, `status` and `verify` print a path
@@ -558,10 +559,22 @@ describe('scan --help says what "It opens nothing else" covers, and names the te
       : [e.name])).sort();
   }
 
-  itIfBuilt('a scan creates that file in the home directory, and nothing else there', () => {
+  /**
+   * Telemetry on for the run: no opt-out and no CI or test-runner variable.
+   * The event goes to a closed port on this machine, with no proxy, so
+   * nothing leaves it.
+   */
+  const TELEMETRY_ON: NodeJS.ProcessEnv = {
+    OPENA2A_TELEMETRY: undefined,
+    OPENA2A_TELEMETRY_URL: 'http://127.0.0.1:9/',
+    ...Object.fromEntries([...AUTOMATED_RUN_VARIABLES, 'NODE_USE_ENV_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']
+      .map((name) => [name, undefined])),
+  };
+
+  itIfBuilt('a scan with telemetry on creates that file in the home directory, and nothing else there', () => {
     const home = tmp('followups-home-');
 
-    const res = cli(['scan', tmp('followups-'), '--json'], { env: { HOME: home, XDG_CONFIG_HOME: undefined } });
+    const res = cli(['scan', tmp('followups-'), '--json'], { env: { ...TELEMETRY_ON, HOME: home, XDG_CONFIG_HOME: undefined } });
 
     expect(res.status).toBe(0);
     expect(filesUnder(home)).toEqual(['.config/opena2a/telemetry.json']);
@@ -571,10 +584,20 @@ describe('scan --help says what "It opens nothing else" covers, and names the te
     const home = tmp('followups-home-');
     const xdg = tmp('followups-xdg-');
 
-    const res = cli(['scan', tmp('followups-'), '--json'], { env: { HOME: home, XDG_CONFIG_HOME: xdg } });
+    const res = cli(['scan', tmp('followups-'), '--json'], { env: { ...TELEMETRY_ON, HOME: home, XDG_CONFIG_HOME: xdg } });
 
     expect(res.status).toBe(0);
     expect(filesUnder(xdg)).toEqual(['opena2a/telemetry.json']);
+    expect(filesUnder(home)).toEqual([]);
+  });
+
+  itIfBuilt('under OPENA2A_TELEMETRY=off a scan creates nothing in the home directory (#422)', () => {
+    const home = tmp('followups-home-');
+
+    // The only switch set is the opt-out: no CI or test-runner variable.
+    const res = cli(['scan', tmp('followups-'), '--json'], { env: { ...TELEMETRY_ON, HOME: home, OPENA2A_TELEMETRY: 'off', XDG_CONFIG_HOME: undefined } });
+
+    expect(res.status).toBe(0);
     expect(filesUnder(home)).toEqual([]);
   });
 });

@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+**No install id is written while telemetry is off (#422).** Under
+`OPENA2A_TELEMETRY=off`, `secretless-ai --version` and `secretless-ai scan`
+wrote `{"enabled": true, "installId": "..."}` to
+`~/.config/opena2a/telemetry.json` (`$XDG_CONFIG_HOME/opena2a/telemetry.json`
+when that is set) when the file was absent: the telemetry library's `init`
+derived and stored the id whatever the opt-out said, and the opt-out only
+stopped sending. `opena2a init` runs `secretless-ai --version`, so a user who
+had opted out was given an install id. On a run with telemetry off (that
+variable, a stored `telemetry off`, CI or a test runner) the library's `init`,
+`status` and `setOptOut` are not called: `--version` and a scan write no file,
+and `telemetry status` prints `install_id:  none (one is created on the first
+run with telemetry on)` when none is stored. Under that variable `telemetry
+on` and `telemetry off` store the setting without an install id, and end with
+`Off for this run: OPENA2A_TELEMETRY is set to turn it off.`, as `telemetry
+status` does. `telemetry off` removes a stored install id. A run with
+telemetry on creates and keeps the install id as before. `scan --help` says
+the file is created when it is absent and the run has telemetry on.
+`src/telemetry-install-id.test.ts` covers `--version`, a scan under each
+opt-out value (`off`, `OFF`, `0`, `false`, `no`), `XDG_CONFIG_HOME`,
+`telemetry status`, `on` and `off`, `CI=true`, a stored `enabled: false`, and
+a control run with telemetry on.
+
 **`doctor` asks the secret store before it says no key is stored (#418).**
 With no known API key in the environment or in a shell profile, it printed
 `[INFO] No API keys found yet.` and ended with `No keys stored yet. Store
