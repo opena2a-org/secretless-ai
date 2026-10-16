@@ -1,23 +1,32 @@
 /**
  * Git pre-commit hook — blocks commits containing secrets.
  *
- * Installs a shell script hook that calls `npx secretless-ai scan-staged`
- * to check staged files for credential patterns and secret file patterns.
+ * Installs a shell script hook that runs `scan-staged` through
+ * commandPrefixForHooks() to check staged files for credential patterns and
+ * secret file patterns.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { commandPrefixForHooks } from './hook-prefix';
 
 const HOOK_MARKER = '# secretless-ai pre-commit hook';
 
-const HOOK_SCRIPT = `#!/bin/sh
+/** The line the hook runs. */
+function hookCommand(): string {
+  return `${commandPrefixForHooks()} scan-staged`;
+}
+
+function hookScript(): string {
+  return `#!/bin/sh
 ${HOOK_MARKER}
 # Automatically scans staged files for hardcoded secrets.
-# Installed by: npx secretless-ai hook install
+# Installed by: secretless-ai hook install
 # Bypass with: git commit --no-verify (use with caution)
 
-npx secretless-ai scan-staged
+${hookCommand()}
 `;
+}
 
 /**
  * Install the pre-commit hook in the project's .git/hooks directory.
@@ -44,17 +53,17 @@ export function installPreCommitHook(projectDir: string): {
     const existing = fs.readFileSync(hookPath, 'utf-8');
     if (existing.includes(HOOK_MARKER)) {
       // Already installed — update it
-      fs.writeFileSync(hookPath, HOOK_SCRIPT, { mode: 0o755 });
+      fs.writeFileSync(hookPath, hookScript(), { mode: 0o755 });
       return { installed: true, message: 'Pre-commit hook updated.' };
     }
     // Foreign hook — don't overwrite
     return {
       installed: false,
-      message: 'A pre-commit hook already exists (not from secretless). Append this line to it: npx secretless-ai scan-staged',
+      message: `A pre-commit hook already exists (not from secretless). Append this line to it: ${hookCommand()}`,
     };
   }
 
-  fs.writeFileSync(hookPath, HOOK_SCRIPT, { mode: 0o755 });
+  fs.writeFileSync(hookPath, hookScript(), { mode: 0o755 });
   return { installed: true, message: 'Pre-commit hook installed.' };
 }
 

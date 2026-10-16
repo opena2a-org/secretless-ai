@@ -238,7 +238,8 @@ export function helperKey(host: string): string {
 /**
  * The helper entry's value. Git runs a value that starts with `!` as a shell
  * command and appends the action (`get`, `store`, `erase`) as its last word.
- * Every part is validated to need no quoting.
+ * `cli` arrives already quoted for the shell (commandPrefixForHooks); every
+ * other part is validated to need no quoting.
  */
 export function helperCommand(cli: string, mapping: HelperMapping): string {
   const user = mapping.username ? ` --username ${mapping.username}` : '';

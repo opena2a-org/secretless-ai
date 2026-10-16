@@ -120,7 +120,7 @@ const BARE_HOOK_LINE = 'eval "$(secretless-ai env 2>/dev/null)"';
 /** A hook line written by getShellHookLine: two single-quoted paths, then `env`. */
 const PATH_HOOK_LINE = /^eval "\$\('((?:[^']|'\\'')*)' '((?:[^']|'\\'')*)' env 2>\/dev\/null\)"$/;
 
-function shellQuote(word: string): string {
+export function shellQuote(word: string): string {
   return `'${word.replace(/'/g, `'\\''`)}'`;
 }
 

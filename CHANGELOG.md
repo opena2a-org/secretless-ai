@@ -69,6 +69,18 @@ instead of leaving the count to read as complete. The home-directory files a
 bare `scan` also reads, such as `~/.claude/settings.json`, are not part of the
 project and are not counted.
 
+**The pre-commit hook, the Claude Code Stop hook and the git credential
+helper run the copy of Secretless that wrote them.** `hook install`, `init`
+and `git-credential install` write the node binary and CLI file of the
+running copy as quoted absolute paths, the form the shell hook already uses,
+or `npm_config_offline=true npx --yes secretless-ai@<version>` when those
+paths cannot be resolved; none of them writes `npx secretless-ai` without a
+version any more. Re-running `init` replaces the Stop hook an earlier
+version wrote, and re-running `hook install` or `git-credential install`
+replaces the earlier hook or helper entry. The Stop hook still never fails a
+turn, and now prints `secretless-ai clean --last failed (exit N)` on its
+stderr instead of discarding the cleaner's error output.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),

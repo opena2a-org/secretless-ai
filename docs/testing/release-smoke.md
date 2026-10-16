@@ -269,6 +269,7 @@ DEGRADED verdict appears (it edits real shell profiles).
 cd "$TMP" && git init -q
 $SL hook status                     # "Pre-commit hook: not installed" + install hint
 $SL hook install                    # "Pre-commit hook installed."; .git/hooks/pre-commit exists
+grep scan-staged .git/hooks/pre-commit  # this build's node and dist/cli.js paths, quoted; never a bare `npx secretless-ai`
 echo "const s = \"$PLANT\";" > staged.js && git add staged.js
 $SL scan-staged; echo "exit=$?"     # finds the planted credential, "Remove the secrets and try again.", non-zero exit
 git rm --cached staged.js -q && rm staged.js
