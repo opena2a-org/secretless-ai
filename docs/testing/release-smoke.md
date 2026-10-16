@@ -262,8 +262,12 @@ $SL doctor                          # Platform/Shell + per-profile key counts + 
 ```
 
 `doctor` must label exactly one profile RECOMMENDED and end with a
-HEALTHY/DEGRADED/BROKEN verdict line, or, when no key is found, with
-`No keys stored yet. Store one: npx secretless-ai secret set NAME` and exit 0.
+HEALTHY/DEGRADED/BROKEN verdict line, or, when no key is found in the
+environment or in a shell profile, exit 0 and end with
+`No keys stored yet. Store one: npx secretless-ai secret set NAME` if the
+store holds no secret, or with a line naming how many secrets the store holds
+(`The secret store (<backend> backend) holds N secrets. List them: npx secretless-ai secret list`)
+if it holds some.
 `--fix` is only exercised when a
 DEGRADED verdict appears (it edits real shell profiles).
 

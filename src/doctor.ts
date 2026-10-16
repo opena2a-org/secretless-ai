@@ -34,9 +34,18 @@ export interface DoctorOptions {
 export type Severity = 'error' | 'warn' | 'info';
 /**
  * 'empty': no known API key was found in the environment or in a shell
- * profile, as on a fresh install. Not an error: nothing is stored yet.
+ * profile, as on a fresh install. Not an error. `doctor()` does not read the
+ * secret store, so a key held only there is not counted here; the `doctor`
+ * command asks the store before it says nothing is stored (#418).
  */
 export type HealthStatus = 'healthy' | 'degraded' | 'broken' | 'empty';
+
+/**
+ * What the secret store holds, as `secret list` counts it: the number of
+ * stored names and the backend holding them, or null when the store could not
+ * be read.
+ */
+export type StoreCount = { count: number; backend: string } | null;
 
 export interface DoctorFinding {
   severity: Severity;
@@ -45,10 +54,11 @@ export interface DoctorFinding {
   /** A command that confirms the finding without printing a secret value */
   verify?: string;
   /**
-   * 'plain-text' marks a secret written into a profile in plain text. Every
-   * other finding is about whether a known key reaches subprocesses.
+   * 'plain-text' marks a secret written into a profile in plain text.
+   * 'no-keys' marks the one finding of the 'empty' state. Every other finding
+   * is about whether a known key reaches subprocesses.
    */
-  kind?: 'plain-text';
+  kind?: 'plain-text' | 'no-keys';
 }
 
 /** One export of a secret-looking name in a profile. Never carries the value. */
@@ -452,11 +462,7 @@ export function doctor(options?: DoctorOptions): DoctorResult {
     // listed with its profile, but it is not a known API key, so a profile
     // holding only such exports is empty too.
     health = 'empty';
-    findings.push({
-      severity: 'info',
-      message: 'No API keys found yet.',
-      fix: `Store one: ${CLI} secret set NAME`,
-    });
+    findings.push(noKeysFinding());
   }
 
   return {
@@ -466,6 +472,24 @@ export function doctor(options?: DoctorOptions): DoctorResult {
     findings,
     health,
   };
+}
+
+/**
+ * The finding of the 'empty' state. It names only what was read, the
+ * environment and the shell profiles. `store` is what the secret store holds,
+ * left out when the store was not asked: the advice to store a key is given
+ * unless the store was read and holds at least one name, or could not be read.
+ */
+export function noKeysFinding(store?: StoreCount): DoctorFinding {
+  const finding: DoctorFinding = {
+    severity: 'info',
+    message: 'No API keys found in the environment or in shell profiles.',
+    kind: 'no-keys',
+  };
+  if (store === undefined || (store !== null && store.count === 0)) {
+    finding.fix = `Store one: ${CLI} secret set NAME`;
+  }
+  return finding;
 }
 
 // ── Quick diagnosis (lightweight, for verify output) ─────────────────────────

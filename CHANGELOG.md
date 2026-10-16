@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+**`doctor` asks the secret store before it says no key is stored (#418).**
+With no known API key in the environment or in a shell profile, it printed
+`[INFO] No API keys found yet.` and ended with `No keys stored yet. Store
+one: npx secretless-ai secret set NAME` without reading the store, so a user
+whose keys `secret set` had stored, as that line advises, was told nothing
+was stored. The finding now reads `No API keys found in the environment or
+in shell profiles.`, and in that state, and only then, `doctor` reads the
+store as `secret list` does. When the store holds names, the last line reads,
+for example, `No API keys found in the environment or in shell profiles. The
+secret store (local backend) holds 1 secret. List them: npx secretless-ai
+secret list`, and the `Store one` advice is left out. When the store cannot
+be read, the last line says so and points to `secret list` instead of
+calling it empty. With an empty store the last line is unchanged. The
+`health` value and the exit code, 0, are unchanged. `src/doctor.test.ts`
+covers one stored name, two stored names beside a profile that could not be
+read, and a local store file that cannot be decrypted.
+
 **`clean --path` refuses a path that is not there or a file that is not a
 transcript, and never calls 0 files clean.** `clean --dry-run --path
 transcript.log` and `clean --dry-run --path <missing>` printed `Scanned: 0
@@ -29,14 +46,16 @@ profiles` with `Fix: Add export lines to ~/.zshenv` (on Windows, `setx`),
 then `BROKEN: Keys are not available to subprocesses.` and exited 1, so the
 first run after `verify` pointed at it told a new user to write keys in plain
 text into a profile AI tools can read. It now prints `[INFO] No API keys
-found yet.` with `Fix: Store one: npx secretless-ai secret set NAME`, ends
-with `No keys stored yet. Store one: npx secretless-ai secret set NAME`, and
-exits 0; `--fix` is not offered. When a profile could not be read, the last
+found in the environment or in shell profiles.` and exits 0; `--fix` is not
+offered. With an empty store it adds `Fix: Store one: npx secretless-ai
+secret set NAME` and ends with `No keys stored yet. Store one: npx
+secretless-ai secret set NAME`; when a profile could not be read, the last
 line reads `No keys found in the profiles that were read.` instead. A key
 exported only in an interactive-only profile is still `BROKEN` with exit 1.
 For library callers, `doctor()` returns the new `health` value `'empty'` for
-this state, where it returned `'broken'`. `doctor` reads the environment and
-shell profiles, not the store, so a key held only in the store is not counted.
+this state, where it returned `'broken'`. `doctor()` reads the environment
+and shell profiles, not the store; the `doctor` command asks the store
+before it says nothing is stored (entry above).
 
 **`vault register` refuses an empty value instead of storing it.** With stdin
 at end of input, as in `vault register github </dev/null`, it printed

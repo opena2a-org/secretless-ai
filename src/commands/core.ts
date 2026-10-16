@@ -6,7 +6,8 @@ import { IGNORE_FILENAME } from '../secretlessignore';
 import { status, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
-import { doctor, quickDiagnosis, fixProfiles } from '../doctor';
+import { doctor, quickDiagnosis, fixProfiles, noKeysFinding, type StoreCount } from '../doctor';
+import { SecretStore } from '../secret-store';
 import { readBackendConfig, resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import { GCP_PROJECT_KEY, resolveGcpProject } from '../backends/gcp-project';
@@ -1904,10 +1905,44 @@ function printGitCredentials(): void {
   console.log();
 }
 
-export function runDoctor(autoFix: boolean): number {
+/** The count `secret list` shows, or null when the store could not be read. */
+async function countStoredSecrets(): Promise<StoreCount> {
+  try {
+    const store = new SecretStore();
+    return { count: (await store.listSecrets()).length, backend: store.backendName };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The last line of `doctor` when no known key is in the environment or in a
+ * profile that was read. It says nothing is stored only when the store was
+ * read and holds no name.
+ */
+function noKeysVerdict(store: StoreCount, unreadProfiles: boolean): string {
+  const where = unreadProfiles ? 'the profiles that were read' : 'shell profiles';
+  if (store === null) {
+    return `No API keys found in the environment or in ${where}. The secret store could not be read, so what it holds was not checked. See why: ${CLI} secret list`;
+  }
+  if (store.count > 0) {
+    const held = store.count === 1 ? '1 secret' : `${store.count} secrets`;
+    return `No API keys found in the environment or in ${where}. The secret store (${store.backend} backend) holds ${held}. List them: ${CLI} secret list`;
+  }
+  return unreadProfiles
+    ? `No keys found in the profiles that were read. Store one: ${CLI} secret set NAME`
+    : `No keys stored yet. Store one: ${CLI} secret set NAME`;
+}
+
+export async function runDoctor(autoFix: boolean): Promise<number> {
   console.log('\n  Secretless Doctor\n');
 
   const result = doctor();
+  // doctor() reads the environment and the shell profiles, not the store.
+  // Before the output says nothing is stored, ask the store what `secret
+  // list` would show (#418).
+  const store = result.health === 'empty' ? await countStoredSecrets() : undefined;
+  const findings = result.findings.map((f) => (f.kind === 'no-keys' ? noKeysFinding(store) : f));
 
   // Platform & shell
   console.log(`  Platform: ${result.platform}`);
@@ -1941,9 +1976,9 @@ export function runDoctor(autoFix: boolean): number {
   console.log();
 
   // Findings
-  if (result.findings.length > 0) {
+  if (findings.length > 0) {
     console.log('  Findings:');
-    for (const finding of result.findings) {
+    for (const finding of findings) {
       const label = finding.severity.toUpperCase();
       console.log(`    [${label}] ${finding.message}`);
       if (finding.verify) {
@@ -1985,7 +2020,6 @@ export function runDoctor(autoFix: boolean): number {
     healthy: 'HEALTHY: All keys correctly configured for subprocess access.',
     degraded: 'DEGRADED: Keys work in your terminal but may fail in subprocesses.',
     broken: 'BROKEN: Keys are not available to subprocesses.',
-    empty: `No keys stored yet. Store one: ${CLI} secret set NAME`,
   };
   if (!accessProblem && plainText.length > 0) {
     const what = plainText.length === 1
@@ -1996,13 +2030,13 @@ export function runDoctor(autoFix: boolean): number {
     return 1;
   }
   // A profile that could not be read was not checked, so HEALTHY, and the
-  // line saying no key is stored yet, cover only the profiles that were read.
+  // line saying no key is found, cover only the profiles that were read.
   // The health value and exit code are unchanged.
   const unread = result.profiles.filter((p) => p.readError);
-  const verdict = unread.length > 0 && result.health === 'healthy'
-    ? 'HEALTHY for the profiles that were read: the keys found there are available to subprocesses.'
-    : unread.length > 0 && result.health === 'empty'
-      ? `No keys found in the profiles that were read. Store one: ${CLI} secret set NAME`
+  const verdict = result.health === 'empty'
+    ? noKeysVerdict(store ?? null, unread.length > 0)
+    : unread.length > 0 && result.health === 'healthy'
+      ? 'HEALTHY for the profiles that were read: the keys found there are available to subprocesses.'
       : verdictMap[result.health];
   console.log(`  ${verdict}\n`);
   if (unread.length > 0) {
