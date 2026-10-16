@@ -63,7 +63,7 @@ npx secretless-ai run --only STRIPE_SECRET_KEY -- node charge.js   # one command
 
 Commands and AI tools see the name, and the value goes to the process that uses it. With no backend configured, secrets go to the OS keychain where one is available, and otherwise to an AES-256-GCM encrypted file.
 
-`secret set` installs a shell hook in `~/.zshenv` or `~/.bashrc` that exports stored secrets as environment variables in every new terminal. `secret set NAME=VALUE` puts the value in shell history.
+On a terminal, `secret set` asks before it adds a hook to `~/.zshenv` or `~/.bashrc` that exports every stored secret as an environment variable in each new terminal; `--no-shell-hook` skips the question, and with a value piped in the profile is left as it is. `secret set NAME=VALUE` puts the value in shell history.
 
 The guard hook and the deny rules that `init` installs check a command before it runs and cannot see what it prints. A command whose own output is a credential puts the value in AI context, and nothing in Secretless blocks it: see [What the guard cannot see](docs/managing-secrets.md#what-the-guard-cannot-see).
 

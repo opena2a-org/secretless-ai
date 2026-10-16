@@ -256,6 +256,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--meta': true,
       '--from-clipboard': false,
       '--keep-clipboard': false,
+      '--no-shell-hook': false,
       '--long': false,
       '--app': true,
       '--needs-rotation': false,

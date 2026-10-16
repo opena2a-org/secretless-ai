@@ -236,10 +236,15 @@ Fail the release if:
 - `secret get` piped (non-TTY) prints the value without `--force`
 - `secret list` or any command prints a stored secret VALUE
 - `run --only` fails to inject, or injects keys outside the `--only` set
-- `secret set` does not install the shell hook on first use (check
-  `~/.zshenv` / `~/.bashrc` for the line after
+- the piped `secret set` above changes `~/.zshenv` / `~/.bashrc`, or
+  `secret set SMOKE_TEST_KEY_DELETEME --no-shell-hook` in a terminal asks a
+  question or changes them
+- `secret set SMOKE_TEST_KEY_DELETEME` in a terminal, on a home with no hook,
+  does not ask `Add a hook to ~/.zshenv that exports every stored secret in
+  each new shell? [y/N]` before writing; Enter or `n` changes the profile; or,
+  after a `y`, the profile lacks the line after
   `# secretless-ai: auto-load secrets from vault`, which runs
-  `'<node>' '<path>/dist/cli.js' env`), or a new shell with no `secretless-ai`
+  `'<node>' '<path>/dist/cli.js' env`, or a new shell with no `secretless-ai`
   on PATH does not receive the secret:
   `env -i HOME="$HOME" PATH=/usr/bin:/bin zsh -c '[ -n "$SMOKE_TEST_KEY_DELETEME" ] && echo set || echo unset'`
   prints `unset` (use `bash -c '. ~/.bashrc; ...'` on Linux)

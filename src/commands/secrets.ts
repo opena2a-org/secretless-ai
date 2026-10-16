@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretStore, isSettableSecretName, isValidSecretName, notSettableReason } from '../secret-store';
-import { installShellHook } from '../env';
+import { planShellHook, writeShellHook } from '../env';
 import type { InstallShellHookOptions } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
 import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard } from '../display-safe';
@@ -17,7 +17,7 @@ import type { SyncAction, SyncResult } from '../secret-sync';
 import { resolveGcpProject, repositoryProjectNote } from '../backends/gcp-project';
 import { Clipboard, clipboardInstallHint } from '../clipboard';
 import { canReadHidden, readHiddenLine } from '../hidden-line';
-import type { TtyInput } from '../hidden-line';
+import type { PromptOutput, TtyInput } from '../hidden-line';
 import { pushSecrets, PushError, MissingLocalNamesError, PUSH_TARGETS, VaultPushTarget, GcpPushTarget } from '../secret-push';
 import type { PushAction, PushResult, PushTarget, PushTargetType } from '../secret-push';
 import { AzureKeyVaultTarget, vaultNameFromArg, vaultNameProblem } from '../backends/azure-kv';
@@ -29,15 +29,87 @@ import type { RotationOutcome } from '../secret-store';
 import { fixCommand, NAME_PLACEHOLDER, PLACEHOLDER_NAME } from '../fix-command';
 import type { FixNames } from '../fix-command';
 
-/**
- * Ensure the shell profile has the eval hook for auto-loading secrets.
- * Called after `secret set` to make stored secrets available as env vars.
- */
-export function ensureShellHook(options: InstallShellHookOptions = {}): void {
-  const change = installShellHook(options);
-  if (change === null) return;
+export interface EnsureShellHookOptions extends InstallShellHookOptions {
+  /** The name `secret set` stored, for the `run --only` line. */
+  name?: string;
+  /** `secret set --no-shell-hook`: leave the profile as it is and do not ask. */
+  noShellHook?: boolean;
+  /** Asks a yes/no question; null when there is no terminal to ask on. For DI/testing. */
+  ask?: (question: string) => Promise<boolean | null>;
+}
 
-  const profileName = path.basename(change.profilePath);
+/**
+ * Ask `question` on `output` and read one line from `input`. `y` or `yes` is
+ * a yes; anything else, an empty line included, is a no. Resolves null
+ * without asking when either stream is not a terminal, so piped input is
+ * never taken for an answer.
+ */
+export function askOnTerminal(
+  question: string,
+  input: TtyInput = process.stdin,
+  output: PromptOutput & { isTTY?: boolean } = process.stderr,
+): Promise<boolean | null> {
+  if (input.isTTY !== true || output.isTTY !== true) return Promise.resolve(null);
+  output.write(question);
+  return new Promise((resolve) => {
+    const done = (line: string | null): void => {
+      input.removeListener('data', onData);
+      input.removeListener('end', onEnd);
+      input.pause();
+      resolve(line !== null && /^\s*y(es)?\s*$/i.test(line));
+    };
+    const onData = (chunk: string | Buffer): void => done(String(chunk));
+    const onEnd = (): void => {
+      output.write('\n');
+      done(null);
+    };
+    input.on('data', onData);
+    input.on('end', onEnd);
+    input.resume();
+  });
+}
+
+/** The way to give one command one stored secret, printed after the shell-hook step. */
+function runOnlyLine(name: string): string {
+  return `  To give one command this secret:  ${CLI_BARE} run --only ${name} -- <command>`;
+}
+
+/**
+ * Offer the shell hook that exports every stored secret in each new shell.
+ * Called after `secret set`. The profile is written only after a yes on a
+ * terminal; `--no-shell-hook`, a no, or no terminal to ask on leaves it as it
+ * is and names `run --only` instead (#412).
+ */
+export async function ensureShellHook(options: EnsureShellHookOptions = {}): Promise<void> {
+  const plan = planShellHook(options);
+  if (plan === null) return;
+
+  const profileName = path.basename(plan.profilePath);
+  const name = options.name ?? 'NAME';
+  if (options.noShellHook === true) {
+    console.log('  Shell profile not changed (--no-shell-hook).');
+    console.log(runOnlyLine(name));
+    return;
+  }
+  if (plan.action === 'repaired') {
+    console.log(`  The shell hook in ~/${profileName} runs a command that was not found, so new shells receive no secrets.`);
+  }
+  const question = plan.action === 'installed'
+    ? `  Add a hook to ~/${profileName} that exports every stored secret in each new shell? [y/N] `
+    : `  Point the hook in ~/${profileName} at this copy of secretless-ai? [y/N] `;
+  const answer = await (options.ask ?? askOnTerminal)(question);
+  if (answer !== true) {
+    console.log(answer === null
+      ? `  Shell profile not changed: there is no terminal to ask on before editing ~/${profileName}.`
+      : '  Shell profile not changed.');
+    console.log(runOnlyLine(name));
+    console.log(answer === null
+      ? `  The next \`${CLI_BARE} secret set\` run in a terminal asks again.`
+      : `  To skip this question:  ${CLI_BARE} secret set <NAME> --no-shell-hook`);
+    return;
+  }
+
+  const change = writeShellHook(plan);
   console.log(change.action === 'installed'
     ? `  Shell hook installed in ~/${profileName}`
     : `  Shell hook in ~/${profileName} updated: the command it ran was not found`);
@@ -47,20 +119,21 @@ export function ensureShellHook(options: InstallShellHookOptions = {}): void {
     console.log('  secretless-ai is not on PATH, so the hook runs this copy by its full path:');
     console.log(`    ${escapePathForDisplay(change.command[change.command.length - 1])}`);
     console.log('  If that copy is removed (clearing the npm cache removes an npx copy), new terminals');
-    console.log(`  receive no secrets until \`${CLI} secret set\` runs again. To keep a copy: npm install -g secretless-ai`);
+    console.log(`  receive no secrets until a \`${CLI} secret set\` in a terminal updates the hook. To keep a copy: npm install -g secretless-ai`);
   }
   console.log(`  Run: source ~/${profileName}   (or open a new terminal)`);
+  console.log(runOnlyLine(name));
 }
 
 /** Flags read by one subcommand only. Another subcommand refuses them (#172). */
 const SECRET_SUBCOMMAND_FLAGS: Readonly<Record<string, readonly string[]>> = {
-  set: ['--description', '--meta', '--from-clipboard', '--keep-clipboard'],
+  set: ['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--no-shell-hook'],
   list: ['--long', '--json', '--app', '--needs-rotation'],
   show: ['--json'],
   exposed: ['--where', '--at'],
 };
 const SECRET_SUBCOMMANDS = new Set(['set', 'list', 'show', 'get', 'rm', 'remove', 'delete', 'exposed']);
-const SCOPED_FLAGS = new Set(['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--long', '--json', '--app', '--needs-rotation', '--where', '--at']);
+const SCOPED_FLAGS = new Set(['--description', '--meta', '--from-clipboard', '--keep-clipboard', '--no-shell-hook', '--long', '--json', '--app', '--needs-rotation', '--where', '--at']);
 const VALUE_FLAGS = new Set(['--description', '--meta', '--app', '--where', '--at']);
 
 interface ParsedSecretArgs {
@@ -231,13 +304,20 @@ const TRANSFER_FLAG_OWNERS: Readonly<Record<string, readonly string[]>> = {
   '--as': ['push'],
 };
 
+/** What `secret set` passes to `afterSet`. */
+export interface AfterSetContext {
+  name: string;
+  /** `--no-shell-hook` was given. */
+  noShellHook: boolean;
+}
+
 export interface RunSecretOptions {
   /** `--json`, as read by the dispatcher. */
   json?: boolean;
   /** Store factory. For DI/testing. */
   createStore?: () => SecretStore;
   /** Called after a successful `secret set`. For DI/testing. */
-  afterSet?: () => void;
+  afterSet?: (context: AfterSetContext) => void | Promise<void>;
   /** Where `secret set NAME` reads a value from. For DI/testing. */
   stdin?: TtyInput;
   /** Whether stdin is a pipe or a file rather than a terminal. For DI/testing. */
@@ -259,7 +339,7 @@ function stdinIsPiped(): boolean {
 export async function runSecret(args: string[], options: RunSecretOptions = {}): Promise<number> {
   const subcommand = args[0];
   const createStore = options.createStore ?? (() => new SecretStore());
-  const afterSet = options.afterSet ?? ensureShellHook;
+  const afterSet = options.afterSet ?? ((context: AfterSetContext) => ensureShellHook(context));
 
   const parsedOrError = parseSecretArgs(subcommand ?? '', args.slice(1));
   if (typeof parsedOrError === 'string') {
@@ -307,6 +387,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
 
       const fromClipboard = parsed.switches.has('--from-clipboard');
       const keepClipboard = parsed.switches.has('--keep-clipboard');
+      const noShellHook = parsed.switches.has('--no-shell-hook');
       if (keepClipboard && !fromClipboard) {
         console.error('\n  --keep-clipboard applies with --from-clipboard only. Nothing was stored.\n');
         return 2;
@@ -334,7 +415,8 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
           return 1;
         }
-        return storeFromClipboard(name, annotation, keepClipboard, options.clipboard ?? new Clipboard(), createStore, afterSet);
+        return storeFromClipboard(name, annotation, keepClipboard, options.clipboard ?? new Clipboard(), createStore,
+          () => afterSet({ name, noShellHook }));
       }
       if (eqIdx !== -1) {
         name = nameArg.slice(0, eqIdx);
@@ -383,7 +465,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           console.log(`  Recorded: ${describeAnnotation(store.getAnnotation(name))}  (${CLI_BARE} secret show ${name})`);
         }
         reportRotation(name, rotation);
-        afterSet();
+        await afterSet({ name, noShellHook });
         return 0;
       } catch (err) {
         console.error(formatCommandError(err));
@@ -1322,7 +1404,7 @@ async function storeFromClipboard(
   keep: boolean,
   clipboard: Clipboard,
   createStore: () => SecretStore,
-  afterSet: () => void,
+  afterSet: () => void | Promise<void>,
 ): Promise<number> {
   const rerun = fixCommand(['secret', 'set', settable(name), '--from-clipboard'], CLI_BARE);
   const read = clipboard.read();
@@ -1379,7 +1461,7 @@ async function storeFromClipboard(
       }
     }
   }
-  afterSet();
+  await afterSet();
   return code;
 }
 
