@@ -93,6 +93,8 @@ Never sent from CI or a test runner: nothing is sent while `CI`, a CI service's 
 
 A variable counts as unset when its value is empty or only spaces, or is `false` or `0` in any letter case with surrounding spaces ignored, so `CI=false` and `CI=` leave telemetry as you configured it.
 
+While telemetry is off (`OPENA2A_TELEMETRY=off`, `telemetry off`, CI or a test runner), Secretless writes no `install_id` to the setting file (`~/.config/opena2a/telemetry.json`, or `$XDG_CONFIG_HOME/opena2a/telemetry.json` when that variable is set). `telemetry off` removes a stored one.
+
 Fire-and-forget with a 2-second timeout. Telemetry never blocks Secretless.
 
 ## Documentation

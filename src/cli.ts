@@ -33,7 +33,9 @@ import { printHelp, OWN_HELP } from './commands/help';
 import { printCommandHelp } from './command-help';
 import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } from './argv';
 import { nearestMatch } from './near-miss';
-import { automatedRunVariable } from './telemetry-gate';
+import {
+  automatedRunVariable, optedOutByVariable, OPT_OUT_VARIABLE, telemetrySettingFile, readTelemetrySetting, storeTelemetrySetting,
+} from './telemetry-gate';
 
 /**
  * The stderr block for a refused command.
@@ -71,6 +73,8 @@ const TOOL = 'secretless-ai';
  * this list against the helper's own accepted set.
  */
 const TELEMETRY_ACTIONS = ['on', 'off', 'status'];
+/** The `install_id:` value `telemetry status` prints while telemetry is off and none is stored. */
+const NO_INSTALL_ID = 'none (one is created on the first run with telemetry on)';
 // Subcommands we don't track: pure-help / pure-config calls don't represent
 // the user actually using the tool, and tracking 'telemetry' itself creates
 // confusing self-referential events.
@@ -105,12 +109,27 @@ async function main(): Promise<number> {
   // README, --version line, telemetry subcommand, opena2a.org/telemetry.
   const tele = await import('@opena2a/telemetry');
   const { versionLine, runTelemetryCommand } = await import('@opena2a/cli-ui');
-  await tele.init({ tool: TOOL, version: VERSION });
   // Nothing is sent from CI or a test runner (#320): each starts in a fresh
   // home and was counted as a new user. The status says so, rather than
   // reporting `on` for a run that sends nothing. See src/telemetry-gate.ts.
   const automated = automatedRunVariable(process.env);
-  const telemetryStatus = () => (automated ? { ...tele.status(), enabled: false } : tele.status());
+  const optedOut = optedOutByVariable(process.env);
+  // No install id is derived or written while telemetry is off (#422): the
+  // SDK's init, status and setOptOut write one whatever the opt-out says, so
+  // none of them is called on a run with telemetry off.
+  const settingFile = telemetrySettingFile(process.env);
+  const telemetryOn = () => !automated && !optedOut && (readTelemetrySetting(settingFile)?.enabled ?? true);
+  const sending = telemetryOn();
+  if (sending) await tele.init({ tool: TOOL, version: VERSION });
+  const telemetryStatus = () => (telemetryOn() ? tele.status() : {
+    enabled: false,
+    configPath: settingFile,
+    policyURL: tele.POLICY_URL,
+    installId: readTelemetrySetting(settingFile)?.installId ?? NO_INSTALL_ID,
+  });
+  const setOptOut = (enabled: boolean) => (enabled && !automated && !optedOut
+    ? tele.setOptOut(true)
+    : storeTelemetrySetting(settingFile, enabled));
 
   // Intercept `--help` / `-h` anywhere in the args BEFORE dispatching. Most
   // subcommand runners do not parse per-subcommand help, so without this guard
@@ -171,12 +190,14 @@ async function main(): Promise<number> {
     console.log(runTelemetryCommand(action as TelemetryAction, {
       tool: TOOL,
       getStatus: telemetryStatus,
-      setOptOut: tele.setOptOut,
+      setOptOut,
     }));
     // `telemetry on` saves the setting and still prints `state: off` here, so
     // the line says why.
     if (automated) {
       console.log(`\n  Off for this run: ${automated} is set, and no usage event is sent from CI or a test runner.`);
+    } else if (optedOut) {
+      console.log(`\n  Off for this run: ${OPT_OUT_VARIABLE} is set to turn it off.`);
     }
     return 0;
   }
@@ -193,10 +214,10 @@ async function main(): Promise<number> {
     exitCode = await dispatch(args, command, prepared);
   } catch (err) {
     exitCode = 1;
-    if (command && !automated) tele.error(eventName, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
+    if (command && sending) tele.error(eventName, (err as { code?: string; name?: string })?.code || (err as { name?: string })?.name || 'UNKNOWN');
     throw err;
   } finally {
-    if (command && !automated && !isUntrackedCall(command, prepared)) {
+    if (command && sending && !isUntrackedCall(command, prepared)) {
       // Exit 1 = scanner found credentials (the tool's job); >=2 = real error.
       // npm audit / eslint convention. Matches @opena2a/telemetry.successFromExitCode.
       await tele.track(eventName, { success: known && exitCode <= 1, durationMs: Date.now() - startedAt });

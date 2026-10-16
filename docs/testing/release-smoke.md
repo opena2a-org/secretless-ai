@@ -387,6 +387,7 @@ rm -f ~/.config/opena2a/telemetry.json   # start clean
 | 10.6 | `OPENA2A_TELEMETRY_DEBUG=print secretless-ai status .` | Stderr contains a `[opena2a:telemetry]` line with the JSON payload (`tool: "secretless-ai"`, `event: "command"`, `name: "status"`, `success: true`, `duration_ms: <int>`, no PII fields). |
 | 10.7 | `secretless-ai status .` (with the unreachable URL) | Command completes normally. Telemetry endpoint unreachable must not slow the command perceptibly (≤2s timeout). |
 | 10.8 | `CI=true OPENA2A_TELEMETRY_DEBUG=print secretless-ai status .` then `CI=true secretless-ai telemetry status` | No `[opena2a:telemetry]` line on stderr. The status shows `state: off` and `Off for this run: CI is set, and no usage event is sent from CI or a test runner.` |
+| 10.9 | `rm -f ~/.config/opena2a/telemetry.json` then `OPENA2A_TELEMETRY=off secretless-ai --version` and `OPENA2A_TELEMETRY=off secretless-ai telemetry status` | `~/.config/opena2a/telemetry.json` is still absent. The status shows `state: off`, `install_id:  none (one is created on the first run with telemetry on)` and `Off for this run: OPENA2A_TELEMETRY is set to turn it off.` |
 
 Fail the release if:
 - any disclosure line is omitted
