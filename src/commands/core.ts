@@ -714,6 +714,22 @@ export function parseFileSize(input: string): number | null {
   return Math.floor(value * mult);
 }
 
+/**
+ * The reasons a directory listed as not entered for source files can carry
+ * and still be offered as the `Scan one:` command: a hidden cache or worktree
+ * directory, a test directory, an ignore-rule match. `.git`, dependency and
+ * build directories, and a hidden directory whose reason says nothing inside
+ * is read are listed without it. The command took the first listed path,
+ * which was `.git` on a repository with no hidden cache sorting before it,
+ * and scanning `.git` walks git metadata (#399).
+ */
+const SCAN_ONE_DIR_REASONS: ReadonlySet<string> = new Set<string>([
+  SOURCE_SKIP_REASONS.hiddenCache,
+  SOURCE_SKIP_REASONS.worktrees,
+  SOURCE_SKIP_REASONS.testDir,
+  SOURCE_SKIP_REASONS.ignoreRule,
+]);
+
 export async function runScan(projectDir: string, options?: { includeTests?: boolean; includeConfig?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
   const scanOpts = {
@@ -976,8 +992,9 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     //
     // A directory is named rather than counted because the count alone is not
     // actionable — an entry a user does not expect skipped is invisible inside
-    // a single total. Each line is followed by the command that scans it, so
-    // naming a gap is never a dead end. These are the source walk's
+    // a single total. The list is followed by the command that scans one of
+    // them, when one is listed whose reason a user can act on (see
+    // SCAN_ONE_DIR_REASONS). These are the source walk's
     // boundaries: the key and config walks can still enter a hidden cache or
     // worktree directory listed here, so a finding can come from one, and the
     // reason beside it says whether they do.
@@ -986,9 +1003,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       console.log(`  ${c.dim(`${n} director${n > 1 ? 'ies' : 'y'} not entered for source files`)}: declared boundaries, not findings.`);
       for (const d of stats.skips.dirs.slice(0, 8)) listLine(d.path, `: ${d.reason}`);
       if (n > 8) console.log(`  ${c.dim(`  … and ${n - 8} more`)}`);
-      // As for files below: a name that cannot be printed as itself is listed
-      // in visible form but never offered as the command.
-      const first = firstOperand(stats.skips.dirs.map(d => d.path));
+      // The command names the first listed directory whose reason is in
+      // SCAN_ONE_DIR_REASONS, and is left out when none is. As for files
+      // below: a name that cannot be printed as itself is listed in visible
+      // form but never offered as the command.
+      const first = firstOperand(stats.skips.dirs.filter(d => SCAN_ONE_DIR_REASONS.has(d.reason)).map(d => d.path));
       if (first) {
         console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${first}`);
       }

@@ -329,17 +329,24 @@ describe('scan prints names and excerpts from the repository escaped', () => {
   });
 
   it('Scan one: names a listed directory that prints as itself, when there is one', async () => {
+    // The ignore rule lists the hostile directory under a reason that is
+    // offered as a command, so only its name keeps it from being offered.
+    // `node_modules` is listed and not offered (#399).
     const dir = tree({
       [path.join(FORGED_DIR, 'a.ts')]: 'export {};\n',
       'node_modules/pkg/index.js': 'module.exports = {};\n',
+      'tests/a.ts': 'export {};\n',
+      '.secretlessignore': '.x*/\n',
     });
     await scanFromParent(dir);
 
     expectNoControlBytes();
     expect(out.join(LF)).not.toContain(FORGED_DIR);
-    const scanOne = out.flatMap((l) => l.split(LF)).filter((l) => l.trimStart().startsWith('Scan one:'));
-    expect(scanOne).toHaveLength(1);
-    expect(scanOne[0]).toMatch(/^ {2}Scan one: npx secretless-ai scan \S*node_modules$/);
+    const base = path.basename(dir);
+    expect(scanOneLines()).toEqual([
+      `  Scan one: npx secretless-ai scan ${base}/tests`,
+      `  Scan one: npx secretless-ai scan ${base}/.secretlessignore`,
+    ]);
   });
 
   it('an escape sequence in a finding name and in its excerpt prints escaped', async () => {
