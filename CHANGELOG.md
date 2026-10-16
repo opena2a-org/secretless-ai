@@ -117,6 +117,19 @@ printed no count; it now names 6 and prints
 `See them: npx secretless-ai scan --show-placeholders`, the lines `scan`
 prints. It prints them on a passing check too.
 
+**`secret set` asks before it adds the shell hook to `~/.zshenv` or
+`~/.bashrc`, and takes `--no-shell-hook` (#412).** The first `secret set`
+appended an `eval "$(... env)"` line, which exports every stored secret into
+each new shell, with no question and no way to decline. On a terminal it now
+asks `Add a hook to ~/.zshenv that exports every stored secret in each new
+shell? [y/N]` and writes the profile only after `y` or `yes`; Enter or `n`
+leaves it as it is. Replacing a hook line whose command was not found asks the
+same way. `--no-shell-hook` leaves the profile as it is without asking, and
+when stdin or stderr is not a terminal, as with a piped value, the profile is
+not written. Unless the profile already has a working hook, `secret set` then
+prints `secretless-ai run --only NAME -- <command>`, which gives one command
+one secret.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),

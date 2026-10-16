@@ -210,12 +210,34 @@ export interface ShellHookChange {
   cliOnPath: boolean;
 }
 
+/** A change `installShellHook` would make, with the profile text it would write. */
+export interface ShellHookPlan extends ShellHookChange {
+  contents: string;
+}
+
 /**
  * Add the hook to ~/.zshenv (macOS or zsh) or ~/.bashrc, or replace the hook
  * line this tool wrote earlier when it no longer reaches a CLI. Returns null
  * when the profile already has a working hook.
  */
 export function installShellHook(options: InstallShellHookOptions = {}): ShellHookChange | null {
+  const plan = planShellHook(options);
+  if (plan === null) return null;
+  return writeShellHook(plan);
+}
+
+/** Write the profile text of `plan`. */
+export function writeShellHook(plan: ShellHookPlan): ShellHookChange {
+  fs.writeFileSync(plan.profilePath, plan.contents);
+  return { profilePath: plan.profilePath, action: plan.action, command: plan.command, cliOnPath: plan.cliOnPath };
+}
+
+/**
+ * The change `installShellHook` would make, without writing it, so a caller
+ * can ask before the profile is edited (#412). Returns null when the profile
+ * already has a working hook.
+ */
+export function planShellHook(options: InstallShellHookOptions = {}): ShellHookPlan | null {
   const home = options.home ?? os.homedir();
   const shell = options.shell ?? process.env.SHELL ?? '';
   const platform = options.platform ?? os.platform();
@@ -238,12 +260,10 @@ export function installShellHook(options: InstallShellHookOptions = {}): ShellHo
     const current = lines[at + 1] ?? '';
     if (current === hookLine || hookLineRuns(current, pathEnv)) return null;
     lines[at + 1] = hookLine;
-    fs.writeFileSync(profilePath, lines.join('\n'));
-    return { profilePath, action: 'repaired', command, cliOnPath };
+    return { profilePath, action: 'repaired', command, cliOnPath, contents: lines.join('\n') };
   }
   // A marker this split did not find on a line of its own, or the user's own line.
   if (existing.includes(SHELL_HOOK_MARKER) || existing.includes('secretless-ai env')) return null;
 
-  fs.writeFileSync(profilePath, `${existing}\n${SHELL_HOOK_MARKER}\n${hookLine}\n`);
-  return { profilePath, action: 'installed', command, cliOnPath };
+  return { profilePath, action: 'installed', command, cliOnPath, contents: `${existing}\n${SHELL_HOOK_MARKER}\n${hookLine}\n` };
 }

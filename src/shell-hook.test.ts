@@ -8,11 +8,14 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
+import { PassThrough } from 'stream';
 import { installShellHook, getShellHookLine, hookLineRuns, shellHookCommand, SHELL_HOOK_MARKER } from './env';
-import { ensureShellHook } from './commands/secrets';
+import { askOnTerminal, ensureShellHook, runSecret } from './commands/secrets';
+import type { SecretStore } from './secret-store';
 
 const BARE_HOOK_LINE = 'eval "$(secretless-ai env 2>/dev/null)"';
 const SHELL_PATH = '/usr/bin:/bin';
+const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
 
 let dir: string;
 let home: string;
@@ -141,10 +144,10 @@ describe('shellHookCommand', () => {
 });
 
 describe('ensureShellHook', () => {
-  it('says the hook runs this copy by its path when secretless-ai is not on PATH', () => {
+  it('says the hook runs this copy by its path when secretless-ai is not on PATH', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      ensureShellHook({ home, shell: '/bin/bash', platform: 'linux', command: [process.execPath, script], pathEnv: emptyPath });
+      await ensureShellHook({ home, shell: '/bin/bash', platform: 'linux', command: [process.execPath, script], pathEnv: emptyPath, ask: async () => true });
       const out = log.mock.calls.map((c) => String(c[0])).join('\n');
       expect(out).toContain('Shell hook installed in ~/.bashrc');
       expect(out).toContain('secretless-ai is not on PATH, so the hook runs this copy by its full path:');
@@ -153,5 +156,179 @@ describe('ensureShellHook', () => {
     } finally {
       log.mockRestore();
     }
+  });
+});
+
+// `secret set` appended the hook to the profile with no question and no way
+// to decline, and the hook exports every stored secret into every new shell
+// (#412).
+describe('ensureShellHook asks before it edits the profile (#412)', () => {
+  const profile = (): string => path.join(home, '.bashrc');
+
+  async function offer(options: { noShellHook?: boolean; answer?: boolean | null } = {}) {
+    const questions: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await ensureShellHook({
+        home,
+        shell: '/bin/bash',
+        platform: 'linux',
+        command: [process.execPath, script],
+        pathEnv: emptyPath,
+        name: 'DEMO_KEY',
+        noShellHook: options.noShellHook,
+        ask: async (question) => {
+          questions.push(question);
+          return options.answer ?? null;
+        },
+      });
+      return { questions, out: log.mock.calls.map((c) => String(c[0])).join('\n') };
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  it('asks on a terminal and writes the hook only after a yes', async () => {
+    const { questions, out } = await offer({ answer: true });
+    expect(questions).toEqual(['  Add a hook to ~/.bashrc that exports every stored secret in each new shell? [y/N] ']);
+    expect(fs.readFileSync(profile(), 'utf-8')).toContain(SHELL_HOOK_MARKER);
+    expect(out).toContain('Shell hook installed in ~/.bashrc');
+    expect(out).toContain('secretless-ai run --only DEMO_KEY -- <command>');
+  });
+
+  it('a no leaves the profile unwritten and names run --only and --no-shell-hook', async () => {
+    const { questions, out } = await offer({ answer: false });
+    expect(questions).toHaveLength(1);
+    expect(fs.existsSync(profile())).toBe(false);
+    expect(out).toContain('Shell profile not changed.');
+    expect(out).toContain('To give one command this secret:  secretless-ai run --only DEMO_KEY -- <command>');
+    expect(out).toContain('secret set <NAME> --no-shell-hook');
+    expect(out).not.toContain('Shell hook installed');
+  });
+
+  it('--no-shell-hook does not ask and leaves an existing profile byte for byte', async () => {
+    const before = "alias ll='ls -l'\n";
+    fs.writeFileSync(profile(), before);
+    const { questions, out } = await offer({ noShellHook: true, answer: true });
+    expect(questions).toEqual([]);
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(before);
+    expect(out).toContain('Shell profile not changed (--no-shell-hook).');
+    expect(out).toContain('secretless-ai run --only DEMO_KEY -- <command>');
+  });
+
+  it('with no terminal to ask on, the profile is not written', async () => {
+    const { questions, out } = await offer({ answer: null });
+    expect(questions).toHaveLength(1);
+    expect(fs.existsSync(profile())).toBe(false);
+    expect(out).toContain('Shell profile not changed: there is no terminal to ask on before editing ~/.bashrc.');
+    expect(out).toContain('secretless-ai run --only DEMO_KEY -- <command>');
+  });
+
+  it('asks before it replaces a hook line whose command was not found, and a no keeps it', async () => {
+    const before = `\n${SHELL_HOOK_MARKER}\n${BARE_HOOK_LINE}\n`;
+    fs.writeFileSync(profile(), before);
+    const { questions, out } = await offer({ answer: false });
+    expect(questions).toEqual(['  Point the hook in ~/.bashrc at this copy of secretless-ai? [y/N] ']);
+    expect(out).toContain('The shell hook in ~/.bashrc runs a command that was not found, so new shells receive no secrets.');
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(before);
+
+    await offer({ answer: true });
+    expect(fs.readFileSync(profile(), 'utf-8')).toContain(getShellHookLine([process.execPath, script]));
+  });
+
+  it('does not ask when the profile already has a working hook', async () => {
+    await offer({ answer: true });
+    const after = fs.readFileSync(profile(), 'utf-8');
+    const { questions, out } = await offer({ answer: true });
+    expect(questions).toEqual([]);
+    expect(out).toBe('');
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(after);
+  });
+});
+
+describe('askOnTerminal (#412)', () => {
+  function terminal(isTTY = true): { input: PassThrough & { isTTY?: boolean }; output: { isTTY: boolean; text: string; write(t: string): void } } {
+    const input = Object.assign(new PassThrough(), { isTTY });
+    const output = { isTTY, text: '', write(t: string) { this.text += t; } };
+    return { input, output };
+  }
+
+  it.each([
+    ['y\n', true],
+    ['YES\n', true],
+    ['\n', false],
+    ['n\n', false],
+    ['yep\n', false],
+  ])('reads %j as %s', async (line, expected) => {
+    const { input, output } = terminal();
+    const answer = askOnTerminal('  Q? [y/N] ', input, output);
+    input.write(line);
+    expect(await answer).toBe(expected);
+    expect(output.text).toBe('  Q? [y/N] ');
+  });
+
+  it('takes the end of input as a no', async () => {
+    const { input, output } = terminal();
+    const answer = askOnTerminal('  Q? [y/N] ', input, output);
+    input.end();
+    expect(await answer).toBe(false);
+  });
+
+  it('does not ask, and reads nothing, when stdin or the prompt stream is not a terminal', async () => {
+    const piped = terminal(false);
+    piped.input.write('y\n');
+    expect(await askOnTerminal('  Q? [y/N] ', piped.input, piped.output)).toBeNull();
+    expect(piped.output.text).toBe('');
+
+    const { input } = terminal(true);
+    const redirected = { isTTY: false, text: '', write(t: string) { this.text += t; } };
+    expect(await askOnTerminal('  Q? [y/N] ', input, redirected)).toBeNull();
+    expect(redirected.text).toBe('');
+  });
+});
+
+describe('secret set --no-shell-hook (#412)', () => {
+  it('passes the flag to the hook step and refuses it on another subcommand', async () => {
+    const seen: Array<{ name: string; noShellHook: boolean }> = [];
+    const store = { setSecret: async () => ({ rotation: { kind: 'none' } }), backendName: 'test' } as unknown as SecretStore;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const afterSet = (context: { name: string; noShellHook: boolean }) => { seen.push(context); };
+      expect(await runSecret(['set', 'DEMO_KEY=not-a-real-value', '--no-shell-hook'], { createStore: () => store, afterSet })).toBe(0);
+      expect(await runSecret(['set', 'DEMO_KEY=not-a-real-value'], { createStore: () => store, afterSet })).toBe(0);
+      expect(seen).toEqual([{ name: 'DEMO_KEY', noShellHook: true }, { name: 'DEMO_KEY', noShellHook: false }]);
+
+      expect(await runSecret(['list', '--no-shell-hook'], { createStore: () => store, afterSet })).toBe(2);
+      expect(err.mock.calls.map((c) => String(c[0])).join('\n')).toContain('--no-shell-hook is read by `secret set`, not by `secret list`');
+    } finally {
+      log.mockRestore();
+      err.mockRestore();
+    }
+  });
+
+  const hasBuild = fs.existsSync(CLI_PATH);
+  const itIfBuilt = hasBuild ? it : it.skip;
+
+  // The built CLI, as a user runs it: argv normalisation accepts the flag, and
+  // a value piped in on a fresh home stores without editing ~/.zshenv.
+  itIfBuilt.each([
+    [['--no-shell-hook'], 'Shell profile not changed (--no-shell-hook).'],
+    [[], 'Shell profile not changed: there is no terminal to ask on before editing ~/.zshenv.'],
+  ])('leaves ~/.zshenv unwritten on a fresh home (flags %j)', (flags, expected) => {
+    fs.mkdirSync(path.join(home, '.secretless-ai'));
+    fs.writeFileSync(path.join(home, '.secretless-ai', 'config.json'), '{"backend":"local"}\n');
+    const res = spawnSync(process.execPath, [CLI_PATH, 'secret', 'set', 'DEMO_KEY', ...flags], {
+      input: 'not-a-real-value',
+      encoding: 'utf-8',
+      cwd: dir,
+      env: { PATH: process.env.PATH ?? '', HOME: home, SHELL: '/bin/zsh', SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' },
+    });
+    expect(res.stderr).toBe('');
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('Stored: DEMO_KEY');
+    expect(res.stdout).toContain(expected);
+    expect(fs.existsSync(path.join(home, '.zshenv'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.bashrc'))).toBe(false);
   });
 });
