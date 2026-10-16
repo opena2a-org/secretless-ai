@@ -27,9 +27,13 @@ export const EXACT_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-
 
 export const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 
-// A name npm can look up. Anything else (a leading dash among it) is never
-// passed to `npm view` as an argument.
-const NPM_PACKAGE_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+// A name npm accepts for a package that already exists: only characters
+// encodeURIComponent leaves as they are, no leading period, hyphen or
+// underscore, and a scoped name's package part with no leading period.
+// Capitals and ~'!()* are refused for new packages only, and the registry
+// still serves older names that carry them (JSONStream). Anything else (a
+// leading hyphen among it) is never passed to `npm view` as an argument.
+const NPM_PACKAGE_NAME =/^(?:@[\w.~!'()*-]+\/(?!\.)[\w.~!'()*-]+|(?![._-])[\w.~!'()*-]+)$/;
 
 /** True for a name under one of OWN_SCOPES. */
 export function isOwnScope(name) {

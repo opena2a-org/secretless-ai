@@ -38,6 +38,7 @@ type Answer = string[] | "E404" | "ECONNREFUSED";
 const REGISTRY: Record<string, Answer> = {
   hackmyagent: [OWNER],
   "arp-guard": [OTHER, OWNER],
+  "Legacy-Own-Fixture": [OWNER],
   "not-served-fixture": "E404",
   "unreachable-fixture": "ECONNREFUSED",
 };
@@ -133,6 +134,7 @@ describe("pinned-first-party-deps refuses a non-exact specifier on an own packag
     ["hackmyagent", ">=0.11.0"],
     ["arp-guard", "~0.3.0"],
     ["@opena2a/aim-core", "1.0.0-beta+build.1+build.2"],
+    ["Legacy-Own-Fixture", "^1.0.0"],
   ])("%s %s fails the check, named", { timeout: 120_000 }, (name, spec) => {
     const run = review({ dependencies: { [name]: spec } });
     expectSingleFailure(run, "pinned-first-party-deps");
@@ -178,6 +180,14 @@ describe("pinned-first-party-deps refuses a non-exact specifier on an own packag
     expect(run.stdout).toContain(`dependencies.${name}=^1.0.0 (not an npm package name)`);
     expect(run.calls.flat()).not.toContain(name);
   });
+
+  it("a name with a leading hyphen fails, and is never passed to npm", { timeout: 120_000 }, () => {
+    const name = "-leading-hyphen-fixture";
+    const run = review({ dependencies: { [name]: "^1.0.0" } });
+    expectSingleFailure(run, "pinned-first-party-deps");
+    expect(run.stdout).toContain(`dependencies.${name}=^1.0.0 (not an npm package name)`);
+    expect(run.calls.flat()).not.toContain(name);
+  });
 });
 
 describe("pinned-first-party-deps passes exact pins and packages other publishers own", () => {
@@ -217,6 +227,19 @@ describe("pinned-first-party-deps passes exact pins and packages other publisher
       const run = review({ devDependencies: { typescript: "^6.0.2" } });
       expect(run.census["pinned-first-party-deps"]).toBe("pass");
       expect(viewedNames(run).sort()).toEqual(["hackmyagent", "typescript"]);
+    },
+  );
+
+  it(
+    "a legacy name with capitals or ~'!()* is read from the registry, not refused as a name",
+    { timeout: 120_000 },
+    () => {
+      const run = review({
+        dependencies: { JSONStream: "^1.3.5" },
+        devDependencies: { "~legacy'name!(x)*": "^1.0.0" },
+      });
+      expect(run.census["pinned-first-party-deps"]).toBe("pass");
+      expect(viewedNames(run).sort()).toEqual(["JSONStream", "hackmyagent", "~legacy'name!(x)*"]);
     },
   );
 });

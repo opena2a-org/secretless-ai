@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**The release review reads a dependency with an older npm name such as
+`JSONStream` from the registry instead of refusing it (#402).** The
+`pinned-first-party-deps` check accepted only lowercase names, so a
+non-exact specifier on `JSONStream`, a name the registry serves, failed the
+check as `pin not served` with `(not an npm package name)`. npm refuses
+capitals and `~'!()*` for new packages only. The check now passes to
+`npm view` a name made of the characters `encodeURIComponent` leaves
+unchanged, with no leading `.`, `-` or `_`, and a scoped name whose package
+part does not start with `.`. A name with a leading hyphen, which the earlier
+rule passed to `npm view`, now fails as not an npm package name without being
+passed. `src/release-artifact-review-own-pins.test.ts` covers a capitalised
+name, a name with `~'!()*`, a capitalised own package and a leading hyphen.
+
 **`scan` does not offer `.git` or a dependency or build directory as the
 `Scan one:` command under the directories not entered (#399).** The line named
 the first directory in the list, which is sorted by code point, so on a
