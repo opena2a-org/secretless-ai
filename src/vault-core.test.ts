@@ -465,6 +465,121 @@ describeWithAimCore('vault-core', () => {
       await expectNothingStored('github');
     });
   });
+
+  // Rotating to an empty value would replace a working credential with a blank
+  // one, so it is refused the same way and the previous version stays in place.
+  describe('vaultRotate refuses an empty value', () => {
+    const NO_VALUE = 'no value provided. Pipe the value on stdin, or use --env NAME.';
+    const ORIGINAL = ['original', 'value'].join('_');
+    let restoreStdin: (() => void) | undefined;
+
+    // Replaces process.stdin with a non-TTY stream that is already at end of input.
+    const stubStdin = (input: string) => {
+      const original = Object.getOwnPropertyDescriptor(process, 'stdin')!;
+      const stream = new PassThrough();
+      stream.end(input);
+      Object.defineProperty(process, 'stdin', { value: stream, configurable: true });
+      restoreStdin = () => Object.defineProperty(process, 'stdin', original);
+    };
+
+    afterEach(() => {
+      restoreStdin?.();
+      restoreStdin = undefined;
+    });
+
+    const initWithCredential = async () => {
+      const { vaultInit, vaultRegister } = await import('./vault-core.js');
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await vaultInit('test-agent');
+      await vaultRegister('github', { value: ORIGINAL });
+      consoleSpy.mockRestore();
+    };
+
+    const readStored = async (namespace: string) => {
+      const { getVaultStore } = await import('./vault-core.js');
+      const { store } = await getVaultStore();
+      const version = store.listCredentials().find((c) => c.namespace === namespace)?.version;
+      const value = new TextDecoder().decode(store.resolveCredential(namespace));
+      store.lock();
+      return { version, value };
+    };
+
+    const expectPreviousVersionKept = async (namespace: string) => {
+      const { loadAimCoreVault, PATHS } = await import('./vault-core.js');
+      expect(await readStored(namespace)).toEqual({ version: 1, value: ORIGINAL });
+      const vault = await loadAimCoreVault();
+      const events = vault.readVaultAudit(PATHS.vaultDir, { namespace });
+      expect(events.filter((e) => e.operation === 'rotate')).toEqual([]);
+    };
+
+    it('refuses --value with an empty string', async () => {
+      stubStdin('');
+      await initWithCredential();
+      const { vaultRotate } = await import('./vault-core.js');
+
+      await expect(vaultRotate('github', { value: '' })).rejects.toThrow(NO_VALUE);
+      await expectPreviousVersionKept('github');
+    });
+
+    it('refuses stdin at end of input', async () => {
+      stubStdin('');
+      await initWithCredential();
+      const { vaultRotate } = await import('./vault-core.js');
+
+      await expect(vaultRotate('github', {})).rejects.toThrow(NO_VALUE);
+      await expectPreviousVersionKept('github');
+    });
+
+    it('refuses stdin that holds only whitespace', async () => {
+      stubStdin('  \n');
+      await initWithCredential();
+      const { vaultRotate } = await import('./vault-core.js');
+
+      await expect(vaultRotate('github', {})).rejects.toThrow(NO_VALUE);
+      await expectPreviousVersionKept('github');
+    });
+
+    it('refuses an environment variable that is set but empty', async () => {
+      stubStdin('');
+      vi.stubEnv('EMPTY_TEST_TOKEN', '');
+      await initWithCredential();
+      const { vaultRotate } = await import('./vault-core.js');
+
+      await expect(vaultRotate('github', { envVar: 'EMPTY_TEST_TOKEN' })).rejects.toThrow(NO_VALUE);
+      await expectPreviousVersionKept('github');
+    });
+
+    it('still rotates to a value piped on stdin', async () => {
+      const rotated = ['rotated', 'value'].join('_');
+      stubStdin(rotated + '\n');
+      await initWithCredential();
+      const { vaultRotate } = await import('./vault-core.js');
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await vaultRotate('github', {});
+      consoleSpy.mockRestore();
+
+      expect(await readStored('github')).toEqual({ version: 2, value: rotated });
+    });
+
+    it('vault rotate exits 1 with stdin at end of input', async () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+      expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+      await initWithCredential();
+
+      const run = spawnSync(process.execPath, [cliPath, 'vault', 'rotate', 'github'], {
+        env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`Error: ${NO_VALUE}`);
+      expect(run.stdout).not.toContain('Credential rotated');
+      await expectPreviousVersionKept('github');
+    });
+  });
 });
 
 describe('vault-core error message format', () => {

@@ -49,6 +49,20 @@ with `Error: no value provided. Pipe the value on stdin, or use --env NAME.`
 and exit 1, before the namespace is created, the value is stored or the audit
 log is written, as `secret set` already refuses one.
 
+**`vault rotate` refuses an empty value instead of storing it (#417).** With
+stdin at end of input, as in `vault rotate github </dev/null`, it printed
+`Credential rotated for namespace "github".` and `New version: 2` and exited
+0, having passed the empty value to the store as the new version of the
+credential. A value that is empty after trimming, from `--value`, `--env` or
+stdin, is now refused with `Error: no value provided. Pipe the value on stdin,
+or use --env NAME.` and exit 1, before the value is stored or the `rotate`
+audit event is written, so the previous version stays in place. `--value ''`
+and an environment variable that is set but empty are now taken as given
+values and reach that check; an unset variable keeps its existing error.
+`src/vault-core.test.ts` covers `--value ''`, stdin at end of input, stdin
+holding only whitespace, an empty environment variable, a piped value that
+still rotates, and the CLI exit code with stdin at end of input.
+
 **`init` counts hardcoded credentials the way `scan` does, so its warning and
 the `scan` it points to report the same number.** `init` counted with a
 scanner of its own: the fixed config-file list, matched line by line with no
