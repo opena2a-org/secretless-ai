@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import {
   BLIND_SCANNER,
+  OWN_PACKAGE_PINS_MODULE,
   SCRIPT,
   buildTarball,
   closedPort,
@@ -27,9 +28,32 @@ import {
  * it fails before it leaves the machine.
  */
 
-const OWN_COPY = { name: "hackmyagent", version: "0.0.1-fixture" };
+type OwnCopy = { name: string; version: string; repo: string };
+
+const OWN_COPY: OwnCopy = {
+  name: "hackmyagent",
+  version: "0.0.1-fixture",
+  repo: "opena2a-org/hackmyagent",
+};
 const OWN_SPEC = `${OWN_COPY.name}@${OWN_COPY.version}`;
-const REPO = "opena2a-org/hackmyagent";
+const REPO = OWN_COPY.repo;
+
+/**
+ * The scopes pinned-first-party-deps counts as own, from its source so the
+ * two cannot drift. Read when the tests are collected, so it throws rather
+ * than asserts.
+ */
+function ownScopes(): string[] {
+  const match = /export const OWN_SCOPES = \[([^\]]*)\]/.exec(
+    fs.readFileSync(OWN_PACKAGE_PINS_MODULE, "utf-8"),
+  );
+  if (match === null) throw new Error("OWN_SCOPES not found in own-package-pins.mjs");
+  const scopes = [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  if (!scopes.includes("@nanomind/")) {
+    throw new Error(`OWN_SCOPES no longer lists @nanomind/: ${JSON.stringify(scopes)}`);
+  }
+  return scopes;
+}
 
 /** The version the script's deprecation probe reads, from its source so the two cannot drift. */
 function knownDeprecatedSpec(): string {
@@ -44,28 +68,28 @@ function knownDeprecatedSpec(): string {
 
 /**
  * A stand-in npm in a new directory: the closure resolves to one copy of
- * OWN_COPY, its packument names REPO, and `view <spec> deprecated` prints a
- * notice for each spec in `deprecated`. Every other call exits 0.
+ * `copy`, its packument names `copy.repo`, and `view <spec> deprecated`
+ * prints a notice for each spec in `deprecated`. Every other call exits 0.
  */
-function npmStandIn(deprecated: string[]): string {
+function npmStandIn(deprecated: string[], copy: OwnCopy): string {
   const dir = fs.mkdtempSync(path.join(tmpRoot, "npm-stand-in-"));
   const lock = {
     lockfileVersion: 3,
     packages: {
       "": { name: "closure-scratch" },
-      [`node_modules/${OWN_COPY.name}`]: { version: OWN_COPY.version },
+      [`node_modules/${copy.name}`]: { version: copy.version },
     },
   };
   const packument = {
-    versions: [OWN_COPY.version],
-    "repository.url": `git+https://github.com/${REPO}.git`,
+    versions: [copy.version],
+    "repository.url": `git+https://github.com/${copy.repo}.git`,
   };
   const source = [
     `#!${process.execPath}`,
     "const argv = process.argv.slice(2);",
     "if (argv[0] === 'install' && argv.includes('--package-lock-only')) {",
     `  require('fs').writeFileSync('package-lock.json', ${JSON.stringify(JSON.stringify(lock))});`,
-    `} else if (argv[0] === 'view' && argv[1] === ${JSON.stringify(OWN_COPY.name)}) {`,
+    `} else if (argv[0] === 'view' && argv[1] === ${JSON.stringify(copy.name)}) {`,
     `  console.log(${JSON.stringify(JSON.stringify(packument))});`,
     "} else if (argv[0] === 'view' && argv[2] === 'deprecated') {",
     `  if (${JSON.stringify(deprecated)}.includes(argv[1])) console.log('fixture deprecation notice');`,
@@ -78,20 +102,20 @@ function npmStandIn(deprecated: string[]): string {
   return dir;
 }
 
-async function offlineReview(name: string, deprecated: string[]) {
+async function offlineReview(name: string, deprecated: string[], copy: OwnCopy = OWN_COPY) {
   const proxy = `http://127.0.0.1:${await closedPort()}`;
   if (!fetchHonoursProxy(proxy)) return null;
   const { script, env } = relocatedScript({ source: BLIND_SCANNER });
   const files = {
     ...healthyFiles(),
     "package/package.json": fixturePackageJson({
-      dependencies: { [OWN_COPY.name]: OWN_COPY.version },
+      dependencies: { [copy.name]: copy.version },
     }),
   };
   return runReview(["--tarball", buildTarball(`${name}.tgz`, files)], {
     script,
     env: {
-      PATH: `${npmStandIn(deprecated)}${path.delimiter}${env.PATH}`,
+      PATH: `${npmStandIn(deprecated, copy)}${path.delimiter}${env.PATH}`,
       HTTPS_PROXY: proxy,
       https_proxy: proxy,
       NO_PROXY: "",
@@ -141,6 +165,40 @@ describe("consumer-closure keeps a deprecation it found when the advisories read
         ),
       );
       expect(run.stdout).not.toContain(`${OWN_SPEC} is deprecated`);
+    },
+  );
+});
+
+/**
+ * consumer-closure and pinned-first-party-deps read the own scopes from one
+ * list, OWN_SCOPES in own-package-pins.mjs: a deprecated copy under each of
+ * them, @nanomind/engine included, is examined and fails the check.
+ */
+describe("consumer-closure examines a copy under every scope pinned-first-party-deps counts as own", () => {
+  it.for(ownScopes())(
+    "a deprecated %sengine copy fails the check",
+    { timeout: 300_000 },
+    async (scope, ctx) => {
+      const copy: OwnCopy = {
+        name: `${scope}engine`,
+        version: "0.0.1-fixture",
+        repo: "opena2a-org/scope-fixture",
+      };
+      const spec = `${copy.name}@${copy.version}`;
+      const run = await offlineReview(
+        `scope-${scope.replace(/[^a-z0-9]/g, "")}`,
+        [knownDeprecatedSpec(), spec],
+        copy,
+      );
+      if (run === null) return ctx.skip(SKIP_NOTE);
+
+      expectDeprecatedDependencyCaught(run, spec);
+      expect(run.stdout).toMatch(
+        new RegExp(
+          `^check consumer-closure: fail: .*advisories endpoint unreadable for ${copy.repo} \\(states: all\\): fetch failed`,
+          "m",
+        ),
+      );
     },
   );
 });

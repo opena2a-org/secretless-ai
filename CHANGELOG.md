@@ -122,6 +122,18 @@ suffix, in the order semver 2.0.0 gives: `1.0.0-beta+build.1` on
 `@opena2a/aim-core` and `0.33.2-rc.1+build.7` on `hackmyagent` pass with no
 registry read, and `1.0.0-beta+build.1+build.2` still fails.
 
+**The release review's `consumer-closure` check reads the deprecation and
+advisory state of `@nanomind/` copies in the install closure.** It counted as
+own a name on its roster of unscoped names or a name under `@opena2a/`, while
+`pinned-first-party-deps` also counts `@nanomind/`: over a fixture closure
+holding a deprecated `@nanomind/engine`, the check passed. It now takes the
+scopes from `OWN_SCOPES` in `scripts/own-package-pins.mjs`, the list
+`pinned-first-party-deps` reads, and that fixture fails the check. Over the
+packed 0.23.1 tarball the check now examines `@nanomind/engine@0.1.1` and
+`@nanomind/guard@0.1.1`; neither is deprecated or in a vulnerable range. An
+unscoped name is still matched against the check's roster, not the npm
+maintainers read `pinned-first-party-deps` uses.
+
 **`scan` lists a config file inside a directory this user can list but not
 search.** For `t/nosearch/config.json` under a `t/nosearch` of mode `0600`,
 `scan t --json` listed the file under neither `findings` nor

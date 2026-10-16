@@ -64,7 +64,9 @@
  *                            resolved with `npm install --package-lock-only`;
  *                            every own package in it (hackmyagent,
  *                            secretless-ai, ai-trust, opena2a-cli, arp-guard,
- *                            damn-vulnerable-ai-agent, cryptoserve, @opena2a/*
+ *                            damn-vulnerable-ai-agent, cryptoserve, and a name
+ *                            under @opena2a/ or @nanomind/, the scopes
+ *                            pinned-first-party-deps reads from OWN_SCOPES
  *                            — the packed package itself included) must be
  *                            neither deprecated on the registry nor inside any
  *                            vulnerable_version_range of its repository's
@@ -78,7 +80,7 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { childEnv, fetchChild, npmChildEnv } from './child-env.mjs';
-import { npmMaintainersReader, ownPackagePins } from './own-package-pins.mjs';
+import { isOwnScope, npmMaintainersReader, ownPackagePins } from './own-package-pins.mjs';
 import { RETRACTED_CLAIMS, retractedClaimsIn } from './retracted-claims.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -86,7 +88,8 @@ const PLANTED_NAME = '00-planted-credential-control.js';
 
 /**
  * The own-package roster: the unscoped npm packages the OpenA2A project
- * publishes, listed below, plus every package in the @opena2a/ scope. The
+ * publishes, listed below, plus every package under a scope in OWN_SCOPES
+ * (own-package-pins.mjs), the scope list pinned-first-party-deps reads. The
  * consumer-closure check holds each copy of these in the install closure to
  * the deprecation and advisory checks. A lockfile package matches on its
  * alias-resolved name, and the packed package itself is in scope. A package
@@ -101,7 +104,6 @@ const OWN_PACKAGE_NAMES = new Set([
   'damn-vulnerable-ai-agent',
   'cryptoserve',
 ]);
-const OWN_SCOPE_PREFIX = '@opena2a/';
 
 /**
  * One version the registry is known to answer `deprecated` for, probed before
@@ -781,7 +783,7 @@ function consumerClosure(tarball, advisoryStates, resolveClosure, results) {
     const name = typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : pathName;
     const version = entry.version;
     if (typeof version !== 'string') continue;
-    if (OWN_PACKAGE_NAMES.has(name) || name.startsWith(OWN_SCOPE_PREFIX)) {
+    if (OWN_PACKAGE_NAMES.has(name) || isOwnScope(name)) {
       ownCopies.set(`${name}@${version}`, { name, version });
     }
   }
