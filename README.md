@@ -26,7 +26,7 @@ What `npx secretless-ai init` prints, trimmed ([full output](docs/captures/quick
   Created:
     + .claude/hooks/secretless-guard.sh
     + .claude/hooks/secretless-output-check.cjs
-    + .claude/settings.json (99 deny patterns)
+    + .claude/settings.json (147 deny patterns)
     + CLAUDE.md
 
   Next steps:
