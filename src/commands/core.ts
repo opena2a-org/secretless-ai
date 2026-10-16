@@ -1957,6 +1957,7 @@ export function runDoctor(autoFix: boolean): number {
     healthy: 'HEALTHY: All keys correctly configured for subprocess access.',
     degraded: 'DEGRADED: Keys work in your terminal but may fail in subprocesses.',
     broken: 'BROKEN: Keys are not available to subprocesses.',
+    empty: `No keys stored yet. Store one: ${CLI} secret set NAME`,
   };
   if (!accessProblem && plainText.length > 0) {
     const what = plainText.length === 1
@@ -1966,12 +1967,15 @@ export function runDoctor(autoFix: boolean): number {
     console.log(`  Store each one with \`${CLI_BARE} secret set NAME\`, then remove its export line.\n`);
     return 1;
   }
-  // A profile that could not be read was not checked, so HEALTHY covers only
-  // the profiles that were read. The health value and exit code are unchanged.
+  // A profile that could not be read was not checked, so HEALTHY, and the
+  // line saying no key is stored yet, cover only the profiles that were read.
+  // The health value and exit code are unchanged.
   const unread = result.profiles.filter((p) => p.readError);
-  const verdict = result.health === 'healthy' && unread.length > 0
+  const verdict = unread.length > 0 && result.health === 'healthy'
     ? 'HEALTHY for the profiles that were read: the keys found there are available to subprocesses.'
-    : verdictMap[result.health];
+    : unread.length > 0 && result.health === 'empty'
+      ? `No keys found in the profiles that were read. Store one: ${CLI} secret set NAME`
+      : verdictMap[result.health];
   console.log(`  ${verdict}\n`);
   if (unread.length > 0) {
     const names = unread.map((p) => `~/${require('path').basename(p.path)} (${p.readError})`).join(', ');
@@ -1979,7 +1983,8 @@ export function runDoctor(autoFix: boolean): number {
     console.log('  Make the file(s) readable, then run `npx secretless-ai doctor` again.\n');
   }
 
-  if (result.health !== 'healthy') {
+  // No key yet is not a fault: nothing for --fix to move, and exit 0.
+  if (result.health === 'degraded' || result.health === 'broken') {
     console.log('  Run `npx secretless-ai doctor --fix` to auto-fix.\n');
     return 1;
   }

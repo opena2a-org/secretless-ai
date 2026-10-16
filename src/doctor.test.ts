@@ -74,8 +74,8 @@ describe('doctor', () => {
     expect(wrongProfileFinding!.fix).toContain('.zshenv');
   });
 
-  it('detects no keys anywhere', () => {
-    // No profile files, no env vars
+  it('reports no keys yet on a fresh install as info, not as broken', () => {
+    // No profile files, no env vars: nothing is stored yet, which is a state
     const result = doctor({
       homeDir: home,
       shell: '/bin/zsh',
@@ -83,9 +83,13 @@ describe('doctor', () => {
       envOverride: {},
     });
 
-    expect(result.health).toBe('broken');
-    const errorFindings = result.findings.filter((f) => f.severity === 'error');
-    expect(errorFindings.some((f) => f.message.includes('No API keys found'))).toBe(true);
+    expect(result.health).not.toBe('broken');
+    expect(result.health).toBe('empty');
+    expect(result.findings).toEqual([
+      { severity: 'info', message: 'No API keys found yet.', fix: 'Store one: npx secretless-ai secret set NAME' },
+    ]);
+    expect(result.findings[0].fix).toContain('secret set');
+    expect(result.findings[0].fix).not.toContain('export');
   });
 
   it('handles missing profile files gracefully', () => {
@@ -321,7 +325,7 @@ describe('doctor', () => {
     expect(psProfile!.exportedVars).toContain('OPENAI_API_KEY');
   });
 
-  it('gives Windows-specific advice when no keys found', () => {
+  it('points a Windows user with no keys at the store, not at setx', () => {
     const result = doctor({
       homeDir: home,
       shell: '',
@@ -329,9 +333,10 @@ describe('doctor', () => {
       envOverride: {},
     });
 
-    expect(result.health).toBe('broken');
-    const errors = result.findings.filter((f) => f.severity === 'error');
-    expect(errors.some((f) => f.fix?.includes('setx') || f.fix?.includes('Environment Variables'))).toBe(true);
+    expect(result.health).toBe('empty');
+    expect(result.findings).toEqual([
+      { severity: 'info', message: 'No API keys found yet.', fix: 'Store one: npx secretless-ai secret set NAME' },
+    ]);
   });
 });
 
@@ -478,10 +483,10 @@ describe('doctor: secrets under names outside the known list', () => {
       ['SSH_KEY', 7, false],
     ]);
     expect(result.findings.filter((f) => f.kind === 'plain-text')).toHaveLength(0);
-    // A file path is not an API key, so with nothing else the verdict is BROKEN.
-    expect(result.health).toBe('broken');
-    expect(result.findings.filter((f) => f.severity === 'error').map((f) => f.message)).toEqual([
-      'No API keys found in env vars or shell profiles',
+    // A file path is not an API key, so with nothing else no key is found yet.
+    expect(result.health).toBe('empty');
+    expect(result.findings.map((f) => [f.severity, f.message])).toEqual([
+      ['info', 'No API keys found yet.'],
     ]);
 
     // The literal JIRA_TOKEN beside them is still reported.
@@ -557,9 +562,9 @@ describe('doctor: secrets under names outside the known list', () => {
     expect(zshenv.secretExports.every((e) => !e.plainText)).toBe(true);
     expect(result.findings.filter((f) => f.kind === 'plain-text')).toHaveLength(0);
     // Listed, but a value looked up at shell start is not an API key doctor
-    // found, so with nothing else the verdict is BROKEN.
-    expect(result.findings.some((f) => f.message === 'No API keys found in env vars or shell profiles')).toBe(true);
-    expect(result.health).toBe('broken');
+    // found, so with nothing else no key is found yet.
+    expect(result.findings.some((f) => f.severity === 'info' && f.message === 'No API keys found yet.')).toBe(true);
+    expect(result.health).toBe('empty');
   });
 
   it('does not list exports whose names do not read as secrets', () => {
@@ -659,16 +664,58 @@ describe('doctor CLI output for a secret outside the known list', () => {
     expect(status).toBe(1);
   });
 
-  itIfBuilt('lists a secret fetched rather than written out and stays BROKEN with no API key', () => {
+  itIfBuilt('lists a secret fetched rather than written out and says no API key is found yet, exit 0', () => {
     fs.writeFileSync(path.join(home, '.zshenv'), 'export JIRA_TOKEN="$(cat ~/.config/jira)"\n');
 
     const { status, stdout } = runDoctorCli();
 
     expect(stdout).toContain('JIRA_TOKEN (line 1)');
     expect(stdout).not.toContain('plain text');
-    expect(stdout).toContain('[ERROR] No API keys found in env vars or shell profiles');
-    expect(stdout).toContain('BROKEN');
+    expect(stdout).toContain('[INFO] No API keys found yet.');
+    expect(stdout).toContain('  No keys stored yet. Store one: npx secretless-ai secret set NAME\n');
+    expect(stdout).not.toContain('[ERROR]');
+    expect(stdout).not.toContain('BROKEN');
     expect(stdout).not.toContain('HEALTHY');
+    expect(status).toBe(0);
+  });
+
+  itIfBuilt('tells a fresh install with no keys how to store one, and exits 0', () => {
+    const { status, stdout } = runDoctorCli();
+
+    expect(stdout).toContain('[INFO] No API keys found yet.');
+    expect(stdout).toContain('Fix: Store one: npx secretless-ai secret set NAME');
+    expect(stdout).toContain('  No keys stored yet. Store one: npx secretless-ai secret set NAME\n');
+    expect(stdout).toContain('secret set');
+    expect(stdout).not.toContain('export');
+    expect(stdout).not.toContain('[ERROR]');
+    expect(stdout).not.toContain('BROKEN');
+    expect(stdout).not.toContain('doctor --fix');
+    expect(status).toBe(0);
+  });
+
+  itIfBuilt('qualifies the no-keys verdict when a profile could not be read', () => {
+    fs.mkdirSync(path.join(home, '.zshrc'));
+
+    const { status, stdout } = runDoctorCli();
+
+    expect(stdout).toContain('  No keys found in the profiles that were read. Store one: npx secretless-ai secret set NAME\n');
+    expect(stdout).not.toContain('No keys stored yet');
+    expect(stdout).toContain('Not checked: ~/.zshrc (EISDIR). Export lines in these files were not read.');
+    expect(stdout).not.toContain('BROKEN');
+    expect(status).toBe(0);
+  });
+
+  itIfBuilt('keeps BROKEN and exit 1 for a key only an interactive-only profile exports', () => {
+    fs.writeFileSync(path.join(home, '.zshrc'), `export ANTHROPIC_API_KEY=${VALUE}\n`);
+
+    const { status, stdout } = runDoctorCli();
+
+    expect(stdout).toContain('[ERROR] ANTHROPIC_API_KEY is in ~/.zshrc (interactive-only) but not available in subprocesses');
+    expect(stdout).toContain('  BROKEN: Keys are not available to subprocesses.\n');
+    expect(stdout).toContain('Run `npx secretless-ai doctor --fix` to auto-fix.');
+    expect(stdout).not.toContain('No API keys found yet.');
+    expect(stdout).not.toContain('No keys stored yet');
+    expect(stdout).not.toContain(VALUE);
     expect(status).toBe(1);
   });
 });

@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { CREDENTIAL_PATTERNS } from './patterns';
+import { CLI } from './commands/utils';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,7 +32,11 @@ export interface DoctorOptions {
 }
 
 export type Severity = 'error' | 'warn' | 'info';
-export type HealthStatus = 'healthy' | 'degraded' | 'broken';
+/**
+ * 'empty': no known API key was found in the environment or in a shell
+ * profile, as on a fresh install. Not an error: nothing is stored yet.
+ */
+export type HealthStatus = 'healthy' | 'degraded' | 'broken' | 'empty';
 
 export interface DoctorFinding {
   severity: Severity;
@@ -441,17 +446,16 @@ export function doctor(options?: DoctorOptions): DoctorResult {
   } else if (findings.some((f) => f.severity === 'warn')) {
     health = 'degraded';
   } else if (varsInEnv.length === 0 && allExportedVars.size === 0) {
-    // A secret-looking name exported as a file path or as a value looked up
-    // at shell start is listed with its profile, but it is not a known API
-    // key, so a profile holding only such exports is still BROKEN.
-    health = 'broken';
-    const fixTarget = platform === 'win32'
-      ? 'Use setx or Settings > System > Environment Variables'
-      : `Add export lines to ~/${path.basename(profiles.find((p) => p.recommendation === 'recommended')?.path ?? specs[0].file)}`;
+    // No key yet is a state, not an error. The way in is the store, not an
+    // export line in a profile that AI tools can read. A secret-looking name
+    // exported as a file path or as a value looked up at shell start is
+    // listed with its profile, but it is not a known API key, so a profile
+    // holding only such exports is empty too.
+    health = 'empty';
     findings.push({
-      severity: 'error',
-      message: 'No API keys found in env vars or shell profiles',
-      fix: fixTarget,
+      severity: 'info',
+      message: 'No API keys found yet.',
+      fix: `Store one: ${CLI} secret set NAME`,
     });
   }
 
