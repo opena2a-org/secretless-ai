@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawnSync } from 'child_process';
-import { doctor, quickDiagnosis, fixProfiles } from './doctor';
+import { doctor, quickDiagnosis, fixProfiles, noKeysFinding } from './doctor';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-ai-doctor-'));
@@ -86,7 +86,7 @@ describe('doctor', () => {
     expect(result.health).not.toBe('broken');
     expect(result.health).toBe('empty');
     expect(result.findings).toEqual([
-      { severity: 'info', message: 'No API keys found yet.', fix: 'Store one: npx secretless-ai secret set NAME' },
+      { severity: 'info', message: 'No API keys found in the environment or in shell profiles.', fix: 'Store one: npx secretless-ai secret set NAME', kind: 'no-keys' },
     ]);
     expect(result.findings[0].fix).toContain('secret set');
     expect(result.findings[0].fix).not.toContain('export');
@@ -335,8 +335,23 @@ describe('doctor', () => {
 
     expect(result.health).toBe('empty');
     expect(result.findings).toEqual([
-      { severity: 'info', message: 'No API keys found yet.', fix: 'Store one: npx secretless-ai secret set NAME' },
+      { severity: 'info', message: 'No API keys found in the environment or in shell profiles.', fix: 'Store one: npx secretless-ai secret set NAME', kind: 'no-keys' },
     ]);
+  });
+});
+
+describe('noKeysFinding', () => {
+  const message = 'No API keys found in the environment or in shell profiles.';
+  const storeOne = 'Store one: npx secretless-ai secret set NAME';
+
+  it('advises storing a key when the store was not asked or holds none', () => {
+    expect(noKeysFinding()).toEqual({ severity: 'info', message, fix: storeOne, kind: 'no-keys' });
+    expect(noKeysFinding({ count: 0, backend: 'local' })).toEqual({ severity: 'info', message, fix: storeOne, kind: 'no-keys' });
+  });
+
+  it('gives no advice to store one when the store holds a name or could not be read', () => {
+    expect(noKeysFinding({ count: 2, backend: 'local' })).toEqual({ severity: 'info', message, kind: 'no-keys' });
+    expect(noKeysFinding(null)).toEqual({ severity: 'info', message, kind: 'no-keys' });
   });
 });
 
@@ -486,7 +501,7 @@ describe('doctor: secrets under names outside the known list', () => {
     // A file path is not an API key, so with nothing else no key is found yet.
     expect(result.health).toBe('empty');
     expect(result.findings.map((f) => [f.severity, f.message])).toEqual([
-      ['info', 'No API keys found yet.'],
+      ['info', 'No API keys found in the environment or in shell profiles.'],
     ]);
 
     // The literal JIRA_TOKEN beside them is still reported.
@@ -563,7 +578,7 @@ describe('doctor: secrets under names outside the known list', () => {
     expect(result.findings.filter((f) => f.kind === 'plain-text')).toHaveLength(0);
     // Listed, but a value looked up at shell start is not an API key doctor
     // found, so with nothing else no key is found yet.
-    expect(result.findings.some((f) => f.severity === 'info' && f.message === 'No API keys found yet.')).toBe(true);
+    expect(result.findings.some((f) => f.severity === 'info' && f.message === 'No API keys found in the environment or in shell profiles.')).toBe(true);
     expect(result.health).toBe('empty');
   });
 
@@ -671,7 +686,7 @@ describe('doctor CLI output for a secret outside the known list', () => {
 
     expect(stdout).toContain('JIRA_TOKEN (line 1)');
     expect(stdout).not.toContain('plain text');
-    expect(stdout).toContain('[INFO] No API keys found yet.');
+    expect(stdout).toContain('[INFO] No API keys found in the environment or in shell profiles.');
     expect(stdout).toContain('  No keys stored yet. Store one: npx secretless-ai secret set NAME\n');
     expect(stdout).not.toContain('[ERROR]');
     expect(stdout).not.toContain('BROKEN');
@@ -682,7 +697,7 @@ describe('doctor CLI output for a secret outside the known list', () => {
   itIfBuilt('tells a fresh install with no keys how to store one, and exits 0', () => {
     const { status, stdout } = runDoctorCli();
 
-    expect(stdout).toContain('[INFO] No API keys found yet.');
+    expect(stdout).toContain('[INFO] No API keys found in the environment or in shell profiles.');
     expect(stdout).toContain('Fix: Store one: npx secretless-ai secret set NAME');
     expect(stdout).toContain('  No keys stored yet. Store one: npx secretless-ai secret set NAME\n');
     expect(stdout).toContain('secret set');
@@ -713,10 +728,79 @@ describe('doctor CLI output for a secret outside the known list', () => {
     expect(stdout).toContain('[ERROR] ANTHROPIC_API_KEY is in ~/.zshrc (interactive-only) but not available in subprocesses');
     expect(stdout).toContain('  BROKEN: Keys are not available to subprocesses.\n');
     expect(stdout).toContain('Run `npx secretless-ai doctor --fix` to auto-fix.');
-    expect(stdout).not.toContain('No API keys found yet.');
+    expect(stdout).not.toContain('No API keys found');
     expect(stdout).not.toContain('No keys stored yet');
     expect(stdout).not.toContain(VALUE);
     expect(status).toBe(1);
+  });
+});
+
+// doctor reads the environment and the shell profiles; the store is asked
+// before the output says nothing is stored (#418).
+describe('doctor CLI output for keys held only in the store', () => {
+  const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
+  const itIfBuilt = fs.existsSync(CLI_PATH) && process.platform !== 'win32' ? it : it.skip;
+  let home: string;
+
+  beforeEach(() => {
+    home = tmpDir();
+    // The local encrypted file: its key derives from HOME and the user, so no
+    // OS keychain is reached.
+    fs.mkdirSync(path.join(home, '.secretless-ai'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.secretless-ai', 'config.json'), JSON.stringify({ backend: 'local' }));
+  });
+
+  afterEach(() => {
+    cleanup(home);
+  });
+
+  function runCli(args: string[], input?: string): { status: number | null; stdout: string } {
+    const res = spawnSync(process.execPath, [CLI_PATH, ...args], {
+      encoding: 'utf-8',
+      input,
+      env: { PATH: process.env.PATH, HOME: home, SHELL: '/bin/zsh', SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' },
+    });
+    return { status: res.status, stdout: res.stdout };
+  }
+
+  itIfBuilt('counts what secret list shows instead of saying no key is stored, and exits 0', () => {
+    expect(runCli(['secret', 'set', 'OPENAI_API_KEY'], 'FAKE-KEY-1234\n').status).toBe(0);
+    expect(runCli(['secret', 'list']).stdout).toContain('OPENAI_API_KEY');
+
+    const { status, stdout } = runCli(['doctor']);
+
+    expect(stdout).toContain('[INFO] No API keys found in the environment or in shell profiles.');
+    expect(stdout).toContain('  No API keys found in the environment or in shell profiles. The secret store (local backend) holds 1 secret. List them: npx secretless-ai secret list\n');
+    expect(stdout).not.toContain('No keys stored yet');
+    expect(stdout).not.toContain('No API keys found yet');
+    expect(stdout).not.toContain('Store one');
+    expect(stdout).not.toContain('FAKE-KEY-1234');
+    expect(status).toBe(0);
+  });
+
+  itIfBuilt('counts every stored name, and keeps the unread-profile qualifier', () => {
+    expect(runCli(['secret', 'set', 'OPENAI_API_KEY'], 'FAKE-KEY-1234\n').status).toBe(0);
+    expect(runCli(['secret', 'set', 'JIRA_TOKEN'], 'FAKE-KEY-5678\n').status).toBe(0);
+    fs.mkdirSync(path.join(home, '.zshrc'));
+
+    const { status, stdout } = runCli(['doctor']);
+
+    expect(stdout).toContain('  No API keys found in the environment or in the profiles that were read. The secret store (local backend) holds 2 secrets. List them: npx secretless-ai secret list\n');
+    expect(stdout).toContain('Not checked: ~/.zshrc (EISDIR). Export lines in these files were not read.');
+    expect(stdout).not.toContain('Store one');
+    expect(status).toBe(0);
+  });
+
+  itIfBuilt('says the store could not be read rather than that nothing is stored', () => {
+    fs.mkdirSync(path.join(home, '.secretless-ai', 'store'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.secretless-ai', 'store', 'secrets.enc'), 'not an encrypted store\n');
+
+    const { status, stdout } = runCli(['doctor']);
+
+    expect(stdout).toContain('  No API keys found in the environment or in shell profiles. The secret store could not be read, so what it holds was not checked. See why: npx secretless-ai secret list\n');
+    expect(stdout).not.toContain('No keys stored yet');
+    expect(stdout).not.toContain('Store one');
+    expect(status).toBe(0);
   });
 });
 
