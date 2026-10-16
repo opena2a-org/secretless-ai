@@ -189,7 +189,7 @@ async function handleExec(args: string[]): Promise<number> {
   if (dashDashIdx === -1) {
     console.error('\n  Usage: secretless-ai vault exec <namespace> -- <command> [args...]\n');
     console.error('  Example:');
-    console.error('    secretless-ai vault exec github -- curl https://api.github.com/user');
+    console.error(`    secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'`);
     console.error('    secretless-ai vault exec aws-prod --env-name AWS_SECRET_ACCESS_KEY -- aws s3 ls\n');
     return 1;
   }
@@ -285,7 +285,7 @@ function printVaultHelp(): void {
     secretless-ai vault register github                  (prompts for the value)
     gh auth token | secretless-ai vault register github  (reads it from the pipe)
     secretless-ai vault register aws --env AWS_SECRET_ACCESS_KEY
-    secretless-ai vault exec github -- curl https://api.github.com/user
+    secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'
     secretless-ai vault migrate --env-file .env --dry-run
     secretless-ai vault audit --limit 10
 `);

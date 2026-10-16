@@ -81,6 +81,24 @@ replaces the earlier hook or helper entry. The Stop hook still never fails a
 turn, and now prints `secretless-ai clean --last failed (exit N)` on its
 stderr instead of discarding the cleaner's error output.
 
+**The top-level help lists `telemetry` and `scan-staged` and no entry twice,
+an unknown command names the nearest command, and the `vault exec` example
+reads the variable it is given (#410).** `--help` listed `warm`, `install`,
+`scan --include-tests`, `scan --include-config`, `scan --no-ignore` and
+`scan --min-confidence` twice each, and did not list `telemetry` or
+`scan-staged`. Every command `cli.ts` registers is now listed, and no entry
+below Quick start is listed twice. `secretless-ai scna` printed
+`Unknown command: scna` and then the whole help, 173 lines on stdout. It now
+prints ``Unknown command: scna (did you mean `scan`?)`` and
+``Run `secretless-ai --help` for the list of commands.`` on stderr and
+nothing on stdout, with exit 2 as before; `bogus` gets no suggestion. The
+next steps `vault init` prints, the help `vault` prints with no subcommand
+and the usage `vault exec` prints without `--` showed
+`vault exec github -- curl https://api.github.com/user`, which never reads
+`$GITHUB`, the variable `vault exec github` sets. They now show
+`vault exec github -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'`,
+as `docs/how-it-works.md` now does.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),

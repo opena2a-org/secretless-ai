@@ -280,7 +280,9 @@ export async function vaultInit(agentName?: string): Promise<void> {
   console.log('  Next steps:');
   console.log('    secretless-ai vault register github        (prompts for the token)');
   console.log('    secretless-ai vault list');
-  console.log('    secretless-ai vault exec github -- curl https://api.github.com/user\n');
+  // The child is given the credential as $GITHUB; the example reads it in the
+  // child's shell and passes it to curl on stdin, off the command line (#410).
+  console.log(`    secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'\n`);
 
   vault.zeroize(edSecretKey);
 }
