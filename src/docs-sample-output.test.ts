@@ -28,6 +28,8 @@ const DAEMON_PATH = path.join(REPO_ROOT, 'dist', 'broker', 'daemon.js');
 const hasBuild = fs.existsSync(CLI_PATH) && fs.existsSync(DAEMON_PATH);
 const itIfBuilt = hasBuild ? it : it.skip;
 const TEST_TIMEOUT_MS = 30_000;
+// `broker start` refuses a socket path longer than this on macOS (src/broker/daemon.ts).
+const SOCKET_PATH_MAX = 104;
 
 const README = 'README.md';
 const COMMANDS_DOC = 'docs/commands.md';
@@ -119,9 +121,19 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-  // Short prefix: the broker's unix socket lives under HOME, and socket paths
-  // are capped at 104 bytes on macOS.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sldoc-'));
+  dirs.push(dir);
+  return dir;
+}
+
+/**
+ * A HOME for `broker start`, whose socket is broker.sock under it. Made under
+ * os.tmpdir(), a TMPDIR longer than 64 bytes put that socket past the
+ * 104-byte macOS limit and the broker refused to start. On POSIX it is made
+ * under /tmp.
+ */
+function brokerHome(): string {
+  const dir = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'sldoc-'));
   dirs.push(dir);
   return dir;
 }
@@ -526,8 +538,23 @@ describe('migrate-from-dotenv.md', () => {
 });
 
 describe('run-broker.md', () => {
+  it('makes the broker HOME short enough for broker.sock when TMPDIR is long', () => {
+    const longTmp = path.join(tempDir(), 'x'.repeat(80));
+    fs.mkdirSync(longTmp);
+    const savedTmp = process.env.TMPDIR;
+    process.env.TMPDIR = longTmp;
+    let home: string;
+    try {
+      home = brokerHome();
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmp;
+    }
+    expect(Buffer.byteLength(path.join(home, '.secretless-ai', 'broker.sock'))).toBeLessThanOrEqual(SOCKET_PATH_MAX);
+  });
+
   itIfBuilt('`broker start`, then `broker status` in a second terminal', async () => {
-    const home = tempDir();
+    const home = brokerHome();
     const port = await freePort();
     const { child, output: started } = await startUntil(['broker', 'start', '--port', String(port)], home, 'Press Ctrl+C to stop.');
 
