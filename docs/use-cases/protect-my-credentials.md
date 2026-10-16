@@ -25,7 +25,7 @@ Expected output in a project that Claude Code and Cursor both use, after the ver
   Created:
     + .claude/hooks/secretless-guard.sh
     + .claude/hooks/secretless-output-check.cjs
-    + .claude/settings.json (99 deny patterns)
+    + .claude/settings.json (147 deny patterns)
     + CLAUDE.md
     + .cursor/rules/secretless.mdc
 
@@ -77,13 +77,13 @@ Expected output in the project from Step 1:
   Secretless Status
 
   ── Observations ────────────────────────────────────────────
-  ✓ Claude Code hook installed (.claude/settings.json — 99 deny patterns)
+  ✓ Claude Code hook installed (.claude/settings.json — 147 deny patterns)
   ✓ Stop hook installed (transcript redaction)
   ✓ Tool instructions: Claude Code, Cursor (advisory, not enforced)
   ✓ No credentials detected in scanned files
-  ⚠ Biometric session not initialized                                      → secretless-ai warm
-  ⚠ Transcript watcher not running                                         → secretless-ai watch
-  ⚠ Broker daemon not installed                                            → secretless-ai install
+  ⚠ Biometric session not initialized                                       → secretless-ai warm
+  ⚠ Transcript watcher not running                                          → secretless-ai watch
+  ⚠ Broker daemon not installed                                             → secretless-ai install
 
   ── Verdict ─────────────────────────────────────────────────
   Protected (3 observations need attention)

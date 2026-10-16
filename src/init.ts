@@ -7,10 +7,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { detectAITools, toolDisplayName, AIDER_IGNORE_FILE, type AITool } from './detect';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
-import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filesystemPathForm, mergeRules } from './custom-rules';
+import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filePatternToDenyRules, filesystemPathForm, mergeRules } from './custom-rules';
 import type { CustomRules, RulesFileIssue } from './custom-rules';
 import { scan, newScanStats, coverageIncomplete } from './scan';
 import { commandPrefixForHooks } from './hook-prefix';
+
+/**
+ * Secret file extensions, matched as a suffix (`server.key`, `prod.env`). The
+ * suffix-form Read, Grep and Bash deny rules init writes for Claude Code
+ * (`Read(*.key)`, `Bash(cat *.key)`, ...) and the guard hook's file-path rule
+ * are generated from this list. The guard hook's command rule matches the
+ * alternation in SECRET_FILE_EXT.
+ */
+export const SECRET_FILE_EXTENSIONS: readonly string[] = ['env', 'key', 'pem', 'p12', 'pfx', 'crt', 'tfstate', 'tfvars'];
 
 /** Known API services with their auth header formats */
 const SERVICE_HINTS: Record<string, { service: string; authHeader: string }> = {
@@ -398,14 +407,8 @@ function configureClaudeCode(
     'Read(.env.production)',
     'Read(.env.staging)',
     'Read(.env.test)',
-    'Read(*.env)', // name.env (prod.env, staging.env) — distinct from .env*
-    'Read(*.key)',
-    'Read(*.pem)',
-    'Read(*.p12)',
-    'Read(*.pfx)',
-    'Read(*.crt)',
-    'Read(*.tfstate)',
-    'Read(*.tfvars)',
+    // `*.env` (prod.env, staging.env) and the other suffix forms come from
+    // SECRET_FILE_EXTENSIONS below, with their Grep and Bash rules.
     'Read(.aws/credentials)',
     'Read(.ssh/*)',
     // Block Read access to secretless data directory
@@ -419,42 +422,29 @@ function configureClaudeCode(
     'Grep(.env.production)',
     'Grep(.env.staging)',
     'Grep(.env.test)',
-    'Grep(*.env)',
-    'Grep(*.key)',
-    'Grep(*.pem)',
-    'Grep(*.p12)',
-    'Grep(*.pfx)',
-    'Grep(*.crt)',
     // The credentials STORE, not the topic word. `credentials*` is a prefix glob,
     // so a project-root `credentials-guide.md` was denied to Grep for naming the
     // subject. Same drift as the guard hook's path fragment above — patterns.ts
     // already spells this rule `credentials/`.
     'Grep(credentials/*)',
-    'Grep(*.tfstate)',
-    'Grep(*.tfvars)',
-    // Block Bash commands that read secret files (Issue #2 - expanded)
+    // Block Bash commands that read secret files (Issue #2 - expanded).
+    // The `.env*` family by its dotfile name; the suffix forms follow.
     'Bash(cat .env*)',
-    'Bash(cat *.key)',
-    'Bash(cat *.pem)',
     'Bash(grep * .env*)',
-    'Bash(grep * *.key)',
-    'Bash(grep * *.pem)',
     'Bash(awk * .env*)',
-    'Bash(awk * *.key)',
     'Bash(sed * .env*)',
-    'Bash(sed * *.key)',
     'Bash(strings .env*)',
-    'Bash(strings *.key)',
-    'Bash(strings *.pem)',
     'Bash(xxd .env*)',
-    'Bash(xxd *.key)',
-    'Bash(xxd *.pem)',
-    'Bash(python3 -c*open*.env*)',
-    'Bash(python3 -c*open*.key*)',
-    'Bash(python3 -c*open*.pem*)',
-    'Bash(node -e*readFile*.env*)',
-    'Bash(node -e*readFile*.key*)',
-    'Bash(node -e*readFile*.pem*)',
+    // Each secret file extension gets the same rules, from one list: Read,
+    // Grep and the Bash reader rules a custom `files:` pattern gets, then the
+    // python3 and node one-liners. The Bash rules were written out by hand for
+    // `.env*`, `*.key` and `*.pem` only, so `*.crt` and `*.tfstate` had no Bash
+    // rule while their Read rule was there.
+    ...SECRET_FILE_EXTENSIONS.flatMap(ext => [
+      ...filePatternToDenyRules(`*.${ext}`),
+      `Bash(python3 -c*open*.${ext}*)`,
+      `Bash(node -e*readFile*.${ext}*)`,
+    ]),
     // Block python/node env var extraction
     'Bash(python3 -c*os.environ*SECRET*)',
     'Bash(python3 -c*os.environ*API_KEY*)',
@@ -1179,7 +1169,11 @@ const ENV_CLASS_WORDS =
 // A single `}` still counts, because the shell can close a path there:
 // `cat {a,.env}` and `cat "${ENV_FILE:-.env}"` both read the file. Written `[}]`
 // because a backslash before `}` is undefined in a POSIX extended regex.
-const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
+//
+// `.crt` is listed because init writes Read(*.crt) and Grep(*.crt): without it
+// the hook refused a Read of x.crt and admitted `cat x.crt`. The
+// SECRET pattern of INERT_WRITE_SCAN_PY below carries the same alternation.
+const SECRET_FILE_EXT = '\\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9}]|[}]([^}]|$)|$)';
 
 // A reader verb must be a whole word: at the start of a line, or after a
 // character that cannot sit inside a command name (whitespace, a shell
@@ -2952,7 +2946,7 @@ const INERT_WRITE_SCAN_PY = String.raw`import re,sys
 WORD = r"(?:\x27[^\x27]*\x27|[A-Za-z0-9_%+,./:=@~-])+"
 TOKEN = re.compile(r"[ \t]+|>>?|" + WORD)
 PLAIN = re.compile(r"[A-Za-z0-9_%+,./:=@~-]+\Z")
-SECRET = re.compile(r"\.(env|key|pem|p12|pfx)([^A-Za-z0-9]|\Z)", re.I)
+SECRET = re.compile(r"\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9]|\Z)", re.I)
 HEREDOC = re.compile(r"([^<]*)<<[ \t]*\x27([A-Za-z0-9_.-]+)\x27([^<]*)\Z")
 def words(s):
     out, i = [], 0
@@ -3007,7 +3001,7 @@ function generateClaudeHookScript(customRules?: CustomRules | null): string {
   //    silently allowed the far more common `name.key`/`prod.env` suffix form.
   //  - dotfileNames: exact basename match for credential dotfiles with no suffix form.
   //  - pathFragments: case-insensitive substring match anywhere in the path.
-  const secretExtensions = ['env', 'key', 'pem', 'p12', 'pfx', 'crt', 'tfstate', 'tfvars'];
+  const secretExtensions = [...SECRET_FILE_EXTENSIONS];
   const dotfileNames = ['.npmrc', '.pypirc', '.git-credentials', '.netrc'];
   // Key the credentials rule on the STORE (`credentials/`), never on the bare
   // topic word. A bare `credentials` becomes the case glob `*credentials*` below

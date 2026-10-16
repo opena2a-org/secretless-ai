@@ -165,6 +165,28 @@ type`; it is now listed with the ignore rule's reason and counted. A
 `.secretlessignore` that excludes a path the default-ignore list does not
 now makes a scan that finds nothing exit 1; `--no-ignore` reads those paths.
 
+**`init` writes the same Read, Grep and Bash deny rules for each secret file
+extension, and the guard hook refuses `cat server.crt` as it refuses a Read
+of `server.crt` (#415).** `.claude/settings.json` had `Read(*.crt)` and
+`Grep(*.crt)`, but its Bash rules for secret files named `.env*`, `*.key` and
+`*.pem` only, so `.p12`, `.pfx`, `.crt`, `.tfstate` and `.tfvars` had no Bash
+rule. One list of
+extensions (`.env`, `.key`, `.pem`, `.p12`, `.pfx`, `.crt`, `.tfstate`,
+`.tfvars`) now gives each the Read and Grep rules and eight Bash rules (`cat`,
+`grep`, `awk`, `sed`, `strings`, `xxd`, and the `python3 -c` and `node -e`
+one-liners), and drives the guard hook's file-path rule. On a new project
+`init` writes 147 deny patterns, up from 99, and keeps every rule it wrote
+before. The guard hook's command rule adds `.crt`: `cat x.crt`,
+`cat certs/server.crt`, `head -5 server.CRT`, `grep BEGIN server.crt` and a
+`python3 -c` one-liner that opens `server.crt` are refused, and
+`openssl x509 -in server.crt -noout -subject` is admitted. The scan that
+lets a `printf` or `echo` write name a secret file treats a `.crt` target as
+it treats a `.pem` one, so `printf 'cat .env' > notes.crt` is refused, as
+`printf 'cat .env' > notes.pem` is. The guard hook's command rule still
+admits `cat terraform.tfstate` and `cat prod.tfvars`; for those two `init`
+now writes `Bash(cat *.tfstate)` and `Bash(cat *.tfvars)` among the settings
+rules.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),

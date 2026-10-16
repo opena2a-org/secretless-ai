@@ -3,7 +3,7 @@ import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { init, DEPRECATED_DENY_RULES } from './init';
+import { init, DEPRECATED_DENY_RULES, SECRET_FILE_EXTENSIONS } from './init';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS } from './patterns';
 import { scan, newScanStats } from './scan';
 import { status } from './status';
@@ -148,6 +148,53 @@ describe('init', { timeout: 30_000 }, () => {
       expect(runHook(hookPath, 'private_key.txt')).toBe(true);
       expect(runHook(hookPath, 'myprivatestuff')).toBe(true);
       expect(runHook(hookPath, 'normalfile.txt')).toBe(false);
+    });
+  });
+
+  // Regression (#415): init wrote Read(*.crt) and Grep(*.crt) but no Bash rule
+  // for `.crt`, and the guard hook refused a Read of x.crt while it admitted
+  // `cat x.crt`. The Bash deny rules were written by hand for
+  // `.env*`, `*.key` and `*.pem` only, so `.p12`, `.pfx`, `.tfstate` and
+  // `.tfvars` had no Bash rule either.
+  describe('secret file extensions get the same rules for Read, Grep and Bash', () => {
+    function decision(hookPath: string, payload: object): boolean {
+      const out = execSync(`bash ${JSON.stringify(hookPath)}`, { input: JSON.stringify(payload), encoding: 'utf-8', cwd: dir });
+      return /"permissionDecision":"deny"/.test(out);
+    }
+
+    it('writes Read, Grep and Bash reader deny rules for every extension in the list', () => {
+      init(dir);
+      const deny: string[] = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8')).permissions.deny;
+      expect(SECRET_FILE_EXTENSIONS).toContain('crt');
+      for (const ext of SECRET_FILE_EXTENSIONS) {
+        for (const rule of [
+          `Read(*.${ext})`, `Grep(*.${ext})`,
+          `Bash(cat *.${ext})`, `Bash(grep * *.${ext})`, `Bash(awk * *.${ext})`, `Bash(sed * *.${ext})`,
+          `Bash(strings *.${ext})`, `Bash(xxd *.${ext})`,
+          `Bash(python3 -c*open*.${ext}*)`, `Bash(node -e*readFile*.${ext}*)`,
+        ]) {
+          expect(deny, `expected deny rule ${rule}`).toContain(rule);
+        }
+      }
+      expect(new Set(deny).size).toBe(deny.length);
+    });
+
+    it('the guard refuses Bash readers of a .crt file as it refuses the Read', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      expect(decision(hookPath, { tool_name: 'Read', tool_input: { file_path: 'x.crt' } })).toBe(true);
+      for (const command of [
+        'cat x.crt',
+        'cat certs/server.crt',
+        'head -5 server.CRT',
+        'grep BEGIN server.crt',
+        `python3 -c "print(open('server.crt').read())"`,
+      ]) {
+        expect(decision(hookPath, { tool_name: 'Bash', tool_input: { command } }), `expected the guard to BLOCK ${command}`).toBe(true);
+      }
+      for (const command of ['ls certs', 'cat README.md']) {
+        expect(decision(hookPath, { tool_name: 'Bash', tool_input: { command } }), `expected the guard to ALLOW ${command}`).toBe(false);
+      }
     });
   });
 
