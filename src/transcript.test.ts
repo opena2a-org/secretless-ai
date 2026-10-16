@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { deepScan, scanTranscriptFile, atomicWrite, discoverTranscripts, cleanTranscripts, MAX_LINE_SIZE, type TranscriptFinding } from './transcript';
+import { deepScan, scanTranscriptFile, atomicWrite, discoverTranscripts, transcriptTarget, cleanTranscripts, MAX_LINE_SIZE, type TranscriptFinding } from './transcript';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-transcript-test-'));
@@ -312,6 +312,88 @@ describe('discoverTranscripts', () => {
     const found = discoverTranscripts(filePath);
 
     expect(found).toEqual([filePath]);
+  });
+});
+
+// A target that is not a directory or a `.jsonl`/`.md` file used to fall
+// through to the default ~/.claude/projects walk, so `--path notes.txt` inside
+// a project directory reported the session beside it instead of the file given.
+describe('discoverTranscripts with a target it does not read', () => {
+  let home: string;
+  let projectDir: string;
+  let sibling: string;
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+
+  beforeEach(() => {
+    home = tmpDir();
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    projectDir = path.join(home, '.claude', 'projects', 'x');
+    fs.mkdirSync(projectDir, { recursive: true });
+    sibling = path.join(projectDir, 's1.jsonl');
+    fs.writeFileSync(sibling, '{}');
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    cleanup(home);
+  });
+
+  it('CONTROL: with no target the default directory is walked', () => {
+    expect(discoverTranscripts()).toEqual([sibling]);
+  });
+
+  it('an existing .log file reads nothing, not the default directory', () => {
+    const log = path.join(home, 'transcript.log');
+    fs.writeFileSync(log, '');
+    expect(discoverTranscripts(log)).toEqual([]);
+    expect(transcriptTarget(log)).toEqual({ kind: 'notTranscript' });
+  });
+
+  it('a .txt file beside a session reads nothing, not that session', () => {
+    const txt = path.join(projectDir, 'notes.txt');
+    fs.writeFileSync(txt, 'notes');
+    expect(discoverTranscripts(txt)).toEqual([]);
+    expect(transcriptTarget(txt)).toEqual({ kind: 'notTranscript' });
+  });
+
+  it('a missing path reads nothing, not the default directory', () => {
+    const missing = path.join(home, 'nope');
+    expect(discoverTranscripts(missing)).toEqual([]);
+    expect(transcriptTarget(missing)).toEqual({ kind: 'missing' });
+  });
+
+  it('a path under a file is missing', () => {
+    const file = path.join(home, 'transcript.log');
+    fs.writeFileSync(file, '');
+    expect(transcriptTarget(path.join(file, 'sub'))).toEqual({ kind: 'missing' });
+  });
+
+  it.skipIf(process.platform === 'win32')('a lookup that fails for another reason names its code', () => {
+    const a = path.join(home, 'loop-a');
+    const b = path.join(home, 'loop-b');
+    fs.symlinkSync(b, a);
+    fs.symlinkSync(a, b);
+    expect(discoverTranscripts(a)).toEqual([]);
+    expect(transcriptTarget(a)).toEqual({ kind: 'unreadable', code: 'ELOOP' });
+  });
+
+  it('an empty directory reads nothing and is a directory target', () => {
+    const empty = path.join(home, 'emptydir');
+    fs.mkdirSync(empty);
+    expect(discoverTranscripts(empty)).toEqual([]);
+    expect(transcriptTarget(empty)).toEqual({ kind: 'directory' });
+  });
+
+  it('CONTROL: a .jsonl or .md file is read as given', () => {
+    const md = path.join(home, 'summary.md');
+    fs.writeFileSync(md, '# Summary');
+    expect(transcriptTarget(sibling)).toEqual({ kind: 'file' });
+    expect(transcriptTarget(md)).toEqual({ kind: 'file' });
+    expect(discoverTranscripts(md)).toEqual([md]);
   });
 });
 

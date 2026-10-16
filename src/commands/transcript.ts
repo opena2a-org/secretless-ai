@@ -1,10 +1,10 @@
 import * as path from 'path';
-import { cleanTranscripts, MAX_LINE_SIZE, type CleanResult } from '../transcript';
+import { cleanTranscripts, transcriptTarget, MAX_LINE_SIZE, type CleanResult } from '../transcript';
 import { startWatch, stopWatch, isWatchRunning, installLaunchAgent, uninstallLaunchAgent } from '../watch';
 import { scanHistory, cleanHistory } from '../history';
-import { shellQuote } from './core';
-import { CLI_BARE } from './utils';
-import { escapeForDisplay } from '../display-safe';
+import { pathOperand, shellQuote } from './core';
+import { CLI, CLI_BARE } from './utils';
+import { escapeForDisplay, escapePathForDisplay } from '../display-safe';
 import { EXIT_USAGE } from '../argv';
 import { SecretStore } from '../secret-store';
 import { markRedactedSecretsExposed } from '../secret-exposure';
@@ -57,6 +57,27 @@ function reportExposures(marks: ExposureMarks, dryRun: boolean): void {
   console.log(`  Open:     ${CLI_BARE} secret list --needs-rotation${dryRun ? '   (run without --dry-run to record)' : ''}\n`);
 }
 
+/**
+ * Refuse a `--path` that `clean` reads nothing from, on stderr. Returns true
+ * when it refused. It used to print "Scanned: 0 files" and "Transcripts are
+ * clean" at exit 0 over a missing path, and a file that is not a transcript
+ * read the default directory instead of the file given.
+ */
+function refuseCleanTarget(targetPath: string): boolean {
+  const target = transcriptTarget(targetPath);
+  if (target.kind === 'directory' || target.kind === 'file') return false;
+  const named = escapePathForDisplay(targetPath);
+  const what = target.kind === 'missing'
+    ? 'was not found'
+    : target.kind === 'notTranscript'
+      ? 'is not a transcript (.jsonl or .md)'
+      : `could not be read (${target.code})`;
+  console.error(`\n  Error: ${named} ${what}. Nothing was read.`);
+  console.error(`  Verify: ls -ld ${pathOperand(targetPath)}`);
+  console.error(`  Fix:    ${CLI} clean --dry-run   # reads the transcripts under ~/.claude/projects\n`);
+  return true;
+}
+
 export interface RunCleanOptions {
   /** Store factory, read only when something was redacted. For DI/testing. */
   createStore?: () => SecretStore;
@@ -71,6 +92,8 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
   if (pathIdx !== -1 && args[pathIdx + 1]) {
     targetPath = path.resolve(args[pathIdx + 1]);
   }
+
+  if (targetPath && refuseCleanTarget(targetPath)) return 1;
 
   // Warn when scanning outside the default transcript directory
   if (targetPath) {
@@ -93,6 +116,12 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
     lastSession,
     onRedacted: (span, where) => { spans.push({ span, ...where }); },
   });
+
+  // No file read is no verdict: an empty directory is not a clean transcript.
+  if (result.filesScanned === 0) {
+    console.log('  Scanned: 0 files — nothing to report.\n');
+    return 0;
+  }
 
   if (result.totalFindings === 0) {
     console.log(`  Scanned: ${result.filesScanned} files`);
