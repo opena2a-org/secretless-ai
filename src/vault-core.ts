@@ -303,17 +303,25 @@ export async function vaultRegister(
 
   // Get credential value
   let credentialValue: string;
-  if (options.value) {
+  if (options.value !== undefined) {
     credentialValue = options.value;
   } else if (options.envVar) {
     const envVal = process.env[options.envVar];
-    if (!envVal) {
+    if (envVal === undefined) {
       throw new Error(`Environment variable ${options.envVar} is not set`);
     }
     credentialValue = envVal;
   } else {
     // Read from stdin (piped or prompt)
     credentialValue = await readCredentialFromStdin(namespace);
+  }
+
+  // An empty value is refused before the namespace, the store or the audit
+  // log is touched, so stdin at end of input never registers a blank credential.
+  if (credentialValue.trim() === '') {
+    vault.zeroize(edSecretKey);
+    store.lock();
+    throw new Error('no value provided. Pipe the value on stdin, or use --env NAME.');
   }
 
   // Create namespace if it doesn't exist

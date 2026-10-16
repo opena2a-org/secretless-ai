@@ -38,6 +38,17 @@ For library callers, `doctor()` returns the new `health` value `'empty'` for
 this state, where it returned `'broken'`. `doctor` reads the environment and
 shell profiles, not the store, so a key held only in the store is not counted.
 
+**`vault register` refuses an empty value instead of storing it.** With stdin
+at end of input, as in `vault register github </dev/null`, it printed
+`Credential registered in namespace "github".` and exited 0, having stored a
+value of length 0 that `vault exec` then exported as `GITHUB=` and `vault test`
+counted as a stored credential. `--value ''` read stdin instead, and an
+environment variable that was set but empty was reported as not set. A value
+that is empty after trimming, from `--value`, `--env` or stdin, is now refused
+with `Error: no value provided. Pipe the value on stdin, or use --env NAME.`
+and exit 1, before the namespace is created, the value is stored or the audit
+log is written, as `secret set` already refuses one.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),

@@ -10,6 +10,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { PassThrough } from 'stream';
 
 // We need to mock the paths before importing vault-core
 let tmpHome: string;
@@ -355,6 +356,114 @@ describeWithAimCore('vault-core', () => {
     `]);
 
     expect(code).toBe(0);
+  });
+
+  // An empty value is a refusal, not a credential: whichever source it came
+  // from, nothing is created, stored or logged when it is empty after trimming.
+  describe('vaultRegister refuses an empty value', () => {
+    const NO_VALUE = 'no value provided. Pipe the value on stdin, or use --env NAME.';
+    let restoreStdin: (() => void) | undefined;
+
+    // Replaces process.stdin with a non-TTY stream that is already at end of input.
+    const stubStdin = (input: string) => {
+      const original = Object.getOwnPropertyDescriptor(process, 'stdin')!;
+      const stream = new PassThrough();
+      stream.end(input);
+      Object.defineProperty(process, 'stdin', { value: stream, configurable: true });
+      restoreStdin = () => Object.defineProperty(process, 'stdin', original);
+    };
+
+    afterEach(() => {
+      restoreStdin?.();
+      restoreStdin = undefined;
+    });
+
+    const expectNothingStored = async (namespace: string) => {
+      const { loadAimCoreVault, getVaultStore, PATHS } = await import('./vault-core.js');
+      const vault = await loadAimCoreVault();
+      const { store } = await getVaultStore();
+      expect(store.listCredentials().map((c) => c.namespace)).not.toContain(namespace);
+      store.lock();
+      expect(vault.getNamespace(PATHS.vaultDir, namespace)).toBeNull();
+      const events = vault.readVaultAudit(PATHS.vaultDir, { namespace });
+      expect(events.filter((e) => e.operation === 'store')).toEqual([]);
+    };
+
+    const initVault = async () => {
+      const { vaultInit } = await import('./vault-core.js');
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await vaultInit('test-agent');
+      consoleSpy.mockRestore();
+    };
+
+    it('refuses --value with an empty string', async () => {
+      stubStdin('');
+      await initVault();
+      const { vaultRegister } = await import('./vault-core.js');
+
+      await expect(vaultRegister('github', { value: '' })).rejects.toThrow(NO_VALUE);
+      await expectNothingStored('github');
+    });
+
+    it('refuses stdin at end of input', async () => {
+      stubStdin('');
+      await initVault();
+      const { vaultRegister } = await import('./vault-core.js');
+
+      await expect(vaultRegister('github', {})).rejects.toThrow(NO_VALUE);
+      await expectNothingStored('github');
+    });
+
+    it('refuses stdin that holds only whitespace', async () => {
+      stubStdin('  \n');
+      await initVault();
+      const { vaultRegister } = await import('./vault-core.js');
+
+      await expect(vaultRegister('github', {})).rejects.toThrow(NO_VALUE);
+      await expectNothingStored('github');
+    });
+
+    it('refuses an environment variable that is set but empty', async () => {
+      stubStdin('');
+      vi.stubEnv('EMPTY_TEST_TOKEN', '');
+      await initVault();
+      const { vaultRegister } = await import('./vault-core.js');
+
+      await expect(vaultRegister('github', { envVar: 'EMPTY_TEST_TOKEN' })).rejects.toThrow(NO_VALUE);
+      await expectNothingStored('github');
+    });
+
+    it('still registers a value piped on stdin', async () => {
+      stubStdin(['piped', 'value'].join('_') + '\n');
+      await initVault();
+      const { vaultRegister, getVaultStore } = await import('./vault-core.js');
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await vaultRegister('github', {});
+      consoleSpy.mockRestore();
+
+      const { store } = await getVaultStore();
+      expect(store.listCredentials().map((c) => c.namespace)).toContain('github');
+      store.lock();
+    });
+
+    it('vault register exits 1 with stdin at end of input', async () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+      expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+      await initVault();
+
+      const run = spawnSync(process.execPath, [cliPath, 'vault', 'register', 'github'], {
+        env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`Error: ${NO_VALUE}`);
+      expect(run.stdout).not.toContain('Credential registered');
+      await expectNothingStored('github');
+    });
   });
 });
 
