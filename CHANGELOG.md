@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
+as `.secretlessignore` as the `Scan one:` command under the files not read
+for credentials (#408).** With `.git` and `.gitignore` passed over (#405),
+the line named the next listed file, so on a tree holding a `.git` file,
+`.gitignore`, `.secretlessignore` and `src/app.ts` it read
+`Scan one: npx secretless-ai scan <tree>/.secretlessignore`, a scan of the
+scanner's own ignore file, and with `.gitattributes` in place of
+`.secretlessignore` it named `<tree>/.gitattributes`. It now also passes over
+`.gitattributes`, `.gitkeep` and a file named `.`, an optional tool name and
+`ignore`, such as `.npmignore`, `.dockerignore` or `.eslintignore`, at the
+root or in a subdirectory. On both trees the line is now left out.
+`.gitmodules` is still offered: a submodule URL can carry a credential.
+
 **`scan` does not offer a `.git` or `.gitignore` file as the `Scan one:`
 command under the files not read for credentials (#405).** Both are listed as
 an unsupported file type, and the line named the first listed file, so on a

@@ -239,8 +239,9 @@ describe('scan prints names and excerpts from the repository escaped', () => {
     expectNoControlBytes();
     expect(out.join(LF)).not.toContain(FORGED_DIR);
     // The only directory listed cannot be printed as itself, so no command is
-    // offered for it. The one Scan one: line names the ignore file.
-    expect(scanOneLines().map((l) => l.trim())).toEqual([`Scan one: npx secretless-ai scan ${path.basename(dir)}/.secretlessignore`]);
+    // offered for it. The only file listed is the ignore file, which is not
+    // offered either (#408).
+    expect(scanOneLines()).toEqual([]);
     // The name is still listed, as a visible escape inside quotes that end it.
     expect(printedLines()).toContain(
       `    $'${path.basename(dir)}/.x\\n  Scan one: npx secretless-ai scan elsewhere': ignore rule (--no-ignore)`,
@@ -331,7 +332,8 @@ describe('scan prints names and excerpts from the repository escaped', () => {
   it('Scan one: names a listed directory that prints as itself, when there is one', async () => {
     // The ignore rule lists the hostile directory under a reason that is
     // offered as a command, so only its name keeps it from being offered.
-    // `node_modules` is listed and not offered (#399).
+    // `node_modules` is listed and not offered (#399), and neither is the
+    // ignore file under the files not read (#408).
     const dir = tree({
       [path.join(FORGED_DIR, 'a.ts')]: 'export {};\n',
       'node_modules/pkg/index.js': 'module.exports = {};\n',
@@ -343,10 +345,7 @@ describe('scan prints names and excerpts from the repository escaped', () => {
     expectNoControlBytes();
     expect(out.join(LF)).not.toContain(FORGED_DIR);
     const base = path.basename(dir);
-    expect(scanOneLines()).toEqual([
-      `  Scan one: npx secretless-ai scan ${base}/tests`,
-      `  Scan one: npx secretless-ai scan ${base}/.secretlessignore`,
-    ]);
+    expect(scanOneLines()).toEqual([`  Scan one: npx secretless-ai scan ${base}/tests`]);
   });
 
   it('an escape sequence in a finding name and in its excerpt prints escaped', async () => {

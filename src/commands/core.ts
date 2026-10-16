@@ -731,14 +731,27 @@ const SCAN_ONE_DIR_REASONS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
- * The names of files listed as not read for credentials that are never
+ * The names of git files listed as not read for credentials that are never
  * offered as the `Scan one:` command: `.git`, the file a linked worktree
- * checkout holds in place of the git directory, and `.gitignore`. Both are
- * listed as an unsupported file type, and the command took the first listed
- * file, which on a tree holding a `.git` file and `.gitignore` was `.git`: a
- * scan of git metadata (#405).
+ * checkout holds in place of the git directory, `.gitattributes` and
+ * `.gitkeep`. An ignore file (IGNORE_FILE_NAME) is not offered either. The
+ * command took the first listed file, which on a tree holding a `.git` file
+ * and `.gitignore` was `.git`, a scan of git metadata (#405), and with those
+ * two passed over was `.gitattributes` or `.secretlessignore` (#408).
+ * `.gitmodules` is still offered: a submodule URL can carry a credential.
  */
-const SCAN_ONE_FILE_NAMES_NOT_OFFERED: ReadonlySet<string> = new Set<string>(['.git', '.gitignore']);
+const SCAN_ONE_FILE_NAMES_NOT_OFFERED: ReadonlySet<string> = new Set<string>(['.git', '.gitattributes', '.gitkeep']);
+
+/**
+ * An ignore file: `.`, an optional tool name and `ignore`, such as
+ * `.gitignore`, `.npmignore`, `.dockerignore` or `.secretlessignore`.
+ */
+const IGNORE_FILE_NAME = /^\.[a-z0-9-]*ignore$/;
+
+function offeredAsScanOneFile(filePath: string): boolean {
+  const name = path.basename(filePath);
+  return !SCAN_ONE_FILE_NAMES_NOT_OFFERED.has(name) && !IGNORE_FILE_NAME.test(name);
+}
 
 export async function runScan(projectDir: string, options?: { includeTests?: boolean; includeConfig?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
@@ -1048,11 +1061,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       const listed = notOpened.slice(0, 8);
       for (const f of listed) listLine(f.path, `: ${f.reason}`);
       if (listed.length > 0 && n > listed.length) console.log(`  ${c.dim(`  … and ${n - listed.length} more`)}`);
-      // The command names the first listed file whose name is not in
-      // SCAN_ONE_FILE_NAMES_NOT_OFFERED, and is left out when none is. A name
-      // that cannot be printed as itself cannot be copied as it reads, so it
-      // is listed but never offered as the command.
-      const first = firstOperand(notOpened.filter(f => !SCAN_ONE_FILE_NAMES_NOT_OFFERED.has(nodePath.basename(f.path))).map(f => f.path));
+      // The command names the first listed file that is neither in
+      // SCAN_ONE_FILE_NAMES_NOT_OFFERED nor an ignore file, and is left out
+      // when none is. A name that cannot be printed as itself cannot be
+      // copied as it reads, so it is listed but never offered as the command.
+      const first = firstOperand(notOpened.filter(f => offeredAsScanOneFile(f.path)).map(f => f.path));
       if (first) {
         console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${first}`);
       }
