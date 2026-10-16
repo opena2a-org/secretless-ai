@@ -56,6 +56,23 @@ files read in dot-directories count toward `--max-files`. On shallow clones of
 `axios/axios` and `psf/requests` the scan reports 0 findings and exits 0
 before and after this change, with and without `--include-config`.
 
+**A large dot-directory reaches `scan`'s file cap after the rest of the tree
+(#397).** With the source walk entering dot-directories (#144), one whose name
+sorted ahead of `src/` had its files collected first, so a large one filled
+`--max-files` and the scan dropped a finding the previous release reported. On
+a tree with `.foo/` holding 6000 small `.js` files and `zzz/app.ts` holding a
+placeholder value, `scan --json --show-placeholders` reported no findings, and
+now reports `zzz/app.ts`. The scan still stops at the cap there and says so:
+`summary.truncated` is `true`, `summary.eligibleFiles` is 6001, and it exits 1.
+The source walk now visits every directory it reaches without passing through
+a dot-directory before any directory at or under one, so a stop at the cap
+leaves files in dot-directories unscanned before any other file. On a 16-file
+tree with source files in and outside dot-directories, the files outside them
+that a capped scan reports are the ones the walk before #144 reported, at each
+cap from 1 to 16. The key and config walks keep their order. `docs/scanning.md`
+and `scan --help` say that the source files in an entered dot-directory count
+toward the cap.
+
 **The optional OpenA2A dependencies are pinned to exact versions.**
 `package.json` declared `@opena2a/aim-core` at `>=0.2.0` and
 `@nanomind/engine` and `@nanomind/guard` at `^0.1.1`, so an install could

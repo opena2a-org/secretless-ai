@@ -104,7 +104,9 @@ function skipReasonDetails(): Record<keyof typeof SOURCE_SKIP_REASONS, string[]>
       ...wrapList([...HIDDEN_CACHE_DIRS].map((d) => `${d}/`), at),
       `${at}source files are not read inside these; the config and key files`,
       `${at}named above are. Every other dot-directory, .claude/ and .github/`,
-      `${at}among them, is read like any other directory`,
+      `${at}among them, is read after every directory that is not hidden. Its`,
+      `${at}source files count toward the --max-files cap, and a scan stopped`,
+      `${at}at the cap leaves them unscanned before any other file`,
     ],
     worktrees: [
       ...wrapList([...WORKTREE_DIRS].map((d) => `${d}/`), at),
