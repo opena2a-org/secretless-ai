@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   AUTOMATED_RUN_VARIABLES, optedOutByVariable, telemetrySettingFile, readTelemetrySetting, storeTelemetrySetting,
+  dropStoredInstallId,
 } from './telemetry-gate';
 
 /**
@@ -138,10 +139,10 @@ describe('under OPENA2A_TELEMETRY=off no install id is derived or written (#422)
     expect(stored(home)).toEqual({ enabled: true });
   });
 
-  itIfBuilt('a setting file already there is left byte for byte as it was', () => {
+  itIfBuilt('a setting file with no install id is left byte for byte as it was', () => {
     const home = tmp('install-id-home-');
     fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true });
-    const before = '{"enabled":true,"installId":"FAKE-INSTALL-ID"}\n';
+    const before = '{"enabled":true}\n';
     fs.writeFileSync(settingIn(home), before);
 
     const res = run(home, ['scan', tmp('install-id-scan-'), '--json'], OFF);
@@ -149,17 +150,121 @@ describe('under OPENA2A_TELEMETRY=off no install id is derived or written (#422)
     expect(res.status).toBe(0);
     expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(before);
   });
+});
 
-  itIfBuilt('`telemetry status` prints an install id that is already stored, and changes nothing', () => {
+describe('an install id left by an earlier run is deleted on a run with telemetry off (#426)', () => {
+  /** A home whose setting file holds `text`, as an earlier run left it. */
+  function homeWith(text: string): string {
     const home = tmp('install-id-home-');
     fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true });
-    const before = '{"enabled":true,"installId":"FAKE-INSTALL-ID"}\n';
-    fs.writeFileSync(settingIn(home), before);
+    fs.writeFileSync(settingIn(home), text);
+    return home;
+  }
+  const LEFT = '{"enabled":true,"installId":"FAKE-INSTALL-ID"}\n';
+
+  itIfBuilt('OPENA2A_TELEMETRY=off: --version deletes it, then `telemetry on` stores {"enabled": true} without it', () => {
+    const home = homeWith(LEFT);
+
+    expect(run(home, ['--version'], OFF).status).toBe(0);
+    expect(stored(home)).toEqual({ enabled: true });
+
+    const res = run(home, ['telemetry', 'on'], OFF);
+
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('install_id:  none (one is created on the first run with telemetry on)');
+    expect(stored(home)).toEqual({ enabled: true });
+  });
+
+  itIfBuilt('OPENA2A_TELEMETRY=off: a scan deletes it and sends nothing', () => {
+    const home = homeWith(LEFT);
+
+    const res = run(home, ['scan', tmp('install-id-scan-'), '--json'], OFF);
+
+    expect(res.status).toBe(0);
+    expect(res.events).toEqual([]);
+    expect(stored(home)).toEqual({ enabled: true });
+  });
+
+  itIfBuilt('`telemetry status` deletes it and prints none', () => {
+    const home = homeWith(LEFT);
 
     const res = run(home, ['telemetry', 'status'], OFF);
 
-    expect(res.stdout).toContain('install_id:  FAKE-INSTALL-ID');
-    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(before);
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('install_id:  none (one is created on the first run with telemetry on)');
+    expect(stored(home)).toEqual({ enabled: true });
+  });
+
+  itIfBuilt('`telemetry on` with no other run first stores {"enabled": true} without it', () => {
+    const home = homeWith('{"enabled":false,"installId":"FAKE-INSTALL-ID"}\n');
+
+    const res = run(home, ['telemetry', 'on'], OFF);
+
+    expect(res.status).toBe(0);
+    expect(stored(home)).toEqual({ enabled: true });
+  });
+
+  itIfBuilt('a stored "enabled": false: a scan with no opt-out variable deletes it, keeps the false, and sends nothing', () => {
+    const home = homeWith('{"enabled":false,"installId":"FAKE-INSTALL-ID"}\n');
+
+    // Telemetry otherwise on: no opt-out variable, no CI or test runner.
+    const res = run(home, ['scan', tmp('install-id-scan-'), '--json']);
+
+    expect(res.status).toBe(0);
+    expect(res.events).toEqual([]);
+    expect(stored(home)).toEqual({ enabled: false });
+  });
+
+  itIfBuilt('CI=true: --version deletes it and keeps the stored setting', () => {
+    const home = homeWith(LEFT);
+
+    expect(run(home, ['--version'], { CI: 'true' }).status).toBe(0);
+    expect(stored(home)).toEqual({ enabled: true });
+  });
+
+  itIfBuilt('a file with no "enabled" key is rewritten as on, which is how the SDK reads it', () => {
+    const home = homeWith('{"installId":"FAKE-INSTALL-ID"}\n');
+
+    expect(run(home, ['--version'], OFF).status).toBe(0);
+    expect(stored(home)).toEqual({ enabled: true });
+  });
+
+  itIfBuilt('with XDG_CONFIG_HOME set, the id is deleted from the file there', () => {
+    const home = tmp('install-id-home-');
+    const xdg = tmp('install-id-xdg-');
+    const file = path.join(xdg, 'opena2a', 'telemetry.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{"enabled":false,"installId":"FAKE-INSTALL-ID"}\n');
+
+    expect(run(home, ['--version'], { ...OFF, XDG_CONFIG_HOME: xdg }).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual({ enabled: false });
+    expect(filesUnder(home)).toEqual([]);
+  });
+
+  const unwritable = process.platform === 'win32' || process.getuid?.() === 0;
+  (fs.existsSync(CLI_PATH) && !unwritable ? it : it.skip)('a setting file that cannot be written stops no command, and status still prints the id', () => {
+    const home = homeWith(LEFT);
+    fs.chmodSync(settingIn(home), 0o400);
+    try {
+      expect(run(home, ['--version'], OFF).status).toBe(0);
+      const res = run(home, ['telemetry', 'status'], OFF);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain('install_id:  FAKE-INSTALL-ID');
+      expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(LEFT);
+    } finally {
+      fs.chmodSync(settingIn(home), 0o600);
+    }
+  });
+
+  itIfBuilt('CONTROL: with telemetry on, a stored id is kept and sent', () => {
+    const home = homeWith(LEFT);
+
+    const res = run(home, ['scan', tmp('install-id-scan-'), '--json']);
+
+    expect(res.events).toHaveLength(1);
+    expect(res.events[0].install_id).toBe('FAKE-INSTALL-ID');
+    expect(stored(home)).toEqual({ enabled: true, installId: 'FAKE-INSTALL-ID' });
   });
 });
 
@@ -277,14 +382,44 @@ describe('the helpers read the setting as the SDK reads it', () => {
     expect(readTelemetrySetting(path.join(dir, 'broken.json'))).toBeNull();
   });
 
-  it('storeTelemetrySetting(on) keeps a stored install id, (off) drops it, and neither derives one', () => {
+  it('storeTelemetrySetting(on) and (off) each drop a stored install id, and neither derives one', () => {
     const file = path.join(tmp('install-id-store-'), 'opena2a', 'telemetry.json');
 
     expect(storeTelemetrySetting(file, true)).toEqual({ enabled: true });
     fs.writeFileSync(file, '{"enabled":false,"installId":"FAKE-ID"}\n');
-    expect(storeTelemetrySetting(file, true)).toEqual({ enabled: true, installId: 'FAKE-ID' });
+    expect(storeTelemetrySetting(file, true)).toEqual({ enabled: true });
+    expect(fs.readFileSync(file, 'utf-8')).toBe('{\n  "enabled": true\n}\n');
+    fs.writeFileSync(file, '{"enabled":true,"installId":"FAKE-ID"}\n');
     expect(storeTelemetrySetting(file, false)).toEqual({ enabled: false });
     expect(fs.readFileSync(file, 'utf-8')).toBe('{\n  "enabled": false\n}\n');
+  });
+
+  it.each([
+    ['{"enabled":true,"installId":"FAKE-ID"}', '{\n  "enabled": true\n}\n'],
+    ['{"enabled":false,"installId":"FAKE-ID"}', '{\n  "enabled": false\n}\n'],
+    ['{"enabled":0,"installId":"FAKE-ID"}', '{\n  "enabled": false\n}\n'],
+    ['{"installId":"FAKE-ID"}', '{\n  "enabled": true\n}\n'],
+  ])('dropStoredInstallId rewrites %s keeping the setting', (text, after) => {
+    const file = path.join(tmp('install-id-drop-'), 'telemetry.json');
+    fs.writeFileSync(file, text);
+
+    expect(dropStoredInstallId(file)).toBe(true);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(after);
+  });
+
+  it.each(['{"enabled":false}', '{"enabled":true,"installId":""}', '{not json'])('dropStoredInstallId leaves %s as it was', (text) => {
+    const file = path.join(tmp('install-id-drop-'), 'telemetry.json');
+    fs.writeFileSync(file, text);
+
+    expect(dropStoredInstallId(file)).toBe(false);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(text);
+  });
+
+  it('dropStoredInstallId creates no file where there is none', () => {
+    const file = path.join(tmp('install-id-drop-'), 'opena2a', 'telemetry.json');
+
+    expect(dropStoredInstallId(file)).toBe(false);
+    expect(fs.existsSync(path.dirname(file))).toBe(false);
   });
 
   it.skipIf(process.platform === 'win32')('storeTelemetrySetting creates the directory 0700 and the file 0600, as the SDK does', () => {
