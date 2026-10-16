@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**`scan` does not offer a `.git` or `.gitignore` file as the `Scan one:`
+command under the files not read for credentials (#405).** Both are listed as
+an unsupported file type, and the line named the first listed file, so on a
+tree holding a `.git` file (as a linked worktree checkout does), `.gitignore`
+and `src/app.ts` it read `Scan one: npx secretless-ai scan <tree>/.git`, a scan
+of git metadata. It now names the first listed file not named `.git` or
+`.gitignore`, and is left out when none is. On that tree the line is now left
+out; with `notes.txt` beside them it names `<tree>/notes.txt`.
+
 **The release review reads a dependency with an older npm name such as
 `JSONStream` from the registry instead of refusing it (#402).** The
 `pinned-first-party-deps` check accepted only lowercase names, so a

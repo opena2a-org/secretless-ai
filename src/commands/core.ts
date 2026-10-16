@@ -730,6 +730,16 @@ const SCAN_ONE_DIR_REASONS: ReadonlySet<string> = new Set<string>([
   SOURCE_SKIP_REASONS.ignoreRule,
 ]);
 
+/**
+ * The names of files listed as not read for credentials that are never
+ * offered as the `Scan one:` command: `.git`, the file a linked worktree
+ * checkout holds in place of the git directory, and `.gitignore`. Both are
+ * listed as an unsupported file type, and the command took the first listed
+ * file, which on a tree holding a `.git` file and `.gitignore` was `.git`: a
+ * scan of git metadata (#405).
+ */
+const SCAN_ONE_FILE_NAMES_NOT_OFFERED: ReadonlySet<string> = new Set<string>(['.git', '.gitignore']);
+
 export async function runScan(projectDir: string, options?: { includeTests?: boolean; includeConfig?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
   const scanOpts = {
@@ -1038,9 +1048,11 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       const listed = notOpened.slice(0, 8);
       for (const f of listed) listLine(f.path, `: ${f.reason}`);
       if (listed.length > 0 && n > listed.length) console.log(`  ${c.dim(`  … and ${n - listed.length} more`)}`);
-      // A name that cannot be printed as itself cannot be copied as it reads, so
-      // it is listed but never offered as the command.
-      const first = firstOperand(notOpened.map(f => f.path));
+      // The command names the first listed file whose name is not in
+      // SCAN_ONE_FILE_NAMES_NOT_OFFERED, and is left out when none is. A name
+      // that cannot be printed as itself cannot be copied as it reads, so it
+      // is listed but never offered as the command.
+      const first = firstOperand(notOpened.filter(f => !SCAN_ONE_FILE_NAMES_NOT_OFFERED.has(nodePath.basename(f.path))).map(f => f.path));
       if (first) {
         console.log(`  ${c.cyan('Scan one:')} npx secretless-ai scan ${first}`);
       }

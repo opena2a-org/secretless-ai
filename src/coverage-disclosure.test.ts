@@ -691,4 +691,47 @@ describe('the human report names a file it did not open', () => {
       fs.chmodSync(locked, 0o755);
     }
   });
+
+  // The files block's `Scan one:` line named the first listed file, which on a
+  // tree holding a `.git` file (as a linked worktree checkout does) and
+  // `.gitignore` was `.git`, so it sent the user to a scan of git metadata
+  // (#405). `a/.gitignore` shows the name is matched in any directory.
+  function notReadBlock(text: string): string {
+    const at = text.indexOf('not read for credentials');
+    expect(at, text).toBeGreaterThan(-1);
+    return text.slice(text.lastIndexOf('\n', at) + 1).split('\n\n')[0];
+  }
+
+  const GIT_FILES = {
+    '.git': 'gitdir: /somewhere/.git/worktrees/x\n',
+    '.gitignore': 'node_modules/\n',
+    'a/.gitignore': 'dist/\n',
+    'src/app.ts': 'export const x = 1;\n',
+  };
+
+  it('prints no Scan one: when only .git and .gitignore files are listed (#405)', async () => {
+    const dir = tree(GIT_FILES);
+    const { text, code } = await report(dir);
+    const block = notReadBlock(text);
+    const base = path.basename(dir);
+
+    expect(block).toMatch(/^ {2}3 files not read for credentials: declared boundaries, not findings\./);
+    expect(block).toContain(`${base}/.git: ${SOURCE_SKIP_REASONS.unsupportedType}`);
+    expect(block).toContain(`${base}/.gitignore: ${SOURCE_SKIP_REASONS.unsupportedType}`);
+    expect(block).toContain(`${base}/a/.gitignore: ${SOURCE_SKIP_REASONS.unsupportedType}`);
+    expect(text).not.toContain('Scan one:');
+    expect(code).toBe(0);
+  });
+
+  it('names a listed file other than .git or .gitignore in Scan one: (#405)', async () => {
+    const dir = tree({ ...GIT_FILES, 'x/notes.txt': 'nothing here\n' });
+    const { text } = await report(dir);
+    const block = notReadBlock(text);
+    const base = path.basename(dir);
+
+    expect(block).toContain(`${base}/.git: ${SOURCE_SKIP_REASONS.unsupportedType}`);
+    expect(block).toContain(`${base}/x/notes.txt: ${SOURCE_SKIP_REASONS.unsupportedType}`);
+    const scanOne = block.split('\n').filter((l) => l.trimStart().startsWith('Scan one:'));
+    expect(scanOne).toEqual([`  Scan one: npx secretless-ai scan ${base}/x/notes.txt`]);
+  });
 });
