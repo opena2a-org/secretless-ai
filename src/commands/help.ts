@@ -37,8 +37,6 @@ ${banner}${description}
     ${CLI} doctor    Diagnose shell profiles and plaintext git credentials (--fix: profiles)
     ${CLI} clean     Scan and redact credentials in transcripts
     ${CLI} watch     Monitor transcripts in real-time
-    ${CLI} warm      Warm biometric session (Touch ID on macOS)
-    ${CLI} install   Install broker as login daemon (macOS)
 
   Secret Management:
     ${CLI} secret set <NAME[=VALUE]>  Store a secret (prompts with input hidden)
@@ -78,6 +76,7 @@ ${banner}${description}
     ${CLI} hook install       Install pre-commit secret scanner
     ${CLI} hook uninstall     Remove pre-commit hook
     ${CLI} hook status        Check hook installation status
+    ${CLI} scan-staged        Scan the files staged for commit (what the hook runs)
     ${CLI} git-credential install --host <host> --name <NAME>
                               Let git read an HTTPS token from the secret store
     ${CLI} git-credential uninstall --host <host>
@@ -104,11 +103,7 @@ ${banner}${description}
   Scan Coverage (raise a cap the scan reports it hit):
     ${CLI} scan --max-files <n>          Raise the file-count cap (default 5000)
     ${CLI} scan --max-file-size <size>   Raise the per-file size cap (e.g. 20mb)
-    ${CLI} scan --min-confidence <0-1>   Drop findings below a confidence score
     ${CLI} scan --show-placeholders      Show values hidden as placeholders
-    ${CLI} scan --no-ignore              Ignore .secretlessignore and defaults
-    ${CLI} scan --include-tests          Include test files in the source scan
-    ${CLI} scan --include-config         Also scan config files not on the built-in list
     ${CLI} scan dist                     Scan a dependency or build output directory by path
     ${CLI} scan notes.txt                Scan a file the scan did not open, whatever its type
 
@@ -165,6 +160,7 @@ ${banner}${description}
 
   Other:
     ${CLI} feedback        Star, file an issue, or join the discussion
+    ${CLI} telemetry [on|off|status]  Show or change anonymous usage telemetry
     ${CLI} ignore <path>   Append a path or glob to .secretlessignore
     ${CLI} ignore --pattern '*.golden.txt'
     ${CLI} diff [<ref>]    Show how secretless-managed files have changed

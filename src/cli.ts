@@ -418,12 +418,17 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
     case undefined:
       printHelp();
       return 0;
-    default:
+    default: {
       // A command we do not know is a refused command line, not a finding:
       // exit 1 would read as "credentials found" to a CI gate.
-      console.error(`Unknown command: ${escapeForDisplay(command)}`);
-      printHelp();
+      // The nearest command, when one is close, and a pointer to the help
+      // rather than the help itself (#410): the whole help followed this line
+      // and named no command to run instead of the one mistyped.
+      const near = nearestMatch(command, [...Object.keys(VERBS), '--help', '--version']);
+      console.error(`Unknown command: ${escapeForDisplay(command)}${near ? ` (did you mean \`${near}\`?)` : ''}`);
+      console.error(`Run \`${CLI_BARE} --help\` for the list of commands.`);
       return EXIT_USAGE;
+    }
   }
 }
 

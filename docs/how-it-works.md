@@ -14,7 +14,7 @@ Three layers. Use one, two, or all three. Vault Exec (Tier 2) reads the Identity
 **Tier 2: Vault Exec.** Runs one command with a credential from the Identity Vault (`~/.aim/vault`, filled by `vault register`) set in that command's environment. Vault Exec does not export the value to the calling shell, pass it on the command line, or write it to a file.
 
 ```bash
-npx secretless-ai vault exec github -- curl https://api.github.com/user
+npx secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'
 ```
 
 The child process receives the value as `$GITHUB` and holds it in its environment for as long as it runs. Vault Exec does not mask the child's output: whatever the command prints goes to whoever ran it, so when an AI assistant runs a wrapped command that prints its environment or the credential, the value enters the assistant's context (see [What the guard cannot see](managing-secrets.md#what-the-guard-cannot-see)). While the child runs, another process running as the same user can read its environment. Wraps any command, in any language.

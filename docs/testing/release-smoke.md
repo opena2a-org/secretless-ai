@@ -120,7 +120,8 @@ $SL status --bogus; echo "exit=$?"        # rejected, exit 2
 $SL scan /tmp/sl-clean --show-placeholder; echo "exit=$?"   # REFUSED, exit 2, names --show-placeholders
 $SL scan /tmp/sl-clean; echo "exit=$?"                      # CONTROL: exit 0, "No hardcoded credentials found."
 $SL scan-staged --no-ignoree; echo "exit=$?"                # REFUSED, exit 2 (the pre-commit gate)
-$SL bogus-command; echo "exit=$?"         # "Unknown command", help block, exit 1
+$SL bogus-command; echo "exit=$?"         # "Unknown command", a pointer to --help, exit 2
+$SL scna; echo "exit=$?"                  # "Unknown command: scna (did you mean `scan`?)", exit 2
 ```
 
 `scan`, `scan-staged` and `scan-history` refuse an unrecognised flag: their
