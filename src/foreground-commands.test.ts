@@ -34,10 +34,17 @@ afterEach(() => {
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
+// `broker start` refuses a socket path longer than this on macOS (src/broker/daemon.ts).
+const SOCKET_PATH_MAX = 104;
+
+/**
+ * A HOME for the CLI, whose broker socket is broker.sock under it. Made under
+ * os.tmpdir(), a long TMPDIR put that socket past the 104-byte macOS limit
+ * (a 75-byte TMPDIR made it 114 bytes) and the broker refused to start. On
+ * POSIX it is made under /tmp.
+ */
 function tempHome(): string {
-  // Short prefix: the broker's unix socket lives under this HOME, and socket
-  // paths are capped at 104 bytes on macOS.
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'slfg-'));
+  const home = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'slfg-'));
   homes.push(home);
   return home;
 }
@@ -111,6 +118,22 @@ function exitWithin(child: ChildProcess, ms: number): Promise<number | null | 'r
 }
 
 describe('broker start', () => {
+  it('makes the HOME short enough for broker.sock when TMPDIR is long', () => {
+    const longTmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'slfg-')), 'x'.repeat(80));
+    homes.push(path.dirname(longTmp));
+    fs.mkdirSync(longTmp);
+    const savedTmp = process.env.TMPDIR;
+    process.env.TMPDIR = longTmp;
+    let home: string;
+    try {
+      home = tempHome();
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmp;
+    }
+    expect(Buffer.byteLength(path.join(home, '.secretless-ai', 'broker.sock'))).toBeLessThanOrEqual(SOCKET_PATH_MAX);
+  });
+
   itIfBuilt('keeps the broker running after reporting it running, until SIGTERM', async () => {
     const home = tempHome();
     const port = await freePort();
