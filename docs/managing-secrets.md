@@ -73,7 +73,7 @@ npx secretless-ai git-credential install --host github.com --name GITHUB_TOKEN  
 npx secretless-ai git-credential uninstall --host github.com                     # removes only what install added
 ```
 
-`install` adds two entries to `credential.https://github.com.helper` in the global git config: an empty one, which stops git asking any helper configured before it (such as `store`) for that host, and the helper itself. No value is written to any config file. Git runs the helper as `git-credential get`, which answers only HTTPS requests for its host and refuses when stdin or stdout is a terminal; `store` and `erase` write nothing. `init` blocks an AI tool from running `git-credential get` or `git credential fill`, which would print the token.
+`install` adds two entries to `credential.https://github.com.helper` in the global git config: an empty one, which stops git asking any helper configured before it (such as `store`) for that host, and the helper itself. The helper names the node binary and CLI file of the copy that ran `install`, or `npx --yes secretless-ai@<version>` with `npm_config_offline=true` when that copy's paths cannot be resolved; the pre-commit hook and the Claude Code Stop hook are written the same way. Re-run `install` if either path moves. No value is written to any config file. Git runs the helper as `git-credential get`, which answers only HTTPS requests for its host and refuses when stdin or stdout is a terminal; `store` and `erase` write nothing. `init` blocks an AI tool from running `git-credential get` or `git credential fill`, which would print the token.
 
 ### Ask your AI assistant to use a secret
 

@@ -10,6 +10,7 @@ import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, KNOWN_EXAMPLE_KEYS, PLACEHOL
 import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filesystemPathForm, mergeRules } from './custom-rules';
 import type { CustomRules, RulesFileIssue } from './custom-rules';
 import { scan, newScanStats, coverageIncomplete } from './scan';
+import { commandPrefixForHooks } from './hook-prefix';
 
 /** Known API services with their auth header formats */
 const SERVICE_HINTS: Record<string, { service: string; authHeader: string }> = {
@@ -353,6 +354,19 @@ function configureClaudeCode(
   // Add Stop hook for transcript cleaning after conversations
   if (!settings.hooks.Stop) settings.hooks.Stop = [];
 
+  // A Stop hook an earlier `init` wrote is brought to the current command, so
+  // a re-run replaces an unversioned prefix or a node path that has moved.
+  const stopCommand = stopHookCommand();
+  for (const h of settings.hooks.Stop) {
+    if (!Array.isArray(h?.hooks)) continue;
+    for (const hh of h.hooks) {
+      if (hh && isOwnStopCommand(hh.command) && hh.command !== stopCommand) {
+        hh.command = stopCommand;
+        listSettings();
+      }
+    }
+  }
+
   const hasTranscriptHook = hasTranscriptStopHook(settings.hooks.Stop);
 
   if (!hasTranscriptHook) {
@@ -360,7 +374,7 @@ function configureClaudeCode(
       matcher: '',
       hooks: [{
         type: 'command',
-        command: 'npx secretless-ai clean --last 2>/dev/null || true',
+        command: stopCommand,
       }],
     });
   }
@@ -545,6 +559,25 @@ function configureClaudeCode(
   addSecretlessInstructions(
     claudeMdPath, 'claude-code', result, '', hasTranscriptStopHook(settings.hooks.Stop),
   );
+}
+
+/**
+ * What the Stop hook runs after the prefix. The cleaner is best effort, so
+ * `|| true` keeps a failure from failing the turn; a failure prints one line
+ * on the hook's stderr, which Claude Code shows in its hook output.
+ */
+const STOP_HOOK_TAIL = ' clean --last || echo "secretless-ai clean --last failed (exit $?)" >&2 || true';
+
+/** The Stop hook command an earlier `init` wrote. */
+const UNVERSIONED_STOP_HOOK = 'npx secretless-ai clean --last 2>/dev/null || true';
+
+function stopHookCommand(): string {
+  return `${commandPrefixForHooks()}${STOP_HOOK_TAIL}`;
+}
+
+/** True for a Stop hook command `init` wrote, under any prefix. */
+function isOwnStopCommand(command: unknown): boolean {
+  return typeof command === 'string' && (command === UNVERSIONED_STOP_HOOK || command.endsWith(STOP_HOOK_TAIL));
 }
 
 /** True when a Stop hook entry runs a `secretless-ai` command. */

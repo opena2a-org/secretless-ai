@@ -14,6 +14,7 @@ import { SecretStore } from '../secret-store';
 import { EXIT_USAGE } from '../argv';
 import { nearestMatch } from '../near-miss';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
+import { commandPrefixForHooks } from '../hook-prefix';
 import { escapeForDisplay } from '../display-safe';
 import {
   GIT_PROTOCOL_ACTIONS,
@@ -184,7 +185,7 @@ function runInstall(values: Record<string, string>, git: GitRunner): number {
   }
   let change;
   try {
-    change = installHelper(git, CLI, mapping);
+    change = installHelper(git, commandPrefixForHooks(), mapping);
   } catch (err) {
     console.error(formatCommandError(err));
     return 1;
