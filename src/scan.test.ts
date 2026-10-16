@@ -37,6 +37,78 @@ describe('isKnownExample (issue #50 — comment-marker precedence)', () => {
   });
 });
 
+describe('isKnownExample (#411: "example" counts only inside a comment)', () => {
+  const PAT = ['gh', 'p_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+  const gh = patternByName('GitHub Token');
+  const hidden = (line: string) => {
+    const m = findRealMatch(line, gh, { includeExamples: true });
+    if (!m) throw new Error(`no GitHub Token match on ${line}`);
+    return isKnownExample(line, m);
+  };
+
+  it.each([
+    ['an https://example.com string in code', `const token = "${PAT}"; const docs = "https://example.com";`],
+    ['the URL before the value', `fetch("https://example.com/v1", { auth: "${PAT}" });`],
+    ['a file:/// URL in code', `const token = "${PAT}"; const dir = "file:///srv/example";`],
+    ['an identifier named example beside a comment without it', `const token = "${PAT}"; const example = 1; // rotate monthly`],
+    ['a closed block comment followed by code that says example', `const token = "${PAT}"; /* rotate */ const example = 1;`],
+    ['a # fragment after the word example', `fetch("https://example.com/#top", { auth: "${PAT}" });`],
+    ['a closed HTML comment followed by text that says example', `<!-- rotate --> example ${PAT}`],
+    ['a closed docstring followed by code that says example', `"""rotate""" example = "${PAT}"`],
+  ])('reports the value when "example" is only in code: %s', (_label, line) => {
+    expect(hidden(line)).toBe(false);
+  });
+
+  it.each([
+    ['a // comment', `// example: ${PAT}`],
+    ['a trailing // comment', `const token = "${PAT}"; // Example`],
+    ['a // comment holding a URL', `const token = "${PAT}"; // https://example.com`],
+    ['a # comment', `token = "${PAT}"  # example`],
+    ['a block comment', `/* example ${PAT} */`],
+    ['an HTML comment', `<!-- example ${PAT} -->`],
+    ['the end of an HTML comment from an earlier line', `example ${PAT} -->`],
+    ['a docstring', `"""example ${PAT}"""`],
+    ["a ''' docstring", `'''example ${PAT}'''`],
+    ['the closing line of a docstring', `example: ${PAT} """`],
+    ['a JSDoc continuation line', ` * example: ${PAT}`],
+  ])('still hides the value when a comment says example: %s', (_label, line) => {
+    expect(hidden(line)).toBe(true);
+  });
+
+  it('counts each value hidden by a comment and reports the rest (13 lines differing only after the value)', () => {
+    const trailers = [
+      '// https://example.com',
+      '// Example',
+      '/* example */',
+      '<!-- example -->',
+      '# example',
+      '""" example """',
+      "''' example '''",
+      'const docs = "https://example.com";',
+      'const example = 1; // rotate monthly',
+      '// see docs at https://docs.vendor.test',
+      '/* rotate */ const example = 1;',
+      'fetch("https://example.com/#top");',
+      '// TODO rotate',
+    ];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-411-'));
+    try {
+      trailers.forEach((t, i) => {
+        fs.writeFileSync(path.join(dir, `t${String(i + 1).padStart(2, '0')}.ts`), `const token = "${PAT}"; ${t}\n`);
+      });
+      const all = scan(dir, { scanGlobal: false, showPlaceholders: true });
+      expect(all.length).toBe(13);
+
+      const stats: ScanStats = { placeholdersSuppressed: 0, truncated: false };
+      const reported = scan(dir, { scanGlobal: false }, stats);
+      expect(reported.map(f => path.basename(f.file)).sort()).toEqual(['t08.ts', 't09.ts', 't10.ts', 't11.ts', 't12.ts', 't13.ts']);
+      expect(stats.placeholdersSuppressed).toBe(7);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('findRealMatch (issue #51 — known-example shadowing)', () => {
   it('mixed-pattern line: AWS example + real GitHub PAT returns the PAT', () => {
     // Intentionally NO `//` or `#` markers — we're testing that the KNOWN_EXAMPLE_KEYS

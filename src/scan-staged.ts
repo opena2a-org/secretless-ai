@@ -40,11 +40,18 @@ export interface ScanStagedResult {
    * commit check (#125).
    */
   notARepo?: boolean;
+  /**
+   * Matches hidden because they looked like a known example or placeholder,
+   * counted the way `scan` counts them, so the hook can say what it hid.
+   */
+  placeholdersSuppressed: number;
 }
 
 export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
   const findings: StagedFinding[] = [];
   const blockedFiles: string[] = [];
+  let placeholdersSuppressed = 0;
+  const matchOpts = { onSuppressed: () => { placeholdersSuppressed += 1; } };
 
   // Get list of staged files
   let stagedFiles: string[];
@@ -57,11 +64,11 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
   } catch {
     // An empty index does not throw (git prints nothing and exits 0), so a
     // failure here means git could not answer at all.
-    return { findings, blockedFiles, notARepo: true };
+    return { findings, blockedFiles, notARepo: true, placeholdersSuppressed };
   }
 
   if (stagedFiles.length === 0) {
-    return { findings, blockedFiles };
+    return { findings, blockedFiles, placeholdersSuppressed };
   }
 
   // Resolve ignore matcher. Priority:
@@ -160,7 +167,7 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
       }
 
       for (const pattern of CREDENTIAL_PATTERNS) {
-        const match = findRealMatch(line, pattern);
+        const match = findRealMatch(line, pattern, matchOpts);
         if (!match) continue;
 
         findings.push({
@@ -173,5 +180,5 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
     }
   }
 
-  return { findings, blockedFiles };
+  return { findings, blockedFiles, placeholdersSuppressed };
 }

@@ -317,20 +317,71 @@ function isLocalhostDemoConnectionString(value: string): boolean {
   return DEMO_PASSWORDS.has(password);
 }
 
-function isExampleInComment(line: string): boolean {
-  const lineLC = line.toLowerCase();
-  if (!lineLC.includes('example')) return false;
-  if (lineLC.includes('//')) return true;
-  if (lineLC.includes('#')) return true;
-  if (lineLC.includes('/*')) return true;
-  if (lineLC.includes('<!--')) return true;
-  if (lineLC.includes('-->')) return true;
-  if (lineLC.includes("'''")) return true;
-  if (lineLC.includes('"""')) return true;
+/**
+ * The comment text on `line`, as `[start, end)` spans: `//` and `#` to the end
+ * of the line, a block comment (`/*`), an HTML comment (`<!--`, or a `-->` that
+ * closes one from an earlier line), a `'''`/`"""` docstring and a JSDoc
+ * continuation line. A `//` right after `:` is a URL scheme
+ * (`https://example.com`), not a comment. A lone `'''`/`"""` may open or close
+ * a docstring, so it marks the whole line.
+ */
+function commentSpans(line: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let i = 0;
   // JSDoc continuation: line starts with optional whitespace then `*`.
   // Anchored so `x * y` (multiplication) does NOT match.
-  if (/^\s*\*/.test(line)) return true;
-  return false;
+  const jsdoc = /^\s*\*/.exec(line);
+  if (jsdoc) {
+    const close = line.indexOf('*/', jsdoc[0].length - 1);
+    i = close === -1 ? line.length : close + 2;
+    spans.push([0, i]);
+  }
+  while (i < line.length) {
+    let close: number;
+    let width: number;
+    if (line.startsWith('<!--', i)) {
+      close = line.indexOf('-->', i + 4);
+      width = 3;
+    } else if (line.startsWith('/*', i)) {
+      close = line.indexOf('*/', i + 2);
+      width = 2;
+    } else if (line.startsWith('"""', i) || line.startsWith("'''", i)) {
+      close = line.indexOf(line.slice(i, i + 3), i + 3);
+      if (close === -1) {
+        spans.push([0, line.length]);
+        break;
+      }
+      width = 3;
+    } else if (line.startsWith('//', i) && line[i - 1] === ':') {
+      i += 2;
+      continue;
+    } else if (line.startsWith('//', i) || line[i] === '#') {
+      spans.push([i, line.length]);
+      break;
+    } else if (line.startsWith('-->', i)) {
+      // Closes an HTML comment opened on an earlier line.
+      spans.push([0, i + 3]);
+      i += 3;
+      continue;
+    } else {
+      i++;
+      continue;
+    }
+    const end = close === -1 ? line.length : close + width;
+    spans.push([i, end]);
+    i = end;
+  }
+  return spans;
+}
+
+/**
+ * True when a comment on `line` says "example". Only the comment text is
+ * tested: "example" in code on the same line (an `https://example.com` string,
+ * an identifier) does not make a value on that line a placeholder.
+ */
+function isExampleInComment(line: string): boolean {
+  if (!line.toLowerCase().includes('example')) return false;
+  return commentSpans(line).some(([start, end]) => line.slice(start, end).toLowerCase().includes('example'));
 }
 
 /**

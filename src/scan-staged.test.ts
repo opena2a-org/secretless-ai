@@ -215,3 +215,75 @@ describe('runScanStaged outside a git repository', () => {
     expect(runScanStaged()).toBe(0);
   });
 });
+
+// #411: `scan` says how many values it hid as placeholders and how to see
+// them; the pre-commit path hid the same values with no count at all.
+describe('scan-staged placeholder disclosure (#411)', () => {
+  const PAT = ['gh', 'p_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function stage(files: Record<string, string>) {
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (args && args.includes('--name-only')) return Object.keys(files).join('\n') + '\n';
+      if (args && args[0] === 'show') return files[String(args[1]).slice(1)] ?? '';
+      return '';
+    });
+  }
+
+  function captureStderr(fn: () => number): { code: number; err: string } {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
+    try {
+      return { code: fn(), err: lines.join('\n') };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('counts the matches it hid as placeholders', () => {
+    stage({
+      'a.js': `const token = "${PAT}"; // example\n`,
+      'b.js': `const token = "${PAT}";\n`,
+      'c.js': 'const k = "AKIAIOSFODNN7EXAMPLE";\n',
+    });
+    const result = scanStagedFiles({ noIgnore: true });
+    expect(result.findings.map(f => f.file)).toEqual(['b.js']);
+    expect(result.placeholdersSuppressed).toBe(2);
+  });
+
+  it('reports zero when nothing was hidden', () => {
+    stage({ 'b.js': `const token = "${PAT}";\n` });
+    expect(scanStagedFiles({ noIgnore: true }).placeholdersSuppressed).toBe(0);
+  });
+
+  it('prints the hidden count and the --show-placeholders pointer on a clean pass', () => {
+    stage({ 'a.js': `const token = "${PAT}"; // example\n` });
+    const { code, err } = captureStderr(() => runScanStaged(['--no-ignore']));
+    expect(code).toBe(0);
+    expect(err).toContain('1 value looked like a placeholder and was hidden.');
+    expect(err).toContain('npx secretless-ai scan --show-placeholders');
+  });
+
+  it('prints the hidden count beside the findings on a blocked commit', () => {
+    stage({
+      'a.js': `const token = "${PAT}"; // example\n`,
+      'c.js': 'const k = "AKIAIOSFODNN7EXAMPLE";\n',
+      'b.js': `const token = "${PAT}";\n`,
+    });
+    const { code, err } = captureStderr(() => runScanStaged(['--no-ignore']));
+    expect(code).toBe(1);
+    expect(err).toContain('GitHub Token in b.js:1');
+    expect(err).toContain('2 values looked like a placeholder and were hidden.');
+    expect(err).toContain('npx secretless-ai scan --show-placeholders');
+  });
+
+  it('prints no placeholder line when nothing was hidden', () => {
+    stage({ 'b.js': `const token = "${PAT}";\n` });
+    const { code, err } = captureStderr(() => runScanStaged(['--no-ignore']));
+    expect(code).toBe(1);
+    expect(err).not.toContain('looked like a placeholder');
+  });
+});

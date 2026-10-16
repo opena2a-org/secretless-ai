@@ -52,7 +52,7 @@ export function runHook(args: string[]): number {
 
 export function runScanStaged(args: string[] = []): number {
   const noIgnore = args.includes('--no-ignore');
-  const { findings, blockedFiles, notARepo } = scanStagedFiles({ noIgnore });
+  const { findings, blockedFiles, notARepo, placeholdersSuppressed } = scanStagedFiles({ noIgnore });
   if (notARepo) {
     // Same message and exit code as `diff` in the same situation. Exiting 0
     // with no output made a pre-commit or CI step in the wrong directory look
@@ -64,8 +64,21 @@ export function runScanStaged(args: string[] = []): number {
   }
   const total = findings.length + blockedFiles.length;
 
+  // Same disclosure `scan` prints: a commit check that hid a value as a
+  // placeholder says how many, and where to see them, so a real key that looked
+  // like one is not passed in silence.
+  const placeholderHint = () => {
+    if (placeholdersSuppressed > 0) {
+      const n = placeholdersSuppressed;
+      console.error(`  ${n} value${n > 1 ? 's' : ''} looked like a placeholder and ${n > 1 ? 'were' : 'was'} hidden.`);
+      console.error('  See them: npx secretless-ai scan --show-placeholders\n');
+    }
+  };
+
   if (total === 0) {
     // Clean — allow commit
+    if (placeholdersSuppressed > 0) console.error();
+    placeholderHint();
     return 0;
   }
 
@@ -87,6 +100,7 @@ export function runScanStaged(args: string[] = []): number {
     console.error();
   }
 
+  placeholderHint();
   console.error('  Remove the secrets and try again.');
   console.error('  To bypass: git commit --no-verify\n');
   return 1;
