@@ -51,11 +51,14 @@ const COMMAND_PATTERNS: Array<{ id: string; name: string; regex: RegExp }> = [
   // has no length floor. Flags before the name are passed over, `--description`
   // and `--meta` together with their argument, so `--meta app=web` is not read
   // as NAME=VALUE. A value opening with `$` or a backtick is a substitution:
-  // history holds the reference, not the value.
+  // history holds the reference, not the value. The unquoted flag argument
+  // cannot open with a quote, so a quoted argument matches exactly one
+  // alternative and a line of many quoted arguments is matched in one pass
+  // rather than one per combination.
   {
     id: 'cmd-secret-set',
     name: 'Secret in secret set NAME=VALUE',
-    regex: /(?<![\w-])secret\s+set\s+(?:--(?:description|meta)(?:=|\s+)(?:"[^"\n]*"|'[^'\n]*'|\S+)\s+|--(?!(?:description|meta)(?:[=\s]|$))\S+\s+)*[A-Za-z][\w-]*=(?<value>"(?![$`])[^"\n]+"|'[^'\n]+'|(?![$`"'])\S+)/,
+    regex: /(?<![\w-])secret\s+set\s+(?:--(?:description|meta)(?:=|\s+)(?:"[^"\n]*"|'[^'\n]*'|[^\s"']\S*)\s+|--(?!(?:description|meta)(?:[=\s]|$))\S+\s+)*[A-Za-z][\w-]*=(?<value>"(?![$`])[^"\n]+"|'[^'\n]+'|(?![$`"'])\S+)/,
   },
 ];
 
