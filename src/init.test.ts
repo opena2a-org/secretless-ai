@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { init, DEPRECATED_DENY_RULES } from './init';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS } from './patterns';
-import { scan } from './scan';
+import { scan, newScanStats } from './scan';
 import { status } from './status';
 import { detectAITools, toolDisplayName, type AITool } from './detect';
 
@@ -2533,7 +2533,7 @@ describe('scan', () => {
   });
 
   it('finds AWS key in .env', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'AWS_KEY=AKIA4MCVFLRTSQBH6Z2N');
+    fs.writeFileSync(path.join(dir, '.env'), 'AWS_KEY=' + ['AKIA', '4MCVFLRT', 'SQBH6Z2N'].join(''));
 
     const findings = scan(dir, { scanGlobal: false });
     expect(findings.length).toBe(1);
@@ -2685,6 +2685,136 @@ describe('status', () => {
 
     const s = await status(dir);
     expect(s.secretsFound).toBe(1);
+  });
+});
+
+// `init` used to count credentials with a scanner of its own: the fixed
+// config-file list, matched line by line with no placeholder check and no
+// source files. On a copy of a fixture tree whose every value is marked FAKE it
+// printed "Warning: 21 hardcoded credentials in config files" while the `scan`
+// it pointed to printed "No hardcoded credentials found.", and a key in a
+// source file that `scan` reported was not counted at all. The count now comes
+// from the scan itself.
+describe('init counts hardcoded credentials the way scan does', () => {
+  let dir: string;
+
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  // Built from parts so secret scanners do not flag a literal in this file.
+  const realShaped = (): string => ['s', 'k-ant-', 'api03-', 'Q7vR2mXk9LpT4wZs8NcB', '1yHd6FjG3eUa5KoV0iWq'].join('');
+
+  // 21 values in the shapes the FAKE fixture tree uses, each matching a
+  // credential pattern and each marked FAKE, one per line.
+  const fakeConfig = (): Record<string, string> => {
+    const values: Record<string, string> = {};
+    for (let i = 0; i < 7; i++) {
+      values[`GITHUB_TOKEN_${i}`] = ['gh', 'p_', `FAKE${i}abcdefghijklmnopqrstuvwxyz0123456789`.slice(0, 36)].join('');
+      values[`ANTHROPIC_API_KEY_${i}`] = ['s', 'k-ant-', 'api03-', `FAKE-${i}yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy`].join('');
+      values[`DATABASE_URL_${i}`] = ['postgresql://', 'root:', `FAKE_db_password_${i}`, '@db.example.com:5432/production'].join('');
+    }
+    return values;
+  };
+
+  const writeTree = (files: Record<string, string>): void => {
+    for (const [rel, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), content);
+    }
+  };
+
+  it('counts no credential for values marked FAKE in a config file', () => {
+    writeTree({ 'config.json': JSON.stringify({ env: fakeConfig() }, null, 2) });
+    // Every value is a pattern match that scan hides as a placeholder, so the
+    // fixture is not vacuous.
+    const stats = newScanStats();
+    expect(scan(dir, { scanGlobal: false }, stats)).toHaveLength(0);
+    expect(stats.placeholdersSuppressed).toBe(21);
+
+    expect(init(dir).secretsFound).toBe(0);
+  });
+
+  it('counts a credential in a source file when no config file holds one', () => {
+    writeTree({ 'src/app.ts': `export const key = '${realShaped()}';\n` });
+
+    expect(init(dir).secretsFound).toBe(1);
+  });
+
+  // Not readable by an owner that bypasses file modes.
+  const ownerHonoursModes = process.platform !== 'win32' && process.getuid?.() !== 0;
+  (ownerHonoursModes ? it : it.skip)('marks the count incomplete when a file could not be read', () => {
+    writeTree({ 'src/app.ts': `export const key = '${realShaped()}';\n` });
+    fs.chmodSync(path.join(dir, 'src', 'app.ts'), 0o000);
+    try {
+      const result = init(dir);
+      expect(result.secretsFound).toBe(0);
+      expect(result.secretsScanIncomplete).toBe(true);
+    } finally {
+      fs.chmodSync(path.join(dir, 'src', 'app.ts'), 0o644);
+    }
+  });
+
+  describe('as the CLI prints it', () => {
+    const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
+    const itIfBuilt = fs.existsSync(CLI_PATH) ? it : it.skip;
+
+    // An empty home so no global config file reaches `scan`, and no store or
+    // telemetry is reachable from the child.
+    const runCli = (home: string, args: string[]): string => {
+      const res = spawnSync(process.execPath, [CLI_PATH, ...args], {
+        cwd: dir,
+        encoding: 'utf-8',
+        timeout: 20_000,
+        env: {
+          PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`,
+          HOME: home,
+          TMPDIR: os.tmpdir(),
+          OPENA2A_TELEMETRY: 'off',
+          SECRETLESS_OS_KEYCHAIN: 'off',
+        },
+      });
+      return res.stdout.replace(/\x1b\[[0-9;]*m/g, '');
+    };
+
+    itIfBuilt('init and the scan it points to report the same number', () => {
+      writeTree({
+        'config.json': JSON.stringify({ env: fakeConfig() }, null, 2),
+        'src/app.ts': `export const key = '${realShaped()}';\n`,
+      });
+      const home = tmpDir();
+      try {
+        const initOut = runCli(home, ['init']);
+        const scanOut = runCli(home, ['scan']);
+
+        const initCount = initOut.match(/Warning: (\d+) hardcoded credentials? in this project {2}→ secretless-ai scan/);
+        const scanCount = scanOut.match(/(\d+) credentials? found/);
+        expect(initCount, initOut).not.toBeNull();
+        expect(scanCount, scanOut).not.toBeNull();
+        expect(Number(initCount![1])).toBe(1);
+        expect(Number(scanCount![1])).toBe(1);
+      } finally {
+        cleanup(home);
+      }
+    });
+
+    itIfBuilt('init prints no warning when every match is a placeholder', () => {
+      writeTree({ 'config.json': JSON.stringify({ env: fakeConfig() }, null, 2) });
+      const home = tmpDir();
+      try {
+        // Read before `init` writes its own files, whose hook carries the
+        // known-example keys it checks against.
+        const scanBefore = runCli(home, ['scan']);
+        const initOut = runCli(home, ['init']);
+        const scanAfter = runCli(home, ['scan']);
+
+        expect(scanBefore).toContain('21 values looked like a placeholder and were hidden.');
+        expect(initOut).toContain('Configured');
+        expect(initOut).not.toMatch(/hardcoded credential/);
+        expect(scanAfter).toContain('No hardcoded credentials found.');
+      } finally {
+        cleanup(home);
+      }
+    });
   });
 });
 

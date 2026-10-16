@@ -6,10 +6,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { detectAITools, toolDisplayName, AIDER_IGNORE_FILE, type AITool } from './detect';
-import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, CONFIG_FILES, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
+import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
 import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filesystemPathForm, mergeRules } from './custom-rules';
 import type { CustomRules, RulesFileIssue } from './custom-rules';
-import { loadSecretlessIgnore } from './secretlessignore';
+import { scan, newScanStats, coverageIncomplete } from './scan';
 
 /** Known API services with their auth header formats */
 const SERVICE_HINTS: Record<string, { service: string; authHeader: string }> = {
@@ -57,7 +57,17 @@ interface InitResult {
   toolsConfigured: AITool[];
   filesCreated: string[];
   filesModified: string[];
+  /**
+   * Hardcoded credentials in the project, as `secretless-ai scan` counts them:
+   * the same walk, patterns and placeholder check, over project files only.
+   */
   secretsFound: number;
+  /**
+   * True when the scan behind `secretsFound` did not read the whole tree (it
+   * stopped at the file cap, a path could not be read, or a file was skipped
+   * for size), so the count is a lower bound rather than a result.
+   */
+  secretsScanIncomplete: boolean;
   /**
    * Total deny rules now in `.claude/settings.json` after merge. Useful for
    * rendering "21 deny patterns" in the configured-tools line.
@@ -143,6 +153,7 @@ export function init(projectDir: string): InitResult {
     filesCreated: [],
     filesModified: [],
     secretsFound: 0,
+    secretsScanIncomplete: false,
     denyRulesTotal: 0,
     denyRulesAdded: 0,
     denyRulesRemoved: 0,
@@ -165,8 +176,10 @@ export function init(projectDir: string): InitResult {
     });
   }
 
-  // Quick scan for existing secrets
-  result.secretsFound = quickScan(projectDir);
+  // Count existing secrets the way the `scan` the warning points to does
+  const counted = countProjectCredentials(projectDir);
+  result.secretsFound = counted.found;
+  result.secretsScanIncomplete = counted.incomplete;
 
   // Load custom rules HERE, not inside configureClaudeCode: a rules file that
   // cannot be honoured must reach the result even when Claude Code is not
@@ -3792,40 +3805,27 @@ process.stdin.on('end', () => {
 `;
 }
 
-function quickScan(projectDir: string): number {
-  let count = 0;
-  // Honor `.secretlessignore` + defaults so the count rendered after
-  // `init` matches what `secretless-ai scan` would report.
-  let ignore: ReturnType<typeof loadSecretlessIgnore> | null = null;
+/**
+ * The number `init` prints is the number the `secretless-ai scan` it points to
+ * prints, so it is counted by that scan: the same walk over config, source and
+ * key files, the same `.secretlessignore`, the same placeholder check and the
+ * same default file cap. A scanner of its own read only the config-file list
+ * and matched without the placeholder check, so on a tree of FAKE-marked values
+ * it warned of 21 credentials over a scan that found none, and missed a key in
+ * a source file that the scan reported.
+ *
+ * Project files only, as `status` counts them: the home-directory config files
+ * a bare `scan` also reads are not part of this project.
+ */
+function countProjectCredentials(projectDir: string): { found: number; incomplete: boolean } {
+  const stats = newScanStats();
   try {
-    ignore = loadSecretlessIgnore(projectDir);
+    const findings = scan(projectDir, { scanGlobal: false }, stats);
+    return { found: findings.length, incomplete: coverageIncomplete(stats) };
   } catch {
-    // Best-effort — fall through.
+    // A walk that threw read nothing we can stand behind, so zero is not clean.
+    return { found: 0, incomplete: true };
   }
-  for (const configFile of CONFIG_FILES) {
-    if (ignore && ignore.matches(configFile)) continue;
-    const fullPath = path.join(projectDir, configFile);
-    if (!fs.existsSync(fullPath)) continue;
-
-    try {
-      const stat = fs.statSync(fullPath);
-      if (stat.size > 10 * 1024 * 1024) continue; // Skip files > 10MB
-
-      const content = fs.readFileSync(fullPath, 'utf-8');
-      for (const line of content.split('\n')) {
-        if (line.length > 4096) continue; // ReDoS protection
-        for (const pattern of CREDENTIAL_PATTERNS) {
-          if (pattern.regex.test(line)) {
-            count++;
-            break; // One finding per line
-          }
-        }
-      }
-    } catch {
-      // Skip unreadable files
-    }
-  }
-  return count;
 }
 
 /**

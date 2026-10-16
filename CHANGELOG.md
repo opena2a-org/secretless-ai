@@ -49,6 +49,26 @@ with `Error: no value provided. Pipe the value on stdin, or use --env NAME.`
 and exit 1, before the namespace is created, the value is stored or the audit
 log is written, as `secret set` already refuses one.
 
+**`init` counts hardcoded credentials the way `scan` does, so its warning and
+the `scan` it points to report the same number.** `init` counted with a
+scanner of its own: the fixed config-file list, matched line by line with no
+placeholder check and no source or key files. On a copy of a tree whose every
+value is marked FAKE it printed
+`Warning: 21 hardcoded credentials in config files  → secretless-ai scan`
+over a `scan` that printed `No hardcoded credentials found.` and
+`21 values looked like a placeholder and were hidden.`, and on a tree whose one
+credential is in `src/app.ts` it printed no warning while `scan` printed
+`1 credential found`. The count now comes from the same project scan `status`
+uses, and the line reads
+`Warning: 1 hardcoded credential in this project  → secretless-ai scan`. When
+every match is a placeholder it prints nothing; `scan` discloses the hidden
+count. The walk stops at the scan's default 5000-file cap; when it stops
+there, or a path cannot be read, `init` prints
+`Credential scan incomplete: part of this project was not read  → secretless-ai scan`
+instead of leaving the count to read as complete. The home-directory files a
+bare `scan` also reads, such as `~/.claude/settings.json`, are not part of the
+project and are not counted.
+
 **`scan` does not offer `.gitattributes`, `.gitkeep` or an ignore file such
 as `.secretlessignore` as the `Scan one:` command under the files not read
 for credentials (#408).** With `.git` and `.gitignore` passed over (#405),
