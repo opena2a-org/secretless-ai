@@ -162,9 +162,18 @@ export function runInit(projectDir: string): number {
 
   // Surface inline observations: secrets found + shell profile fix. Each
   // observation ends in a runnable verb (no dead ends).
+  //
+  // The count is the one `scan` prints for this project. Zero with placeholders
+  // hidden prints nothing: `scan` discloses the hidden count itself. A walk
+  // that did not read the whole tree makes the count a lower bound, so that is
+  // said rather than left to read as clean.
   if (result.secretsFound > 0) {
     console.log();
-    console.log(`  Warning: ${result.secretsFound} hardcoded credential${result.secretsFound === 1 ? '' : 's'} in config files  → secretless-ai scan`);
+    console.log(`  Warning: ${result.secretsFound} hardcoded credential${result.secretsFound === 1 ? '' : 's'} in this project  → secretless-ai scan`);
+  }
+  if (result.secretsScanIncomplete) {
+    if (result.secretsFound === 0) console.log();
+    console.log('  Credential scan incomplete: part of this project was not read  → secretless-ai scan');
   }
 
   const fix = fixProfiles();
