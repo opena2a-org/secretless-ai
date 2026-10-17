@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**The piped form a `secret set NAME` hint offers reads the value from a file
+(#439).** When `secret set NAME` read no value, from an empty pipe or from
+Enter alone at the prompt, its `Or:` line offered
+`echo "value" | secretless-ai secret set NAME`. Typed with a key in place of
+`value`, the key is part of the command line, and an interactive bash records
+that line in its history file: the exposure README.md names for
+`secret set NAME=VALUE`. The `Or:` line now reads
+`cat token.txt | secretless-ai secret set NAME`, and the one printed at a
+terminal that cannot turn echo off (#437) reads the same with the given name
+in place of NAME, so the key comes from a file and the line typed does not
+carry it. `src/commands/secret-set-input.test.ts` covers the three inputs: on
+platforms other than Windows it runs the part before the pipe in a shell, in
+a directory whose `token.txt` holds a key, passes its output to the
+`secret set` words after the pipe, and checks that the key is stored and is
+not in the line.
+
 **`secret set NAME` at a terminal that cannot turn echo off reads nothing
 (#437).** `secret set NAME` on a terminal reads the value with echo off
 through the terminal input's raw mode (#234). A terminal input that reports

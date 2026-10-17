@@ -5,6 +5,7 @@
  * off (#234).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -287,13 +288,65 @@ describe('secret set NAME at a terminal that cannot turn echo off', () => {
     expect(await store().getSecret('API_KEY')).toBeUndefined();
     expect(res.err).toContain('Error: this terminal cannot hide typed input, so no value was read. Nothing was stored.');
     expect(res.err).toContain('secret set API_KEY --from-clipboard');
-    expect(res.err).toContain('echo "value" | ');
+    expect(res.err).toContain('cat token.txt | secretless-ai secret set API_KEY');
     // No prompt with echo on, and no typed character on the terminal.
     expect(res.err).not.toContain('Enter value for');
     expect(res.err + res.out).not.toContain(TOKEN.slice(0, 8));
     // The typed line was never consumed: no reader was attached, and it is still in the stream.
     expect(input.listenerCount('data')).toBe(0);
     expect(String(input.read())).toBe(`${TOKEN}\n`);
+  });
+});
+
+/**
+ * The piped form a `secret set NAME` hint offers reads the value from a file
+ * (#439). It was `echo "value" | secretless-ai secret set NAME`: typed with a
+ * key in place of `value`, the key is part of the command line, which shell
+ * history keeps, the exposure README.md names for `secret set NAME=VALUE`.
+ */
+describe('the piped form a secret set hint offers', () => {
+  const cases: Array<{ input: string; name: string; stdin: () => TtyInput & PassThrough; feed: (input: PassThrough) => void }> = [
+    { input: 'empty piped stdin', name: 'NAME', stdin: () => new PassThrough() as TtyInput & PassThrough, feed: (input) => input.end() },
+    { input: 'Enter alone at the hidden prompt', name: 'NAME', stdin: () => fakeTty().input, feed: (input) => input.write('\r') },
+    { input: 'a terminal that cannot turn echo off', name: 'API_KEY', stdin: fakeTtyWithoutRawMode, feed: () => {} },
+  ];
+
+  /** `secret set API_KEY` reading `c.stdin`, and the command its `Or:` line prints. */
+  async function hint(c: (typeof cases)[number]): Promise<{ res: Captured; printed: string }> {
+    const input = c.stdin();
+    const pending = run(['set', 'API_KEY'], { stdin: input });
+    c.feed(input);
+    const res = await pending;
+    expect(res.code, res.err).toBe(1);
+    expect(await store().getSecret('API_KEY')).toBeUndefined();
+    const printed = [...res.err.matchAll(/ Or: +(.*)/g)].map((m) => m[1]);
+    expect(printed).toHaveLength(1);
+    return { res, printed: printed[0] };
+  }
+
+  it.each(cases)('$input: the Or line pipes a file into secret set', async (c) => {
+    const { res, printed } = await hint(c);
+    expect(printed).toBe(`cat token.txt | secretless-ai secret set ${c.name}`);
+    // No other line offers the echo form.
+    expect(res.err + res.out).not.toMatch(/\becho\b/);
+  });
+
+  it.skipIf(process.platform === 'win32').each(cases)('$input: the Or line run as printed stores the key token.txt holds, and the line does not carry it', async (c) => {
+    const { printed } = await hint(c);
+    const [source, sink, ...more] = printed.split(' | ');
+    expect(more).toEqual([]);
+    const words = sink.split(' ');
+    expect(words.slice(0, 2)).toEqual(['secretless-ai', 'secret']);
+
+    fs.writeFileSync(path.join(dir, 'token.txt'), `${TOKEN}\n`);
+    const piped = new PassThrough() as TtyInput & PassThrough;
+    piped.end(execFileSync('/bin/sh', ['-c', source], { cwd: dir }));
+    const res = await run(words.slice(2), { stdin: piped });
+    expect(res.code, res.err).toBe(0);
+    const stored = await store().getSecret(c.name);
+    expect(stored).toBe(TOKEN);
+    // Shell history keeps the line as typed; the stored value is not in it.
+    expect(printed).not.toContain(stored);
   });
 });
 

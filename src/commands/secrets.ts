@@ -448,17 +448,18 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         }
         if (read === ECHO_ON) {
           // Typed here, the value would show on screen and stay in
-          // scrollback (#437); the clipboard and piped forms do not type it.
+          // scrollback (#437); the clipboard form and a pipe from a file do
+          // not type it.
           console.error('  Error: this terminal cannot hide typed input, so no value was read. Nothing was stored.');
           console.error(`  Fix:     ${fixCommand(['secret', 'set', settable(name), '--from-clipboard'], CLI_BARE)}`);
-          console.error(`  Or:      echo "value" | ${CLI_BARE} secret set ${name}\n`);
+          console.error(`  Or:      ${pipedFromFile(name)}\n`);
           return 1;
         }
         value = read;
         if (value === null) {
           console.error('  Error: no value provided.');
           console.error(`  Usage: ${CLI_BARE} secret set NAME --from-clipboard`);
-          console.error(`  Or:    echo "value" | ${CLI_BARE} secret set NAME\n`);
+          console.error(`  Or:    ${pipedFromFile('NAME')}\n`);
           return 1;
         }
       }
@@ -1484,6 +1485,15 @@ const CANCELLED = Symbol('cancelled');
 
 /** `readSecretFromStdin` result when stdin is a terminal that cannot turn echo off (#437). */
 const ECHO_ON = Symbol('echo-on');
+
+/**
+ * The piped form of `secret set NAME` a hint offers. The value comes from a
+ * file, so the line typed, which shell history keeps, does not carry it; the
+ * form offered before, `echo "value" | secret set NAME`, did (#439).
+ */
+function pipedFromFile(name: string): string {
+  return `cat token.txt | ${CLI_BARE} secret set ${name}`;
+}
 
 /**
  * Read a secret value from stdin. On a terminal, reads one line with echo
