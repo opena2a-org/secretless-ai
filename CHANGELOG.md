@@ -17,6 +17,15 @@ write keeps the file's mode and does not truncate the file before writing:
 under `ulimit -f 0`, `telemetry off` leaves the file as it was and
 `telemetry status` prints `state: off`. A setting file this user cannot write
 is still not replaced, and with no setting file the `EACCES` is still thrown.
+A directory with the macOS immutable flag set (`chflags uchg`) refuses the new
+file with `EPERM` instead, and the file is now rewritten in place there too
+(#434): before that, with `OPENA2A_TELEMETRY=off`, `telemetry off` and
+`telemetry on` exited 1 with `EPERM` on the `.telemetry.json.<pid>.<hex>.tmp`
+file and left the file unchanged, and `--version` left the install id in it.
+In that directory the three commands now exit 0, store the same settings and
+leave no other file, and under `ulimit -f 0` `telemetry off` leaves the file
+as it was. A setting file with the immutable flag set is not replaced, and
+with no setting file the `EPERM` is thrown.
 `src/telemetry-install-id.test.ts` covers each of these.
 
 **A rewrite of the telemetry setting file that does not finish leaves the
