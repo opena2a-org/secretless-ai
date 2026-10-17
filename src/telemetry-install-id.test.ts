@@ -334,6 +334,57 @@ describe('a rewrite of the setting file that does not finish leaves the previous
     expect(fs.readdirSync(path.dirname(real))).toEqual(['kept.json']);
   });
 
+  // fs.existsSync is false for a link whose target does not exist yet, so the
+  // new content was renamed over the link and the link was gone (#432).
+  it.skipIf(!posix).each([
+    ['an absolute', (real: string) => real],
+    ['a relative', (real: string, dir: string) => path.relative(dir, real)],
+  ] as const)('%s link to a file that does not exist yet stays a link, and the file is created', (_, text) => {
+    const dir = path.join(tmp('install-id-dangling-'), 'opena2a');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const file = path.join(dir, 'telemetry.json');
+    const real = path.join(tmp('install-id-link-'), 'dotfiles', 'telemetry.json');
+    fs.mkdirSync(path.dirname(real));
+    fs.symlinkSync(text(real, dir), file);
+
+    storeTelemetrySetting(file, false);
+
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(file)).toBe(text(real, dir));
+    expect(fs.readFileSync(real, 'utf-8')).toBe(REWRITTEN);
+    expect(fs.statSync(real).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+    expect(fs.readdirSync(path.dirname(real))).toEqual(['telemetry.json']);
+  });
+
+  itIfBuiltPosix('OPENA2A_TELEMETRY=off: telemetry off through a link to a file that does not exist yet creates that file', () => {
+    const home = tmp('install-id-home-');
+    fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true });
+    const real = path.join(home, 'dotfiles-telemetry.json');
+    fs.symlinkSync(real, settingIn(home));
+
+    expect(run(home, ['telemetry', 'off'], OFF).status).toBe(0);
+
+    expect(fs.lstatSync(settingIn(home)).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(real, 'utf-8')).toBe(REWRITTEN);
+    expect(run(home, ['telemetry', 'status']).stdout).toContain('state:       off');
+  });
+
+  it.skipIf(!posix)('a setting file that is a link loop is not replaced', () => {
+    const dir = path.join(tmp('install-id-loop-'), 'opena2a');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const file = path.join(dir, 'telemetry.json');
+    const other = path.join(dir, 'other.json');
+    fs.symlinkSync(other, file);
+    fs.symlinkSync(file, other);
+
+    expect(() => storeTelemetrySetting(file, false)).toThrow(/ELOOP/);
+
+    expect(fs.readlinkSync(file)).toBe(other);
+    expect(fs.readlinkSync(other)).toBe(file);
+    expect(fs.readdirSync(dir).sort()).toEqual(['other.json', 'telemetry.json']);
+  });
+
   it.skipIf(!posix || process.getuid?.() === 0)('a setting file this user cannot write is not replaced', () => {
     const dir = settingDirWith(OPTED_OUT);
     const file = path.join(dir, 'telemetry.json');
