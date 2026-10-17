@@ -143,6 +143,9 @@ function settingWriteTarget(file: string): string {
   }
 }
 
+/** The errors that refuse the new file and lead to the in-place write; see writeTelemetrySetting. */
+const NEW_FILE_REFUSALS = new Set(['EACCES', 'EPERM']);
+
 /**
  * Write the setting as the SDK writes it: directory mode 0700, file mode 0600.
  *
@@ -159,11 +162,12 @@ function settingWriteTarget(file: string): string {
  * in-place write did.
  *
  * A setting file this user can write, in a directory where the new file is
- * refused with EACCES, is rewritten in place (#431): the new file needs write
- * permission on the directory, the in-place write does not. That write keeps
- * the file's mode and does not truncate the file before writing, so a write
- * that fails before its first byte leaves the setting file as it was. With no
- * setting file, the refusal is thrown.
+ * refused with EACCES or EPERM, is rewritten in place: the new file needs
+ * write permission on the directory (EACCES, #431) and, on macOS, no
+ * `chflags uchg` immutable flag on it (EPERM, #434); the in-place write needs
+ * neither. That write keeps the file's mode and does not truncate the file
+ * before writing, so a write that fails before its first byte leaves the
+ * setting file as it was. With no setting file, the refusal is thrown.
  */
 function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -178,7 +182,7 @@ function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   try {
     fd = fs.openSync(temp, 'wx', 0o600);
   } catch (err) {
-    if (!exists || (err as NodeJS.ErrnoException).code !== 'EACCES') throw err;
+    if (!exists || !NEW_FILE_REFUSALS.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
     writeInPlace(target, content);
     return;
   }

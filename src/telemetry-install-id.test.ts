@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -504,6 +504,111 @@ describe('a setting file this user can write is rewritten in a directory this us
     expect(() => inReadOnlyDir(home, () => storeTelemetrySetting(settingIn(home), false))).toThrow(/EACCES/);
 
     expect(fs.readdirSync(path.dirname(settingIn(home)))).toEqual([]);
+  });
+});
+
+describe('a setting file this user can write is rewritten in a directory with the immutable flag set (#434)', () => {
+  // The immutable flag refuses a new file in the directory with EPERM, not the
+  // EACCES of #431, and leaves the setting file in it writable, so the in-place
+  // rewrite was not used: `telemetry on` and `telemetry off` exited 1 and left
+  // the file unchanged.
+  const OPTED_OUT = '{"enabled":false,"installId":"FAKE-INSTALL-ID"}\n';
+  const REWRITTEN = '{\n  "enabled": false\n}\n';
+  // Node sets no file flags, so the macOS chflags command sets this one.
+  const darwin = process.platform === 'darwin';
+  const itIfDarwin = darwin ? it : it.skip;
+  const itIfBuiltDarwin = fs.existsSync(CLI_PATH) && darwin ? it : it.skip;
+  const GATE_PATH = path.resolve(__dirname, '..', 'dist', 'telemetry-gate.js');
+
+  /** Run `fn` with the immutable flag set on each of `paths`, then clear it. */
+  function withImmutable<T>(paths: string[], fn: () => T): T {
+    execFileSync('/usr/bin/chflags', ['uchg', ...paths]);
+    try {
+      return fn();
+    } finally {
+      execFileSync('/usr/bin/chflags', ['nouchg', ...paths]);
+    }
+  }
+
+  /** A home whose setting file, mode 0600, holds `text`. */
+  function homeWith(text: string): string {
+    const home = tmp('install-id-home-');
+    fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(settingIn(home), text, { mode: 0o600 });
+    return home;
+  }
+
+  itIfBuiltDarwin.each([
+    { args: ['telemetry', 'off'], expected: { enabled: false } },
+    { args: ['telemetry', 'on'], expected: { enabled: true } },
+    { args: ['--version'], expected: { enabled: false } },
+  ])('OPENA2A_TELEMETRY=off: $args exits 0 and stores $expected', ({ args, expected }) => {
+    const home = homeWith(OPTED_OUT);
+    const dir = path.dirname(settingIn(home));
+
+    const res = withImmutable([dir], () => run(home, args, OFF));
+
+    expect(res.status).toBe(0);
+    expect(stored(home)).toEqual(expected);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+  });
+
+  itIfBuiltDarwin('OPENA2A_TELEMETRY=off: telemetry off with a write that fails keeps the stored "enabled": false', () => {
+    const home = homeWith(OPTED_OUT);
+    const dir = path.dirname(settingIn(home));
+
+    withImmutable([dir], () => run(home, ['telemetry', 'off'], OFF, true));
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(OPTED_OUT);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+    expect(run(home, ['telemetry', 'status']).stdout).toContain('state:       off');
+  });
+
+  itIfDarwin('a setting file with the immutable flag set is still not replaced', () => {
+    const home = homeWith(OPTED_OUT);
+    const dir = path.dirname(settingIn(home));
+
+    expect(() => withImmutable([settingIn(home), dir], () => dropStoredInstallId(settingIn(home)))).toThrow(/EPERM/);
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(OPTED_OUT);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+  });
+
+  itIfDarwin('with no setting file, the EPERM is still thrown and nothing is created', () => {
+    const home = tmp('install-id-home-');
+    const dir = path.dirname(settingIn(home));
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+    expect(() => withImmutable([dir], () => storeTelemetrySetting(settingIn(home), false))).toThrow(/EPERM/);
+
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  // The flag is set above on macOS only. Here a child process refuses the new
+  // file with EPERM, so this test is not limited to macOS.
+  (fs.existsSync(GATE_PATH) ? it : it.skip)('the setting file is rewritten in place when the new file is refused with EPERM', () => {
+    const dir = path.join(tmp('install-id-eperm-'), 'opena2a');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const file = path.join(dir, 'telemetry.json');
+    fs.writeFileSync(file, OPTED_OUT);
+
+    const res = spawnSync(process.execPath, ['-e', [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      'const [gate, file] = process.argv.slice(1);',
+      'const openSync = fs.openSync;',
+      'fs.openSync = (target, ...rest) => {',
+      '  if (path.dirname(target) !== path.dirname(file) || fs.existsSync(target)) return openSync(target, ...rest);',
+      "  console.log('refused ' + path.basename(target));",
+      "  throw Object.assign(new Error('EPERM: operation not permitted, open ' + target), { code: 'EPERM' });",
+      '};',
+      'require(gate).storeTelemetrySetting(file, false);',
+    ].join('\n'), GATE_PATH, file], { encoding: 'utf-8' });
+
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.stdout).toMatch(/^refused \.telemetry\.json\.\d+\.[0-9a-f]{12}\.tmp$/m);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(REWRITTEN);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
   });
 });
 
