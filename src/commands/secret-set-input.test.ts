@@ -221,6 +221,13 @@ function fakeTty(): { input: TtyInput & PassThrough; rawModes: boolean[] } {
   return { input, rawModes };
 }
 
+/** A terminal whose input stream reports `isTTY` and has no `setRawMode` (#437). */
+function fakeTtyWithoutRawMode(): TtyInput & PassThrough {
+  const input = new PassThrough() as TtyInput & PassThrough;
+  input.isTTY = true;
+  return input;
+}
+
 describe('secret set NAME at a terminal prompt', () => {
   it('stores a bracketed paste of a 40-character token as exactly 40 characters, with nothing echoed', async () => {
     const { input, rawModes } = fakeTty();
@@ -260,6 +267,33 @@ describe('secret set NAME at a terminal prompt', () => {
     expect(res.err).toContain('Cancelled. Nothing was stored.');
     expect(rawModes).toEqual([true, false]);
     expect(await store().getSecret('API_KEY')).toBeUndefined();
+  });
+});
+
+/**
+ * A terminal whose input cannot turn echo off (#437). `process.stdin` on a
+ * terminal is a `tty.ReadStream`, which has `setRawMode`; a stream that
+ * reports `isTTY` without it was the one terminal left on the cooked read,
+ * which prompted `Enter value for NAME: ` and read the line with echo on.
+ */
+describe('secret set NAME at a terminal that cannot turn echo off', () => {
+  it('reads nothing, stores nothing, exits 1 and names the clipboard and pipe forms', async () => {
+    const input = fakeTtyWithoutRawMode();
+    const pending = run(['set', 'API_KEY'], { stdin: input });
+    input.write(`${TOKEN}\n`);
+    const res = await pending;
+
+    expect(res.code, res.err).toBe(1);
+    expect(await store().getSecret('API_KEY')).toBeUndefined();
+    expect(res.err).toContain('Error: this terminal cannot hide typed input, so no value was read. Nothing was stored.');
+    expect(res.err).toContain('secret set API_KEY --from-clipboard');
+    expect(res.err).toContain('echo "value" | ');
+    // No prompt with echo on, and no typed character on the terminal.
+    expect(res.err).not.toContain('Enter value for');
+    expect(res.err + res.out).not.toContain(TOKEN.slice(0, 8));
+    // The typed line was never consumed: no reader was attached, and it is still in the stream.
+    expect(input.listenerCount('data')).toBe(0);
+    expect(String(input.read())).toBe(`${TOKEN}\n`);
   });
 });
 

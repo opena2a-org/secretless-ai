@@ -446,6 +446,14 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
           console.error('  Cancelled. Nothing was stored.\n');
           return 130;
         }
+        if (read === ECHO_ON) {
+          // Typed here, the value would show on screen and stay in
+          // scrollback (#437); the clipboard and piped forms do not type it.
+          console.error('  Error: this terminal cannot hide typed input, so no value was read. Nothing was stored.');
+          console.error(`  Fix:     ${fixCommand(['secret', 'set', settable(name), '--from-clipboard'], CLI_BARE)}`);
+          console.error(`  Or:      echo "value" | ${CLI_BARE} secret set ${name}\n`);
+          return 1;
+        }
         value = read;
         if (value === null) {
           console.error('  Error: no value provided.');
@@ -1474,45 +1482,34 @@ async function storeFromClipboard(
 /** `readSecretFromStdin` result when the user pressed Ctrl-C at the prompt. */
 const CANCELLED = Symbol('cancelled');
 
+/** `readSecretFromStdin` result when stdin is a terminal that cannot turn echo off (#437). */
+const ECHO_ON = Symbol('echo-on');
+
 /**
  * Read a secret value from stdin. On a terminal, reads one line with echo
- * off. In piped mode, reads until stdin closes. Returns null if value is empty.
+ * off; a terminal whose input has no raw mode is not read, since a cooked
+ * read shows the value on screen and keeps it in scrollback (#437).
+ * In piped mode, reads until stdin closes. Returns null if value is empty.
  */
-async function readSecretFromStdin(name: string, stdin: TtyInput): Promise<string | null | typeof CANCELLED> {
+async function readSecretFromStdin(name: string, stdin: TtyInput): Promise<string | null | typeof CANCELLED | typeof ECHO_ON> {
   if (canReadHidden(stdin)) {
     const result = await readHiddenLine(stdin, process.stderr, `  Enter value for ${name} (input hidden): `);
     if (result.kind === 'cancelled') return CANCELLED;
     const trimmed = result.value.trim();
     return trimmed === '' ? null : trimmed;
   }
+  if (stdin.isTTY === true) return ECHO_ON;
   return new Promise((resolve) => {
+    // Piped mode: the value may arrive in several chunks, so wait for stdin
+    // to close, then store.
     let input = '';
     stdin.setEncoding('utf-8');
-
-    if (stdin.isTTY) {
-      process.stderr.write(`  Enter value for ${name}: `);
-    }
-
-    let resolved = false;
-    const finish = (value: string): void => {
-      if (resolved) return;
-      resolved = true;
-      const trimmed = value.trim();
-      resolve(trimmed === '' ? null : trimmed);
-    };
-
     stdin.on('data', (chunk) => {
       input += chunk;
-      // In TTY mode, each Enter press delivers a line — store immediately.
-      // In piped mode, we may get multiple chunks; wait for 'end'.
-      if (stdin.isTTY) {
-        finish(input);
-      }
     });
-
-    // Piped mode: wait for stdin to close, then store
     stdin.on('end', () => {
-      finish(input);
+      const trimmed = input.trim();
+      resolve(trimmed === '' ? null : trimmed);
     });
   });
 }

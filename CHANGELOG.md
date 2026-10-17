@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+**`secret set NAME` at a terminal that cannot turn echo off reads nothing
+(#437).** `secret set NAME` on a terminal reads the value with echo off
+through the terminal input's raw mode (#234). A terminal input that reports
+`isTTY` and has no `setRawMode` went to the cooked read instead: it printed
+`Enter value for NAME: `, read the line in cooked mode, with echo on, so the
+value showed on screen and stayed in scrollback, and stored it. That read is
+gone. On such a terminal the command now prints `Error: this terminal cannot
+hide typed input, so no value was read. Nothing was stored.`, a `Fix:` line
+with the `--from-clipboard` form and an `Or:` line with the piped form,
+attaches no reader to stdin, stores nothing and exits 1. `process.stdin` on
+a terminal is a `tty.ReadStream`, which has `setRawMode`, so a terminal Node
+opens itself took the hidden read already. Piped stdin is read until it
+closes, as before. `src/commands/secret-set-input.test.ts` covers the
+terminal without raw mode.
+
 **A writable telemetry setting file in a directory this user cannot write to
 is rewritten again (#431).** Since #429 the new content went to a new file in
 the setting file's directory, which needs write permission on the directory:
