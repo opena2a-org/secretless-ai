@@ -34,7 +34,10 @@ before the rename leaves the file as it was and a
 `.telemetry.json.<pid>.<hex>.tmp` file next to it. A rewritten file has mode
 0600, as the telemetry library writes it; the in-place write kept the mode
 the file had. A symlinked setting file stays a link and the file it points
-to is rewritten, and a file this user cannot write is not replaced.
+to is rewritten, or created when it does not exist yet (#432): before that,
+`OPENA2A_TELEMETRY=off secretless-ai telemetry off` through a link to a
+missing file replaced the link with a regular file and left the target
+uncreated. A link loop and a file this user cannot write are not replaced.
 `src/telemetry-install-id.test.ts` covers each of these.
 
 **An install id left by an earlier run is deleted on a run with telemetry

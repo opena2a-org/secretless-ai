@@ -112,6 +112,37 @@ export function readTelemetrySetting(file: string): TelemetrySetting | null {
   return installId ? { enabled, installId } : { enabled };
 }
 
+/** Symbolic links followed from the setting file before a chain counts as a loop. */
+const MAX_SETTING_LINKS = 40;
+
+/**
+ * The path the setting is renamed to: the setting file, or the file at the
+ * end of its symbolic links. fs.existsSync and fs.realpathSync fail on a link
+ * whose target does not exist yet, so such a link is followed one readlink at
+ * a time, and the target is created as the in-place write created it (#432).
+ * A link loop throws ELOOP, as the in-place write did, and is not replaced.
+ */
+function settingWriteTarget(file: string): string {
+  if (fs.existsSync(file)) {
+    const target = fs.realpathSync(file);
+    fs.accessSync(target, fs.constants.W_OK);
+    return target;
+  }
+  let target = file;
+  for (let links = 0; ; links++) {
+    try {
+      if (!fs.lstatSync(target).isSymbolicLink()) return target;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return target;
+      throw err;
+    }
+    if (links === MAX_SETTING_LINKS) {
+      throw Object.assign(new Error(`ELOOP: too many symbolic links, open '${file}'`), { code: 'ELOOP' });
+    }
+    target = path.resolve(fs.realpathSync(path.dirname(target)), fs.readlinkSync(target));
+  }
+}
+
 /**
  * Write the setting as the SDK writes it: directory mode 0700, file mode 0600.
  *
@@ -137,12 +168,8 @@ export function readTelemetrySetting(file: string): TelemetrySetting | null {
 function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const content = JSON.stringify(setting, null, 2) + '\n';
-  let target = file;
   const exists = fs.existsSync(file);
-  if (exists) {
-    target = fs.realpathSync(file);
-    fs.accessSync(target, fs.constants.W_OK);
-  }
+  const target = settingWriteTarget(file);
   const temp = path.join(
     path.dirname(target),
     `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
