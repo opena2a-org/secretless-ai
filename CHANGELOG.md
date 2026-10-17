@@ -10,9 +10,10 @@ but one already in `~/.config/opena2a/telemetry.json`
 file. On a run with telemetry off (`OPENA2A_TELEMETRY=off`, a stored
 `telemetry off`, CI or a test runner) the file is now rewritten without the
 install id before the command runs, keeping the stored `enabled` value, so
-an explicit `"enabled": false` stays. `telemetry on` and `telemetry off` on
-such a run store `{"enabled": true}` or `{"enabled": false}` without an id.
-Apart from those two commands, a file with no install id is not written. A
+an explicit `"enabled": false` stays. On such a run `telemetry off` stores
+`{"enabled": false}`, and `telemetry on` under `OPENA2A_TELEMETRY=off`, CI
+or a test runner stores `{"enabled": true}`, each without an id. Apart from
+those two commands, a file with no install id is not written. A
 file that cannot be written does not stop the run: `--version` and
 `telemetry status` exit 0, and the status still prints the id. A run with
 telemetry on keeps and sends the stored id as before. `scan --help` says

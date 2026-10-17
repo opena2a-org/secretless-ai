@@ -115,10 +115,10 @@ function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
 }
 
 /**
- * Store the setting without an install id: `telemetry on|off` on a run with
- * telemetry off, and `telemetry off` on any run. Each is a run with telemetry
- * off, so an id already stored is dropped for `on` as for `off` (#426); the
- * SDK derives one on the next run with telemetry on.
+ * Store the setting without an install id: `telemetry on` under
+ * OPENA2A_TELEMETRY=off, CI or a test runner, and `telemetry off` on any run.
+ * An id already stored is dropped for `on` as for `off` (#426); the SDK
+ * derives one on the next run with telemetry on.
  */
 export function storeTelemetrySetting(file: string, enabled: boolean): TelemetrySetting {
   const setting: TelemetrySetting = { enabled };
