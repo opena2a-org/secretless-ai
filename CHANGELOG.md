@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+**A rewrite of the telemetry setting file that does not finish leaves the
+previous content (#429).** The file was rewritten in place, which truncated
+it first, so a write that failed part way left it empty. An empty file reads
+as absent, and absent is on, so a stored `"enabled": false` was lost: under
+`ulimit -f 0`, `OPENA2A_TELEMETRY=off secretless-ai --version` on a file
+holding `"enabled": false` and an install id left it at 0 bytes, and the
+next `secretless-ai telemetry status` printed `state: on`. The new content
+is now written to a new file in the same directory, which is renamed over
+the setting file. Under `ulimit -f 0`, `--version`, `telemetry off` and
+`telemetry on` with `OPENA2A_TELEMETRY=off` leave the file as it was and no
+other file next to it, and the status prints `state: off`. A process killed
+before the rename leaves the file as it was and a
+`.telemetry.json.<pid>.<hex>.tmp` file next to it. A rewritten file has mode
+0600, as the telemetry library writes it; the in-place write kept the mode
+the file had. A symlinked setting file stays a link and the file it points
+to is rewritten, and a file this user cannot write is not replaced.
+`src/telemetry-install-id.test.ts` covers each of these.
+
 **An install id left by an earlier run is deleted on a run with telemetry
 off (#426).** Since #422 no install id was created while telemetry was off,
 but one already in `~/.config/opena2a/telemetry.json`

@@ -42,8 +42,12 @@ function filesUnder(dir: string): string[] {
     : [e.name])).sort();
 }
 
-/** The CLI run for `args` in `home` with telemetry on, plus `extra`; its events parsed. */
-function run(home: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
+/**
+ * The CLI run for `args` in `home` with telemetry on, plus `extra`; its events
+ * parsed. With `noFileBytes`, it runs under `ulimit -f 0`, where its first
+ * write of a byte to a regular file fails with EFBIG.
+ */
+function run(home: string, args: string[], extra: NodeJS.ProcessEnv = {}, noFileBytes = false) {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
@@ -55,7 +59,10 @@ function run(home: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
     delete env[name];
   }
   Object.assign(env, extra);
-  const res = spawnSync(process.execPath, [CLI_PATH, ...args], {
+  const command = [process.execPath, CLI_PATH, ...args];
+  const res = spawnSync(noFileBytes ? '/bin/sh' : command[0], noFileBytes
+    ? ['-c', 'ulimit -f 0; exec "$@"', 'sh', ...command]
+    : command.slice(1), {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: tmp('install-id-cwd-'),
@@ -265,6 +272,95 @@ describe('an install id left by an earlier run is deleted on a run with telemetr
     expect(res.events).toHaveLength(1);
     expect(res.events[0].install_id).toBe('FAKE-INSTALL-ID');
     expect(stored(home)).toEqual({ enabled: true, installId: 'FAKE-INSTALL-ID' });
+  });
+});
+
+describe('a rewrite of the setting file that does not finish leaves the previous content (#429)', () => {
+  // The rewrite truncated the file before writing it, so a write that failed
+  // part way left it empty; an empty file reads as absent, and absent is on.
+  const OPTED_OUT = '{"enabled":false,"installId":"FAKE-INSTALL-ID"}\n';
+  const REWRITTEN = '{\n  "enabled": false\n}\n';
+  const posix = process.platform !== 'win32';
+  const itIfBuiltPosix = fs.existsSync(CLI_PATH) && posix ? it : it.skip;
+  const GATE_PATH = path.resolve(__dirname, '..', 'dist', 'telemetry-gate.js');
+
+  function settingDirWith(text: string): string {
+    const dir = path.join(tmp('install-id-atomic-'), 'opena2a');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    fs.writeFileSync(path.join(dir, 'telemetry.json'), text);
+    return dir;
+  }
+
+  itIfBuiltPosix.each([
+    { args: ['--version'] },
+    { args: ['telemetry', 'off'] },
+    { args: ['telemetry', 'on'] },
+  ])('OPENA2A_TELEMETRY=off: $args with a write that fails keeps the stored "enabled": false', ({ args }) => {
+    const home = tmp('install-id-home-');
+    fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true });
+    fs.writeFileSync(settingIn(home), OPTED_OUT);
+
+    run(home, args, OFF, true);
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(OPTED_OUT);
+    expect(fs.readdirSync(path.dirname(settingIn(home)))).toEqual(['telemetry.json']);
+    expect(run(home, ['telemetry', 'status']).stdout).toContain('state:       off');
+  });
+
+  it.skipIf(!posix)('a rewrite leaves no other file in the directory, and the file is 0600 as the SDK writes it', () => {
+    const dir = settingDirWith(OPTED_OUT);
+    const file = path.join(dir, 'telemetry.json');
+    fs.chmodSync(file, 0o644);
+
+    expect(dropStoredInstallId(file)).toBe(true);
+
+    expect(fs.readFileSync(file, 'utf-8')).toBe(REWRITTEN);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(!posix)('a symlinked setting file stays a link, and the file it points to is rewritten', () => {
+    const dir = settingDirWith(OPTED_OUT);
+    const file = path.join(dir, 'telemetry.json');
+    const real = path.join(tmp('install-id-link-'), 'kept.json');
+    fs.renameSync(file, real);
+    fs.symlinkSync(real, file);
+
+    expect(dropStoredInstallId(file)).toBe(true);
+
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(real, 'utf-8')).toBe(REWRITTEN);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+    expect(fs.readdirSync(path.dirname(real))).toEqual(['kept.json']);
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a setting file this user cannot write is not replaced', () => {
+    const dir = settingDirWith(OPTED_OUT);
+    const file = path.join(dir, 'telemetry.json');
+    fs.chmodSync(file, 0o400);
+
+    expect(() => dropStoredInstallId(file)).toThrow(/EACCES/);
+
+    expect(fs.readFileSync(file, 'utf-8')).toBe(OPTED_OUT);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+  });
+
+  (fs.existsSync(GATE_PATH) && posix ? it : it.skip)('a process killed before the rename leaves the setting file as it was', () => {
+    const dir = settingDirWith(OPTED_OUT);
+    const file = path.join(dir, 'telemetry.json');
+
+    const res = spawnSync(process.execPath, ['-e', [
+      "const fs = require('fs');",
+      "fs.renameSync = () => process.kill(process.pid, 'SIGKILL');",
+      'require(process.argv[1]).dropStoredInstallId(process.argv[2]);',
+    ].join('\n'), GATE_PATH, file], { encoding: 'utf-8' });
+
+    expect(res.signal).toBe('SIGKILL');
+    expect(fs.readFileSync(file, 'utf-8')).toBe(OPTED_OUT);
+    const others = fs.readdirSync(dir).filter((name) => name !== 'telemetry.json');
+    expect(others).toHaveLength(1);
+    expect(others[0]).toMatch(/^\.telemetry\.json\.\d+\.[0-9a-f]{12}\.tmp$/);
+    expect(fs.readFileSync(path.join(dir, others[0]), 'utf-8')).toBe(REWRITTEN);
   });
 });
 

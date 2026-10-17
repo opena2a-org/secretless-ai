@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -111,10 +112,45 @@ export function readTelemetrySetting(file: string): TelemetrySetting | null {
   return installId ? { enabled, installId } : { enabled };
 }
 
-/** Write the setting as the SDK writes it: directory mode 0700, file mode 0600. */
+/**
+ * Write the setting as the SDK writes it: directory mode 0700, file mode 0600.
+ *
+ * The content goes to a new file in the same directory, which is then renamed
+ * over the setting file (#429). Writing the setting file in place truncated it
+ * first, so a write that failed part way left it empty, an
+ * empty file reads as absent, and absent is on: a stored `"enabled": false`
+ * was lost. A write that fails now removes the new file and leaves the
+ * setting file as it was; a process killed before the rename leaves the
+ * setting file as it was and a `.telemetry.json.*.tmp` file next to it.
+ *
+ * A symlinked setting file is followed, so the link stays a link. A setting
+ * file this user cannot write is not replaced: the write throws, as the
+ * in-place write did.
+ */
 function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify(setting, null, 2) + '\n', { mode: 0o600 });
+  let target = file;
+  if (fs.existsSync(file)) {
+    target = fs.realpathSync(file);
+    fs.accessSync(target, fs.constants.W_OK);
+  }
+  const temp = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
+  );
+  const fd = fs.openSync(temp, 'wx', 0o600);
+  try {
+    try {
+      fs.writeFileSync(fd, JSON.stringify(setting, null, 2) + '\n');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temp, target);
+  } catch (err) {
+    fs.rmSync(temp, { force: true });
+    throw err;
+  }
 }
 
 /**
