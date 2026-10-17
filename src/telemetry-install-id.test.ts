@@ -400,9 +400,12 @@ describe('a rewrite of the setting file that does not finish leaves the previous
     const dir = settingDirWith(OPTED_OUT);
     const file = path.join(dir, 'telemetry.json');
 
+    // The rename of the setting file to itself is let through; the process is
+    // killed at the rename of the new file over the setting file.
     const res = spawnSync(process.execPath, ['-e', [
       "const fs = require('fs');",
-      "fs.renameSync = () => process.kill(process.pid, 'SIGKILL');",
+      'const renameSync = fs.renameSync;',
+      "fs.renameSync = (from, to) => (from === to ? renameSync(from, to) : process.kill(process.pid, 'SIGKILL'));",
       'require(process.argv[1]).dropStoredInstallId(process.argv[2]);',
     ].join('\n'), GATE_PATH, file], { encoding: 'utf-8' });
 
@@ -609,6 +612,172 @@ describe('a setting file this user can write is rewritten in a directory with th
     expect(res.stdout).toMatch(/^refused \.telemetry\.json\.\d+\.[0-9a-f]{12}\.tmp$/m);
     expect(fs.readFileSync(file, 'utf-8')).toBe(REWRITTEN);
     expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+  });
+});
+
+describe('a setting file this user can write is rewritten in a directory with the append-only flag set (#436)', () => {
+  // An append-only directory takes a new file but refuses to rename or remove
+  // it, so the new file stayed, the write threw the refused removal, and the
+  // setting file was left unchanged: each write left one more file.
+  const OPTED_OUT = '{"enabled":false,"installId":"FAKE-INSTALL-ID"}\n';
+  const REWRITTEN = '{\n  "enabled": false\n}\n';
+  const NEW_FILE = /^\.telemetry\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
+  // Node sets no file flags, so the macOS chflags command sets this one.
+  const darwin = process.platform === 'darwin';
+  const itIfDarwin = darwin ? it : it.skip;
+  const itIfBuiltDarwin = fs.existsSync(CLI_PATH) && darwin ? it : it.skip;
+  const GATE_PATH = path.resolve(__dirname, '..', 'dist', 'telemetry-gate.js');
+  const itIfGateBuilt = fs.existsSync(GATE_PATH) ? it : it.skip;
+
+  /** Run `fn` with the append-only flag set on `dir`, then clear it. */
+  function withAppendOnly<T>(dir: string, fn: () => T): T {
+    execFileSync('/usr/bin/chflags', ['uappnd', dir]);
+    try {
+      return fn();
+    } finally {
+      execFileSync('/usr/bin/chflags', ['nouappnd', dir]);
+    }
+  }
+
+  /** A home whose setting file, mode 0600, holds `text`. */
+  function homeWith(text: string): string {
+    const home = tmp('install-id-home-');
+    fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(settingIn(home), text, { mode: 0o600 });
+    return home;
+  }
+
+  itIfDarwin('each rewrite stores the setting in place and leaves no other file', () => {
+    const home = homeWith(OPTED_OUT);
+    const dir = path.dirname(settingIn(home));
+    fs.chmodSync(settingIn(home), 0o644);
+
+    withAppendOnly(dir, () => {
+      expect(dropStoredInstallId(settingIn(home))).toBe(true);
+      expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(REWRITTEN);
+      storeTelemetrySetting(settingIn(home), true);
+      expect(stored(home)).toEqual({ enabled: true });
+      expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+    });
+
+    expect(fs.statSync(settingIn(home)).mode & 0o777).toBe(0o644);
+  });
+
+  itIfBuiltDarwin.each([
+    { args: ['telemetry', 'off'], expected: { enabled: false } },
+    { args: ['telemetry', 'on'], expected: { enabled: true } },
+    { args: ['--version'], expected: { enabled: false } },
+  ])('OPENA2A_TELEMETRY=off: $args exits 0, stores $expected and leaves no other file', ({ args, expected }) => {
+    const home = homeWith(OPTED_OUT);
+    const dir = path.dirname(settingIn(home));
+
+    const res = withAppendOnly(dir, () => run(home, args, OFF));
+
+    expect(res.status).toBe(0);
+    expect(stored(home)).toEqual(expected);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+  });
+
+  itIfBuiltDarwin('OPENA2A_TELEMETRY=off: telemetry off with a write that fails keeps the stored "enabled": false', () => {
+    const home = homeWith(OPTED_OUT);
+    const dir = path.dirname(settingIn(home));
+
+    withAppendOnly(dir, () => run(home, ['telemetry', 'off'], OFF, true));
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(OPTED_OUT);
+    expect(fs.readdirSync(dir)).toEqual(['telemetry.json']);
+    expect(run(home, ['telemetry', 'status']).stdout).toContain('state:       off');
+  });
+
+  itIfDarwin('with no setting file, the error thrown is the refused rename, not the refused removal', () => {
+    const home = tmp('install-id-home-');
+    const dir = path.dirname(settingIn(home));
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+    const thrown = withAppendOnly(dir, () => {
+      try {
+        storeTelemetrySetting(settingIn(home), false);
+      } catch (err) {
+        return err as NodeJS.ErrnoException;
+      }
+      return undefined;
+    });
+
+    expect(thrown).toMatchObject({ code: 'EPERM', syscall: 'rename' });
+    // The directory refuses the removal of the new file as well, so it stays
+    // until the flag is cleared.
+    expect(fs.readdirSync(dir)).toEqual([expect.stringMatching(NEW_FILE)]);
+  });
+
+  // Where a rename to the same name is not refused, the refusal shows only at
+  // the rename of the new file. Here a child process refuses that rename, and
+  // where a case says so the removal of the new file, so these tests are not
+  // limited to macOS.
+  /** Lines that make the child refuse the rename of the new file with `code`, and with `removal` its removal too. */
+  const refusing = (code: string, removal: boolean) => [
+    "const fs = require('fs');",
+    'const [gate, file] = process.argv.slice(1);',
+    'const renameSync = fs.renameSync;',
+    'fs.renameSync = (from, to) => {',
+    '  if (from === to) return renameSync(from, to);',
+    "  console.log('refused rename');",
+    `  throw Object.assign(new Error('${code}: rename'), { code: '${code}', syscall: 'rename' });`,
+    '};',
+    ...(removal ? [
+      'fs.rmSync = () => {',
+      "  console.log('refused removal');",
+      `  throw Object.assign(new Error('${code}: rm'), { code: '${code}', syscall: 'rm' });`,
+      '};',
+    ] : []),
+  ];
+
+  itIfGateBuilt.each([
+    { code: 'EPERM', removal: false, printed: 'refused rename\n', others: 0 },
+    { code: 'EACCES', removal: false, printed: 'refused rename\n', others: 0 },
+    { code: 'EPERM', removal: true, printed: 'refused rename\nrefused removal\n', others: 1 },
+  ])('the setting file is rewritten in place when the rename of the new file is refused with $code, removal refused: $removal', ({ code, removal, printed, others }) => {
+    const dir = path.join(tmp('install-id-appnd-'), 'opena2a');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const file = path.join(dir, 'telemetry.json');
+    fs.writeFileSync(file, OPTED_OUT);
+
+    const res = spawnSync(process.execPath, ['-e', [
+      ...refusing(code, removal),
+      'require(gate).storeTelemetrySetting(file, false);',
+    ].join('\n'), GATE_PATH, file], { encoding: 'utf-8' });
+
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.stdout).toBe(printed);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(REWRITTEN);
+    const left = fs.readdirSync(dir).filter((name) => name !== 'telemetry.json');
+    expect(left).toHaveLength(others);
+    for (const name of left) expect(name).toMatch(NEW_FILE);
+  });
+
+  // Under `ulimit -f 0` the write of the new file fails with EFBIG before the rename.
+  (fs.existsSync(GATE_PATH) && process.platform !== 'win32' ? it : it.skip).each([
+    { failed: 'rename', noFileBytes: false, printed: 'refused rename\nrefused removal\nthrown rename EPERM\n' },
+    { failed: 'write', noFileBytes: true, printed: 'refused removal\nthrown write EFBIG\n' },
+  ])('with no setting file and the removal refused too, the error thrown is the failed $failed', ({ noFileBytes, printed }) => {
+    const dir = path.join(tmp('install-id-appnd-'), 'opena2a');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const file = path.join(dir, 'telemetry.json');
+    const node = [process.execPath, '-e', [
+      ...refusing('EPERM', true),
+      'try {',
+      '  require(gate).storeTelemetrySetting(file, false);',
+      '} catch (err) {',
+      "  console.log('thrown ' + err.syscall + ' ' + err.code);",
+      '}',
+    ].join('\n'), GATE_PATH, file];
+
+    const res = spawnSync(noFileBytes ? '/bin/sh' : node[0], noFileBytes
+      ? ['-c', 'ulimit -f 0; exec "$@"', 'sh', ...node]
+      : node.slice(1), { encoding: 'utf-8' });
+
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.stdout).toBe(printed);
+    expect(fs.existsSync(file)).toBe(false);
   });
 });
 

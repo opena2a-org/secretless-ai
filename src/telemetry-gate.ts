@@ -143,8 +143,13 @@ function settingWriteTarget(file: string): string {
   }
 }
 
-/** The errors that refuse the new file and lead to the in-place write; see writeTelemetrySetting. */
+/** The errors that refuse the new file, or its rename over the setting file, and lead to the in-place write; see writeTelemetrySetting. */
 const NEW_FILE_REFUSALS = new Set(['EACCES', 'EPERM']);
+
+/** True when `err` is one of NEW_FILE_REFUSALS. */
+function refused(err: unknown): boolean {
+  return NEW_FILE_REFUSALS.has((err as NodeJS.ErrnoException).code ?? '');
+}
 
 /**
  * Write the setting as the SDK writes it: directory mode 0700, file mode 0600.
@@ -153,27 +158,42 @@ const NEW_FILE_REFUSALS = new Set(['EACCES', 'EPERM']);
  * over the setting file (#429). Writing the setting file in place truncated it
  * first, so a write that failed part way left it empty, an
  * empty file reads as absent, and absent is on: a stored `"enabled": false`
- * was lost. A write that fails now removes the new file and leaves the
- * setting file as it was; a process killed before the rename leaves the
- * setting file as it was and a `.telemetry.json.*.tmp` file next to it.
+ * was lost. A write that fails now leaves the setting file as it was and
+ * removes the new file, unless the directory refuses that too (below); a
+ * process killed before the rename leaves the setting file as it was and a
+ * `.telemetry.json.*.tmp` file next to it.
  *
  * A symlinked setting file is followed, so the link stays a link. A setting
  * file this user cannot write is not replaced: the write throws, as the
  * in-place write did.
  *
- * A setting file this user can write, in a directory where the new file is
- * refused with EACCES or EPERM, is rewritten in place: the new file needs
- * write permission on the directory (EACCES, #431) and, on macOS, no
- * `chflags uchg` immutable flag on it (EPERM, #434); the in-place write needs
- * neither. That write keeps the file's mode and does not truncate the file
- * before writing, so a write that fails before its first byte leaves the
- * setting file as it was. With no setting file, the refusal is thrown.
+ * A setting file this user can write, in a directory that refuses the new
+ * file or its rename with EACCES or EPERM, is rewritten in place: the new file
+ * needs write permission on the directory (EACCES, #431) and, on macOS, no
+ * `chflags uchg` immutable flag on it (EPERM, #434), and its rename needs no
+ * `chflags uappnd` append-only flag on it (EPERM, #436); the in-place write
+ * needs none of these. That write keeps the file's mode and does not truncate
+ * the file before writing, so a write that fails before its first byte leaves
+ * the setting file as it was. With no setting file, the refusal is thrown.
+ *
+ * An append-only directory takes the new file and then refuses to rename or
+ * remove it, so before the new file is made, the setting file is renamed to
+ * itself. On macOS that rename changes nothing in a directory that allows it,
+ * and each of the three directories above refuses it with the error it
+ * refuses the new file or its rename with; the file is then rewritten in
+ * place without a new file. With no setting file there is nothing to rename,
+ * so in an append-only directory the new file stays and its refused rename
+ * is thrown.
  */
 function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const content = JSON.stringify(setting, null, 2) + '\n';
   const exists = fs.existsSync(file);
   const target = settingWriteTarget(file);
+  if (exists && renameRefused(target)) {
+    writeInPlace(target, content);
+    return;
+  }
   const temp = path.join(
     path.dirname(target),
     `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
@@ -182,7 +202,7 @@ function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   try {
     fd = fs.openSync(temp, 'wx', 0o600);
   } catch (err) {
-    if (!exists || !NEW_FILE_REFUSALS.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
+    if (!exists || !refused(err)) throw err;
     writeInPlace(target, content);
     return;
   }
@@ -193,10 +213,38 @@ function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
     } finally {
       fs.closeSync(fd);
     }
+  } catch (err) {
+    removeNewFile(temp);
+    throw err;
+  }
+  try {
     fs.renameSync(temp, target);
   } catch (err) {
+    removeNewFile(temp);
+    if (!exists || !refused(err)) throw err;
+    writeInPlace(target, content);
+  }
+}
+
+/** True when renaming `target` to itself is refused with one of NEW_FILE_REFUSALS. */
+function renameRefused(target: string): boolean {
+  try {
+    fs.renameSync(target, target);
+    return false;
+  } catch (err) {
+    return refused(err);
+  }
+}
+
+/**
+ * Remove the new file after its write or rename failed. A directory that
+ * refuses this as well keeps it, and that refusal is not thrown (#436).
+ */
+function removeNewFile(temp: string): void {
+  try {
     fs.rmSync(temp, { force: true });
-    throw err;
+  } catch {
+    // The new file stays.
   }
 }
 
