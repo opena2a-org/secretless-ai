@@ -59,7 +59,10 @@ export function automatedRunVariable(env: NodeJS.ProcessEnv): string | undefined
  * The telemetry SDK's `init`, `status` and `setOptOut` each derive an install
  * id and write it to the setting file when the file has none, whatever
  * OPENA2A_TELEMETRY says: the opt-out only stopped sending. cli.ts calls them
- * only on a run with telemetry on, and uses the functions below otherwise.
+ * on a run that starts with telemetry on, and uses the functions below
+ * otherwise, with one exception: `telemetry on` with a stored `telemetry off`
+ * and none of OPENA2A_TELEMETRY=off, CI or a test runner set calls the SDK's
+ * `setOptOut` and then its `status`, because that command turns telemetry on.
  */
 export const OPT_OUT_VARIABLE = 'OPENA2A_TELEMETRY';
 
