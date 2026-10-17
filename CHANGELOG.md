@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+**A writable telemetry setting file in a directory this user cannot write to
+is rewritten again (#431).** Since #429 the new content went to a new file in
+the setting file's directory, which needs write permission on the directory:
+with `~/.config/opena2a` at mode 0500 and a writable setting file,
+`OPENA2A_TELEMETRY=off secretless-ai telemetry off` exited 1 with `EACCES` on
+the `.telemetry.json.<pid>.<hex>.tmp` file and left the file unchanged. When
+the directory refuses the new file with `EACCES` and the setting file exists
+and this user can write it, the file is now rewritten in place. In that
+layout, with `OPENA2A_TELEMETRY=off`, `telemetry off`, `telemetry on` and
+`--version` exit 0, store `{"enabled": false}`, `{"enabled": true}` and
+`{"enabled": false}`, and leave no other file in the directory. The in-place
+write keeps the file's mode and does not truncate the file before writing:
+under `ulimit -f 0`, `telemetry off` leaves the file as it was and
+`telemetry status` prints `state: off`. A setting file this user cannot write
+is still not replaced, and with no setting file the `EACCES` is still thrown.
+`src/telemetry-install-id.test.ts` covers each of these.
+
 **A rewrite of the telemetry setting file that does not finish leaves the
 previous content (#429).** The file was rewritten in place, which truncated
 it first, so a write that failed part way left it empty. An empty file reads

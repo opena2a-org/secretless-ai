@@ -126,11 +126,20 @@ export function readTelemetrySetting(file: string): TelemetrySetting | null {
  * A symlinked setting file is followed, so the link stays a link. A setting
  * file this user cannot write is not replaced: the write throws, as the
  * in-place write did.
+ *
+ * A setting file this user can write, in a directory where the new file is
+ * refused with EACCES, is rewritten in place (#431): the new file needs write
+ * permission on the directory, the in-place write does not. That write keeps
+ * the file's mode and does not truncate the file before writing, so a write
+ * that fails before its first byte leaves the setting file as it was. With no
+ * setting file, the refusal is thrown.
  */
 function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const content = JSON.stringify(setting, null, 2) + '\n';
   let target = file;
-  if (fs.existsSync(file)) {
+  const exists = fs.existsSync(file);
+  if (exists) {
     target = fs.realpathSync(file);
     fs.accessSync(target, fs.constants.W_OK);
   }
@@ -138,10 +147,17 @@ function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
     path.dirname(target),
     `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
   );
-  const fd = fs.openSync(temp, 'wx', 0o600);
+  let fd: number;
+  try {
+    fd = fs.openSync(temp, 'wx', 0o600);
+  } catch (err) {
+    if (!exists || (err as NodeJS.ErrnoException).code !== 'EACCES') throw err;
+    writeInPlace(target, content);
+    return;
+  }
   try {
     try {
-      fs.writeFileSync(fd, JSON.stringify(setting, null, 2) + '\n');
+      fs.writeFileSync(fd, content);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
@@ -150,6 +166,18 @@ function writeTelemetrySetting(file: string, setting: TelemetrySetting): void {
   } catch (err) {
     fs.rmSync(temp, { force: true });
     throw err;
+  }
+}
+
+/** Write `content` over the start of `file`, then cut the file to its length. */
+function writeInPlace(file: string, content: string): void {
+  const fd = fs.openSync(file, 'r+');
+  try {
+    fs.writeFileSync(fd, content);
+    fs.ftruncateSync(fd, Buffer.byteLength(content));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
   }
 }
 

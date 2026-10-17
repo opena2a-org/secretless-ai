@@ -364,6 +364,98 @@ describe('a rewrite of the setting file that does not finish leaves the previous
   });
 });
 
+describe('a setting file this user can write is rewritten in a directory this user cannot write to (#431)', () => {
+  // Since #429 the new content went to a new file in the setting file's
+  // directory, so a directory this user cannot write to stopped `telemetry on`
+  // and `telemetry off` with EACCES, where the in-place write stored the setting.
+  const OPTED_OUT = '{"enabled":false,"installId":"FAKE-INSTALL-ID"}\n';
+  const REWRITTEN = '{\n  "enabled": false\n}\n';
+  // root writes to a directory of any mode, so the new file is never refused.
+  const dirModeBinds = process.platform !== 'win32' && process.getuid?.() !== 0;
+  const itIfDirModeBinds = dirModeBinds ? it : it.skip;
+  const itIfBuiltDirModeBinds = fs.existsSync(CLI_PATH) && dirModeBinds ? it : it.skip;
+
+  /** Run `fn` with the setting directory of `home` at mode 0500, then give it 0700 back. */
+  function inReadOnlyDir<T>(home: string, fn: () => T): T {
+    const dir = path.dirname(settingIn(home));
+    fs.chmodSync(dir, 0o500);
+    try {
+      return fn();
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+  }
+
+  /** A home whose setting file, mode 0600, holds `text`. */
+  function homeWith(text: string): string {
+    const home = tmp('install-id-home-');
+    fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(settingIn(home), text, { mode: 0o600 });
+    return home;
+  }
+
+  itIfBuiltDirModeBinds.each([
+    { args: ['telemetry', 'off'], expected: { enabled: false } },
+    { args: ['telemetry', 'on'], expected: { enabled: true } },
+    { args: ['--version'], expected: { enabled: false } },
+  ])('OPENA2A_TELEMETRY=off: $args exits 0 and stores $expected', ({ args, expected }) => {
+    const home = homeWith(OPTED_OUT);
+
+    const res = inReadOnlyDir(home, () => run(home, args, OFF));
+
+    expect(res.status).toBe(0);
+    expect(stored(home)).toEqual(expected);
+    expect(fs.readdirSync(path.dirname(settingIn(home)))).toEqual(['telemetry.json']);
+  });
+
+  itIfBuiltDirModeBinds('OPENA2A_TELEMETRY=off: telemetry off with a write that fails keeps the stored "enabled": false', () => {
+    const home = homeWith(OPTED_OUT);
+
+    inReadOnlyDir(home, () => run(home, ['telemetry', 'off'], OFF, true));
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(OPTED_OUT);
+    expect(fs.readdirSync(path.dirname(settingIn(home)))).toEqual(['telemetry.json']);
+    expect(run(home, ['telemetry', 'status']).stdout).toContain('state:       off');
+  });
+
+  itIfDirModeBinds('the in-place rewrite cuts a longer file to the new content and keeps the file mode', () => {
+    const home = homeWith(OPTED_OUT);
+    fs.chmodSync(settingIn(home), 0o644);
+
+    expect(inReadOnlyDir(home, () => dropStoredInstallId(settingIn(home)))).toBe(true);
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(REWRITTEN);
+    expect(fs.statSync(settingIn(home)).mode & 0o777).toBe(0o644);
+    expect(fs.readdirSync(path.dirname(settingIn(home)))).toEqual(['telemetry.json']);
+  });
+
+  itIfDirModeBinds('the in-place rewrite stores content longer than the file had', () => {
+    const home = homeWith('{}\n');
+
+    inReadOnlyDir(home, () => storeTelemetrySetting(settingIn(home), false));
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(REWRITTEN);
+  });
+
+  itIfDirModeBinds('a setting file this user cannot write is still not replaced', () => {
+    const home = homeWith(OPTED_OUT);
+    fs.chmodSync(settingIn(home), 0o400);
+
+    expect(() => inReadOnlyDir(home, () => dropStoredInstallId(settingIn(home)))).toThrow(/EACCES/);
+
+    expect(fs.readFileSync(settingIn(home), 'utf-8')).toBe(OPTED_OUT);
+  });
+
+  itIfDirModeBinds('with no setting file, the directory refusal still throws and creates nothing', () => {
+    const home = tmp('install-id-home-');
+    fs.mkdirSync(path.dirname(settingIn(home)), { recursive: true, mode: 0o700 });
+
+    expect(() => inReadOnlyDir(home, () => storeTelemetrySetting(settingIn(home), false))).toThrow(/EACCES/);
+
+    expect(fs.readdirSync(path.dirname(settingIn(home)))).toEqual([]);
+  });
+});
+
 describe('the other ways telemetry is off write no install id either', () => {
   itIfBuilt('CI=true: --version and a scan write no setting file', () => {
     const home = tmp('install-id-home-');
