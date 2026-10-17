@@ -116,8 +116,12 @@ async function main(): Promise<number> {
   const automated = automatedRunVariable(process.env);
   const optedOut = optedOutByVariable(process.env);
   // No install id is derived or written while telemetry is off (#422): the
-  // SDK's init, status and setOptOut write one whatever the opt-out says, so
-  // none of them is called on a run with telemetry off.
+  // SDK's init, status and setOptOut write one whatever the opt-out says.
+  // init is called only on a run that starts with telemetry on. status and
+  // setOptOut are called on such a run, and on one more: `telemetry on` with a
+  // stored `telemetry off` and none of OPENA2A_TELEMETRY=off, CI or a test
+  // runner set, which turns telemetry on through setOptOut and so stores an
+  // id (#428).
   const settingFile = telemetrySettingFile(process.env);
   const telemetryOn = () => !automated && !optedOut && (readTelemetrySetting(settingFile)?.enabled ?? true);
   const sending = telemetryOn();

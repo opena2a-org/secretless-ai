@@ -31,11 +31,14 @@ when that is set) when the file was absent: the telemetry library's `init`
 derived and stored the id whatever the opt-out said, and the opt-out only
 stopped sending. `opena2a init` runs `secretless-ai --version`, so a user who
 had opted out was given an install id. On a run with telemetry off (that
-variable, a stored `telemetry off`, CI or a test runner) the library's `init`,
-`status` and `setOptOut` are not called: `--version` and a scan write no file,
-and `telemetry status` prints `install_id:  none (one is created on the first
-run with telemetry on)` when none is stored. Under that variable `telemetry
-on` and `telemetry off` store the setting without an install id, and end with
+variable, a stored `telemetry off`, CI or a test runner) the library's `init`
+is not called, and its `status` and `setOptOut` are called only by `telemetry
+on` with a stored `telemetry off` and none of that variable, CI or a test
+runner set: that command turns telemetry on through the library, which stores
+an install id. `--version` and a scan write no file, and `telemetry status`
+prints `install_id:  none (one is created on the first run with telemetry
+on)` when none is stored. Under that variable `telemetry on` and `telemetry
+off` store the setting without an install id, and end with
 `Off for this run: OPENA2A_TELEMETRY is set to turn it off.`, as `telemetry
 status` does. `telemetry off` removes a stored install id. A run with
 telemetry on creates and keeps the install id as before. `scan --help` says
