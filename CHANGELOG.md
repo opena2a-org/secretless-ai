@@ -26,6 +26,21 @@ In that directory the three commands now exit 0, store the same settings and
 leave no other file, and under `ulimit -f 0` `telemetry off` leaves the file
 as it was. A setting file with the immutable flag set is not replaced, and
 with no setting file the `EPERM` is thrown.
+A directory with the macOS append-only flag set (`chflags uappnd`) takes the
+new file but refuses to rename or remove it, with `EPERM` (#436): there, with
+`OPENA2A_TELEMETRY=off`, `telemetry off` and `telemetry on` exited 1 with the
+`EPERM` of the refused removal, left the setting file unchanged and left two
+`.telemetry.json.<pid>.<hex>.tmp` files, and each `--version` run left the
+install id and one more such file. Before a new file is made, the setting
+file is now renamed to itself: on macOS that rename changes nothing in a
+directory that allows it, each of these three directories refuses it, and
+that refusal leads to the in-place write. In an append-only directory the
+three commands now exit 0, store the same settings and leave no other file,
+and under `ulimit -f 0` `telemetry off` leaves the file as it was. A rename
+of the new file refused with `EACCES` or `EPERM` leads to the in-place write
+as well, and a refused removal of the new file no longer replaces the error
+of the write or the rename: with no setting file, an append-only directory
+still keeps the new file, and the error is now the refused rename.
 `src/telemetry-install-id.test.ts` covers each of these.
 
 **A rewrite of the telemetry setting file that does not finish leaves the
