@@ -179,6 +179,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--explain': false,
       '--no-ignore': false,
       '--show-placeholders': false,
+      '--check-validity': false,
       '--min-confidence': true,
       '--max-files': true,
       '--max-file-size': true,

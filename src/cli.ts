@@ -323,6 +323,10 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
         return EXIT_USAGE;
       }
       const json = jsonFlag || format === 'json';
+      // --check-validity  Ask the provider that issued each found credential
+      // whether it still accepts it. Opt-in: without it no credential is sent
+      // anywhere. `scan --help` lists the host contacted per credential type.
+      const checkValidity = args.includes('--check-validity');
       // --min-confidence <n>  (n in [0, 1]). Drops findings whose composite
       // confidence score is below the threshold. Useful on noisy repos to
       // surface only high-confidence credentials.
@@ -393,7 +397,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, includeConfig, explain, noIgnore, minConfidence, json, format, showPlaceholders, maxFiles, maxFileSizeBytes });
+      return runScan(projectDir, { includeTests, includeConfig, explain, noIgnore, minConfidence, json, format, showPlaceholders, maxFiles, maxFileSizeBytes, checkValidity });
     }
     case 'status': {
       const json = args.includes('--json');

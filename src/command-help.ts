@@ -41,6 +41,7 @@ import {
   GLOBAL_CONFIG_LABELS,
   isEnvFile,
 } from './scan';
+import { validityHelpLines } from './validity';
 
 /** `[placeholder, description]` for a value-taking flag; a description alone otherwise. */
 type FlagDoc = string | [string, string];
@@ -187,13 +188,20 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--explain': 'Detailed per-finding view with remediation',
       '--no-ignore': 'Disable .secretlessignore and the default-ignore list',
       '--show-placeholders': 'Show values hidden as placeholders',
+      '--check-validity': 'Ask the provider that issued each credential whether it still accepts it (opt-in; hosts below)',
       '--min-confidence': ['<n>', 'Drop findings with composite confidence below n (0-1)'],
       '--max-files': ['<n>', 'Raise the file-count cap (default 5000)'],
       '--max-file-size': ['<size>', 'Raise the per-file size cap (e.g. 20mb, 500kb)'],
       '--json': JSON_DOC,
       '--format': ['<json|sarif>', 'JSON, or SARIF 2.1.0 for GitHub code scanning'],
     },
-    notes: scanCoverageNotes(),
+    notes: [
+      ...scanCoverageNotes(),
+      '',
+      // Generated from the probe registry, so the hosts the help names are the
+      // hosts the code contacts (validity.test.ts holds them together).
+      ...validityHelpLines(),
+    ],
   },
   status: {
     summary: 'Show protection status.',

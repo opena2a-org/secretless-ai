@@ -1,9 +1,10 @@
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips, unreadReason, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
+import { scan, emptySkips, unreadReason, matchedValueOf, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
 import { scanToSarif } from '../sarif';
+import { checkFindings, summarizeValidity, stateLabel, type ProbeDeps, type ValidityResult, type ValidityState } from '../validity';
 import { status, protection, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
@@ -763,7 +764,28 @@ function offeredAsScanOneFile(filePath: string): boolean {
   return !SCAN_ONE_FILE_NAMES_NOT_OFFERED.has(name) && !IGNORE_FILE_NAME.test(name);
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; includeConfig?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; format?: 'json' | 'sarif'; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
+export interface RunScanOptions {
+  includeTests?: boolean;
+  includeConfig?: boolean;
+  explain?: boolean;
+  noIgnore?: boolean;
+  minConfidence?: number;
+  json?: boolean;
+  format?: 'json' | 'sarif';
+  showPlaceholders?: boolean;
+  maxFiles?: number;
+  maxFileSizeBytes?: number;
+  /**
+   * `--check-validity`: ask the provider that issued each found credential
+   * whether it still accepts it (src/validity.ts). Off by default; then the
+   * scanner keeps no matched value and nothing below reaches the network.
+   */
+  checkValidity?: boolean;
+  /** How the validity check reaches the network. The CLI leaves it unset; tests pass a stand-in fetch. */
+  validityDeps?: ProbeDeps;
+}
+
+export async function runScan(projectDir: string, options?: RunScanOptions): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
   // `--json` and `--format sarif` both write one machine-readable document to
   // stdout and nothing else; the human report is for neither.
@@ -782,7 +804,14 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     // The detailed view prints what the score was made of. Never with --json
     // or --format sarif, whose findings keep their shape.
     confidenceFactors: options?.explain === true && !machine,
+    // The matched value is kept only for the validity check, which is the one
+    // consumer of it. Without the flag it is not kept at all.
+    retainValues: options?.checkValidity === true,
   };
+  // Asked only under the flag, and only about the findings of this scan. A
+  // scan with nothing found sends nothing.
+  const validityOf = async (findings: ScanFinding[]): Promise<Map<ScanFinding, ValidityResult> | null> =>
+    options?.checkValidity ? checkFindings(findings, matchedValueOf, options.validityDeps) : null;
   const capUsed = options?.maxFiles ?? 5000;
 
   // --json: emit a single valid JSON document to stdout and nothing else, so the
@@ -800,10 +829,13 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
+    const validity = await validityOf(findings);
     const report = {
       tool: 'secretless-ai',
       version: require('../../package.json').version,
-      findings,
+      // `validity` is on each finding only when --check-validity was given;
+      // without the flag the document is the one this command printed before.
+      findings: validity ? findings.map(f => ({ ...f, validity: validity.get(f) })) : findings,
       summary: {
         total: findings.length,
         critical,
@@ -844,6 +876,8 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
         // `values.yaml`). The same declared-boundary class, and the field a CI
         // job gates on when it wants them read: `--include-config` scans them.
         unscannedConfig: stats.unscannedConfig.count,
+        // Counts per validity state and the hosts asked, under the flag only.
+        ...(validity ? { validity: summarizeValidity(validity.values()) } : {}),
       },
       unreadableFiles: stats.unreadable,
       // The cause of each, as `lstat`, `stat` and `access` report it: the same
@@ -1166,6 +1200,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
   }
 
   const initNext = await initIsNextStep(projectDir);
+  const validity = await validityOf(findings);
 
   // --explain: the detailed per-finding view. Built from the scan alone, so it
   // does not depend on the NanoMind engine or its model.
@@ -1184,21 +1219,43 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       }
       return operand([file]);
     };
-    const code = await runScanWithExplanations(findings, verifyOperand, initNext);
+    const code = await runScanWithExplanations(findings, verifyOperand, initNext, validity);
     coverageWarnings();
     placeholderHint();
     confidenceHint();
     return code;
   }
 
-  printFindings(findings, initNext);
+  printFindings(findings, initNext, validity);
   coverageWarnings();
   placeholderHint();
   confidenceHint();
   return 1;
 }
 
-function printFindings(findings: ReturnType<typeof scan>, initNext: boolean): void {
+/**
+ * The colour of a validity state follows what it means for triage: a live
+ * credential is the one to act on first, a rejected one is the least urgent,
+ * and an unknown answer is a question still open.
+ */
+function validityColor(state: ValidityState): (s: string) => string {
+  if (state === 'live') return c.brightRed;
+  if (state === 'rejected') return c.green;
+  if (state === 'unknown') return c.yellow;
+  return c.dim;
+}
+
+/** `Validity: 1 live, 2 not checked (asked api.github.com)` for the findings header. */
+function validitySummaryLine(validity: Map<ScanFinding, ValidityResult>): string {
+  const s = summarizeValidity(validity.values());
+  const parts = (['live', 'rejected', 'unknown', 'unchecked'] as const)
+    .filter((state) => s[state] > 0)
+    .map((state) => validityColor(state)(`${s[state]} ${stateLabel(state)}`));
+  const asked = s.hosts.length > 0 ? c.dim(` (asked ${s.hosts.join(', ')})`) : '';
+  return `  ${c.cyan('Validity:')} ${parts.join(', ')}${asked}`;
+}
+
+function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, validity: Map<ScanFinding, ValidityResult> | null = null): void {
   const critCount = findings.filter(f => f.severity === 'critical').length;
   const highCount = findings.length - critCount;
 
@@ -1214,6 +1271,7 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean): vo
   if (critCount > 0) summaryParts.push(c.brightRed(`${critCount} critical`));
   if (highCount > 0) summaryParts.push(c.yellow(`${highCount} high`));
   console.log(`  ${summaryParts.join('  ')}`);
+  if (validity) console.log(validitySummaryLine(validity));
 
   for (const finding of findings) {
     const sevColor = finding.severity === 'critical' ? c.brightRed : c.yellow;
@@ -1238,6 +1296,12 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean): vo
     console.log(`  ${sevColor('\u2502')} ${c.dim(`${escapePathForDisplay(finding.file)}:${finding.line}`)}${fixtureSuffix}`);
     console.log(`  ${sevColor('\u2502')} ${escapeForDisplay(finding.preview)}`);
     console.log(`  ${sevColor('\u2502')} ${c.cyan('Confidence:')} ${tierColor(`${finding.confidenceTier} (${finding.confidence.toFixed(2)})`)}`);
+    // What the issuing host answered, under --check-validity only. The detail
+    // is built from the host name and the status, never from the value.
+    const answer = validity?.get(finding);
+    if (answer) {
+      console.log(`  ${sevColor('\u2502')} ${c.cyan('Validity:')} ${validityColor(answer.state)(stateLabel(answer.state))} ${c.dim(`(${answer.detail})`)}`);
+    }
     if (finding.fix) {
       console.log(`  ${sevColor('\u2502')} ${c.cyan('Fix:')} ${finding.fix}`);
     }
@@ -1307,6 +1371,7 @@ async function runScanWithExplanations(
   findings: ReturnType<typeof scan>,
   verifyOperand: (file: string) => string,
   initNext: boolean,
+  validity: Map<ScanFinding, ValidityResult> | null = null,
 ): Promise<number> {
   // Generated context is opt-in (see below), so the engine is consulted only
   // when it was asked for. Not finding it costs that note, never the view.
@@ -1336,6 +1401,11 @@ async function runScanWithExplanations(
       const { pathScore, pathKind } = finding.confidenceFactors;
       const { label, reason } = PATH_KIND_REASONS[pathKind];
       console.log(`         Path: ${label} (${pathScore.toFixed(2)}): ${reason}`);
+    }
+    // What the issuing host answered, under --check-validity only.
+    const answer = validity?.get(finding);
+    if (answer) {
+      console.log(`         Validity: ${stateLabel(answer.state)} (${answer.detail})`);
     }
 
     // The deterministic fix ALWAYS prints. Generated text may only appear
