@@ -1,0 +1,440 @@
+/**
+ * `scan --check-validity`: ask the provider that issued a found credential
+ * whether it still accepts it.
+ *
+ * A finding says a value has the shape of a credential. Whether the provider
+ * still accepts it is a different question, and only that provider can answer
+ * it. This module asks, for the credential types that have a read-only
+ * endpoint whose answer depends on the credential alone, and reports the
+ * answer beside the finding.
+ *
+ * Opt-in, end to end. Nothing here runs unless `runScan` is given
+ * `checkValidity`, and the scanner keeps no matched value unless it is asked
+ * to (`retainValues` in scan.ts), so without the flag there is no value to
+ * send and no code path that sends one.
+ *
+ * What a request is. The value is placed where the probe's `headers` or `path`
+ * carries the `{value}` marker, and nowhere else. The request goes to the
+ * probe's `host` over HTTPS, redirects are left unfollowed so a 3xx cannot
+ * carry a header to another host, and the exchange is under one deadline.
+ *
+ * What a result says. `live`: the host answered 200. `rejected`: the host
+ * answered 401. `unknown`: any other status, no connection, or no answer in
+ * time, with the status or reason named. `unchecked`: no probe for the type,
+ * and nothing was sent. A result describes the host's answer to the request
+ * this module sends, not the credential's history. No result string holds the
+ * value, including one built from an error message. The states are reported
+ * beside a finding and change neither its severity, its confidence nor the
+ * exit code.
+ */
+import { CREDENTIAL_PATTERNS } from './patterns';
+import { VERSION, wrapList } from './commands/utils';
+import type { ScanFinding } from './scan';
+
+export type ValidityState = 'live' | 'rejected' | 'unknown' | 'unchecked';
+
+export interface ValidityResult {
+  state: ValidityState;
+  /** The host a request was sent to. Absent when nothing was sent. */
+  host?: string;
+  /** The HTTP status the host answered. Absent when it did not answer. */
+  status?: number;
+  /** One line for a human. Never holds the credential. */
+  detail: string;
+}
+
+export interface ValidityProbe {
+  /** Pattern ids from src/patterns.ts this probe covers. */
+  readonly patterns: readonly string[];
+  /** The provider, as help text names it. */
+  readonly provider: string;
+  /** The only host this probe sends to. */
+  readonly host: string;
+  readonly method: 'GET' | 'POST';
+  /** Request path. A `{value}` marker is replaced by the URL-encoded credential. */
+  readonly path: string;
+  /** Request headers. A `{value}` marker is replaced by the credential. */
+  readonly headers: Readonly<Record<string, string>>;
+  /** A reason not to send this value, or null to send it. */
+  readonly skip?: (value: string) => string | null;
+  /**
+   * The state for an answer the default rule does not cover (200 live, 401
+   * rejected, anything else unknown). Return null for the default rule.
+   */
+  readonly decide?: (status: number, body: string) => { state: ValidityState; detail: string } | null;
+}
+
+/** Marker in a probe's path or header value where the credential goes. */
+export const VALUE_MARKER = '{value}';
+
+const BEARER: Readonly<Record<string, string>> = { Authorization: `Bearer ${VALUE_MARKER}` };
+
+/** The `error` values in a Slack `ok: false` answer this probe counts as a rejection. */
+const SLACK_REJECTIONS = new Set(['invalid_auth', 'not_authed', 'token_revoked', 'token_expired', 'account_inactive']);
+
+export const VALIDITY_PROBES: readonly ValidityProbe[] = [
+  {
+    patterns: ['github-pat', 'github-fine', 'github-oauth'],
+    provider: 'GitHub',
+    host: 'api.github.com',
+    method: 'GET',
+    path: '/user',
+    headers: { ...BEARER, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+  },
+  {
+    patterns: ['anthropic'],
+    provider: 'Anthropic',
+    host: 'api.anthropic.com',
+    method: 'GET',
+    path: '/v1/models',
+    headers: { 'x-api-key': VALUE_MARKER, 'anthropic-version': '2023-06-01' },
+  },
+  {
+    patterns: ['openai-proj', 'openai-legacy'],
+    provider: 'OpenAI',
+    host: 'api.openai.com',
+    method: 'GET',
+    path: '/v1/models',
+    headers: BEARER,
+  },
+  {
+    patterns: ['groq'],
+    provider: 'Groq',
+    host: 'api.groq.com',
+    method: 'GET',
+    path: '/openai/v1/models',
+    headers: BEARER,
+  },
+  {
+    patterns: ['huggingface'],
+    provider: 'Hugging Face',
+    host: 'huggingface.co',
+    method: 'GET',
+    path: '/api/whoami-v2',
+    headers: BEARER,
+  },
+  {
+    patterns: ['replicate'],
+    provider: 'Replicate',
+    host: 'api.replicate.com',
+    method: 'GET',
+    path: '/v1/account',
+    headers: BEARER,
+  },
+  {
+    patterns: ['slack'],
+    provider: 'Slack',
+    host: 'slack.com',
+    method: 'POST',
+    path: '/api/auth.test',
+    headers: BEARER,
+    // An xoxr- value is a refresh token; sending it to auth.test would read
+    // as rejected whatever its state, so it is not sent.
+    skip: (value) => (value.startsWith('xoxr-') ? 'an xoxr- value is a refresh token, and this probe is for access tokens' : null),
+    // auth.test answers 200 either way and states the verdict in the body.
+    decide: (status, body) => {
+      if (status !== 200) return null;
+      let parsed: { ok?: unknown; error?: unknown };
+      try {
+        parsed = JSON.parse(body) as { ok?: unknown; error?: unknown };
+      } catch {
+        return { state: 'unknown', detail: 'slack.com answered 200 with a body that is not JSON' };
+      }
+      if (parsed?.ok === true) return { state: 'live', detail: 'slack.com answered ok: true' };
+      // The error name is printed, so only an identifier is accepted as one.
+      const error = typeof parsed?.error === 'string' && /^[a-z_]+$/.test(parsed.error) ? parsed.error : 'no error named';
+      const state: ValidityState = SLACK_REJECTIONS.has(error) ? 'rejected' : 'unknown';
+      return { state, detail: `slack.com answered ok: false (${error})` };
+    },
+  },
+  {
+    patterns: ['discord-bot'],
+    provider: 'Discord',
+    host: 'discord.com',
+    method: 'GET',
+    path: '/api/v10/users/@me',
+    headers: { Authorization: `Bot ${VALUE_MARKER}` },
+  },
+  {
+    patterns: ['telegram-bot'],
+    provider: 'Telegram',
+    host: 'api.telegram.org',
+    method: 'GET',
+    path: `/bot${VALUE_MARKER}/getMe`,
+    headers: {},
+  },
+  {
+    patterns: ['sendgrid'],
+    provider: 'SendGrid',
+    host: 'api.sendgrid.com',
+    method: 'GET',
+    path: '/v3/scopes',
+    headers: BEARER,
+  },
+  {
+    patterns: ['npm'],
+    provider: 'npm',
+    host: 'registry.npmjs.org',
+    method: 'GET',
+    path: '/-/whoami',
+    headers: BEARER,
+  },
+  {
+    patterns: ['digitalocean'],
+    provider: 'DigitalOcean',
+    host: 'api.digitalocean.com',
+    method: 'GET',
+    path: '/v2/account',
+    headers: BEARER,
+  },
+  {
+    patterns: ['heroku'],
+    provider: 'Heroku',
+    host: 'api.heroku.com',
+    method: 'GET',
+    path: '/account',
+    headers: { ...BEARER, Accept: 'application/vnd.heroku+json; version=3' },
+  },
+  {
+    patterns: ['netlify'],
+    provider: 'Netlify',
+    host: 'api.netlify.com',
+    method: 'GET',
+    path: '/api/v1/user',
+    headers: BEARER,
+  },
+  {
+    patterns: ['stripe', 'stripe-test', 'stripe-restricted'],
+    provider: 'Stripe',
+    host: 'api.stripe.com',
+    method: 'GET',
+    path: '/v1/balance',
+    headers: BEARER,
+  },
+];
+
+const PROBE_BY_PATTERN: ReadonlyMap<string, ValidityProbe> = (() => {
+  const map = new Map<string, ValidityProbe>();
+  for (const probe of VALIDITY_PROBES) {
+    for (const id of probe.patterns) map.set(id, probe);
+  }
+  return map;
+})();
+
+/** The probe for a credential pattern id, or undefined when the type is not checked. */
+export function probeFor(patternId: string): ValidityProbe | undefined {
+  return PROBE_BY_PATTERN.get(patternId);
+}
+
+function patternNameOf(patternId: string): string {
+  return CREDENTIAL_PATTERNS.find((p) => p.id === patternId)?.name ?? patternId;
+}
+
+export interface ProbeRequest {
+  url: string;
+  method: 'GET' | 'POST';
+  headers: Record<string, string>;
+}
+
+/** The request a probe sends for a value: the marker filled in, and nothing else added but a User-Agent. */
+export function buildProbeRequest(probe: ValidityProbe, value: string): ProbeRequest {
+  const headers: Record<string, string> = { 'User-Agent': `secretless-ai/${VERSION}` };
+  for (const [name, template] of Object.entries(probe.headers)) {
+    headers[name] = template.split(VALUE_MARKER).join(value);
+  }
+  const path = probe.path.split(VALUE_MARKER).join(encodeURIComponent(value));
+  return { url: `https://${probe.host}${path}`, method: probe.method, headers };
+}
+
+/** What a probe needs from `fetch`: the status, and the body for a probe that reads one. */
+export interface ProbeResponse {
+  readonly status: number;
+  text(): Promise<string>;
+}
+
+export interface ProbeFetchInit {
+  method: 'GET' | 'POST';
+  headers: Record<string, string>;
+  /** Always `manual`: a 3xx is an answer, never a second request. */
+  redirect: 'manual';
+  signal: AbortSignal;
+}
+
+export type ProbeFetch = (url: string, init: ProbeFetchInit) => Promise<ProbeResponse>;
+
+export interface ProbeDeps {
+  /** Defaults to the global `fetch`. Tests pass a stand-in. */
+  fetchImpl?: ProbeFetch;
+  /** The bound for one exchange, request and body read together. Default 10 seconds. */
+  timeoutMs?: number;
+  /** How many hosts are asked at once. Default 4. */
+  concurrency?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_CONCURRENCY = 4;
+
+const defaultFetch: ProbeFetch = (url, init) => fetch(url, init);
+
+function defaultState(status: number): ValidityState {
+  if (status === 200) return 'live';
+  if (status === 401) return 'rejected';
+  return 'unknown';
+}
+
+/** A short identifier for a failed request: an error code or name, never its message. */
+function errorCode(err: unknown): string {
+  const e = err as { code?: unknown; name?: unknown; cause?: { code?: unknown } } | null;
+  const candidates = [e?.code, e?.cause?.code, e?.name];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && /^[A-Za-z0-9_]+$/.test(candidate)) return candidate;
+  }
+  return 'error';
+}
+
+function formatDeadline(timeoutMs: number): string {
+  return timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`;
+}
+
+/** The result with every occurrence of the value, should one have reached a string, replaced. */
+function withoutValue(value: string, result: ValidityResult): ValidityResult {
+  if (value === '' || !result.detail.includes(value)) return result;
+  return { ...result, detail: result.detail.split(value).join('[value]') };
+}
+
+/**
+ * Ask the issuing host about one value. Resolves to a result in every case; a
+ * failed or slow request is `unknown`, never a thrown error.
+ */
+export async function probeCredential(patternId: string, value: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
+  const probe = probeFor(patternId);
+  if (!probe) return { state: 'unchecked', detail: `no validity probe for ${patternNameOf(patternId)}` };
+  const reason = probe.skip?.(value) ?? null;
+  if (reason !== null) return { state: 'unchecked', detail: `not sent: ${reason}` };
+
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const fetchImpl = deps.fetchImpl ?? defaultFetch;
+  const request = buildProbeRequest(probe, value);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let status: number;
+  let body = '';
+  try {
+    const response = await fetchImpl(request.url, {
+      method: request.method,
+      headers: request.headers,
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    status = response.status;
+    // Only a probe that decides on the body reads one; the deadline covers the read.
+    if (probe.decide) body = await response.text();
+  } catch (err) {
+    const detail = controller.signal.aborted
+      ? `no answer from ${probe.host} within ${formatDeadline(timeoutMs)}`
+      : `no answer from ${probe.host} (${errorCode(err)})`;
+    return withoutValue(value, { state: 'unknown', host: probe.host, detail });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const decided = probe.decide?.(status, body) ?? null;
+  const result: ValidityResult = decided
+    ? { state: decided.state, host: probe.host, status, detail: decided.detail }
+    : { state: defaultState(status), host: probe.host, status, detail: `${probe.host} answered ${status}` };
+  return withoutValue(value, result);
+}
+
+/**
+ * A result for every finding. A type without a probe, or a finding whose
+ * value was not kept, is `unchecked` and sends nothing. The same value found
+ * in several places is one credential: its host is asked once, and each
+ * finding that carries it receives that answer.
+ */
+export async function checkFindings(
+  findings: readonly ScanFinding[],
+  valueOf: (finding: ScanFinding) => string | undefined,
+  deps: ProbeDeps = {},
+): Promise<Map<ScanFinding, ValidityResult>> {
+  const results = new Map<ScanFinding, ValidityResult>();
+  const pending = new Map<string, { patternId: string; value: string; findings: ScanFinding[] }>();
+  for (const finding of findings) {
+    if (!probeFor(finding.patternId)) {
+      results.set(finding, { state: 'unchecked', detail: `no validity probe for ${finding.patternName}` });
+      continue;
+    }
+    const value = valueOf(finding);
+    if (value === undefined || value === '') {
+      results.set(finding, { state: 'unchecked', detail: 'the matched value was not kept for checking' });
+      continue;
+    }
+    const key = `${finding.patternId}\u0000${value}`;
+    const entry = pending.get(key);
+    if (entry) entry.findings.push(finding);
+    else pending.set(key, { patternId: finding.patternId, value, findings: [finding] });
+  }
+
+  const queue = [...pending.values()];
+  const workers = Math.max(1, Math.min(deps.concurrency ?? DEFAULT_CONCURRENCY, queue.length));
+  await Promise.all(Array.from({ length: workers }, async () => {
+    for (let job = queue.shift(); job !== undefined; job = queue.shift()) {
+      const result = await probeCredential(job.patternId, job.value, deps);
+      for (const finding of job.findings) results.set(finding, { ...result });
+    }
+  }));
+  return results;
+}
+
+export interface ValiditySummary {
+  live: number;
+  rejected: number;
+  unknown: number;
+  unchecked: number;
+  /** Every host a request was sent to, sorted. */
+  hosts: string[];
+}
+
+export function summarizeValidity(results: Iterable<ValidityResult>): ValiditySummary {
+  const summary: ValiditySummary = { live: 0, rejected: 0, unknown: 0, unchecked: 0, hosts: [] };
+  const hosts = new Set<string>();
+  for (const result of results) {
+    summary[result.state] += 1;
+    if (result.host) hosts.add(result.host);
+  }
+  summary.hosts = [...hosts].sort();
+  return summary;
+}
+
+/** The word printed for a state. */
+export function stateLabel(state: ValidityState): string {
+  return state === 'unchecked' ? 'not checked' : state;
+}
+
+/** A paragraph of the `scan --help` notes, wrapped to their width. */
+function helpParagraph(text: string): string[] {
+  return wrapList(text.split(' '), '');
+}
+
+/**
+ * The lines `scan --help` prints after its options: what --check-validity
+ * contacts, per credential type. Each stays inside the notes' width
+ * (NOTE_WIDTH, an 80-column terminal with their indent): the types a host
+ * is asked about continue under their own column when they do not fit
+ * beside it, and the wrap falls between two type names, never inside one.
+ */
+export function validityHelpLines(): string[] {
+  const width = Math.max(...VALIDITY_PROBES.map((p) => p.host.length)) + 2;
+  const rows = VALIDITY_PROBES.flatMap((probe) => {
+    const names = probe.patterns.map(patternNameOf);
+    const items = names.map((name, i) =>
+      `${i === 0 ? `${probe.provider}: ` : ''}${name}${i < names.length - 1 ? ',' : ''}`);
+    return wrapList(items, ' '.repeat(2 + width), ' ', `  ${probe.host.padEnd(width)}`);
+  });
+  return [
+    ...helpParagraph('--check-validity sends each found credential, over HTTPS, to the host that issued it and to no other:'),
+    ...rows,
+    ...helpParagraph('Types not listed are reported as not checked, and nothing is sent for them. Without the flag, '
+      + 'no credential is sent anywhere. live: the host answered 200. rejected: it answered 401. '
+      + 'unknown: any other answer, or none. The answer does not change the exit code.'),
+  ];
+}

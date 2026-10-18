@@ -45,6 +45,18 @@ export interface ScanFinding {
   confidenceFactors?: ConfidenceBreakdown;
 }
 
+/**
+ * Matched values, kept only under `ScanOptions.retainValues`. A WeakMap keyed
+ * on the finding object: not a property, so `JSON.stringify(finding)` and the
+ * renderers never see it, and it is released with the finding.
+ */
+const MATCHED_VALUES = new WeakMap<ScanFinding, string>();
+
+/** The value a finding matched, when the scan was run with `retainValues`; undefined otherwise. */
+export function matchedValueOf(finding: ScanFinding): string | undefined {
+  return MATCHED_VALUES.get(finding);
+}
+
 /** Per-pattern fix guidance. Tells users exactly how to fix each finding. */
 const FIX_GUIDANCE: Record<string, string> = {
   'anthropic': 'Move to env var ANTHROPIC_API_KEY. Rotate at console.anthropic.com > API Keys.',
@@ -187,6 +199,15 @@ export interface ScanOptions {
    * default, so `scan --json` output keeps its shape. Backs `scan --explain`.
    */
   confidenceFactors?: boolean;
+  /**
+   * Keep each finding's matched value reachable through `matchedValueOf()`.
+   * Default: false, and then no value is kept anywhere. The value is held
+   * beside the finding, never on it, so a finding printed or serialized to
+   * JSON carries no more than it does without this option. Backs
+   * `scan --check-validity`, which hands the value to the credential's own
+   * provider (src/validity.ts).
+   */
+  retainValues?: boolean;
 }
 
 /** Optional out-param: counters the scan populates as a side channel. */
@@ -578,7 +599,7 @@ function scanSingleFile(
           if (breakdown.score < minConfidence) {
             if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
           } else {
-            findings.push({
+            const finding: ScanFinding = {
               file: display,
               line: i + 1,
               patternId: pattern.id,
@@ -590,7 +611,9 @@ function scanSingleFile(
               confidenceTier: breakdown.tier,
               looksLikeFixture: false,
               ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
-            });
+            };
+            if (options?.retainValues) MATCHED_VALUES.set(finding, match[1] ?? match[0]);
+            findings.push(finding);
           }
           break;
         }
@@ -695,7 +718,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       return null;
     }
     const looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(file.replace(/\\/g, '/')));
-    return {
+    const finding: ScanFinding = {
       file,
       line,
       patternId: pattern.id,
@@ -708,6 +731,8 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       looksLikeFixture,
       ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
     };
+    if (options?.retainValues) MATCHED_VALUES.set(finding, match[1] ?? match[0]);
+    return finding;
   }
 
   // Scan global config files (keys in ~/.claude/CLAUDE.md are in every session's context)

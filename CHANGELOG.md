@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+**`scan --check-validity` asks the provider that issued a found credential whether it still accepts it.**
+Off by default: without the flag the scanner keeps no matched value, sends no
+credential anywhere, and prints what it printed before. With it, each finding
+whose type has a probe is sent, over HTTPS, to that provider's own API and to
+no other host (`api.github.com/user` for a GitHub token,
+`api.anthropic.com/v1/models` for an Anthropic key, `slack.com/api/auth.test`
+for a Slack token; `scan --help` lists the host for each of the 20 credential
+types covered, from 15 providers), with redirects left unfollowed and a 10
+second bound on each exchange. The answer is printed under the finding as
+`Validity: live` when the host answered 200, `rejected` when it answered 401,
+and `unknown` for any other answer or none, with the status or reason named.
+Types without a probe (connection strings, private keys, AWS keys and webhooks
+among them) read `not checked`, and nothing is sent for them. `--json` carries
+the same as `validity` on each finding and counts under `summary.validity`,
+only when the flag is given. The same value found in several files is sent
+once. Severity, confidence and the exit code do not change with the answer.
+
 **`scan --format sarif` writes the findings as SARIF 2.1.0.** The document
 holds one result per finding, with its file, line, pattern name and fix and
 its `patternId` as the `ruleId`, and one rule per pattern id, carrying

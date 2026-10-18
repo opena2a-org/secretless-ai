@@ -55,10 +55,13 @@ npx secretless-ai ignore --pattern '*.golden.txt'
 npx secretless-ai diff main                    # audit secretless-managed file changes vs a git ref
 npx secretless-ai scan --json                  # machine-readable findings for CI
 npx secretless-ai scan --format sarif > secretless.sarif   # the same findings as SARIF 2.1.0, for GitHub code scanning
+npx secretless-ai scan --check-validity        # ask each credential's issuer whether it still accepts it (opt-in)
 npx secretless-ai status --json                # protection state for CI (gate on summary.verdict)
 ```
 
 `scan` renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so they stay visible without being re-suppressed.
+
+`scan --check-validity` asks the provider that issued each found credential whether it still accepts it, and prints `Validity: live`, `rejected`, `unknown` or `not checked` under the finding (`validity` on each finding and `summary.validity` in `--json`). It is off by default, and without it no credential is sent anywhere. With it, the matched value goes over HTTPS to that provider's own API and to no other host: GitHub, Anthropic, OpenAI, Groq, Hugging Face, Replicate, Slack, Discord, Telegram, SendGrid, npm, DigitalOcean, Heroku, Netlify and Stripe credentials are checked, and `scan --help` lists the host for each. Other types, such as connection strings and private keys, read `not checked`, and nothing is sent for them. `live` means the host answered 200, `rejected` that it answered 401, and `unknown` any other answer or none; the answer changes neither the severity nor the exit code.
 
 ### Exit codes and scan coverage
 

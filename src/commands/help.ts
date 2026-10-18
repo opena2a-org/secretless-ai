@@ -178,6 +178,8 @@ ${banner}${description}
                              is still not entered; scan one by its path.
     --min-confidence <n>     Drop findings with composite confidence below n (0-1)
     --format <json|sarif>    JSON, or SARIF 2.1.0 for GitHub code scanning
+    --check-validity         Ask the provider that issued each credential whether it
+                             still accepts it. Opt-in; \`${CLI} scan --help\` lists the hosts.
 
   Options:
     -v, -V, --version    Show version
