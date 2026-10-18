@@ -29,6 +29,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { GLOBAL_CONFIG_LABELS, type ScanFinding } from './scan';
+import type { ValidityResult } from './validity';
 import { escapePathForDisplay } from './display-safe';
 
 /** The schema's own id: the OASIS SARIF 2.1.0 errata01 schema. */
@@ -73,6 +74,8 @@ export interface SarifResult {
     confidence: number;
     confidenceTier: ScanFinding['confidenceTier'];
     looksLikeFixture: boolean;
+    /** The issuing host's answer, under `--check-validity` only. */
+    validity?: ValidityResult;
   };
 }
 
@@ -92,7 +95,11 @@ export interface SarifScanInput {
   version: string;
   /** The scanned directory or file, as `runScan` received it. */
   projectDir: string;
-  findings: ScanFinding[];
+  /**
+   * The findings of `--json`: under `--check-validity` each carries the
+   * issuing host's answer as `validity`, which is written onto its result.
+   */
+  findings: Array<ScanFinding & { validity?: ValidityResult }>;
   /**
    * The `summary` of `--json`, kept on the run so a reader of the document can
    * tell a clean scan from an unfinished one without the exit code.
@@ -168,6 +175,7 @@ export function scanToSarif(input: SarifScanInput): SarifLog {
       confidence: f.confidence,
       confidenceTier: f.confidenceTier,
       looksLikeFixture: f.looksLikeFixture,
+      ...(f.validity ? { validity: f.validity } : {}),
     },
   }));
 

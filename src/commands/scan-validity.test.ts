@@ -219,6 +219,31 @@ describe('runScan --check-validity', () => {
     expect(text).toContain('Validity: unknown (no answer from api.github.com (ECONNREFUSED))');
   });
 
+  it('--format sarif carries the answer on each result, as --json carries it on each finding, without the value', async () => {
+    const dir = project({ 'config.js': `const a = "${GITHUB}";\nconst b = "${DOCKERHUB}";\n` });
+    const code = await runScan(dir, { format: 'sarif', checkValidity: true, validityDeps: { fetchImpl: answering(401) } });
+    const text = out.join('\n');
+    const run = JSON.parse(text).runs[0];
+    expect(code).toBe(1);
+    expect(text).not.toContain(GITHUB);
+    expect(text).not.toContain(DOCKERHUB);
+
+    const byRule = (id: string) => run.results.find((r: { ruleId: string }) => r.ruleId === id);
+    expect(byRule('github-pat').properties.validity).toEqual({ state: 'rejected', host: 'api.github.com', status: 401, detail: 'api.github.com answered 401' });
+    expect(byRule('dockerhub').properties.validity).toEqual({ state: 'unchecked', detail: 'no validity probe for Docker Hub PAT' });
+    expect(run.properties.summary.validity).toEqual({ live: 0, rejected: 1, unknown: 0, unchecked: 1, hosts: ['api.github.com'] });
+  });
+
+  it('--format sarif without the flag writes no validity on any result', async () => {
+    const dir = project({ 'config.js': `const a = "${GITHUB}";\n` });
+    expect(await runScan(dir, { format: 'sarif' })).toBe(1);
+    const run = JSON.parse(out.join('\n')).runs[0];
+    expect(run.results).toHaveLength(1);
+    for (const r of run.results) expect(r.properties).not.toHaveProperty('validity');
+    expect(run.properties.summary).not.toHaveProperty('validity');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('--explain prints the Validity line under each finding too', async () => {
     const dir = project({ 'config.js': `const a = "${GITHUB}";\n` });
     const code = await runScan(dir, { explain: true, checkValidity: true, validityDeps: { fetchImpl: answering(401) } });
