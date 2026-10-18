@@ -31,18 +31,27 @@
  * or stated a rejection in a body where its API does so (Slack in a 200,
  * Google's tokeninfo in a 400, Discord's webhook endpoint in a 404 whose code
  * is 10015, hooks.slack.com in a 403 or 404 naming invalid_token, no_service
- * or no_team). `unknown`: any other status, no connection, or no answer in
- * time, with the status or reason named. `unchecked`: no probe for the type,
- * or a value the probe does not send, and nothing was sent. A result describes
- * the host's answer to the request this module sends, not the credential's
- * history: a token a self-managed GitHub or GitLab instance issued still goes
- * to api.github.com or gitlab.com, which did not issue it. No result string
- * holds the value, including one built from an error message. The states are
- * reported beside a finding and change neither its severity, its confidence
- * nor the exit code.
+ * or no_team, STS in a 403 naming InvalidClientTokenId or
+ * SignatureDoesNotMatch). `unknown`: any other status, no connection, or no
+ * answer in time, with the status or reason named; an STS refusal of the
+ * request time is one. `unchecked`: no probe for the type, or a value the
+ * probe does not send, and nothing was sent. A result describes the host's
+ * answer to the request this module sends, not the credential's history: a
+ * token a self-managed GitHub or GitLab instance issued still goes to
+ * api.github.com or gitlab.com, which did not issue it, and a key from the
+ * AWS China or GovCloud partition still goes to sts.amazonaws.com. No result
+ * string holds the value, including one built from an error message. The
+ * states are reported beside a finding and change neither its severity, its
+ * confidence nor the exit code.
+ *
+ * An AWS key is two values: the access key ID and the secret access key from
+ * one file are checked as a pair (`awsPairs`), by an STS request signed with
+ * the secret (`signing`). The request names the key ID in its signature and
+ * holds no part of the secret.
  */
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { VERSION, wrapList } from './commands/utils';
+import { signSigV4 } from './aws-sigv4';
 import type { ScanFinding } from './scan';
 
 export type ValidityState = 'live' | 'rejected' | 'unknown' | 'unchecked';
@@ -88,6 +97,19 @@ export interface ValidityProbe {
    * rejected, anything else unknown). Return null for the default rule.
    */
   readonly decide?: (status: number, body: string) => { state: ValidityState; detail: string } | null;
+  /**
+   * For a probe whose request is signed instead of carrying the credential:
+   * AWS Signature Version 4 for this region and service. The value of
+   * `keyIdPattern` is named in the signature; the value of `secretPattern`
+   * keys it and goes in no part of the request. The two are taken from one
+   * file (`awsPairs`), so a probe with `signing` never sends one value alone.
+   */
+  readonly signing?: {
+    readonly region: string;
+    readonly service: string;
+    readonly keyIdPattern: string;
+    readonly secretPattern: string;
+  };
 }
 
 /** Marker in a probe's path or header value where the credential goes. */
@@ -155,6 +177,68 @@ function plainErrorIn(body: string): string {
 
 /** Linear's GraphQL takes a read-only viewer query; it carries no credential. */
 const LINEAR_VIEWER_QUERY = JSON.stringify({ query: '{ viewer { id } }' });
+
+/** STS GetCallerIdentity as a form body. It carries no value. */
+const STS_GET_CALLER_IDENTITY = 'Action=GetCallerIdentity&Version=2011-06-15';
+
+/**
+ * The errors STS names in a 403 for a pair it does not take: a key ID it does
+ * not have, or a signature the found secret did not make for that key ID.
+ */
+const STS_REJECTIONS = new Set(['InvalidClientTokenId', 'SignatureDoesNotMatch']);
+
+/**
+ * How the message beside a SignatureDoesNotMatch begins when STS refuses the
+ * request time, more than 15 minutes from its own, before it looks at the
+ * key: a made-up key ID sent with a clock an hour off was answered this way,
+ * not with InvalidClientTokenId. The answer is about this machine's clock.
+ */
+const STS_CLOCK_MESSAGES = ['Signature expired', 'Signature not yet current'];
+
+/** The text of the first `name` element in an XML body, or null when it has none. */
+function xmlText(body: string, name: string): string | null {
+  const match = new RegExp(`<${name}>([^<]*)</${name}>`).exec(body);
+  return match ? match[1] : null;
+}
+
+/**
+ * How the AWS probe signs: Signature Version 4 for STS in us-east-1, the
+ * region sts.amazonaws.com takes signatures for, with the AWS Access Key
+ * finding as the key ID and the AWS Secret Access Key finding as the secret.
+ */
+const AWS_SIGNING = { region: 'us-east-1', service: 'sts', keyIdPattern: 'aws-access', secretPattern: 'aws-secret' } as const;
+
+/**
+ * An AWS key is two values found together: the access key ID, which the
+ * request names, and the secret access key, which signs the request and goes
+ * in no part of it (src/aws-sigv4.ts). GetCallerIdentity is read-only, and
+ * AWS documents it as needing no permission and as answering even when a
+ * policy attached to the caller denies it, so the answer is about the pair,
+ * not its permissions. A 403 is decided on the error its XML body names;
+ * every other status takes the default rule.
+ */
+const AWS_PROBE: ValidityProbe = {
+  patterns: [AWS_SIGNING.keyIdPattern, AWS_SIGNING.secretPattern],
+  provider: 'AWS',
+  host: 'sts.amazonaws.com',
+  method: 'POST',
+  path: '/',
+  headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
+  body: STS_GET_CALLER_IDENTITY,
+  signing: AWS_SIGNING,
+  decide: (status, body) => {
+    if (status !== 403) return null;
+    const code = xmlText(body, 'Code');
+    const error = code !== null && /^[A-Za-z]{1,64}$/.test(code) ? code : 'no error named';
+    const message = xmlText(body, 'Message') ?? '';
+    const clock = error === 'SignatureDoesNotMatch' ? STS_CLOCK_MESSAGES.find((m) => message.startsWith(m)) : undefined;
+    if (clock !== undefined) {
+      return { state: 'unknown', detail: `sts.amazonaws.com answered 403 (SignatureDoesNotMatch: ${clock}); check this machine's clock` };
+    }
+    const state: ValidityState = STS_REJECTIONS.has(error) ? 'rejected' : 'unknown';
+    return { state, detail: `sts.amazonaws.com answered 403 (${error})` };
+  },
+};
 
 export const VALIDITY_PROBES: readonly ValidityProbe[] = [
   {
@@ -341,6 +425,7 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     path: '/-/whoami',
     headers: BEARER,
   },
+  AWS_PROBE,
   {
     patterns: ['digitalocean'],
     provider: 'DigitalOcean',
@@ -478,21 +563,39 @@ export function notSentReason(probe: ValidityProbe, value: string): string | nul
   return null;
 }
 
+/** What a probe with `signing` signs its request with: the secret found with the key ID, and the time it is signed at. */
+export interface SigningInput {
+  secret: string;
+  now: Date;
+}
+
 /**
  * The request a probe sends for a value: the markers filled in, and nothing
- * else added but a User-Agent. Throws for a value `notSentReason` names a
- * reason for, so check that first.
+ * else added but a User-Agent and, for a probe with `signing`, the headers of
+ * a signature made with `signWith.secret`, in which `value` is the key ID.
+ * Throws for a value `notSentReason` names a reason for, so check that first,
+ * and for a probe with `signing` given nothing to sign with.
  */
-export function buildProbeRequest(probe: ValidityProbe, value: string): ProbeRequest {
-  const headers: Record<string, string> = { 'User-Agent': `secretless-ai/${VERSION}` };
+export function buildProbeRequest(probe: ValidityProbe, value: string, signWith?: SigningInput): ProbeRequest {
+  const own: Record<string, string> = {};
   for (const [name, template] of Object.entries(probe.headers)) {
-    headers[name] = template.split(VALUE_MARKER).join(value);
+    own[name] = template.split(VALUE_MARKER).join(value);
   }
   let path = probe.path.split(VALUE_MARKER).join(encodeURIComponent(value));
   if (urlPathPrefix(probe) !== null) {
     const rest = foundUrlPath(probe, value);
     if (rest === null) throw new Error(`${probe.provider}: the value is not a URL this probe sends`);
     path = path.split(URL_PATH_MARKER).join(rest);
+  }
+  const headers: Record<string, string> = { 'User-Agent': `secretless-ai/${VERSION}`, ...own };
+  if (probe.signing) {
+    if (!signWith) throw new Error(`${probe.provider}: a signed probe needs the secret to sign with`);
+    const { region, service } = probe.signing;
+    Object.assign(headers, signSigV4(
+      { method: probe.method, host: probe.host, path, headers: own, body: probe.body ?? '', region, service },
+      { accessKeyId: value, secretAccessKey: signWith.secret },
+      signWith.now,
+    ));
   }
   const request: ProbeRequest = { url: `https://${probe.host}${path}`, method: probe.method, headers };
   if (probe.body !== undefined) request.body = probe.body;
@@ -524,6 +627,8 @@ export interface ProbeDeps {
   timeoutMs?: number;
   /** How many hosts are asked at once. Default 4. */
   concurrency?: number;
+  /** The clock a signed request is dated by. Defaults to the system clock. Tests pass a fixed one. */
+  now?: () => Date;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -551,25 +656,51 @@ function formatDeadline(timeoutMs: number): string {
   return timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`;
 }
 
-/** The result with every occurrence of the value, should one have reached a string, replaced. */
-function withoutValue(value: string, result: ValidityResult): ValidityResult {
-  if (value === '' || !result.detail.includes(value)) return result;
-  return { ...result, detail: result.detail.split(value).join('[value]') };
+/** The result with every occurrence of each value, should one have reached a string, replaced. */
+function withoutValues(values: readonly string[], result: ValidityResult): ValidityResult {
+  let detail = result.detail;
+  for (const value of values) {
+    if (value !== '' && detail.includes(value)) detail = detail.split(value).join('[value]');
+  }
+  return detail === result.detail ? result : { ...result, detail };
 }
+
+/** Why `probeCredential` does not send a value a probe with `signing` covers. */
+const PAIR_ONLY = 'an AWS key is checked as a pair, the access key ID with its secret access key, by probeAwsKeyPair';
 
 /**
  * Ask the issuing host about one value. Resolves to a result in every case; a
- * failed or slow request is `unknown`, never a thrown error.
+ * failed or slow request is `unknown`, never a thrown error. A value a probe
+ * with `signing` covers is half of a pair and is not sent alone.
  */
 export async function probeCredential(patternId: string, value: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
   const probe = probeFor(patternId);
   if (!probe) return { state: 'unchecked', detail: `no validity probe for ${patternNameOf(patternId)}` };
+  if (probe.signing) return { state: 'unchecked', detail: `not sent: ${PAIR_ONLY}` };
   const reason = notSentReason(probe, value);
-  if (reason !== null) return withoutValue(value, { state: 'unchecked', detail: `not sent: ${reason}` });
+  if (reason !== null) return withoutValues([value], { state: 'unchecked', detail: `not sent: ${reason}` });
+  return exchange(probe, buildProbeRequest(probe, value), [value], deps);
+}
 
+/**
+ * Ask AWS about an access key ID and the secret access key found with it:
+ * STS GetCallerIdentity, signed with the secret, which goes in no part of the
+ * request. Resolves to a result in every case, as `probeCredential` does, and
+ * no result string holds either value.
+ */
+export async function probeAwsKeyPair(accessKeyId: string, secretAccessKey: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
+  const now = deps.now?.() ?? new Date();
+  const request = buildProbeRequest(AWS_PROBE, accessKeyId, { secret: secretAccessKey, now });
+  return exchange(AWS_PROBE, request, [accessKeyId, secretAccessKey], deps);
+}
+
+/**
+ * Send one built request under the deadline and read the answer as the probe
+ * decides it. `hidden` holds the values no result string may carry.
+ */
+async function exchange(probe: ValidityProbe, request: ProbeRequest, hidden: readonly string[], deps: ProbeDeps): Promise<ValidityResult> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl = deps.fetchImpl ?? defaultFetch;
-  const request = buildProbeRequest(probe, value);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let status: number;
@@ -589,7 +720,7 @@ export async function probeCredential(patternId: string, value: string, deps: Pr
     const detail = controller.signal.aborted
       ? `no answer from ${probe.host} within ${formatDeadline(timeoutMs)}`
       : `no answer from ${probe.host} (${errorCode(err)})`;
-    return withoutValue(value, { state: 'unknown', host: probe.host, detail });
+    return withoutValues(hidden, { state: 'unknown', host: probe.host, detail });
   } finally {
     clearTimeout(timer);
   }
@@ -598,14 +729,90 @@ export async function probeCredential(patternId: string, value: string, deps: Pr
   const result: ValidityResult = decided
     ? { state: decided.state, host: probe.host, status, detail: decided.detail }
     : { state: defaultState(status), host: probe.host, status, detail: `${probe.host} answered ${status}` };
-  return withoutValue(value, result);
+  return withoutValues(hidden, result);
+}
+
+/**
+ * The pattern ids of the AWS access key IDs the scanner matches. A temporary
+ * key (aws-sts) has no probe, since STS takes it only with the session token
+ * issued with it, which no built-in pattern matches; it still counts as a key
+ * ID when a file is paired, so a secret beside it is paired with no other.
+ */
+const AWS_KEY_ID_PATTERNS: ReadonlySet<string> = new Set([AWS_SIGNING.keyIdPattern, 'aws-sts']);
+
+/** An AWS access key ID and the secret access key paired with it. */
+interface KeyPair {
+  keyId: string;
+  secret: string;
+}
+
+function counted(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/**
+ * The pair each AWS finding is checked as, or the reason it is not sent. A
+ * file is paired when its findings hold one access key ID and one secret
+ * access key (one value on several lines counts once), and each finding of
+ * either value in that file is checked as that pair. A key ID paired with
+ * different secrets in different files is sent with none of them, so AWS is
+ * never asked about one key ID with two secrets in a scan.
+ */
+function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFinding) => string | undefined): Map<ScanFinding, KeyPair | string> {
+  const { keyIdPattern, secretPattern } = AWS_SIGNING;
+  const files = new Map<string, { keyIds: Map<string, string>; secrets: Set<string>; findings: ScanFinding[] }>();
+  for (const finding of findings) {
+    const isKeyId = AWS_KEY_ID_PATTERNS.has(finding.patternId);
+    if (!isKeyId && finding.patternId !== secretPattern) continue;
+    const value = valueOf(finding);
+    if (value === undefined || value === '') continue;
+    const file = files.get(finding.file) ?? { keyIds: new Map<string, string>(), secrets: new Set<string>(), findings: [] };
+    files.set(finding.file, file);
+    if (isKeyId) file.keyIds.set(value, finding.patternId);
+    else file.secrets.add(value);
+    file.findings.push(finding);
+  }
+
+  const outcomes = new Map<ScanFinding, KeyPair | string>();
+  const secretsOfKeyId = new Map<string, Set<string>>();
+  for (const { keyIds, secrets, findings: inFile } of files.values()) {
+    // [value, pattern id] of the file's one key ID, and its one secret.
+    const onlyKeyId = keyIds.size === 1 ? [...keyIds][0] : undefined;
+    const onlySecret = secrets.size === 1 ? [...secrets][0] : undefined;
+    for (const finding of inFile) {
+      const isSecret = finding.patternId === secretPattern;
+      let outcome: KeyPair | string;
+      if (isSecret && keyIds.size === 0) outcome = `the file has no ${patternNameOf(keyIdPattern)} finding to pair it with`;
+      else if (!isSecret && secrets.size === 0) outcome = `the file has no ${patternNameOf(secretPattern)} finding to sign the request with`;
+      else if (onlyKeyId === undefined || onlySecret === undefined) {
+        outcome = `the file's findings hold ${counted(keyIds.size, 'AWS access key ID', 'AWS access key IDs')} and `
+          + `${counted(secrets.size, 'secret access key', 'secret access keys')}, and a pair is formed only from one of each`;
+      } else if (onlyKeyId[1] !== keyIdPattern) {
+        outcome = `the file's access key ID is an ${patternNameOf(onlyKeyId[1])}, which STS takes only with its session token`;
+      } else {
+        outcome = { keyId: onlyKeyId[0], secret: onlySecret };
+        secretsOfKeyId.set(onlyKeyId[0], (secretsOfKeyId.get(onlyKeyId[0]) ?? new Set<string>()).add(onlySecret));
+      }
+      outcomes.set(finding, outcome);
+    }
+  }
+  for (const [finding, outcome] of outcomes) {
+    if (typeof outcome === 'string') continue;
+    const secretCount = secretsOfKeyId.get(outcome.keyId)?.size ?? 1;
+    if (secretCount > 1) {
+      outcomes.set(finding, `the access key ID is paired with ${secretCount} different secret access keys in the scanned files, and is sent with none of them`);
+    }
+  }
+  return outcomes;
 }
 
 /**
  * A result for every finding. A type without a probe, or a finding whose
  * value was not kept, is `unchecked` and sends nothing. The same value found
  * in several places is one credential: its host is asked once, and each
- * finding that carries it receives that answer.
+ * finding that carries it receives that answer. An AWS access key ID and
+ * secret access key are one credential when `awsPairs` pairs them, and each
+ * finding of either is given the pair's answer.
  */
 export async function checkFindings(
   findings: readonly ScanFinding[],
@@ -613,9 +820,11 @@ export async function checkFindings(
   deps: ProbeDeps = {},
 ): Promise<Map<ScanFinding, ValidityResult>> {
   const results = new Map<ScanFinding, ValidityResult>();
-  const pending = new Map<string, { patternId: string; value: string; findings: ScanFinding[] }>();
+  const pending = new Map<string, { run: () => Promise<ValidityResult>; findings: ScanFinding[] }>();
+  const pairs = awsPairs(findings, valueOf);
   for (const finding of findings) {
-    if (!probeFor(finding.patternId)) {
+    const probe = probeFor(finding.patternId);
+    if (!probe) {
       results.set(finding, { state: 'unchecked', detail: `no validity probe for ${finding.patternName}` });
       continue;
     }
@@ -624,17 +833,31 @@ export async function checkFindings(
       results.set(finding, { state: 'unchecked', detail: 'the matched value was not kept for checking' });
       continue;
     }
-    const key = `${finding.patternId}\u0000${value}`;
+    let key: string;
+    let run: () => Promise<ValidityResult>;
+    if (probe.signing) {
+      const pair = pairs.get(finding) ?? 'it was not paired';
+      if (typeof pair === 'string') {
+        results.set(finding, { state: 'unchecked', detail: `not sent: ${pair}` });
+        continue;
+      }
+      // Pattern ids hold no NUL, so a pair's key never meets a single value's.
+      key = `\u0000${pair.keyId}\u0000${pair.secret}`;
+      run = () => probeAwsKeyPair(pair.keyId, pair.secret, deps);
+    } else {
+      key = `${finding.patternId}\u0000${value}`;
+      run = () => probeCredential(finding.patternId, value, deps);
+    }
     const entry = pending.get(key);
     if (entry) entry.findings.push(finding);
-    else pending.set(key, { patternId: finding.patternId, value, findings: [finding] });
+    else pending.set(key, { run, findings: [finding] });
   }
 
   const queue = [...pending.values()];
   const workers = Math.max(1, Math.min(deps.concurrency ?? DEFAULT_CONCURRENCY, queue.length));
   await Promise.all(Array.from({ length: workers }, async () => {
     for (let job = queue.shift(); job !== undefined; job = queue.shift()) {
-      const result = await probeCredential(job.patternId, job.value, deps);
+      const result = await job.run();
       for (const finding of job.findings) results.set(finding, { ...result });
     }
   }));
@@ -712,13 +935,20 @@ export function validityHelpLines(): string[] {
     ...rows,
     ...helpParagraph('Types not listed are reported as not checked, and nothing is sent for them. Without the flag, '
       + 'no credential is sent anywhere. live: the host answered 200. rejected: it answered 401 (Slack: '
-      + 'ok: false in a 200; Google: invalid_token in a 400). unknown: any other answer, or none.'),
+      + 'ok: false in a 200; Google: invalid_token in a 400; AWS: InvalidClientTokenId or '
+      + 'SignatureDoesNotMatch in a 403). unknown: any other answer, or none.'),
     ...helpParagraph('A webhook URL is itself the credential: the path of the found URL goes to the host above, and '
       + 'nothing else from it. Discord: a GET of the webhook, its read-only endpoint, sent to discord.com '
       + 'whether the URL named discord.com or discordapp.com; 404 Unknown Webhook reads rejected. Slack: a '
       + 'POST whose body is {}, a message with no text, which Slack refuses before posting anything; a '
       + '400 for that refusal (no_text) reads live, and invalid_token, no_service or no_team read rejected.'),
+    ...helpParagraph('An AWS key is checked as a pair: the access key ID and the secret access key found with it '
+      + 'in one file, when the file holds exactly one of each. The request, GetCallerIdentity, is signed with '
+      + 'the secret (Signature Version 4): the key ID and the signature are sent, and the secret is not. A '
+      + 'SignatureDoesNotMatch that names the request time reads unknown; check the clock.'),
     ...helpParagraph('A token a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com, '
-      + "which did not issue it; read the answer as that host's. The answer does not change the exit code."),
+      + 'which did not issue it, and a key from the AWS China or GovCloud partition still goes to '
+      + "sts.amazonaws.com, whose partition did not issue it; read the answer as that host's. The answer "
+      + 'does not change the exit code.'),
   ];
 }
