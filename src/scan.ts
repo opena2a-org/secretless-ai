@@ -46,15 +46,38 @@ export interface ScanFinding {
 }
 
 /**
- * Matched values, kept only under `ScanOptions.retainValues`. A WeakMap keyed
- * on the finding object: not a property, so `JSON.stringify(finding)` and the
+ * Matched values, kept only under `ScanOptions.retainValues`, each with the
+ * character after it on its line (`keepMatchedValue`). A WeakMap keyed on the
+ * finding object: not a property, so `JSON.stringify(finding)` and the
  * renderers never see it, and it is released with the finding.
  */
-const MATCHED_VALUES = new WeakMap<ScanFinding, string>();
+const MATCHED_VALUES = new WeakMap<ScanFinding, { value: string; charAfter: string | undefined }>();
 
 /** The value a finding matched, when the scan was run with `retainValues`; undefined otherwise. */
 export function matchedValueOf(finding: ScanFinding): string | undefined {
-  return MATCHED_VALUES.get(finding);
+  return MATCHED_VALUES.get(finding)?.value;
+}
+
+/**
+ * The character after a finding's matched value on its line, or '' when the
+ * value ends the line, kept with the value under `retainValues`. For a
+ * pattern that ends in an unbounded run of a character class, as openai-proj
+ * does, it is the character the run stopped at, one outside the class; when
+ * the credential can hold it, the value may be only the part of the
+ * credential before it. Undefined when no value was kept, and for a value
+ * taken from a pattern's capture group, whose end the match does not give.
+ */
+export function charAfterValueOf(finding: ScanFinding): string | undefined {
+  return MATCHED_VALUES.get(finding)?.charAfter;
+}
+
+/** Keep a finding's matched value, as `retainValues` asks: the capture group when the pattern has one, else the match. */
+function keepMatchedValue(finding: ScanFinding, match: RegExpMatchArray): void {
+  const fromGroup = match[1] !== undefined;
+  const charAfter = !fromGroup && match.index !== undefined && match.input !== undefined
+    ? match.input.charAt(match.index + match[0].length)
+    : undefined;
+  MATCHED_VALUES.set(finding, { value: match[1] ?? match[0], charAfter });
 }
 
 /** Per-pattern fix guidance. Tells users exactly how to fix each finding. */
@@ -200,7 +223,8 @@ export interface ScanOptions {
    */
   confidenceFactors?: boolean;
   /**
-   * Keep each finding's matched value reachable through `matchedValueOf()`.
+   * Keep each finding's matched value reachable through `matchedValueOf()`,
+   * and the character after it through `charAfterValueOf()`.
    * Default: false, and then no value is kept anywhere. The value is held
    * beside the finding, never on it, so a finding printed or serialized to
    * JSON carries no more than it does without this option. Backs
@@ -613,7 +637,7 @@ function scanSingleFile(
               looksLikeFixture: false,
               ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
             };
-            if (options?.retainValues) MATCHED_VALUES.set(finding, match[1] ?? match[0]);
+            if (options?.retainValues) keepMatchedValue(finding, match);
             findings.push(finding);
           }
           break;
@@ -732,7 +756,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       looksLikeFixture,
       ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
     };
-    if (options?.retainValues) MATCHED_VALUES.set(finding, match[1] ?? match[0]);
+    if (options?.retainValues) keepMatchedValue(finding, match);
     return finding;
   }
 
