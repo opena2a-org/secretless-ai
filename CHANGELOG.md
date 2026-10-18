@@ -44,9 +44,10 @@ before one, and the finding says so. `--json` carries the
 same as `validity` on each finding and counts under `summary.validity`,
 only when the flag is given; `--format sarif` carries it as
 `properties.validity` on each result (#448). The same value, or the
-same AWS pair, found in several files is sent once, and an AWS access key ID
+same AWS pair, found in several files is sent once. An AWS access key ID
 paired with different secret access keys in different files is sent with none
-of them. Severity, confidence and the exit code do not change with the
+of them, and so is a secret access key paired with different access key IDs.
+Severity, confidence and the exit code do not change with the
 answer. For library callers, `probeCredential` and
 `checkFindings`, exported from the package, take a `fetchImpl` in place of
 the global `fetch` and the bound as `timeoutMs`, 10 seconds by default. An
