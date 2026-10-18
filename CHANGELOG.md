@@ -7,17 +7,23 @@ Off by default: without the flag the scanner keeps no matched value, sends no
 credential anywhere, and prints what it printed before. With it, each finding
 whose type has a probe is sent, over HTTPS, to that provider's own API and to
 no other host (`api.github.com/user` for a GitHub token,
-`api.anthropic.com/v1/models` for an Anthropic key, `slack.com/api/auth.test`
-for a Slack token; `scan --help` lists the host for each of the 20 credential
-types covered, from 15 providers), with redirects left unfollowed and a 10
-second bound on each exchange. The answer is printed under the finding as
-`Validity: live` when the host answered 200, `rejected` when it answered 401,
+`gitlab.com/api/v4/user` for a GitLab token, `api.anthropic.com/v1/models`
+for an Anthropic key, `oauth2.googleapis.com/tokeninfo` for a Google OAuth
+access token, `slack.com/api/auth.test` for a Slack token; `scan --help`
+lists the endpoint for each of the 25 credential types covered, from 19
+providers), with redirects left unfollowed and a 10 second bound on each
+exchange. The answer is printed under the finding as `Validity: live` when
+the host answered 200, `rejected` when it answered 401 (Slack states a
+rejection in the body of a 200, and Google's tokeninfo in the body of a 400),
 and `unknown` for any other answer or none, with the status or reason named.
-Types without a probe (connection strings, private keys, AWS keys and webhooks
-among them) read `not checked`, and nothing is sent for them. `--json` carries
-the same as `validity` on each finding and counts under `summary.validity`,
-only when the flag is given. The same value found in several files is sent
-once. Severity, confidence and the exit code do not change with the answer.
+A token a self-managed GitHub or GitLab instance issued still goes to
+api.github.com or gitlab.com, which did not issue it; the answer is that
+host's. Types without a probe (connection strings, private keys, AWS keys and
+webhooks among them) read `not checked`, and nothing is sent for them.
+`--json` carries the same as `validity` on each finding and counts under
+`summary.validity`, only when the flag is given. The same value found in
+several files is sent once. Severity, confidence and the exit code do not
+change with the answer.
 
 **`scan --format sarif` writes the findings as SARIF 2.1.0.** The document
 holds one result per finding, with its file, line, pattern name and fix and

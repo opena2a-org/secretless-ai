@@ -25,8 +25,10 @@ import type { ProbeFetch, ProbeFetchInit } from '../validity';
 // source line has the shape of a provider token. Not marked FAKE: a marked
 // value is hidden as a placeholder, and these tests need the findings.
 const GITHUB = ['ghp_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'].join('');
-/** A GitLab token: a pattern no probe covers, so it reads "not checked". */
+/** A GitLab token: checked at gitlab.com, sent in the PRIVATE-TOKEN header rather than as a bearer. */
 const GITLAB = ['glpat-', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].join('');
+/** A Docker Hub token: a pattern no probe covers, so it reads "not checked". */
+const DOCKERHUB = ['dckr_pat_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].join('');
 
 interface Call { url: string; init: ProbeFetchInit }
 
@@ -73,7 +75,7 @@ describe('runScan --check-validity', () => {
   });
 
   it('without the flag: no request, no validity key in --json, no Validity line, exit 1 as before', async () => {
-    const dir = project({ 'config.js': `const a = "${GITHUB}";\nconst b = "${GITLAB}";\n` });
+    const dir = project({ 'config.js': `const a = "${GITHUB}";\nconst b = "${DOCKERHUB}";\n` });
     const code = await runScan(dir, { json: true });
     const doc = JSON.parse(out.join('\n'));
     expect(code).toBe(1);
@@ -88,27 +90,32 @@ describe('runScan --check-validity', () => {
   });
 
   it('with the flag, --json carries the answer on each finding and counts in the summary, without the value, and exit stays 1', async () => {
-    const dir = project({ 'config.js': `const a = "${GITHUB}";\nconst b = "${GITLAB}";\n` });
+    const dir = project({ 'config.js': `const a = "${GITHUB}";\nconst b = "${GITLAB}";\nconst c = "${DOCKERHUB}";\n` });
     const calls: Call[] = [];
     const code = await runScan(dir, { json: true, checkValidity: true, validityDeps: { fetchImpl: answering(200, calls) } });
     const text = out.join('\n');
     const doc = JSON.parse(text);
     expect(code).toBe(1);
-    expect(text).not.toContain(GITHUB);
-    expect(text).not.toContain(GITLAB);
+    for (const value of [GITHUB, GITLAB, DOCKERHUB]) expect(text).not.toContain(value);
 
-    const github = doc.findings.find((f: { patternId: string }) => f.patternId === 'github-pat');
-    const gitlab = doc.findings.find((f: { patternId: string }) => f.patternId === 'gitlab');
-    expect(github.validity).toEqual({ state: 'live', host: 'api.github.com', status: 200, detail: 'api.github.com answered 200' });
-    expect(gitlab.validity).toEqual({ state: 'unchecked', detail: 'no validity probe for GitLab PAT' });
-    expect(doc.summary.validity).toEqual({ live: 1, rejected: 0, unknown: 0, unchecked: 1, hosts: ['api.github.com'] });
+    const byId = (id: string) => doc.findings.find((f: { patternId: string }) => f.patternId === id);
+    expect(byId('github-pat').validity).toEqual({ state: 'live', host: 'api.github.com', status: 200, detail: 'api.github.com answered 200' });
+    expect(byId('gitlab').validity).toEqual({ state: 'live', host: 'gitlab.com', status: 200, detail: 'gitlab.com answered 200' });
+    expect(byId('dockerhub').validity).toEqual({ state: 'unchecked', detail: 'no validity probe for Docker Hub PAT' });
+    expect(doc.summary.validity).toEqual({ live: 2, rejected: 0, unknown: 0, unchecked: 1, hosts: ['api.github.com', 'gitlab.com'] });
 
-    // The value went to the issuing host, in the bearer header, and nowhere else.
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('https://api.github.com/user');
-    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${GITHUB}`);
-    const { Authorization: _auth, ...otherHeaders } = calls[0].init.headers;
-    expect(JSON.stringify({ url: calls[0].url, headers: otherHeaders })).not.toContain(GITHUB);
+    // Each value went to its issuing host, in the one header that host reads, and nowhere else.
+    expect(calls).toHaveLength(2);
+    const github = calls.find((call) => call.url === 'https://api.github.com/user');
+    const gitlab = calls.find((call) => call.url === 'https://gitlab.com/api/v4/user');
+    expect(github?.init.headers.Authorization).toBe(`Bearer ${GITHUB}`);
+    expect(gitlab?.init.headers['PRIVATE-TOKEN']).toBe(GITLAB);
+    expect(gitlab?.init.headers.Authorization).toBeUndefined();
+    for (const call of calls) {
+      const { Authorization: _auth, 'PRIVATE-TOKEN': _private, ...otherHeaders } = call.init.headers;
+      const elsewhere = JSON.stringify({ url: call.url, headers: otherHeaders });
+      for (const value of [GITHUB, GITLAB, DOCKERHUB]) expect(elsewhere).not.toContain(value);
+    }
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -149,15 +156,15 @@ describe('runScan --check-validity', () => {
   });
 
   it('the human report prints a Validity line under each finding and one in the header, without the value, and exit stays 1', async () => {
-    const dir = project({ 'config.js': `const a = "${GITHUB}";\nconst b = "${GITLAB}";\n` });
+    const dir = project({ 'config.js': `const a = "${GITHUB}";\nconst b = "${DOCKERHUB}";\n` });
     const code = await runScan(dir, { checkValidity: true, validityDeps: { fetchImpl: answering(200) } });
     const text = out.join('\n');
     expect(code).toBe(1);
     expect(text).not.toContain(GITHUB);
-    expect(text).not.toContain(GITLAB);
+    expect(text).not.toContain(DOCKERHUB);
     expect(text).toContain('Validity: 1 live, 1 not checked (asked api.github.com)');
     expect(text).toContain('Validity: live (api.github.com answered 200)');
-    expect(text).toContain('Validity: not checked (no validity probe for GitLab PAT)');
+    expect(text).toContain('Validity: not checked (no validity probe for Docker Hub PAT)');
     expect(text).toContain('Confidence:');
     expect(text).toContain('Fix:');
   });
