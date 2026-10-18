@@ -2,7 +2,8 @@
  * `scan --check-validity` (src/validity.ts). What these tests hold:
  *
  * - The registry covers real pattern ids, each by one probe, and names no
- *   probe for the types a request could not answer or would act on.
+ *   probe for the types a request could not answer or would act on, or
+ *   whose matched value is not the whole credential.
  * - A request goes to the probe's host over HTTPS with the value in exactly
  *   one header or the path, never the query, and redirects unfollowed.
  * - 200 is live, 401 is rejected, anything else, an error or a timeout is
@@ -108,6 +109,8 @@ describe('the probe registry', () => {
       'aws-sts', 'azure', 'supabase', 'twilio', 'dockerhub', 'bitbucket', 'google', 'slack-app',
       // The one call these accept would act: rotate the token, run a pipeline; a Stripe webhook secret only signs.
       'stripe-webhook', 'github-refresh', 'gitlab-pipeline',
+      // The pattern keeps only part of the value: a Sentry org auth token is sntrys_<payload>_<secret>, and sntrys_[a-zA-Z0-9]{40,} stops at that underscore.
+      'sentry',
     ]) {
       expect(probeFor(id), id).toBeUndefined();
     }
@@ -247,17 +250,19 @@ describe('probeCredential', () => {
     expect(result.state).toBe('rejected');
   });
 
-  it('sends a Sentry token as a bearer header to sentry.io/api/0/organizations/, read by status', async () => {
+  it('does not check a Sentry auth token: the pattern stops before the secret part, so the scanner never keeps the whole token', async () => {
+    // A Sentry org auth token is sntrys_<base64 JSON payload>_<secret>. This value has that shape, made of a legible placeholder.
+    const token = ['sntrys_', 'a'.repeat(40), '_', 'FAKE'].join('');
+    const kept = CREDENTIAL_PATTERNS.find((p) => p.id === 'sentry')!.regex.exec(token)![0];
+    expect(kept).toBe(token.slice(0, token.lastIndexOf('_')));
+    expect(probeFor('sentry')).toBeUndefined();
     const calls: Call[] = [];
-    const live = await probeCredential('sentry', VALUE, { fetchImpl: answering(200, '', calls) });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('https://sentry.io/api/0/organizations/');
-    expect(calls[0].init.method).toBe('GET');
-    expect(calls[0].init.redirect).toBe('manual');
-    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${VALUE}`);
-    expect(live).toEqual({ state: 'live', host: 'sentry.io', status: 200, detail: 'sentry.io answered 200' });
-    const rejected = await probeCredential('sentry', VALUE, { fetchImpl: answering(401, '{"detail":"Invalid token"}') });
-    expect(rejected).toEqual({ state: 'rejected', host: 'sentry.io', status: 401, detail: 'sentry.io answered 401' });
+    const finding = findingOf('sentry');
+    const results = await checkFindings([finding], () => kept, { fetchImpl: answering(200, '', calls) });
+    expect(results.get(finding)).toEqual({ state: 'unchecked', detail: 'no validity probe for Sentry Auth Token' });
+    expect(await probeCredential('sentry', kept, { fetchImpl: answering(200, '', calls) }))
+      .toEqual({ state: 'unchecked', detail: 'no validity probe for Sentry Auth Token' });
+    expect(calls).toHaveLength(0);
   });
 
   it('sends a Linear key in the Authorization header with no scheme, as a POST of a fixed viewer query, read by status', async () => {
