@@ -191,6 +191,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--max-files': ['<n>', 'Raise the file-count cap (default 5000)'],
       '--max-file-size': ['<size>', 'Raise the per-file size cap (e.g. 20mb, 500kb)'],
       '--json': JSON_DOC,
+      '--format': ['<json|sarif>', 'JSON, or SARIF 2.1.0 for GitHub code scanning'],
     },
     notes: scanCoverageNotes(),
   },

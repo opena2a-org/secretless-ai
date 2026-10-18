@@ -501,7 +501,8 @@ const GLOBAL_CONFIG_FILES = [
 
 /**
  * @internal The home-directory files every directory scan also reads, as
- * `scan --help` names them. Read by the help text and its tests only.
+ * `scan --help` names them. Read by the help text, its tests, and the SARIF
+ * writer, which gives a finding in one of them as an absolute URI.
  */
 export const GLOBAL_CONFIG_LABELS: readonly string[] = GLOBAL_CONFIG_FILES.map((g) => g.label);
 

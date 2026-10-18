@@ -43,6 +43,7 @@ Run it in a project root. It needs Node.js 20.19 or later and exits 1 when it le
 
 - [Store a secret and use it by name](#store-secrets-and-use-them-in-ai-sessions)
 - [Scan for hardcoded credentials](docs/commands.md#scan-for-hardcoded-credentials)
+- [Send scan findings to the GitHub Security tab](docs/scanning.md#scan-in-ci)
 - [Encrypt keys in MCP configs](docs/commands.md#mcp-server-protection)
 - [Move secrets to another machine](docs/managing-secrets.md#move-secrets-to-another-machine)
 - [Track an exposed key until rotated](docs/managing-secrets.md#track-an-exposed-key-until-it-is-rotated)

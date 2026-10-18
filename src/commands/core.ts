@@ -3,6 +3,7 @@ import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips, unreadReason, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
+import { scanToSarif } from '../sarif';
 import { status, protection, USER_SETTINGS_PATH } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
@@ -762,8 +763,11 @@ function offeredAsScanOneFile(filePath: string): boolean {
   return !SCAN_ONE_FILE_NAMES_NOT_OFFERED.has(name) && !IGNORE_FILE_NAME.test(name);
 }
 
-export async function runScan(projectDir: string, options?: { includeTests?: boolean; includeConfig?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
+export async function runScan(projectDir: string, options?: { includeTests?: boolean; includeConfig?: boolean; explain?: boolean; noIgnore?: boolean; minConfidence?: number; json?: boolean; format?: 'json' | 'sarif'; showPlaceholders?: boolean; maxFiles?: number; maxFileSizeBytes?: number }): Promise<number> {
   const nodeFs = require('fs') as typeof import('fs');
+  // `--json` and `--format sarif` both write one machine-readable document to
+  // stdout and nothing else; the human report is for neither.
+  const machine = options?.json === true || options?.format === 'sarif';
   const scanOpts = {
     includeTests: options?.includeTests,
     includeConfig: options?.includeConfig,
@@ -775,16 +779,17 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     showPlaceholders: options?.showPlaceholders,
     maxSourceFiles: options?.maxFiles,
     maxFileSizeBytes: options?.maxFileSizeBytes,
-    // The detailed view prints what the score was made of. Never with --json,
-    // whose findings keep their shape.
-    confidenceFactors: options?.explain === true && !options?.json,
+    // The detailed view prints what the score was made of. Never with --json
+    // or --format sarif, whose findings keep their shape.
+    confidenceFactors: options?.explain === true && !machine,
   };
   const capUsed = options?.maxFiles ?? 5000;
 
   // --json: emit a single valid JSON document to stdout and nothing else, so the
   // output is machine-parseable (issue #63 — the flag previously printed the human
   // report). Errors go to stderr; exit code still signals findings for CI gating.
-  if (options?.json) {
+  // --format sarif: the same report, written as SARIF 2.1.0 (src/sarif.ts).
+  if (machine) {
     if (refuseMissingTarget(projectDir, 'scan', true)) return 1;
     const stats = {
       placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
@@ -795,7 +800,7 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
     };
     const findings = scan(projectDir, scanOpts, stats);
     const critical = findings.filter(f => f.severity === 'critical').length;
-    console.log(JSON.stringify({
+    const report = {
       tool: 'secretless-ai',
       version: require('../../package.json').version,
       findings,
@@ -852,7 +857,13 @@ export async function runScan(projectDir: string, options?: { includeTests?: boo
       skippedUnsupportedFiles: stats.skips.files,
       notEnteredDirs: stats.skips.dirs,
       unscannedConfigFiles: stats.unscannedConfig.files,
-    }, null, 2));
+    };
+    // SARIF is built from the same report, so the two formats cannot disagree
+    // about a finding.
+    const document = options?.format === 'sarif'
+      ? scanToSarif({ version: report.version, projectDir, findings, summary: report.summary })
+      : report;
+    console.log(JSON.stringify(document, null, 2));
     // An incomplete scan is not a pass. `total: 0` with `truncated: true`, an
     // unreadable file, a file skipped for size, or a path the tree's own
     // ignore file excluded means part of the tree was never read, so exiting
