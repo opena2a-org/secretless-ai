@@ -7,6 +7,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { formatAimStatus } from './broker';
+import { socketPathMaxBytes } from '../broker/daemon';
 
 describe('formatAimStatus', () => {
   it('reports "not configured" when aimConfigured is false', () => {
@@ -87,7 +88,8 @@ describe('broker start --grant-file (built CLI)', () => {
   beforeEach(() => {
     // Under /tmp on POSIX rather than os.tmpdir(): the broker's socket path is 45 bytes longer
     // than the directory this is made in, and `broker start` refuses a socket path past the
-    // platform's limit (104 bytes on macOS), so a long TMPDIR would decide these cases.
+    // platform's limit (104 bytes on macOS under a libuv before 1.53.0), so a long TMPDIR would
+    // decide these cases.
     home = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'broker-cli-'));
   });
 
@@ -107,18 +109,24 @@ describe('broker start --grant-file (built CLI)', () => {
     return { status: res.status, stdout: res.stdout, stderr: res.stderr };
   }
 
-  // The socket path limit `broker start` checks on this platform; undefined where it checks none.
-  const socketPathMax = ({ darwin: 104, linux: 108 } as Partial<Record<NodeJS.Platform, number>>)[
-    process.platform
-  ];
+  // The socket path limit `broker start` checks under this platform and Node; undefined where it
+  // checks none.
+  const socketPathMax = socketPathMaxBytes();
 
   it.skipIf(socketPathMax === undefined)(
     'refuses to start under a HOME that puts the socket path past the limit: exit 1, the length and the limit named, no config directory made',
     () => {
-      const longHome = path.join(home, 'h'.repeat(120));
+      // A HOME that puts broker.sock one byte past the limit of the running Node: 104 bytes on
+      // macOS under a libuv before 1.53.0, 253 under 1.53.0 (#441), 108 on Linux.
+      const suffixBytes = Buffer.byteLength('/.secretless-ai/broker.sock');
+      const longHome = path.join(
+        home,
+        'h'.repeat(socketPathMax! + 1 - suffixBytes - Buffer.byteLength(home) - 1),
+      );
       fs.mkdirSync(longHome);
       const socketPath = path.join(longHome, '.secretless-ai', 'broker.sock');
-      const homeMax = socketPathMax! - Buffer.byteLength('/.secretless-ai/broker.sock');
+      expect(Buffer.byteLength(socketPath)).toBe(socketPathMax! + 1);
+      const homeMax = socketPathMax! - suffixBytes;
 
       const res = brokerStart([], longHome);
 

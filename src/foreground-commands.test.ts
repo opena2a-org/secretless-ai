@@ -34,7 +34,8 @@ afterEach(() => {
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
-// `broker start` refuses a socket path longer than this on macOS (src/broker/daemon.ts).
+// The macOS socket path limit `broker start` checks under a libuv before 1.53.0
+// (src/broker/daemon.ts); a HOME within it also fits the 253-byte limit of libuv 1.53.0.
 const SOCKET_PATH_MAX = 104;
 
 /**

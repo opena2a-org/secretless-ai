@@ -28,7 +28,8 @@ const DAEMON_PATH = path.join(REPO_ROOT, 'dist', 'broker', 'daemon.js');
 const hasBuild = fs.existsSync(CLI_PATH) && fs.existsSync(DAEMON_PATH);
 const itIfBuilt = hasBuild ? it : it.skip;
 const TEST_TIMEOUT_MS = 30_000;
-// `broker start` refuses a socket path longer than this on macOS (src/broker/daemon.ts).
+// The macOS socket path limit `broker start` checks under a libuv before 1.53.0
+// (src/broker/daemon.ts); a HOME within it also fits the 253-byte limit of libuv 1.53.0.
 const SOCKET_PATH_MAX = 104;
 
 const README = 'README.md';
