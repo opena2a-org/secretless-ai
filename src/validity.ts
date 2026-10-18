@@ -178,6 +178,17 @@ function plainErrorIn(body: string): string {
 /** Linear's GraphQL takes a read-only viewer query; it carries no credential. */
 const LINEAR_VIEWER_QUERY = JSON.stringify({ query: '{ viewer { id } }' });
 
+/**
+ * The shortest OpenAI project key the published scanner rules describe:
+ * sk-proj-, then 58 or 74 characters, T3BlbkFJ, and 58 or 74 more, from an
+ * alphabet that holds - and _ (gitleaks' openai-api-key rule; TruffleHog's
+ * OpenAI detector names the same alphabet without a length). OpenAI
+ * publishes no format. The openai-proj pattern stops at - or _, so a value
+ * shorter than this may be only the part of a key before one of them, which
+ * api.openai.com would refuse whatever the key's state; it is not sent.
+ */
+const OPENAI_PROJECT_KEY_MIN_LENGTH = 132;
+
 /** STS GetCallerIdentity as a form body. It carries no value. */
 const STS_GET_CALLER_IDENTITY = 'Action=GetCallerIdentity&Version=2011-06-15';
 
@@ -282,6 +293,11 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     method: 'GET',
     path: '/v1/models',
     headers: BEARER,
+    // A project key can hold - or _, where its pattern stops; a value too
+    // short to be a whole key may be the part before one, and is not sent.
+    skip: (value) => (value.startsWith('sk-proj-') && value.length < OPENAI_PROJECT_KEY_MIN_LENGTH
+      ? `a value shorter than ${OPENAI_PROJECT_KEY_MIN_LENGTH} characters may be only the part of an OpenAI project key before a - or _, where the pattern stops`
+      : null),
   },
   {
     patterns: ['groq'],

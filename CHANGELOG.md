@@ -36,8 +36,12 @@ or gitlab.com, which did not issue it, and a key from the AWS China or
 GovCloud partition still goes to sts.amazonaws.com, whose partition did not
 issue it; the answer is that host's. Types without a probe (connection
 strings, private keys, AWS STS temporary keys and Stripe webhook signing
-secrets among them) read `not checked`, and nothing is sent for them. `--json` carries the same as `validity` on each finding and counts
-under `summary.validity`, only when the flag is given. The same value, or the
+secrets among them) read `not checked`, and nothing is sent for them. An
+OpenAI project key value shorter than 132 characters is not sent either:
+the key can hold `-` or `_`, where the pattern stops, so such a value may
+be only the part before one, and the finding says so. `--json` carries the
+same as `validity` on each finding and counts under `summary.validity`,
+only when the flag is given. The same value, or the
 same AWS pair, found in several files is sent once, and an AWS access key ID
 found with different secret access keys in different files is sent with none
 of them. Severity, confidence and the exit code do not change with the
