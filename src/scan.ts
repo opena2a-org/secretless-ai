@@ -205,7 +205,8 @@ export interface ScanOptions {
    * beside the finding, never on it, so a finding printed or serialized to
    * JSON carries no more than it does without this option. Backs
    * `scan --check-validity`, which hands the value to the credential's own
-   * provider (src/validity.ts).
+   * provider, or for an AWS secret access key signs the request with it and
+   * sends it nowhere (src/validity.ts).
    */
   retainValues?: boolean;
 }

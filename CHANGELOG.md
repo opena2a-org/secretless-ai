@@ -10,29 +10,38 @@ no other host (`api.github.com/user` for a GitHub token,
 `gitlab.com/api/v4/user` for a GitLab token, `api.anthropic.com/v1/models`
 for an Anthropic key, `oauth2.googleapis.com/tokeninfo` for a Google OAuth
 access token, `slack.com/api/auth.test` for a Slack token; `scan --help`
-lists the endpoint for each of the 29 credential types covered, from 21
+lists the endpoint for each of the 31 credential types covered, from 22
 providers), with redirects left unfollowed and a 10 second bound on each
 exchange. A webhook URL is itself the credential: the path of the found URL
 goes to the host that serves it, and nothing else from it. A Discord webhook
 URL is fetched with GET, the webhook's read-only endpoint, at discord.com
 whether the URL named discord.com or discordapp.com; a Slack webhook URL is
 sent a POST whose body is `{}`, a message with no text, which Slack refuses
-before posting anything. The answer is printed under the finding as
-`Validity: live` when the host answered 200 (or, for a Slack webhook, when
-hooks.slack.com refused the empty message with 400 `no_text` rather than
-refusing the URL), `rejected` when it answered 401 (Slack states a rejection
-in the body of a 200, Google's tokeninfo in the body of a 400, Discord's
-webhook endpoint as 404 Unknown Webhook, and hooks.slack.com as 403
-`invalid_token` or 404 `no_service` or `no_team`), and `unknown` for any
-other answer or none, with the status or reason named. A token a
+before posting anything. An AWS key is checked as a pair: the access key ID
+and the secret access key found with it in one file, when the file's
+findings hold exactly one of each, make one GetCallerIdentity request to
+`sts.amazonaws.com` signed with the secret (Signature Version 4), so the key
+ID and the signature are sent and the secret is not. The answer is printed
+under the finding as `Validity: live` when the host answered 200 (or, for a
+Slack webhook, when hooks.slack.com refused the empty message with 400
+`no_text` rather than refusing the URL), `rejected` when it answered 401
+(Slack states a rejection in the body of a 200, Google's tokeninfo in the
+body of a 400, Discord's webhook endpoint as 404 Unknown Webhook,
+hooks.slack.com as 403 `invalid_token` or 404 `no_service` or `no_team`, and
+AWS STS as 403 `InvalidClientTokenId` or `SignatureDoesNotMatch`), and
+`unknown` for any other answer or none, a `SignatureDoesNotMatch` that names
+the request time among them, with the status or reason named. A token a
 self-managed GitHub or GitLab instance issued still goes to api.github.com
-or gitlab.com, which did not issue it; the answer is that host's. Types
-without a probe (connection strings, private keys, AWS keys and Stripe
-webhook signing secrets among them) read `not checked`, and nothing is sent
-for them. `--json` carries the same as `validity` on each finding and counts
-under `summary.validity`, only when the flag is given. The same value found
-in several files is sent once. Severity, confidence and the exit code do not
-change with the answer.
+or gitlab.com, which did not issue it, and a key from the AWS China or
+GovCloud partition still goes to sts.amazonaws.com, whose partition did not
+issue it; the answer is that host's. Types without a probe (connection
+strings, private keys, AWS STS temporary keys and Stripe webhook signing
+secrets among them) read `not checked`, and nothing is sent for them. `--json` carries the same as `validity` on each finding and counts
+under `summary.validity`, only when the flag is given. The same value, or the
+same AWS pair, found in several files is sent once, and an AWS access key ID
+found with different secret access keys in different files is sent with none
+of them. Severity, confidence and the exit code do not change with the
+answer.
 
 **`scan --format sarif` writes the findings as SARIF 2.1.0.** The document
 holds one result per finding, with its file, line, pattern name and fix and

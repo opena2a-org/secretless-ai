@@ -10,9 +10,13 @@
  * - A webhook URL is sent as its own path to the host that serves it, and
  *   to no other host; the Discord and Slack webhook answers are decided as
  *   those hosts state them, and a URL off the host or its path is not sent.
+ * - An AWS access key ID and secret access key found in one file are checked
+ *   as a pair, by a request signed with the secret, which no request holds;
+ *   a file without exactly one of each, or a key ID found with two secrets,
+ *   sends nothing, and an STS answer about the clock is unknown.
  * - No result string holds the value, even when an error message does.
  * - The scanner keeps a matched value only under `retainValues`, and never on
- *   the finding object.
+ *   the finding object; for an AWS secret access key it keeps the secret alone.
  * - The help and docs/commands.md name what the flag contacts.
  */
 import { describe, it, expect, vi } from 'vitest';
@@ -23,9 +27,10 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   VALIDITY_PROBES, VALUE_MARKER, URL_PATH_MARKER, probeFor, buildProbeRequest, notSentReason, probeCredential, checkFindings,
-  summarizeValidity, stateLabel, validityHelpLines, probeEndpoint,
+  probeAwsKeyPair, summarizeValidity, stateLabel, validityHelpLines, probeEndpoint,
   type ProbeFetch, type ProbeFetchInit, type ValidityProbe, type ValidityResult,
 } from './validity';
+import { signSigV4 } from './aws-sigv4';
 import { scan, matchedValueOf, type ScanFinding } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { VERBS, prepareArgv } from './argv';
@@ -33,6 +38,12 @@ import { printCommandHelp } from './command-help';
 
 /** Not a credential: `probeCredential` takes any string, and this one is never scanned. */
 const VALUE = 'not-a-real-token';
+
+/** Not a credential: an AWS key ID and secret for the signed probe. STS knows neither. */
+const KEY_ID = 'NOTAREALKEYID000';
+const SECRET = 'not-a-real-secret';
+/** The time a signed request in these tests is dated by. */
+const SIGNED_AT = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
 
 /** A value each probe sends: the plain token, or for a probe that takes a URL, a URL on its host under its prefix ending in that token. */
 function sampleValueFor(probe: ValidityProbe): string {
@@ -93,8 +104,8 @@ describe('the probe registry', () => {
     for (const id of [
       // A connection string or a key file: no endpoint answers for it.
       'postgres', 'mysql', 'mongodb', 'redis', 'pem-private-key', 'gcp-service-account', 'secretless-bundle', 'pkcs12-keystore',
-      // Needs a second value beside the one found: an AWS secret, an account or user name, a project host, the API a key is enabled for.
-      'aws-access', 'aws-secret', 'aws-sts', 'azure', 'supabase', 'twilio', 'dockerhub', 'bitbucket', 'google', 'slack-app',
+      // Needs a value no pattern matches: a temporary AWS key's session token, an account or user name, a project host, the API a key is enabled for.
+      'aws-sts', 'azure', 'supabase', 'twilio', 'dockerhub', 'bitbucket', 'google', 'slack-app',
       // The one call these accept would act: rotate the token, run a pipeline; a Stripe webhook secret only signs.
       'stripe-webhook', 'github-refresh', 'gitlab-pipeline',
     ]) {
@@ -102,9 +113,25 @@ describe('the probe registry', () => {
     }
   });
 
+  it('checks an AWS access key and secret access key by one probe, signed for STS, and no other probe signs', () => {
+    const aws = probeFor('aws-access');
+    expect(aws).toBeDefined();
+    expect(probeFor('aws-secret')).toBe(aws);
+    expect(aws).toMatchObject({ provider: 'AWS', host: 'sts.amazonaws.com', method: 'POST', path: '/', body: 'Action=GetCallerIdentity&Version=2011-06-15' });
+    expect(aws!.signing).toEqual({ region: 'us-east-1', service: 'sts', keyIdPattern: 'aws-access', secretPattern: 'aws-secret' });
+    expect(VALIDITY_PROBES.filter((p) => p.signing)).toEqual([aws]);
+  });
+
   it('carries one marker per probe: the value marker in the path or one header, or the URL-path marker ending the path', () => {
     for (const probe of VALIDITY_PROBES) {
       const carriers = [probe.path, ...Object.values(probe.headers)].filter((s) => s.includes(VALUE_MARKER) || s.includes(URL_PATH_MARKER));
+      if (probe.signing) {
+        // A signed probe carries no marker: the key ID goes into the signature it builds, and its patterns are the pair.
+        expect(carriers, probe.provider).toEqual([]);
+        expect(probe.patterns, probe.provider).toEqual([probe.signing.keyIdPattern, probe.signing.secretPattern]);
+        expect(probe.body ?? '', probe.provider).not.toContain(VALUE_MARKER);
+        continue;
+      }
       expect(carriers, probe.provider).toHaveLength(1);
       expect(carriers[0].split(VALUE_MARKER).length + carriers[0].split(URL_PATH_MARKER).length, probe.provider).toBe(3);
       if (carriers[0].includes(URL_PATH_MARKER)) {
@@ -123,7 +150,9 @@ describe('the probe registry', () => {
     for (const probe of VALIDITY_PROBES) {
       const value = sampleValueFor(probe);
       expect(notSentReason(probe, value), probe.provider).toBeNull();
-      const request = buildProbeRequest(probe, value);
+      const request = probe.signing ? buildProbeRequest(probe, value, { secret: SECRET, now: SIGNED_AT }) : buildProbeRequest(probe, value);
+      // A signed probe's secret keys the signature and is in no part of the request.
+      expect(JSON.stringify(request), probe.provider).not.toContain(SECRET);
       const url = new URL(request.url);
       expect(url.protocol, probe.provider).toBe('https:');
       expect(url.host, probe.provider).toBe(probe.host);
@@ -492,6 +521,99 @@ describe('a webhook URL is itself the credential', () => {
   });
 });
 
+/** An STS error answer, in the shape sts.amazonaws.com gave one to a signed request with a made-up key ID. */
+function stsError(code: string, message: string): string {
+  return '<ErrorResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">\n  <Error>\n    <Type>Sender</Type>\n'
+    + `    <Code>${code}</Code>\n    <Message>${message}</Message>\n  </Error>\n  <RequestId>(id)</RequestId>\n</ErrorResponse>\n`;
+}
+
+describe('an AWS key is checked as a pair, by a request signed with the secret', () => {
+  const STS_BODY = 'Action=GetCallerIdentity&Version=2011-06-15';
+  const STS_REQUEST = {
+    method: 'POST' as const, host: 'sts.amazonaws.com', path: '/', body: STS_BODY, region: 'us-east-1', service: 'sts',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
+  };
+
+  it('sends one POST of GetCallerIdentity to sts.amazonaws.com, signed for STS in us-east-1, with the secret in no part of it', async () => {
+    const calls: Call[] = [];
+    const result = await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: answering(200, '', calls), now: () => SIGNED_AT });
+    expect(calls).toHaveLength(1);
+    const [{ url, init }] = calls;
+    expect(url).toBe('https://sts.amazonaws.com/');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(STS_BODY);
+    expect(init.redirect).toBe('manual');
+    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded; charset=utf-8');
+    expect(init.headers['X-Amz-Date']).toBe('20260102T030405Z');
+    expect(init.headers.Authorization).toMatch(
+      /^AWS4-HMAC-SHA256 Credential=NOTAREALKEYID000\/20260102\/us-east-1\/sts\/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=[0-9a-f]{64}$/,
+    );
+    expect(init.headers.Authorization).toBe(signSigV4(STS_REQUEST, { accessKeyId: KEY_ID, secretAccessKey: SECRET }, SIGNED_AT).Authorization);
+    expect(init.headers['User-Agent']).toMatch(/^secretless-ai\/\d+\.\d+\.\d+/);
+    expect(JSON.stringify({ url, init: { ...init, signal: undefined } })).not.toContain(SECRET);
+    expect(result).toEqual({ state: 'live', host: 'sts.amazonaws.com', status: 200, detail: 'sts.amazonaws.com answered 200' });
+  });
+
+  it('dates the request by the system clock when no clock is given', async () => {
+    const calls: Call[] = [];
+    const before = Date.now();
+    await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: answering(200, '', calls) });
+    const stamp = calls[0].init.headers['X-Amz-Date'];
+    const dated = Date.parse(stamp.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, '$1-$2-$3T$4:$5:$6Z'));
+    expect(dated).toBeGreaterThanOrEqual(Math.floor(before / 1000) * 1000);
+    expect(dated).toBeLessThanOrEqual(Date.now());
+  });
+
+  it.each([
+    [stsError('InvalidClientTokenId', 'The security token included in the request is invalid.'), 'rejected', 'sts.amazonaws.com answered 403 (InvalidClientTokenId)'],
+    [stsError('SignatureDoesNotMatch', 'The request signature we calculated does not match the signature you provided.'), 'rejected', 'sts.amazonaws.com answered 403 (SignatureDoesNotMatch)'],
+    [stsError('SignatureDoesNotMatch', 'Signature expired: 20261018T184757Z is now earlier than 20261018T193257Z (20261018T194757Z - 15 min.)'), 'unknown',
+      "sts.amazonaws.com answered 403 (SignatureDoesNotMatch: Signature expired); check this machine's clock"],
+    [stsError('SignatureDoesNotMatch', 'Signature not yet current: 20261018T204757Z is still later than 20261018T200257Z (20261018T194757Z + 15 min.)'), 'unknown',
+      "sts.amazonaws.com answered 403 (SignatureDoesNotMatch: Signature not yet current); check this machine's clock"],
+    [stsError('AccessDenied', 'not this one'), 'unknown', 'sts.amazonaws.com answered 403 (AccessDenied)'],
+    [stsError('Not An Id!', 'x'), 'unknown', 'sts.amazonaws.com answered 403 (no error named)'],
+    ['{"Error":{"Code":"InvalidClientTokenId"}}', 'unknown', 'sts.amazonaws.com answered 403 (no error named)'],
+    ['Forbidden', 'unknown', 'sts.amazonaws.com answered 403 (no error named)'],
+  ])('decides an STS answer of 403 on the error its body names: %s is %s', async (body, state, detail) => {
+    const result = await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: answering(403, body), now: () => SIGNED_AT });
+    expect(result).toEqual({ state, host: 'sts.amazonaws.com', status: 403, detail });
+  });
+
+  it('decides an STS answer other than 403 by status, as every other probe does', async () => {
+    for (const [status, state] of [[200, 'live'], [400, 'unknown'], [401, 'rejected'], [500, 'unknown'], [503, 'unknown']] as const) {
+      const result = await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: answering(status, stsError('InvalidClientTokenId', 'x')), now: () => SIGNED_AT });
+      expect(result, String(status)).toEqual({ state, host: 'sts.amazonaws.com', status, detail: `sts.amazonaws.com answered ${status}` });
+    }
+  });
+
+  it('keeps the key ID and the secret out of the result when a failed request names them', async () => {
+    const refused: ProbeFetch = async () => {
+      throw Object.assign(new Error(`refused ${KEY_ID} ${SECRET}`), { code: 'ECONNREFUSED' });
+    };
+    const result = await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: refused, now: () => SIGNED_AT });
+    expect(result).toEqual({ state: 'unknown', host: 'sts.amazonaws.com', detail: 'no answer from sts.amazonaws.com (ECONNREFUSED)' });
+    expect(JSON.stringify(result)).not.toContain(KEY_ID);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+
+  it('sends neither value of the pair alone through probeCredential', async () => {
+    for (const patternId of ['aws-access', 'aws-secret']) {
+      const calls: Call[] = [];
+      const result = await probeCredential(patternId, patternId === 'aws-access' ? KEY_ID : SECRET, { fetchImpl: answering(200, '', calls) });
+      expect(calls, patternId).toHaveLength(0);
+      expect(result, patternId).toEqual({
+        state: 'unchecked',
+        detail: 'not sent: an AWS key is checked as a pair, the access key ID with its secret access key, by probeAwsKeyPair',
+      });
+    }
+  });
+
+  it('builds no request for the signed probe without a secret to sign with', () => {
+    expect(() => buildProbeRequest(probeFor('aws-access')!, KEY_ID)).toThrow(/a signed probe needs the secret to sign with/);
+  });
+});
+
 describe('checkFindings', () => {
   it('asks once per distinct value and gives every finding that carries it the same answer', async () => {
     const calls: Call[] = [];
@@ -538,6 +660,133 @@ describe('checkFindings', () => {
     const results = await checkFindings([], () => VALUE, { fetchImpl: answering(200, '', calls) });
     expect(results.size).toBe(0);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('checkFindings pairs an AWS access key ID with the secret access key in its file', () => {
+  const REJECTED = { state: 'rejected', host: 'sts.amazonaws.com', status: 403, detail: 'sts.amazonaws.com answered 403 (InvalidClientTokenId)' };
+
+  /** Findings with their kept values, and a fetch stand-in that answers the way STS answered a made-up key ID. */
+  function setup(rows: Array<[patternId: string, file: string, line: number, value: string]>) {
+    const values = new Map<ScanFinding, string>();
+    const findings = rows.map(([patternId, file, line, value]) => {
+      const finding = findingOf(patternId, file, line);
+      values.set(finding, value);
+      return finding;
+    });
+    const calls: Call[] = [];
+    const fetchImpl = answering(403, stsError('InvalidClientTokenId', 'The security token included in the request is invalid.'), calls);
+    const check = () => checkFindings(findings, (f) => values.get(f), { fetchImpl, now: () => SIGNED_AT });
+    return { findings, calls, check };
+  }
+
+  /** The key ID a recorded request was signed for, read from its Credential field. */
+  const keyIdOf = (call: Call): string => /Credential=([^/]+)\//.exec(call.init.headers.Authorization)![1];
+
+  it('sends one request for a file holding one of each, and gives both findings its answer', async () => {
+    const { findings: [id, secret], calls, check } = setup([['aws-access', 'deploy.env', 1, KEY_ID], ['aws-secret', 'deploy.env', 2, SECRET]]);
+    const results = await check();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://sts.amazonaws.com/');
+    expect(keyIdOf(calls[0])).toBe(KEY_ID);
+    expect(JSON.stringify(calls[0].init.headers)).not.toContain(SECRET);
+    expect(results.get(id)).toEqual(REJECTED);
+    expect(results.get(secret)).toEqual(REJECTED);
+    expect(results.get(secret)).not.toBe(results.get(id));
+  });
+
+  it('counts one value found on several lines of a file once, and asks once for a pair found in two files', async () => {
+    const { findings, calls, check } = setup([
+      ['aws-access', 'deploy.env', 1, KEY_ID], ['aws-access', 'deploy.env', 9, KEY_ID], ['aws-secret', 'deploy.env', 2, SECRET],
+      ['aws-access', 'ci/vars.yml', 3, KEY_ID], ['aws-secret', 'ci/vars.yml', 4, SECRET],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(1);
+    for (const finding of findings) expect(results.get(finding), `${finding.file}:${finding.line}`).toEqual(REJECTED);
+  });
+
+  it('sends nothing for a key ID or a secret alone in its file, and says which half is missing', async () => {
+    const { findings: [id, secret], calls, check } = setup([['aws-access', 'a.env', 1, KEY_ID], ['aws-secret', 'b.env', 1, SECRET]]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    expect(results.get(id)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Secret Access Key finding to sign the request with' });
+    expect(results.get(secret)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Access Key finding to pair it with' });
+  });
+
+  it('sends nothing for a file holding more than one key ID or more than one secret', async () => {
+    const { findings, calls, check } = setup([
+      ['aws-access', 'two-ids.env', 1, KEY_ID], ['aws-access', 'two-ids.env', 2, 'NOTAREALKEYID001'], ['aws-secret', 'two-ids.env', 3, SECRET],
+      ['aws-access', 'two-secrets.env', 1, KEY_ID], ['aws-secret', 'two-secrets.env', 2, SECRET], ['aws-secret', 'two-secrets.env', 3, 'another-not-real-secret'],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    for (const finding of findings.slice(0, 3)) {
+      expect(results.get(finding)).toEqual({
+        state: 'unchecked',
+        detail: "not sent: the file's findings hold 2 AWS access key IDs and 1 secret access key, and a pair is formed only from one of each",
+      });
+    }
+    for (const finding of findings.slice(3)) {
+      expect(results.get(finding)).toEqual({
+        state: 'unchecked',
+        detail: "not sent: the file's findings hold 1 AWS access key ID and 2 secret access keys, and a pair is formed only from one of each",
+      });
+    }
+  });
+
+  it('pairs no secret with a temporary key ID, and counts the temporary key ID when a file is paired', async () => {
+    const { findings: [temporary, secret, id, secret2, temporary2], calls, check } = setup([
+      ['aws-sts', 'session.env', 1, 'NOTAREALTEMPKEY0'], ['aws-secret', 'session.env', 2, SECRET],
+      ['aws-access', 'mixed.env', 1, KEY_ID], ['aws-secret', 'mixed.env', 2, SECRET], ['aws-sts', 'mixed.env', 3, 'NOTAREALTEMPKEY0'],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    expect(results.get(temporary)).toEqual({ state: 'unchecked', detail: 'no validity probe for AWS STS Temporary Key' });
+    expect(results.get(secret)).toEqual({
+      state: 'unchecked',
+      detail: "not sent: the file's access key ID is an AWS STS Temporary Key, which STS takes only with its session token",
+    });
+    const ambiguous = "not sent: the file's findings hold 2 AWS access key IDs and 1 secret access key, and a pair is formed only from one of each";
+    expect(results.get(id)).toEqual({ state: 'unchecked', detail: ambiguous });
+    expect(results.get(secret2)).toEqual({ state: 'unchecked', detail: ambiguous });
+    expect(results.get(temporary2)).toEqual({ state: 'unchecked', detail: 'no validity probe for AWS STS Temporary Key' });
+  });
+
+  it('sends a key ID found with different secrets in different files with none of them', async () => {
+    const { findings, calls, check } = setup([
+      ['aws-access', 'a.env', 1, KEY_ID], ['aws-secret', 'a.env', 2, SECRET],
+      ['aws-access', 'b.env', 1, KEY_ID], ['aws-secret', 'b.env', 2, 'another-not-real-secret'],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    for (const finding of findings) {
+      expect(results.get(finding), finding.file).toEqual({
+        state: 'unchecked',
+        detail: 'not sent: the access key ID is paired with 2 different secret access keys in the scanned files, and is sent with none of them',
+      });
+    }
+  });
+
+  it('checks the pair of one file and not the same key ID alone in another, beside a single-value probe', async () => {
+    const { findings: [id, secret, alone, github], calls, check } = setup([
+      ['aws-access', 'a.env', 1, KEY_ID], ['aws-secret', 'a.env', 2, SECRET], ['aws-access', 'c.env', 1, KEY_ID], ['github-pat', 'c.env', 2, VALUE],
+    ]);
+    const results = await check();
+    expect(calls.map((c) => c.url).sort()).toEqual(['https://api.github.com/user', 'https://sts.amazonaws.com/']);
+    expect(results.get(id)).toEqual(REJECTED);
+    expect(results.get(secret)).toEqual(REJECTED);
+    expect(results.get(alone)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Secret Access Key finding to sign the request with' });
+    expect(results.get(github)).toEqual({ state: 'unknown', host: 'api.github.com', status: 403, detail: 'api.github.com answered 403' });
+  });
+
+  it('pairs only findings whose values were kept', async () => {
+    const id = findingOf('aws-access', 'deploy.env', 1);
+    const secret = findingOf('aws-secret', 'deploy.env', 2);
+    const calls: Call[] = [];
+    const results = await checkFindings([id, secret], (f) => (f === id ? KEY_ID : undefined), { fetchImpl: answering(200, '', calls) });
+    expect(calls).toHaveLength(0);
+    expect(results.get(id)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Secret Access Key finding to sign the request with' });
+    expect(results.get(secret)).toEqual({ state: 'unchecked', detail: 'the matched value was not kept for checking' });
   });
 });
 
@@ -640,6 +889,42 @@ describe('over HTTP on the loopback interface', () => {
       await close();
     }
   });
+
+  it('delivers a signed AWS request through the real fetch with the content type, date and body it signed', async () => {
+    const seen: Array<{ method?: string; url?: string; contentType?: string; date?: string | string[]; authorization?: string; body: string }> = [];
+    const { toLoopback, close } = await loopback((req, res) => {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        seen.push({
+          method: req.method, url: req.url, contentType: req.headers['content-type'], date: req.headers['x-amz-date'],
+          authorization: req.headers.authorization, body,
+        });
+        res.writeHead(403, { 'content-type': 'text/xml' });
+        res.end(stsError('InvalidClientTokenId', 'The security token included in the request is invalid.'));
+      });
+    });
+    try {
+      const result = await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: toLoopback, now: () => SIGNED_AT });
+      expect(seen).toHaveLength(1);
+      const [got] = seen;
+      expect(got.method).toBe('POST');
+      expect(got.url).toBe('/');
+      expect(got.body).toBe('Action=GetCallerIdentity&Version=2011-06-15');
+      expect(got.date).toBe('20260102T030405Z');
+      // Signed again from what arrived, for the host the probe names: the signature covers what fetch sent.
+      const resigned = signSigV4(
+        { method: 'POST', host: 'sts.amazonaws.com', path: got.url!, headers: { 'Content-Type': got.contentType! }, body: got.body, region: 'us-east-1', service: 'sts' },
+        { accessKeyId: KEY_ID, secretAccessKey: SECRET },
+        SIGNED_AT,
+      );
+      expect(got.authorization).toBe(resigned.Authorization);
+      expect(JSON.stringify(got)).not.toContain(SECRET);
+      expect(result).toEqual({ state: 'rejected', host: 'sts.amazonaws.com', status: 403, detail: 'sts.amazonaws.com answered 403 (InvalidClientTokenId)' });
+    } finally {
+      await close();
+    }
+  });
 });
 
 describe('the scanner keeps a matched value only when asked', () => {
@@ -683,6 +968,20 @@ describe('the scanner keeps a matched value only when asked', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('keeps only the secret of an AWS secret access key, the value a pair is signed with, not the name before it', () => {
+    // A legible placeholder, reported because the scan is told to show placeholders.
+    const placeholder = 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE';
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'validity-scan-'));
+    fs.writeFileSync(path.join(dir, 'config.js'), `const AWS_SECRET_ACCESS_KEY = "${placeholder}";\n`);
+    try {
+      const findings = scan(dir, { scanGlobal: false, retainValues: true, showPlaceholders: true });
+      expect(findings.map((f) => f.patternId)).toEqual(['aws-secret']);
+      expect(matchedValueOf(findings[0])).toBe(placeholder);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('the flag, the help and docs/commands.md name what --check-validity contacts', () => {
@@ -717,6 +1016,13 @@ describe('the flag, the help and docs/commands.md name what --check-validity con
     expect(text).toContain('Types not listed are reported as not checked, and nothing is sent for them. '
       + 'Without the flag, no credential is sent anywhere.');
     expect(text).toContain('a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com');
+    expect(probeEndpoint(probeFor('aws-access')!)).toBe('sts.amazonaws.com/');
+    expect(text).toContain('AWS: InvalidClientTokenId or SignatureDoesNotMatch in a 403');
+    expect(text).toContain('An AWS key is checked as a pair: the access key ID and the secret access key found with it in one file, '
+      + 'when the file holds exactly one of each.');
+    expect(text).toContain('the key ID and the signature are sent, and the secret is not');
+    expect(text).toContain('A SignatureDoesNotMatch that names the request time reads unknown');
+    expect(text).toContain('a key from the AWS China or GovCloud partition still goes to sts.amazonaws.com');
   });
 
   it('every help line fits an 80-column terminal with the notes indent, and no type name is split', () => {

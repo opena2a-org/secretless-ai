@@ -1,8 +1,9 @@
 export { init } from './init';
 export { scan, matchedValueOf, type ScanFinding, type ScanOptions } from './scan';
 export {
-  checkFindings, probeCredential, probeFor, buildProbeRequest, summarizeValidity, VALIDITY_PROBES,
+  checkFindings, probeCredential, probeAwsKeyPair, probeFor, buildProbeRequest, summarizeValidity, VALIDITY_PROBES,
   type ValidityProbe, type ValidityResult, type ValidityState, type ValiditySummary, type ProbeDeps, type ProbeFetch,
+  type SigningInput,
 } from './validity';
 export {
   scoreFinding, formatConfidence,
