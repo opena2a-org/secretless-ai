@@ -218,6 +218,42 @@ describe('probeCredential', () => {
     expect(result.state).toBe('rejected');
   });
 
+  it('sends a Sentry token as a bearer header to sentry.io/api/0/organizations/, read by status', async () => {
+    const calls: Call[] = [];
+    const live = await probeCredential('sentry', VALUE, { fetchImpl: answering(200, '', calls) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://sentry.io/api/0/organizations/');
+    expect(calls[0].init.method).toBe('GET');
+    expect(calls[0].init.redirect).toBe('manual');
+    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${VALUE}`);
+    expect(live).toEqual({ state: 'live', host: 'sentry.io', status: 200, detail: 'sentry.io answered 200' });
+    const rejected = await probeCredential('sentry', VALUE, { fetchImpl: answering(401, '{"detail":"Invalid token"}') });
+    expect(rejected).toEqual({ state: 'rejected', host: 'sentry.io', status: 401, detail: 'sentry.io answered 401' });
+  });
+
+  it('sends a Linear key in the Authorization header with no scheme, as a POST of a fixed viewer query, read by status', async () => {
+    const calls: Call[] = [];
+    const live = await probeCredential('linear', VALUE, { fetchImpl: answering(200, '{"data":{"viewer":{"id":"u"}}}', calls) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.linear.app/graphql');
+    expect(calls[0].init.method).toBe('POST');
+    expect(calls[0].init.body).toBe('{"query":"{ viewer { id } }"}');
+    expect(calls[0].init.headers.Authorization).toBe(VALUE);
+    expect(calls[0].init.headers['Content-Type']).toBe('application/json');
+    expect(Object.values(calls[0].init.headers).filter((v) => v === `Bearer ${VALUE}`)).toHaveLength(0);
+    expect(live).toEqual({ state: 'live', host: 'api.linear.app', status: 200, detail: 'api.linear.app answered 200' });
+    const rejected = await probeCredential('linear', VALUE, { fetchImpl: answering(401, '{"errors":[{"message":"Authentication required, not authenticated"}]}') });
+    expect(rejected).toEqual({ state: 'rejected', host: 'api.linear.app', status: 401, detail: 'api.linear.app answered 401' });
+  });
+
+  it('decides Linear on the status alone, not reading a 200 body that carries GraphQL errors', async () => {
+    let reads = 0;
+    const fetchImpl: ProbeFetch = async () => ({ status: 200, text: async () => { reads += 1; return '{"errors":[{"message":"x"}]}'; } });
+    const result = await probeCredential('linear', VALUE, { fetchImpl });
+    expect(result.state).toBe('live');
+    expect(reads).toBe(0);
+  });
+
   it.each([
     ['{"error":"invalid_token","error_description":"Invalid Value"}', 'rejected', 'oauth2.googleapis.com answered 400 (invalid_token)'],
     ['{"error":"invalid_request"}', 'unknown', 'oauth2.googleapis.com answered 400 (invalid_request)'],

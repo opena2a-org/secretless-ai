@@ -153,6 +153,9 @@ function plainErrorIn(body: string): string {
   return /^[a-z_]{1,64}$/.test(text) ? text : 'no error named';
 }
 
+/** Linear's GraphQL takes a read-only viewer query; it carries no credential. */
+const LINEAR_VIEWER_QUERY = JSON.stringify({ query: '{ viewer { id } }' });
+
 export const VALIDITY_PROBES: readonly ValidityProbe[] = [
   {
     patterns: ['github-pat', 'github-fine', 'github-oauth'],
@@ -387,6 +390,27 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
       const state: ValidityState = error === 'invalid_token' ? 'rejected' : 'unknown';
       return { state, detail: `oauth2.googleapis.com answered 400 (${error})` };
     },
+  },
+  {
+    patterns: ['sentry'],
+    provider: 'Sentry',
+    host: 'sentry.io',
+    method: 'GET',
+    path: '/api/0/organizations/',
+    headers: BEARER,
+  },
+  {
+    // Linear's GraphQL takes the key in the Authorization header with no
+    // scheme (not Bearer). A viewer query is read-only; it answers 200 for a
+    // key it accepts and 401 for one it rejects, so the default rule reads it,
+    // and the fixed query body carries no value.
+    patterns: ['linear'],
+    provider: 'Linear',
+    host: 'api.linear.app',
+    method: 'POST',
+    path: '/graphql',
+    headers: { Authorization: VALUE_MARKER, 'Content-Type': 'application/json' },
+    body: LINEAR_VIEWER_QUERY,
   },
 ];
 
