@@ -43,7 +43,7 @@ be only the part before one, and the finding says so. `--json` carries the
 same as `validity` on each finding and counts under `summary.validity`,
 only when the flag is given. The same value, or the
 same AWS pair, found in several files is sent once, and an AWS access key ID
-found with different secret access keys in different files is sent with none
+paired with different secret access keys in different files is sent with none
 of them. Severity, confidence and the exit code do not change with the
 answer.
 
