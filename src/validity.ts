@@ -799,8 +799,10 @@ function counted(n: number, one: string, many: string): string {
  * file is paired when its findings hold one access key ID and one secret
  * access key (one value on several lines counts once), and each finding of
  * either value in that file is checked as that pair. A key ID paired with
- * different secrets in different files is sent with none of them, so AWS is
- * never asked about one key ID with two secrets in a scan.
+ * different secrets in different files is sent with none of them, as is a
+ * secret paired with different key IDs, so AWS is never asked about one key
+ * ID with two secrets, or one secret with two key IDs, in a scan. A pair
+ * whose key ID and secret are both so paired is given the key ID's reason.
  */
 function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFinding) => string | undefined): Map<ScanFinding, KeyPair | string> {
   const { keyIdPattern, secretPattern } = AWS_SIGNING;
@@ -819,6 +821,7 @@ function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFindi
 
   const outcomes = new Map<ScanFinding, KeyPair | string>();
   const secretsOfKeyId = new Map<string, Set<string>>();
+  const keyIdsOfSecret = new Map<string, Set<string>>();
   for (const { keyIds, secrets, findings: inFile } of files.values()) {
     // [value, pattern id] of the file's one key ID, and its one secret.
     const onlyKeyId = keyIds.size === 1 ? [...keyIds][0] : undefined;
@@ -836,6 +839,7 @@ function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFindi
       } else {
         outcome = { keyId: onlyKeyId[0], secret: onlySecret };
         secretsOfKeyId.set(onlyKeyId[0], (secretsOfKeyId.get(onlyKeyId[0]) ?? new Set<string>()).add(onlySecret));
+        keyIdsOfSecret.set(onlySecret, (keyIdsOfSecret.get(onlySecret) ?? new Set<string>()).add(onlyKeyId[0]));
       }
       outcomes.set(finding, outcome);
     }
@@ -843,8 +847,11 @@ function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFindi
   for (const [finding, outcome] of outcomes) {
     if (typeof outcome === 'string') continue;
     const secretCount = secretsOfKeyId.get(outcome.keyId)?.size ?? 1;
+    const keyIdCount = keyIdsOfSecret.get(outcome.secret)?.size ?? 1;
     if (secretCount > 1) {
       outcomes.set(finding, `the access key ID is paired with ${secretCount} different secret access keys in the scanned files, and is sent with none of them`);
+    } else if (keyIdCount > 1) {
+      outcomes.set(finding, `the secret access key is paired with ${keyIdCount} different access key IDs in the scanned files, and is sent with none of them`);
     }
   }
   return outcomes;

@@ -16,8 +16,9 @@
  *   those hosts state them, and a URL off the host or its path is not sent.
  * - An AWS access key ID and secret access key found in one file are checked
  *   as a pair, by a request signed with the secret, which no request holds;
- *   a file without exactly one of each, or a key ID found with two secrets,
- *   sends nothing, and an STS answer about the clock is unknown.
+ *   a file without exactly one of each, a key ID paired with two secrets, or
+ *   a secret paired with two key IDs, sends nothing, and an STS answer about
+ *   the clock is unknown.
  * - No result string holds the value, even when an error message does.
  * - An OpenAI project key value the scanner found with a - or _ after it is
  *   not sent, also at 132 characters or more; that is decided for each finding.
@@ -857,8 +858,14 @@ describe('checkFindings reads what the scanner found after an OpenAI project key
 describe('checkFindings pairs an AWS access key ID with the secret access key in its file', () => {
   const REJECTED = { state: 'rejected', host: 'sts.amazonaws.com', status: 403, detail: 'sts.amazonaws.com answered 403 (InvalidClientTokenId)' };
 
-  /** Findings with their kept values, and a fetch stand-in that answers the way STS answered a made-up key ID. */
-  function setup(rows: Array<[patternId: string, file: string, line: number, value: string]>) {
+  /**
+   * Findings with their kept values, and a fetch stand-in that answers the way
+   * STS answered a made-up key ID, or the one `fetchFor` builds on the calls list.
+   */
+  function setup(
+    rows: Array<[patternId: string, file: string, line: number, value: string]>,
+    fetchFor: (calls: Call[]) => ProbeFetch = (calls) => answering(403, stsError('InvalidClientTokenId', 'The security token included in the request is invalid.'), calls),
+  ) {
     const values = new Map<ScanFinding, string>();
     const findings = rows.map(([patternId, file, line, value]) => {
       const finding = findingOf(patternId, file, line);
@@ -866,7 +873,7 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
       return finding;
     });
     const calls: Call[] = [];
-    const fetchImpl = answering(403, stsError('InvalidClientTokenId', 'The security token included in the request is invalid.'), calls);
+    const fetchImpl = fetchFor(calls);
     const check = () => checkFindings(findings, (f) => values.get(f), { fetchImpl, now: () => SIGNED_AT });
     return { findings, calls, check };
   }
@@ -956,6 +963,43 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
         detail: 'not sent: the access key ID is paired with 2 different secret access keys in the scanned files, and is sent with none of them',
       });
     }
+  });
+
+  it('sends a secret paired with different key IDs in different files with none of them', async () => {
+    // The stand-in answers 200 to a request signed for KEY_ID and 403 SignatureDoesNotMatch to one signed
+    // for another key ID: were both pairs sent, the one secret would read live in a.py and rejected in b.py.
+    const { findings, calls, check } = setup([
+      ['aws-access', 'a.py', 1, KEY_ID], ['aws-secret', 'a.py', 2, SECRET],
+      ['aws-access', 'b.py', 1, 'NOTAREALKEYID001'], ['aws-secret', 'b.py', 2, SECRET],
+    ], (calls) => async (url, init) => {
+      calls.push({ url, init });
+      return keyIdOf({ url, init }) === KEY_ID
+        ? { status: 200, text: async () => '' }
+        : { status: 403, text: async () => stsError('SignatureDoesNotMatch', 'The request signature we calculated does not match the signature you provided.') };
+    });
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    for (const finding of findings) {
+      expect(results.get(finding), `${finding.file}:${finding.line}`).toEqual({
+        state: 'unchecked',
+        detail: 'not sent: the secret access key is paired with 2 different access key IDs in the scanned files, and is sent with none of them',
+      });
+    }
+  });
+
+  it('sends no pair whose key ID or secret is also in a different pair, names the key ID when both are, and sends a pair that shares neither', async () => {
+    const OTHER_SECRET = 'another-not-real-secret';
+    const { findings, calls, check } = setup([
+      ['aws-access', 'a.env', 1, KEY_ID], ['aws-secret', 'a.env', 2, SECRET],
+      ['aws-access', 'b.env', 1, KEY_ID], ['aws-secret', 'b.env', 2, OTHER_SECRET],
+      ['aws-access', 'c.env', 1, 'NOTAREALKEYID001'], ['aws-secret', 'c.env', 2, OTHER_SECRET],
+      ['aws-access', 'd.env', 1, 'NOTAREALKEYID002'], ['aws-secret', 'd.env', 2, 'a-third-not-real-secret'],
+    ]);
+    const results = await check();
+    expect(calls.map(keyIdOf)).toEqual(['NOTAREALKEYID002']);
+    const byKeyId = { state: 'unchecked', detail: 'not sent: the access key ID is paired with 2 different secret access keys in the scanned files, and is sent with none of them' };
+    const bySecret = { state: 'unchecked', detail: 'not sent: the secret access key is paired with 2 different access key IDs in the scanned files, and is sent with none of them' };
+    expect(findings.map((f) => results.get(f))).toEqual([byKeyId, byKeyId, byKeyId, byKeyId, bySecret, bySecret, REJECTED, REJECTED]);
   });
 
   it('checks the pair of one file and not the same key ID alone in another, beside a single-value probe', async () => {
