@@ -20,7 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   VALIDITY_PROBES, VALUE_MARKER, probeFor, buildProbeRequest, probeCredential, checkFindings,
-  summarizeValidity, stateLabel, validityHelpLines,
+  summarizeValidity, stateLabel, validityHelpLines, probeEndpoint,
   type ProbeFetch, type ProbeFetchInit, type ValidityResult,
 } from './validity';
 import { scan, matchedValueOf, type ScanFinding } from './scan';
@@ -82,10 +82,12 @@ describe('the probe registry', () => {
 
   it('has no probe for the types a request could not answer on the value alone, or would act on', () => {
     for (const id of [
-      'postgres', 'mysql', 'mongodb', 'redis',
-      'pem-private-key', 'aws-access', 'aws-secret', 'aws-sts',
-      'slack-webhook', 'discord-webhook', 'stripe-webhook',
-      'secretless-bundle', 'pkcs12-keystore',
+      // A connection string or a key file: no endpoint answers for it.
+      'postgres', 'mysql', 'mongodb', 'redis', 'pem-private-key', 'gcp-service-account', 'secretless-bundle', 'pkcs12-keystore',
+      // Needs a second value beside the one found: an AWS secret, an account or user name, a project host, the API a key is enabled for.
+      'aws-access', 'aws-secret', 'aws-sts', 'azure', 'supabase', 'twilio', 'dockerhub', 'bitbucket', 'google', 'slack-app',
+      // The one call these accept would act: post a message, rotate the token, run a pipeline.
+      'slack-webhook', 'discord-webhook', 'stripe-webhook', 'github-refresh', 'gitlab-pipeline',
     ]) {
       expect(probeFor(id), id).toBeUndefined();
     }
@@ -162,6 +164,59 @@ describe('probeCredential', () => {
     await probeCredential('telegram-bot', token, { fetchImpl: answering(200, '', calls) });
     expect(calls[0].url).toBe('https://api.telegram.org/bot12345678%3Anot-a-real_token/getMe');
     expect(Object.values(calls[0].init.headers).some((v) => v.includes('not-a-real_token'))).toBe(false);
+  });
+
+  it('sends a GitLab token in the PRIVATE-TOKEN header to gitlab.com/api/v4/user, with no Authorization header', async () => {
+    const calls: Call[] = [];
+    await probeCredential('gitlab', VALUE, { fetchImpl: answering(200, '', calls) });
+    expect(calls[0].url).toBe('https://gitlab.com/api/v4/user');
+    expect(calls[0].init.method).toBe('GET');
+    expect(calls[0].init.headers['PRIVATE-TOKEN']).toBe(VALUE);
+    expect(calls[0].init.headers.Authorization).toBeUndefined();
+  });
+
+  it('sends a GitHub App installation token to the installation endpoint, not to /user', async () => {
+    const calls: Call[] = [];
+    const result = await probeCredential('github-app', VALUE, { fetchImpl: answering(200, '', calls) });
+    expect(calls[0].url).toBe('https://api.github.com/installation/repositories');
+    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${VALUE}`);
+    expect(calls[0].init.headers['X-GitHub-Api-Version']).toBe('2022-11-28');
+    expect(result).toEqual({ state: 'live', host: 'api.github.com', status: 200, detail: 'api.github.com answered 200' });
+  });
+
+  it.each([
+    ['openrouter', 'https://openrouter.ai/api/v1/auth/key'],
+    ['fireworks', 'https://api.fireworks.ai/inference/v1/models'],
+  ])('sends a %s key as a bearer header to %s', async (patternId, url) => {
+    const calls: Call[] = [];
+    const result = await probeCredential(patternId, VALUE, { fetchImpl: answering(401, '', calls) });
+    expect(calls[0].url).toBe(url);
+    expect(calls[0].init.method).toBe('GET');
+    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${VALUE}`);
+    expect(result.state).toBe('rejected');
+  });
+
+  it.each([
+    ['{"error":"invalid_token","error_description":"Invalid Value"}', 'rejected', 'oauth2.googleapis.com answered 400 (invalid_token)'],
+    ['{"error":"invalid_request"}', 'unknown', 'oauth2.googleapis.com answered 400 (invalid_request)'],
+    ['{"error":"<b>x</b>"}', 'unknown', 'oauth2.googleapis.com answered 400 (no error named)'],
+    ['{}', 'unknown', 'oauth2.googleapis.com answered 400 (no error named)'],
+    ['not json', 'unknown', 'oauth2.googleapis.com answered 400 with a body that is not JSON'],
+  ])('decides a Google tokeninfo answer of 400 on its body: %s is %s', async (body, state, detail) => {
+    const calls: Call[] = [];
+    const result = await probeCredential('google-oauth', VALUE, { fetchImpl: answering(400, body, calls) });
+    expect(result).toEqual({ state, host: 'oauth2.googleapis.com', status: 400, detail });
+    expect(calls[0].url).toBe('https://oauth2.googleapis.com/tokeninfo');
+    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${VALUE}`);
+  });
+
+  it('decides a Google answer other than 400 by status, as every other probe does', async () => {
+    expect(await probeCredential('google-oauth', VALUE, { fetchImpl: answering(200, '{"scope":"openid","expires_in":3599}') }))
+      .toEqual({ state: 'live', host: 'oauth2.googleapis.com', status: 200, detail: 'oauth2.googleapis.com answered 200' });
+    expect(await probeCredential('google-oauth', VALUE, { fetchImpl: answering(401, '') }))
+      .toEqual({ state: 'rejected', host: 'oauth2.googleapis.com', status: 401, detail: 'oauth2.googleapis.com answered 401' });
+    expect(await probeCredential('google-oauth', VALUE, { fetchImpl: answering(403, '{"error":"invalid_token"}') }))
+      .toEqual({ state: 'unknown', host: 'oauth2.googleapis.com', status: 403, detail: 'oauth2.googleapis.com answered 403' });
   });
 
   it('reports a type without a probe as not checked and calls nothing', async () => {
@@ -432,20 +487,25 @@ describe('the flag, the help and docs/commands.md name what --check-validity con
     expect(prepared.warnings).toEqual([]);
   });
 
-  it('the help rows name every probe host, provider and credential type, and say what is not sent', () => {
+  it('the help rows name every probe endpoint, provider and credential type, and say what is not sent', () => {
     const lines = validityHelpLines();
     const text = lines.join(' ').replace(/\s+/g, ' ');
     for (const probe of VALIDITY_PROBES) {
-      const row = helpRow(lines, probe.host);
-      expect(row, probe.host).toBeDefined();
+      const endpoint = probeEndpoint(probe);
+      const opening = lines.filter((l) => l.startsWith(`  ${endpoint} `) || l === `  ${endpoint}`);
+      expect(opening, `one row for ${endpoint}`).toHaveLength(1);
+      const row = helpRow(lines, endpoint);
       expect(row).toContain(`${probe.provider}: `);
       for (const id of probe.patterns) {
         const name = CREDENTIAL_PATTERNS.find((p) => p.id === id)!.name;
-        expect(row, `${probe.host} row names ${name}`).toContain(name);
+        expect(row, `${endpoint} row names ${name}`).toContain(name);
       }
     }
+    expect(probeEndpoint(probeFor('telegram-bot')!)).toBe('api.telegram.org/bot<value>/getMe');
+    expect(text).not.toContain(VALUE_MARKER);
     expect(text).toContain('Types not listed are reported as not checked, and nothing is sent for them. '
       + 'Without the flag, no credential is sent anywhere.');
+    expect(text).toContain('a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com');
   });
 
   it('every help line fits an 80-column terminal with the notes indent, and no type name is split', () => {
@@ -455,6 +515,15 @@ describe('the flag, the help and docs/commands.md name what --check-validity con
       .map((id) => CREDENTIAL_PATTERNS.find((p) => p.id === id)!.name);
     const split = names.filter((name) => !lines.some((l) => l.includes(name)));
     expect(split).toEqual([]);
+  });
+
+  it('an endpoint longer than the column takes a line of its own, with its types on the next line', () => {
+    const lines = validityHelpLines();
+    const endpoint = probeEndpoint(probeFor('github-app')!);
+    const at = lines.indexOf(`  ${endpoint}`);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(lines[at + 1].trim()).toBe('GitHub: GitHub App Installation Token');
+    expect(lines[at + 1].indexOf('GitHub')).toBe(lines.find((l) => l.startsWith('  api.github.com/user '))!.indexOf('GitHub'));
   });
 
   it('scan --help prints those lines', () => {

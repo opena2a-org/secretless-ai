@@ -19,13 +19,16 @@
  * carry a header to another host, and the exchange is under one deadline.
  *
  * What a result says. `live`: the host answered 200. `rejected`: the host
- * answered 401. `unknown`: any other status, no connection, or no answer in
- * time, with the status or reason named. `unchecked`: no probe for the type,
- * and nothing was sent. A result describes the host's answer to the request
- * this module sends, not the credential's history. No result string holds the
- * value, including one built from an error message. The states are reported
- * beside a finding and change neither its severity, its confidence nor the
- * exit code.
+ * answered 401, or stated a rejection in a body where its API does so (Slack
+ * in a 200, Google's tokeninfo in a 400). `unknown`: any other status, no
+ * connection, or no answer in time, with the status or reason named.
+ * `unchecked`: no probe for the type, and nothing was sent. A result describes
+ * the host's answer to the request this module sends, not the credential's
+ * history: a token a self-managed GitHub or GitLab instance issued still goes
+ * to api.github.com or gitlab.com, which did not issue it. No result string
+ * holds the value, including one built from an error message. The states are
+ * reported beside a finding and change neither its severity, its confidence
+ * nor the exit code.
  */
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { VERSION, wrapList } from './commands/utils';
@@ -69,8 +72,30 @@ export const VALUE_MARKER = '{value}';
 
 const BEARER: Readonly<Record<string, string>> = { Authorization: `Bearer ${VALUE_MARKER}` };
 
+const GITHUB_HEADERS: Readonly<Record<string, string>> = { ...BEARER, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+
 /** The `error` values in a Slack `ok: false` answer this probe counts as a rejection. */
 const SLACK_REJECTIONS = new Set(['invalid_auth', 'not_authed', 'token_revoked', 'token_expired', 'account_inactive']);
+
+/** What `parseJson` returns for a body that is not JSON. */
+const NOT_JSON: unique symbol = Symbol('not JSON');
+
+function parseJson(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return NOT_JSON;
+  }
+}
+
+/**
+ * The `error` a parsed body names. It is printed, so only an identifier is
+ * accepted as one; anything else reads as no error named.
+ */
+function errorNamedIn(parsed: unknown): string {
+  const error = (parsed as { error?: unknown } | null)?.error;
+  return typeof error === 'string' && /^[a-z_]+$/.test(error) ? error : 'no error named';
+}
 
 export const VALIDITY_PROBES: readonly ValidityProbe[] = [
   {
@@ -79,7 +104,25 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     host: 'api.github.com',
     method: 'GET',
     path: '/user',
-    headers: { ...BEARER, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+    headers: GITHUB_HEADERS,
+  },
+  {
+    // An installation token identifies an app installation, not a user, so
+    // it goes to the installation's own read-only endpoint.
+    patterns: ['github-app'],
+    provider: 'GitHub',
+    host: 'api.github.com',
+    method: 'GET',
+    path: '/installation/repositories',
+    headers: GITHUB_HEADERS,
+  },
+  {
+    patterns: ['gitlab'],
+    provider: 'GitLab',
+    host: 'gitlab.com',
+    method: 'GET',
+    path: '/api/v4/user',
+    headers: { 'PRIVATE-TOKEN': VALUE_MARKER },
   },
   {
     patterns: ['anthropic'],
@@ -103,6 +146,22 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     host: 'api.groq.com',
     method: 'GET',
     path: '/openai/v1/models',
+    headers: BEARER,
+  },
+  {
+    patterns: ['openrouter'],
+    provider: 'OpenRouter',
+    host: 'openrouter.ai',
+    method: 'GET',
+    path: '/api/v1/auth/key',
+    headers: BEARER,
+  },
+  {
+    patterns: ['fireworks'],
+    provider: 'Fireworks AI',
+    host: 'api.fireworks.ai',
+    method: 'GET',
+    path: '/inference/v1/models',
     headers: BEARER,
   },
   {
@@ -134,15 +193,10 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     // auth.test answers 200 either way and states the verdict in the body.
     decide: (status, body) => {
       if (status !== 200) return null;
-      let parsed: { ok?: unknown; error?: unknown };
-      try {
-        parsed = JSON.parse(body) as { ok?: unknown; error?: unknown };
-      } catch {
-        return { state: 'unknown', detail: 'slack.com answered 200 with a body that is not JSON' };
-      }
-      if (parsed?.ok === true) return { state: 'live', detail: 'slack.com answered ok: true' };
-      // The error name is printed, so only an identifier is accepted as one.
-      const error = typeof parsed?.error === 'string' && /^[a-z_]+$/.test(parsed.error) ? parsed.error : 'no error named';
+      const parsed = parseJson(body);
+      if (parsed === NOT_JSON) return { state: 'unknown', detail: 'slack.com answered 200 with a body that is not JSON' };
+      if ((parsed as { ok?: unknown } | null)?.ok === true) return { state: 'live', detail: 'slack.com answered ok: true' };
+      const error = errorNamedIn(parsed);
       const state: ValidityState = SLACK_REJECTIONS.has(error) ? 'rejected' : 'unknown';
       return { state, detail: `slack.com answered ok: false (${error})` };
     },
@@ -210,6 +264,24 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     method: 'GET',
     path: '/v1/balance',
     headers: BEARER,
+  },
+  {
+    patterns: ['google-oauth'],
+    provider: 'Google',
+    host: 'oauth2.googleapis.com',
+    method: 'GET',
+    path: '/tokeninfo',
+    headers: BEARER,
+    // tokeninfo states a rejection as a 400 whose body names invalid_token,
+    // so a 400 is decided on its body; every other status takes the default rule.
+    decide: (status, body) => {
+      if (status !== 400) return null;
+      const parsed = parseJson(body);
+      if (parsed === NOT_JSON) return { state: 'unknown', detail: 'oauth2.googleapis.com answered 400 with a body that is not JSON' };
+      const error = errorNamedIn(parsed);
+      const state: ValidityState = error === 'invalid_token' ? 'rejected' : 'unknown';
+      return { state, detail: `oauth2.googleapis.com answered 400 (${error})` };
+    },
   },
 ];
 
@@ -410,31 +482,50 @@ export function stateLabel(state: ValidityState): string {
   return state === 'unchecked' ? 'not checked' : state;
 }
 
+/** The endpoint a probe contacts, host and path, with the place a value takes in the path shown as <value>. */
+export function probeEndpoint(probe: ValidityProbe): string {
+  return `${probe.host}${probe.path.split(VALUE_MARKER).join('<value>')}`;
+}
+
 /** A paragraph of the `scan --help` notes, wrapped to their width. */
 function helpParagraph(text: string): string[] {
   return wrapList(text.split(' '), '');
 }
 
 /**
+ * The longest endpoint `scan --help` prints beside the types it is asked
+ * about. A longer one takes a line of its own, with its types on the next
+ * line under the column, so the column leaves the types room for their names.
+ */
+const HELP_ENDPOINT_COLUMN = 33;
+
+/**
  * The lines `scan --help` prints after its options: what --check-validity
  * contacts, per credential type. Each stays inside the notes' width
- * (NOTE_WIDTH, an 80-column terminal with their indent): the types a host
- * is asked about continue under their own column when they do not fit
- * beside it, and the wrap falls between two type names, never inside one.
+ * (NOTE_WIDTH, an 80-column terminal with their indent): the types an
+ * endpoint is asked about continue under their own column when they do not
+ * fit beside it, and the wrap falls between two type names, never inside one.
  */
 export function validityHelpLines(): string[] {
-  const width = Math.max(...VALIDITY_PROBES.map((p) => p.host.length)) + 2;
-  const rows = VALIDITY_PROBES.flatMap((probe) => {
+  const endpoints = VALIDITY_PROBES.map(probeEndpoint);
+  const width = Math.min(Math.max(...endpoints.map((e) => e.length)), HELP_ENDPOINT_COLUMN) + 2;
+  const indent = ' '.repeat(2 + width);
+  const rows = VALIDITY_PROBES.flatMap((probe, p) => {
     const names = probe.patterns.map(patternNameOf);
     const items = names.map((name, i) =>
       `${i === 0 ? `${probe.provider}: ` : ''}${name}${i < names.length - 1 ? ',' : ''}`);
-    return wrapList(items, ' '.repeat(2 + width), ' ', `  ${probe.host.padEnd(width)}`);
+    const endpoint = endpoints[p];
+    return endpoint.length > HELP_ENDPOINT_COLUMN
+      ? [`  ${endpoint}`, ...wrapList(items, indent)]
+      : wrapList(items, indent, ' ', `  ${endpoint.padEnd(width)}`);
   });
   return [
     ...helpParagraph('--check-validity sends each found credential, over HTTPS, to the host that issued it and to no other:'),
     ...rows,
     ...helpParagraph('Types not listed are reported as not checked, and nothing is sent for them. Without the flag, '
-      + 'no credential is sent anywhere. live: the host answered 200. rejected: it answered 401. '
-      + 'unknown: any other answer, or none. The answer does not change the exit code.'),
+      + 'no credential is sent anywhere. live: the host answered 200. rejected: it answered 401 (Slack: '
+      + 'ok: false in a 200; Google: invalid_token in a 400). unknown: any other answer, or none. A token '
+      + 'a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com, which '
+      + "did not issue it; read the answer as that host's. The answer does not change the exit code."),
   ];
 }
