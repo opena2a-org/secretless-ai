@@ -327,6 +327,41 @@ describe('probeCredential', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('does not send an OpenAI project key value shorter than a whole key: the pattern stops at - or _, which a key can hold', async () => {
+    const reason = 'a value shorter than 132 characters may be only the part of an OpenAI project key before a - or _, where the pattern stops';
+    // A value in a key's shape with a _ in its body, made of a legible placeholder: the pattern keeps the part before the _.
+    const token = ['sk-proj-', 'a'.repeat(30), '_', 'FAKE'].join('');
+    const kept = CREDENTIAL_PATTERNS.find((p) => p.id === 'openai-proj')!.regex.exec(token)![0];
+    expect(kept).toBe(token.slice(0, token.indexOf('_')));
+    const calls: Call[] = [];
+    const finding = findingOf('openai-proj');
+    const results = await checkFindings([finding], () => kept, { fetchImpl: answering(200, '', calls) });
+    expect(results.get(finding)).toEqual({ state: 'unchecked', detail: `not sent: ${reason}` });
+    expect(await probeCredential('openai-proj', kept, { fetchImpl: answering(200, '', calls) }))
+      .toEqual({ state: 'unchecked', detail: `not sent: ${reason}` });
+    expect(notSentReason(probeFor('openai-proj')!, kept)).toBe(reason);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sends an OpenAI project key value of a whole key's length, and a legacy key, as a bearer to api.openai.com/v1/models", async () => {
+    const calls: Call[] = [];
+    // sk-proj- and 124 characters: 132, the shortest project key the published rules describe.
+    const whole = 'sk-proj-' + 'a'.repeat(124);
+    expect(notSentReason(probeFor('openai-proj')!, whole)).toBeNull();
+    const live = await probeCredential('openai-proj', whole, { fetchImpl: answering(200, '', calls) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.openai.com/v1/models');
+    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${whole}`);
+    expect(live).toEqual({ state: 'live', host: 'api.openai.com', status: 200, detail: 'api.openai.com answered 200' });
+    // A legacy key is sk- and 48 characters of an alphabet without - or _, which its pattern keeps whole; the length rule is for project keys.
+    const legacy = 'sk-' + 'a'.repeat(48);
+    expect(notSentReason(probeFor('openai-legacy')!, legacy)).toBeNull();
+    const rejected = await probeCredential('openai-legacy', legacy, { fetchImpl: answering(401, '', calls) });
+    expect(calls).toHaveLength(2);
+    expect(calls[1].init.headers.Authorization).toBe(`Bearer ${legacy}`);
+    expect(rejected).toEqual({ state: 'rejected', host: 'api.openai.com', status: 401, detail: 'api.openai.com answered 401' });
+  });
+
   it.each([
     ['{"ok":true,"team":"t"}', 'live', 'slack.com answered ok: true'],
     ['{"ok":false,"error":"invalid_auth"}', 'rejected', 'slack.com answered ok: false (invalid_auth)'],
