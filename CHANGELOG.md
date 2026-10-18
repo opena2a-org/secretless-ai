@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+**`broker start` accepts a socket path as long as the Node it runs under
+listens on (#441).** The check from #377 held 104 bytes as the macOS limit.
+Node 26.12.0 bundles libuv 1.53.0, which binds a Unix socket path of up to 253
+bytes on macOS: measured on macOS 26.6.2 (Darwin 25.6.0) under that Node,
+`net.Server.listen` listened on a path of 253 bytes and failed with `EINVAL`
+on one of 254. There, `broker start` refused a socket path of 105 to 253
+bytes with `a Unix socket path on this platform can be at most 104 bytes`,
+and the daemon test that checks the limit against `listen` failed with
+`expected [ 'EINVAL', 'shortened' ] to include 'listening'`. The macOS limit
+is now 253 bytes under a Node whose libuv (`node -p process.versions.uv`) is
+1.53.0 or later and 104 bytes under an earlier one; Linux stays at 108 bytes.
+The message keeps its form, with the limit it names and the `HOME` length its
+Fix line gives for the default path (226 bytes under libuv 1.53.0) following
+the running Node. `src/broker/daemon.test.ts` checks both macOS limits and
+the Linux one against the libuv version they apply to, and on a Node that
+listens on them starts a broker on a socket path of 200 bytes and on one of
+exactly the limit.
+
 **The piped form a `secret set NAME` hint offers reads the value from a file
 (#439).** When `secret set NAME` read no value, from an empty pipe or from
 Enter alone at the prompt, its `Or:` line offered

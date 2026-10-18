@@ -6,7 +6,8 @@ import * as path from 'path';
 import * as http from 'http';
 import * as net from 'net';
 import {
-  assertSocketPathFits, startDaemon, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning,
+  assertSocketPathFits, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning,
+  socketPathMaxBytes, startDaemon,
 } from './daemon';
 import { TOKEN_FILE } from './server';
 
@@ -34,10 +35,15 @@ const testHome = vi.hoisted(() => {
   return { dir, original, makeHome };
 });
 
-// Node on macOS listens on a Unix socket path of up to 104 bytes. Given a
-// longer one, Node 24 and 26 fail with EINVAL, while Node 20 and 22 shorten it
-// to 104 bytes and listen there instead. Linux allows a longer path.
+// Node on macOS under a libuv before 1.53.0 listens on a Unix socket path of
+// up to 104 bytes: given a longer one, Node 24 and 26 fail with EINVAL, while
+// Node 20 and 22 shorten it to 104 bytes and listen there instead. Node
+// 26.12.0 bundles libuv 1.53.0, which listens on up to 253 bytes there (#441).
+// The temporary HOME is kept within the 104-byte limit, so the suite runs
+// under either; socketPathMax is the limit of the Node running it, as
+// src/broker/daemon.ts reads it.
 const SOCKET_PATH_MAX = 104;
+const socketPathMax = socketPathMaxBytes();
 
 // startDaemon adds SIGTERM and SIGINT handlers that stop the server, and stop()
 // writes a shutdown entry to the audit log under HOME. Left in place, the
@@ -97,7 +103,7 @@ describe('daemon test HOME', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('checks against the socket path limit Node listens within', async () => {
+  it.skipIf(socketPathMax === undefined)('checks against the socket path limit Node listens within', async () => {
     // Resolves 'listening' when the socket is at the path given, 'shortened'
     // when Node listened and nothing is there, or the error code when it failed.
     const listen = (socketPath: string): Promise<string> =>
@@ -112,10 +118,14 @@ describe('daemon test HOME', () => {
     const pathOf = (bytes: number): string =>
       path.join(testHome.dir, 's'.repeat(bytes - Buffer.byteLength(testHome.dir) - 1));
 
-    expect(await listen(pathOf(SOCKET_PATH_MAX))).toBe('listening');
+    // Held at 104 bytes on every macOS, the check refused paths of 105 to 253 bytes that
+    // Node 26.12.0 listens on, and this case got 'listening' one byte past 104 (#441).
+    const max = socketPathMax!;
+    expect(await listen(pathOf(max))).toBe('listening');
     if (process.platform === 'darwin') {
-      // One byte past the limit: EINVAL on Node 24 and 26, a shortened path on 20 and 22.
-      expect(['EINVAL', 'shortened']).toContain(await listen(pathOf(SOCKET_PATH_MAX + 1)));
+      // One byte past the limit: EINVAL under libuv 1.53.0, and on Node 24 and 26 before
+      // it; a shortened path on Node 20 and 22.
+      expect(['EINVAL', 'shortened']).toContain(await listen(pathOf(max + 1)));
     }
   });
 });
@@ -128,31 +138,55 @@ describe('daemon test HOME', () => {
  */
 describe('startDaemon socket path limit', () => {
   const pidFile = path.join(testHome.dir, '.secretless-ai', 'broker.pid');
-  const platformMax = ({ darwin: 104, linux: 108 } as Partial<Record<NodeJS.Platform, number>>)[
-    process.platform
-  ];
+  const platformMax = socketPathMax;
 
   /** A path of exactly `bytes` bytes under the temporary HOME. */
   const pathOf = (bytes: number): string =>
     path.join(testHome.dir, 's'.repeat(bytes - Buffer.byteLength(testHome.dir) - 1));
 
   it.each([
-    ['darwin', 104],
-    ['linux', 108],
-  ] as const)('accepts a %s path of %i bytes and refuses one byte more', (platform, max) => {
-    expect(Buffer.byteLength(pathOf(max))).toBe(max);
-    expect(() => assertSocketPathFits(pathOf(max), platform)).not.toThrow();
-    expect(() => assertSocketPathFits(pathOf(max + 1), platform)).toThrow(
-      `is ${max + 1} bytes long, and a Unix socket path on this platform can be at most ${max} bytes`,
-    );
+    ['darwin', '1.52.1', 104],
+    ['darwin', '1.53.0', 253],
+    ['linux', '1.52.1', 108],
+    ['linux', '1.53.0', 108],
+  ] as const)(
+    'accepts a %s path under libuv %s of %i bytes and refuses one byte more',
+    (platform, uvVersion, max) => {
+      expect(socketPathMaxBytes(platform, uvVersion)).toBe(max);
+      expect(Buffer.byteLength(pathOf(max))).toBe(max);
+      expect(() => assertSocketPathFits(pathOf(max), platform, uvVersion)).not.toThrow();
+      expect(() => assertSocketPathFits(pathOf(max + 1), platform, uvVersion)).toThrow(
+        `is ${max + 1} bytes long, and a Unix socket path on this platform can be at most ${max} bytes`,
+      );
+    },
+  );
+
+  it.each([
+    ['1.53.0', 253],
+    ['1.53.0-dev', 253],
+    ['1.53.1', 253],
+    ['1.54.0', 253],
+    ['2.0.0', 253],
+    ['1.52.1', 104],
+    ['1.9.0', 104],
+    ['', 104],
+  ] as const)('reads libuv %s as a %i-byte limit on darwin', (uvVersion, max) => {
+    expect(socketPathMaxBytes('darwin', uvVersion)).toBe(max);
+  });
+
+  it('takes the platform and libuv of the running Node by default', () => {
+    expect(socketPathMaxBytes()).toBe(socketPathMaxBytes(process.platform, process.versions.uv));
+    expect(socketPathMaxBytes('win32')).toBeUndefined();
   });
 
   it('measures the path in bytes, not characters', () => {
+    // 50 two-byte characters: within 104 characters, past 104 bytes, the darwin limit under
+    // a libuv before 1.53.0.
     const socketPath = path.join(testHome.dir, 'é'.repeat(50));
     expect(socketPath.length).toBeLessThanOrEqual(104);
     expect(Buffer.byteLength(socketPath)).toBeGreaterThan(104);
 
-    expect(() => assertSocketPathFits(socketPath, 'darwin')).toThrow(
+    expect(() => assertSocketPathFits(socketPath, 'darwin', '1.52.1')).toThrow(
       `is ${Buffer.byteLength(socketPath)} bytes long`,
     );
   });
@@ -166,10 +200,12 @@ describe('startDaemon socket path limit', () => {
     async () => {
       fs.rmSync(pidFile, { force: true });
       fs.rmSync(TOKEN_FILE, { force: true });
-      const socketPath = pathOf(200);
+      // Past the 253-byte macOS limit under libuv 1.53.0, the 104-byte one before it and the
+      // 108 of Linux.
+      const socketPath = pathOf(300);
 
       await expect(startDaemon({ socketPath })).rejects.toThrow(
-        `Broker socket path ${socketPath} is 200 bytes long, and a Unix socket path on this ` +
+        `Broker socket path ${socketPath} is 300 bytes long, and a Unix socket path on this ` +
         `platform can be at most ${platformMax} bytes. The broker was not started.\n` +
         `  Verify: printf %s '${socketPath}' | wc -c\n` +
         `  Fix:    start the broker on a socket path of at most ${platformMax} bytes`,
@@ -184,7 +220,7 @@ describe('startDaemon socket path limit', () => {
   it.skipIf(process.platform === 'win32')(
     'prints a Verify command that counts the bytes of a path holding quotes, a space and a $(...)',
     () => {
-      const socketPath = path.join(testHome.dir, `it's "a" $(echo x) é`, 's'.repeat(100));
+      const socketPath = path.join(testHome.dir, `it's "a" $(echo x) é`, 's'.repeat(300));
       let message = '';
       try {
         assertSocketPathFits(socketPath, 'darwin');
@@ -202,7 +238,7 @@ describe('startDaemon socket path limit', () => {
   );
 
   it.skipIf(process.platform !== 'darwin')('starts on a socket path of exactly the limit', async () => {
-    const socketPath = pathOf(SOCKET_PATH_MAX);
+    const socketPath = pathOf(socketPathMax!);
 
     const server = await startDaemon({ socketPath, httpPort: 24000 + Math.floor(Math.random() * 1000) });
     try {
@@ -213,6 +249,24 @@ describe('startDaemon socket path limit', () => {
       fs.rmSync(pidFile, { force: true });
     }
   });
+
+  it.skipIf(process.platform !== 'darwin' || socketPathMax === undefined || socketPathMax <= 104)(
+    'starts on a socket path of 200 bytes under a Node that listens on one',
+    async () => {
+      // With the limit held at 104 bytes, a start on a path of 105 to 253 bytes was refused on
+      // macOS under Node 26.12.0, whose libuv 1.53.0 listens on it (#441).
+      const socketPath = pathOf(200);
+
+      const server = await startDaemon({ socketPath, httpPort: 25000 + Math.floor(Math.random() * 1000) });
+      try {
+        expect(getDaemonStatus()?.socketPath).toBe(socketPath);
+        expect(fs.existsSync(socketPath)).toBe(true);
+      } finally {
+        await server.stop();
+        fs.rmSync(pidFile, { force: true });
+      }
+    },
+  );
 });
 
 /**

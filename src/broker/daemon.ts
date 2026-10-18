@@ -27,14 +27,47 @@ const DEFAULT_AUDIT_LOG = path.join(SECRETLESS_DIR, 'broker-audit.log');
 const DEFAULT_GRANT_FILE = path.join(SECRETLESS_DIR, 'broker-grants.json');
 
 /**
- * The longest Unix socket path, in bytes, a start accepts on each platform. 104 is the size
- * of `sun_path` in the macOS `sockaddr_un`, and 108 the size the Linux unix(7) manual page
- * gives for it. A platform with no entry is not checked.
+ * The longest Unix socket path, in bytes, a start accepts on `platform` under the libuv that
+ * Node bundles (`process.versions.uv`), or undefined on a platform with no limit recorded,
+ * which is not checked.
+ *
+ * Linux: 108, the size the unix(7) manual page gives for `sun_path`.
+ *
+ * macOS: `sun_path` in `sockaddr_un` is 104 bytes, and under a libuv before 1.53.0 a longer
+ * path failed with EINVAL (Node 24, and Node 26 before it bundled 1.53.0) or was shortened
+ * to 104 bytes (Node 20 and 22). libuv 1.53.0 ("unix: support long path names in pipe.c" in
+ * its ChangeLog) sizes the path from `SOCK_MAXADDRLEN` on Darwin, which gives 253 bytes.
+ * Measured on Darwin 25.6.0 (macOS 26.6.2) under Node 26.12.0, which bundles libuv 1.53.0:
+ * `net.Server.listen` listened on a path of 253 bytes and failed with EINVAL on one of 254
+ * (#441). A libuv version that does not parse counts as older.
  */
-const SOCKET_PATH_MAX_BYTES: Partial<Record<NodeJS.Platform, number>> = {
-  darwin: 104,
-  linux: 108,
-};
+export function socketPathMaxBytes(
+  platform: NodeJS.Platform = process.platform,
+  uvVersion: string = process.versions.uv,
+): number | undefined {
+  switch (platform) {
+    case 'linux':
+      return 108;
+    case 'darwin':
+      return atLeastVersion(uvVersion, [1, 53, 0]) ? 253 : 104;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Whether `version` (`1.53.0`, or `1.53.0-dev`) is `min` or later, comparing each dotted
+ * component as a number. A missing or non-numeric component counts as 0.
+ */
+function atLeastVersion(version: string, min: readonly number[]): boolean {
+  const parts = version.split('.').map((part) => parseInt(part, 10));
+  for (let i = 0; i < min.length; i++) {
+    const part = parts[i];
+    const n = part === undefined || Number.isNaN(part) ? 0 : part;
+    if (n !== min[i]) return n > min[i];
+  }
+  return true;
+}
 
 /** Bytes the default socket path adds to the home directory path. */
 const DEFAULT_SOCKET_SUFFIX_BYTES = Buffer.byteLength(
@@ -42,8 +75,9 @@ const DEFAULT_SOCKET_SUFFIX_BYTES = Buffer.byteLength(
 );
 
 /**
- * Throw when `socketPath` is longer than the limit recorded for `platform`, naming the path,
- * its length in bytes and the limit, with a Verify and a Fix line.
+ * Throw when `socketPath` is longer than the limit `socketPathMaxBytes` gives for `platform`
+ * under `uvVersion`, naming the path, its length in bytes and the limit, with a Verify and a
+ * Fix line.
  *
  * `startDaemon` calls this first, before it creates the config directory, a PID file or a
  * token.
@@ -51,8 +85,9 @@ const DEFAULT_SOCKET_SUFFIX_BYTES = Buffer.byteLength(
 export function assertSocketPathFits(
   socketPath: string,
   platform: NodeJS.Platform = process.platform,
+  uvVersion: string = process.versions.uv,
 ): void {
-  const max = SOCKET_PATH_MAX_BYTES[platform];
+  const max = socketPathMaxBytes(platform, uvVersion);
   if (max === undefined) return;
   const bytes = Buffer.byteLength(socketPath);
   if (bytes <= max) return;
