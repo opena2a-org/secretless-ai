@@ -10,7 +10,7 @@ no other host (`api.github.com/user` for a GitHub token,
 `gitlab.com/api/v4/user` for a GitLab token, `api.anthropic.com/v1/models`
 for an Anthropic key, `oauth2.googleapis.com/tokeninfo` for a Google OAuth
 access token, `slack.com/api/auth.test` for a Slack token; `scan --help`
-lists the endpoint for each of the 31 credential types covered, from 22
+lists the endpoint for each of the 30 credential types covered, from 21
 providers), with redirects left unfollowed and a 10 second bound on each
 exchange. A webhook URL is itself the credential: the path of the found URL
 goes to the host that serves it, and nothing else from it. A Discord webhook

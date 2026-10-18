@@ -477,14 +477,6 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     },
   },
   {
-    patterns: ['sentry'],
-    provider: 'Sentry',
-    host: 'sentry.io',
-    method: 'GET',
-    path: '/api/0/organizations/',
-    headers: BEARER,
-  },
-  {
     // Linear's GraphQL takes the key in the Authorization header with no
     // scheme (not Bearer). A viewer query is read-only; it answers 200 for a
     // key it accepts and 401 for one it rejects, so the default rule reads it,
