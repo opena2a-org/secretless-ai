@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+**`secret get --force` is refused inside an AI agent runtime (#445).** `env`
+and `export` refuse with exit 1 when one of the variables an AI agent sets in
+the commands it runs holds a value: `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+`CURSOR_TRACE_ID` or `AIDER_MODEL`. `secret get NAME --force`, the override of
+the check that blocks `secret get` when stdout is not a terminal, printed the
+value with exit 0 under each of them; in an agent with no guard hook for the
+command, that output entered the agent's context. It now refuses under the
+same check, with exit 1 and before the store is opened, whether stdout is a
+pipe or a terminal. The refusal prints the line `env` prints,
+`An AI agent runtime is set (CLAUDECODE), so this output would enter the
+agent's context.` with the variable found, and offers
+`secretless-ai run --only NAME -- <command>`, with the name given in place of
+`NAME` when `secret set` would store under it. Inside an agent runtime, the
+message that blocks `secret get` without `--force` leaves out its `--force`
+line, and `secret --help` and the top-level help say the flag is refused
+there. `src/commands/secret-get-agent-runtime.test.ts` covers each variable
+with stdout a pipe and a terminal, compares the runtime line with the one
+`env` prints, and checks that `--force` prints the value with no variable set.
+
 **`broker start` accepts a socket path as long as the Node it runs under
 listens on (#441).** The check from #377 held 104 bytes as the macOS limit.
 Node 26.12.0 bundles libuv 1.53.0, which binds a Unix socket path of up to 253

@@ -23,7 +23,7 @@ npx secretless-ai run --only STRIPE_SECRET_KEY -- node charge.js
 
 The command reads the value from its environment. `run` refuses to start a command whose arguments carry a stored value of eight or more characters, verbatim or URL-encoded, because `ps` shows a process's arguments to every local process; for `psql`, store the password as `PGPASSWORD` and pass host, user and database as arguments. `--allow-argv` starts it anyway, with a warning.
 
-Reading a value back is TTY-gated: `secret get NAME` prints it in an interactive terminal, but is blocked in piped or AI-driven contexts unless `--force` is passed. `init` installs deny rules so AI tools cannot run the `--force` form or dump an injected environment (`run -- env`).
+Reading a value back is TTY-gated: `secret get NAME` prints it in an interactive terminal, but is blocked in piped or AI-driven contexts unless `--force` is passed. Where one of the variables an AI agent sets in the commands it runs holds a value (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CURSOR_TRACE_ID` or `AIDER_MODEL`), `secret get --force` is refused and prints no value, as are `env` and `export`; `run --only NAME -- <command>` still passes the value to the one command. `init` installs deny rules so AI tools cannot run the `--force` form or dump an injected environment (`run -- env`).
 
 ### Record what a credential is for
 
