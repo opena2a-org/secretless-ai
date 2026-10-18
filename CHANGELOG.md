@@ -41,7 +41,8 @@ OpenAI project key value shorter than 132 characters is not sent either:
 the key can hold `-` or `_`, where the pattern stops, so such a value may
 be only the part before one, and the finding says so. `--json` carries the
 same as `validity` on each finding and counts under `summary.validity`,
-only when the flag is given. The same value, or the
+only when the flag is given; `--format sarif` carries it as
+`properties.validity` on each result (#448). The same value, or the
 same AWS pair, found in several files is sent once, and an AWS access key ID
 paired with different secret access keys in different files is sent with none
 of them. Severity, confidence and the exit code do not change with the

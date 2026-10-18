@@ -893,9 +893,9 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
       unscannedConfigFiles: stats.unscannedConfig.files,
     };
     // SARIF is built from the same report, so the two formats cannot disagree
-    // about a finding.
+    // about a finding, its validity answer included.
     const document = options?.format === 'sarif'
-      ? scanToSarif({ version: report.version, projectDir, findings, summary: report.summary })
+      ? scanToSarif({ version: report.version, projectDir, findings: report.findings, summary: report.summary })
       : report;
     console.log(JSON.stringify(document, null, 2));
     // An incomplete scan is not a pass. `total: 0` with `truncated: true`, an
