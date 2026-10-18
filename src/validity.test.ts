@@ -7,6 +7,9 @@
  *   one header or the path, never the query, and redirects unfollowed.
  * - 200 is live, 401 is rejected, anything else, an error or a timeout is
  *   unknown with the status or reason named; Slack is decided on its body.
+ * - A webhook URL is sent as its own path to the host that serves it, and
+ *   to no other host; the Discord and Slack webhook answers are decided as
+ *   those hosts state them, and a URL off the host or its path is not sent.
  * - No result string holds the value, even when an error message does.
  * - The scanner keeps a matched value only under `retainValues`, and never on
  *   the finding object.
@@ -19,9 +22,9 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  VALIDITY_PROBES, VALUE_MARKER, probeFor, buildProbeRequest, probeCredential, checkFindings,
+  VALIDITY_PROBES, VALUE_MARKER, URL_PATH_MARKER, probeFor, buildProbeRequest, notSentReason, probeCredential, checkFindings,
   summarizeValidity, stateLabel, validityHelpLines, probeEndpoint,
-  type ProbeFetch, type ProbeFetchInit, type ValidityResult,
+  type ProbeFetch, type ProbeFetchInit, type ValidityProbe, type ValidityResult,
 } from './validity';
 import { scan, matchedValueOf, type ScanFinding } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
@@ -30,6 +33,12 @@ import { printCommandHelp } from './command-help';
 
 /** Not a credential: `probeCredential` takes any string, and this one is never scanned. */
 const VALUE = 'not-a-real-token';
+
+/** A value each probe sends: the plain token, or for a probe that takes a URL, a URL on its host under its prefix ending in that token. */
+function sampleValueFor(probe: ValidityProbe): string {
+  const at = probe.path.indexOf(URL_PATH_MARKER);
+  return at < 0 ? VALUE : `${probe.host}${probe.path.slice(0, at)}${VALUE}`;
+}
 
 interface Call { url: string; init: ProbeFetchInit }
 
@@ -86,24 +95,35 @@ describe('the probe registry', () => {
       'postgres', 'mysql', 'mongodb', 'redis', 'pem-private-key', 'gcp-service-account', 'secretless-bundle', 'pkcs12-keystore',
       // Needs a second value beside the one found: an AWS secret, an account or user name, a project host, the API a key is enabled for.
       'aws-access', 'aws-secret', 'aws-sts', 'azure', 'supabase', 'twilio', 'dockerhub', 'bitbucket', 'google', 'slack-app',
-      // The one call these accept would act: post a message, rotate the token, run a pipeline.
-      'slack-webhook', 'discord-webhook', 'stripe-webhook', 'github-refresh', 'gitlab-pipeline',
+      // The one call these accept would act: rotate the token, run a pipeline; a Stripe webhook secret only signs.
+      'stripe-webhook', 'github-refresh', 'gitlab-pipeline',
     ]) {
       expect(probeFor(id), id).toBeUndefined();
     }
   });
 
-  it('carries the value marker exactly once per probe, in the path or one header', () => {
+  it('carries one marker per probe: the value marker in the path or one header, or the URL-path marker ending the path', () => {
     for (const probe of VALIDITY_PROBES) {
-      const carriers = [probe.path, ...Object.values(probe.headers)].filter((s) => s.includes(VALUE_MARKER));
+      const carriers = [probe.path, ...Object.values(probe.headers)].filter((s) => s.includes(VALUE_MARKER) || s.includes(URL_PATH_MARKER));
       expect(carriers, probe.provider).toHaveLength(1);
-      expect(carriers[0].split(VALUE_MARKER)).toHaveLength(2);
+      expect(carriers[0].split(VALUE_MARKER).length + carriers[0].split(URL_PATH_MARKER).length, probe.provider).toBe(3);
+      if (carriers[0].includes(URL_PATH_MARKER)) {
+        expect(carriers[0], `${probe.provider}: the URL-path marker belongs in the path`).toBe(probe.path);
+        expect(probe.path.endsWith(URL_PATH_MARKER), probe.provider).toBe(true);
+        expect(probe.path.length, `${probe.provider}: a URL probe names the path prefix a found URL must be under`).toBeGreaterThan(URL_PATH_MARKER.length + 1);
+      } else {
+        expect(probe.urlHosts, `${probe.provider}: urlHosts belongs to a URL probe`).toBeUndefined();
+      }
+      expect(probe.body ?? '', probe.provider).not.toContain(VALUE_MARKER);
+      expect(probe.body ?? '', probe.provider).not.toContain(URL_PATH_MARKER);
     }
   });
 
   it('builds every request for the probe host over https, with the value in one place and never the query', () => {
     for (const probe of VALIDITY_PROBES) {
-      const request = buildProbeRequest(probe, VALUE);
+      const value = sampleValueFor(probe);
+      expect(notSentReason(probe, value), probe.provider).toBeNull();
+      const request = buildProbeRequest(probe, value);
       const url = new URL(request.url);
       expect(url.protocol, probe.provider).toBe('https:');
       expect(url.host, probe.provider).toBe(probe.host);
@@ -113,6 +133,8 @@ describe('the probe registry', () => {
       expect(inHeaders + inPath, probe.provider).toBe(1);
       expect(request.headers['User-Agent']).toMatch(/^secretless-ai\/\d+\.\d+\.\d+/);
       expect(request.method).toBe(probe.method);
+      expect(request.body, probe.provider).toBe(probe.body);
+      if (request.body !== undefined) expect(request.body, probe.provider).not.toContain(VALUE);
     }
   });
 });
@@ -316,6 +338,124 @@ describe('probeCredential', () => {
   });
 });
 
+describe('a webhook URL is itself the credential', () => {
+  // Webhook URLs as the scanner matches them: host and path, no scheme. Not
+  // real: the id and the token are the words below.
+  const DISCORD_HOOK = 'discord.com/api/webhooks/1/not-a-real-token';
+  const SLACK_HOOK = 'hooks.slack.com/services/not-a-real-token';
+  const DISCORD_NOT_SENT = 'the found URL is not an https URL on discord.com or discordapp.com under /api/webhooks/';
+
+  it('sends a Discord webhook URL as a GET of its own path to discord.com, with no header carrying it and no body', async () => {
+    const calls: Call[] = [];
+    const result = await probeCredential('discord-webhook', DISCORD_HOOK, { fetchImpl: answering(200, '{"id":"1","name":"hook"}', calls) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://discord.com/api/webhooks/1/not-a-real-token');
+    expect(calls[0].init.method).toBe('GET');
+    expect(calls[0].init.body).toBeUndefined();
+    expect(calls[0].init.redirect).toBe('manual');
+    expect(calls[0].init.headers.Authorization).toBeUndefined();
+    expect(Object.values(calls[0].init.headers).some((v) => v.includes('not-a-real-token'))).toBe(false);
+    expect(result).toEqual({ state: 'live', host: 'discord.com', status: 200, detail: 'discord.com answered 200' });
+  });
+
+  it('sends a discordapp.com webhook URL to discord.com, and takes only the path from the URL', async () => {
+    const calls: Call[] = [];
+    await probeCredential('discord-webhook', 'https://discordapp.com/api/webhooks/1/not-a-real-token?wait=true#x', { fetchImpl: answering(200, '{}', calls) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://discord.com/api/webhooks/1/not-a-real-token');
+  });
+
+  it.each([
+    ['{"message": "Unknown Webhook", "code": 10015}', 'rejected', 'discord.com answered 404 (Unknown Webhook, code 10015)'],
+    ['{"message": "404: Not Found", "code": 0}', 'unknown', 'discord.com answered 404 (code 0)'],
+    ['{"message": "x"}', 'unknown', 'discord.com answered 404 (no code named)'],
+    ['{"code": "10015"}', 'unknown', 'discord.com answered 404 (no code named)'],
+    ['<html>', 'unknown', 'discord.com answered 404 with a body that is not JSON'],
+  ])('decides a Discord answer of 404 on its body: %s is %s', async (body, state, detail) => {
+    const result = await probeCredential('discord-webhook', DISCORD_HOOK, { fetchImpl: answering(404, body) });
+    expect(result).toEqual({ state, host: 'discord.com', status: 404, detail });
+  });
+
+  it('decides a Discord answer other than 404 by status, as every other probe does', async () => {
+    expect(await probeCredential('discord-webhook', DISCORD_HOOK, { fetchImpl: answering(401, '{"message": "Invalid Webhook Token", "code": 50027}') }))
+      .toEqual({ state: 'rejected', host: 'discord.com', status: 401, detail: 'discord.com answered 401' });
+    expect(await probeCredential('discord-webhook', DISCORD_HOOK, { fetchImpl: answering(429, '{"message": "You are being rate limited."}') }))
+      .toEqual({ state: 'unknown', host: 'discord.com', status: 429, detail: 'discord.com answered 429' });
+  });
+
+  it('sends a Slack webhook URL as a POST of {} to its own path on hooks.slack.com, as JSON, with no header carrying it', async () => {
+    const calls: Call[] = [];
+    const result = await probeCredential('slack-webhook', SLACK_HOOK, { fetchImpl: answering(400, 'no_text', calls) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://hooks.slack.com/services/not-a-real-token');
+    expect(calls[0].init.method).toBe('POST');
+    expect(calls[0].init.body).toBe('{}');
+    expect(calls[0].init.headers['Content-Type']).toBe('application/json');
+    expect(calls[0].init.headers.Authorization).toBeUndefined();
+    expect(Object.values(calls[0].init.headers).some((v) => v.includes('not-a-real-token'))).toBe(false);
+    expect(result).toEqual({ state: 'live', host: 'hooks.slack.com', status: 400, detail: 'hooks.slack.com took the webhook and refused the empty message (no_text)' });
+  });
+
+  it.each([
+    [400, 'no_text', 'live', 'hooks.slack.com took the webhook and refused the empty message (no_text)'],
+    [400, 'invalid_payload\n', 'live', 'hooks.slack.com took the webhook and refused the empty message (invalid_payload)'],
+    [400, 'missing_text_or_fallback_or_attachments', 'live', 'hooks.slack.com took the webhook and refused the empty message (missing_text_or_fallback_or_attachments)'],
+    [400, 'user_not_found', 'unknown', 'hooks.slack.com answered 400 (user_not_found)'],
+    [403, 'invalid_token', 'rejected', 'hooks.slack.com answered 403 (invalid_token)'],
+    [403, 'action_prohibited', 'unknown', 'hooks.slack.com answered 403 (action_prohibited)'],
+    [404, 'no_service', 'rejected', 'hooks.slack.com answered 404 (no_service)'],
+    [404, 'no_team', 'rejected', 'hooks.slack.com answered 404 (no_team)'],
+    [404, 'channel_not_found', 'unknown', 'hooks.slack.com answered 404 (channel_not_found)'],
+    [404, '<html>Not Found</html>', 'unknown', 'hooks.slack.com answered 404 (no error named)'],
+    [404, 'no_text', 'unknown', 'hooks.slack.com answered 404 (no_text)'],
+  ])('decides a Slack webhook answer of %i on its body: %s is %s', async (status, body, state, detail) => {
+    const result = await probeCredential('slack-webhook', SLACK_HOOK, { fetchImpl: answering(status, body) });
+    expect(result).toEqual({ state, host: 'hooks.slack.com', status, detail });
+  });
+
+  it('decides a Slack webhook answer other than 400, 403 or 404 by status, as every other probe does', async () => {
+    expect(await probeCredential('slack-webhook', SLACK_HOOK, { fetchImpl: answering(200, 'ok') }))
+      .toEqual({ state: 'live', host: 'hooks.slack.com', status: 200, detail: 'hooks.slack.com answered 200' });
+    expect(await probeCredential('slack-webhook', SLACK_HOOK, { fetchImpl: answering(410, 'channel_is_archived') }))
+      .toEqual({ state: 'unknown', host: 'hooks.slack.com', status: 410, detail: 'hooks.slack.com answered 410' });
+    expect(await probeCredential('slack-webhook', SLACK_HOOK, { fetchImpl: answering(500, 'rollup_error') }))
+      .toEqual({ state: 'unknown', host: 'hooks.slack.com', status: 500, detail: 'hooks.slack.com answered 500' });
+  });
+
+  it.each([
+    ['another host', 'discord.com.example.net/api/webhooks/1/not-a-real-token'],
+    ['the host as a prefix of another', 'discord.community/api/webhooks/1/not-a-real-token'],
+    ['a path off the webhook endpoint', 'discord.com/api/v10/users/@me'],
+    ['the prefix with nothing after it', 'discord.com/api/webhooks/'],
+    ['a port', 'discord.com:8443/api/webhooks/1/not-a-real-token'],
+    ['userinfo', 'someone@discord.com/api/webhooks/1/not-a-real-token'],
+    ['a plain http scheme', 'http://discord.com/api/webhooks/1/not-a-real-token'],
+    ['a path that climbs out of the prefix', 'discord.com/api/webhooks/../../x'],
+    ['not a URL at all', 'not-a-real-token'],
+  ])('does not send a Discord webhook value with %s, and says why without the value', async (_what, value) => {
+    const calls: Call[] = [];
+    const result = await probeCredential('discord-webhook', value, { fetchImpl: answering(200, '{}', calls) });
+    expect(calls).toHaveLength(0);
+    expect(result).toEqual({ state: 'unchecked', detail: `not sent: ${DISCORD_NOT_SENT}` });
+    expect(notSentReason(probeFor('discord-webhook')!, value)).toBe(DISCORD_NOT_SENT);
+    expect(() => buildProbeRequest(probeFor('discord-webhook')!, value)).toThrow(/not a URL this probe sends/);
+  });
+
+  it('does not send a Slack webhook value on another host or off /services/', async () => {
+    for (const value of ['slack.com/services/not-a-real-token', 'hooks.slack.com/api/auth.test', 'hooks.slack.com/services/']) {
+      const calls: Call[] = [];
+      const result = await probeCredential('slack-webhook', value, { fetchImpl: answering(400, 'no_text', calls) });
+      expect(calls, value).toHaveLength(0);
+      expect(result, value).toEqual({ state: 'unchecked', detail: 'not sent: the found URL is not an https URL on hooks.slack.com under /services/' });
+    }
+  });
+
+  it('notSentReason is null for a probe with neither a URL marker nor a skip rule, and defers to a skip rule first', () => {
+    expect(notSentReason(probeFor('github-pat')!, VALUE)).toBeNull();
+    expect(notSentReason(probeFor('slack')!, ['xo', 'xr-', VALUE].join(''))).toBe('an xoxr- value is a refresh token, and this probe is for access tokens');
+  });
+});
+
 describe('checkFindings', () => {
   it('asks once per distinct value and gives every finding that carries it the same answer', async () => {
     const calls: Call[] = [];
@@ -434,6 +574,36 @@ describe('over HTTP on the loopback interface', () => {
       await close();
     }
   });
+
+  it('delivers a webhook request through the real fetch: the Slack POST carries {} as its body, the Discord GET carries none', async () => {
+    const seen: Array<{ method: string | undefined; url: string | undefined; contentType: string | undefined; body: string }> = [];
+    const { toLoopback, close } = await loopback((req, res) => {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        seen.push({ method: req.method, url: req.url, contentType: req.headers['content-type'], body });
+        if (req.url?.startsWith('/services/')) {
+          res.writeHead(400, { 'content-type': 'text/html' });
+          res.end('no_text');
+          return;
+        }
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end('{"message": "Unknown Webhook", "code": 10015}');
+      });
+    });
+    try {
+      const slack = await probeCredential('slack-webhook', 'hooks.slack.com/services/not-a-real-token', { fetchImpl: toLoopback });
+      const discord = await probeCredential('discord-webhook', 'discord.com/api/webhooks/1/not-a-real-token', { fetchImpl: toLoopback });
+      expect(seen).toEqual([
+        { method: 'POST', url: '/services/not-a-real-token', contentType: 'application/json', body: '{}' },
+        { method: 'GET', url: '/api/webhooks/1/not-a-real-token', contentType: undefined, body: '' },
+      ]);
+      expect(slack).toEqual({ state: 'live', host: 'hooks.slack.com', status: 400, detail: 'hooks.slack.com took the webhook and refused the empty message (no_text)' });
+      expect(discord).toEqual({ state: 'rejected', host: 'discord.com', status: 404, detail: 'discord.com answered 404 (Unknown Webhook, code 10015)' });
+    } finally {
+      await close();
+    }
+  });
 });
 
 describe('the scanner keeps a matched value only when asked', () => {
@@ -502,7 +672,12 @@ describe('the flag, the help and docs/commands.md name what --check-validity con
       }
     }
     expect(probeEndpoint(probeFor('telegram-bot')!)).toBe('api.telegram.org/bot<value>/getMe');
+    expect(probeEndpoint(probeFor('discord-webhook')!)).toBe('discord.com/api/webhooks/<from the found URL>');
+    expect(probeEndpoint(probeFor('slack-webhook')!)).toBe('hooks.slack.com/services/<from the found URL>');
     expect(text).not.toContain(VALUE_MARKER);
+    expect(text).not.toContain(URL_PATH_MARKER);
+    expect(text).toContain('Discord: a GET of the webhook, its read-only endpoint');
+    expect(text).toContain('Slack: a POST whose body is {}, a message with no text, which Slack refuses before posting anything');
     expect(text).toContain('Types not listed are reported as not checked, and nothing is sent for them. '
       + 'Without the flag, no credential is sent anywhere.');
     expect(text).toContain('a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com');

@@ -5,8 +5,9 @@
  * A finding says a value has the shape of a credential. Whether the provider
  * still accepts it is a different question, and only that provider can answer
  * it. This module asks, for the credential types that have a read-only
- * endpoint whose answer depends on the credential alone, and reports the
- * answer beside the finding.
+ * endpoint whose answer depends on the credential alone (or, for a Slack
+ * webhook URL, a request its endpoint refuses before it posts anything), and
+ * reports the answer beside the finding.
  *
  * Opt-in, end to end. Nothing here runs unless `runScan` is given
  * `checkValidity`, and the scanner keeps no matched value unless it is asked
@@ -16,13 +17,23 @@
  * What a request is. The value is placed where the probe's `headers` or `path`
  * carries the `{value}` marker, and nowhere else. The request goes to the
  * probe's `host` over HTTPS, redirects are left unfollowed so a 3xx cannot
- * carry a header to another host, and the exchange is under one deadline.
+ * carry a header to another host, and the exchange is under one deadline. A
+ * URL-shaped credential (a webhook URL) is itself the request: the part of
+ * its path after the probe's prefix replaces the `{url-path}` marker, once the
+ * URL is checked to be https, without port or userinfo, on the probe's `host`
+ * or one of its `urlHosts`, and with its path under that prefix; nothing else
+ * from the URL is used, and a URL that fails the check is not sent. A probe's
+ * `body`, when it has one, is fixed text that never carries the value.
  *
- * What a result says. `live`: the host answered 200. `rejected`: the host
- * answered 401, or stated a rejection in a body where its API does so (Slack
- * in a 200, Google's tokeninfo in a 400). `unknown`: any other status, no
- * connection, or no answer in time, with the status or reason named.
- * `unchecked`: no probe for the type, and nothing was sent. A result describes
+ * What a result says. `live`: the host answered 200, or hooks.slack.com
+ * refused the empty message a webhook probe sends (400 no_text), which it
+ * states instead of a refusal of the URL. `rejected`: the host answered 401,
+ * or stated a rejection in a body where its API does so (Slack in a 200,
+ * Google's tokeninfo in a 400, Discord's webhook endpoint in a 404 whose code
+ * is 10015, hooks.slack.com in a 403 or 404 naming invalid_token, no_service
+ * or no_team). `unknown`: any other status, no connection, or no answer in
+ * time, with the status or reason named. `unchecked`: no probe for the type,
+ * or a value the probe does not send, and nothing was sent. A result describes
  * the host's answer to the request this module sends, not the credential's
  * history: a token a self-managed GitHub or GitLab instance issued still goes
  * to api.github.com or gitlab.com, which did not issue it. No result string
@@ -53,11 +64,23 @@ export interface ValidityProbe {
   readonly provider: string;
   /** The only host this probe sends to. */
   readonly host: string;
+  /**
+   * For a probe whose path carries `{url-path}`: hosts a found URL may name
+   * beside `host`. The request still goes to `host`.
+   */
+  readonly urlHosts?: readonly string[];
   readonly method: 'GET' | 'POST';
-  /** Request path. A `{value}` marker is replaced by the URL-encoded credential. */
+  /**
+   * Request path. A `{value}` marker is replaced by the URL-encoded
+   * credential. A `{url-path}` marker is replaced by the part of a URL-shaped
+   * credential's path after the text before the marker, which the found URL's
+   * path must begin with; see `foundUrlPath` for the rest of the check.
+   */
   readonly path: string;
   /** Request headers. A `{value}` marker is replaced by the credential. */
   readonly headers: Readonly<Record<string, string>>;
+  /** A fixed request body, for a POST. Never carries the value. */
+  readonly body?: string;
   /** A reason not to send this value, or null to send it. */
   readonly skip?: (value: string) => string | null;
   /**
@@ -70,12 +93,35 @@ export interface ValidityProbe {
 /** Marker in a probe's path or header value where the credential goes. */
 export const VALUE_MARKER = '{value}';
 
+/**
+ * Marker in a probe's path where the rest of a URL-shaped credential's path
+ * goes: the part after the probe's prefix, once the URL passes `foundUrlPath`.
+ */
+export const URL_PATH_MARKER = '{url-path}';
+
 const BEARER: Readonly<Record<string, string>> = { Authorization: `Bearer ${VALUE_MARKER}` };
 
 const GITHUB_HEADERS: Readonly<Record<string, string>> = { ...BEARER, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
 
 /** The `error` values in a Slack `ok: false` answer this probe counts as a rejection. */
 const SLACK_REJECTIONS = new Set(['invalid_auth', 'not_authed', 'token_revoked', 'token_expired', 'account_inactive']);
+
+/**
+ * The errors hooks.slack.com states, as a plain-text body, when it refuses the
+ * webhook URL itself: the token, the service it names or its workspace is
+ * gone, disabled or invalid.
+ */
+const SLACK_WEBHOOK_REJECTIONS = new Set(['invalid_token', 'no_service', 'no_service_id', 'no_active_hooks', 'no_team', 'team_disabled']);
+
+/**
+ * The errors hooks.slack.com states when it refuses the payload after taking
+ * the URL: the message sent has no text, which is the message this probe
+ * sends on purpose, so each of these means the webhook is live.
+ */
+const SLACK_WEBHOOK_PAYLOAD_REFUSALS = new Set(['no_text', 'invalid_payload', 'missing_text_or_fallback_or_attachments']);
+
+/** The Discord error code for a webhook id it does not have. */
+const DISCORD_UNKNOWN_WEBHOOK = 10015;
 
 /** What `parseJson` returns for a body that is not JSON. */
 const NOT_JSON: unique symbol = Symbol('not JSON');
@@ -95,6 +141,16 @@ function parseJson(body: string): unknown {
 function errorNamedIn(parsed: unknown): string {
   const error = (parsed as { error?: unknown } | null)?.error;
   return typeof error === 'string' && /^[a-z_]+$/.test(error) ? error : 'no error named';
+}
+
+/**
+ * The error a plain-text body names, as hooks.slack.com states one. It is
+ * printed, so only a short identifier is accepted; anything else reads as no
+ * error named.
+ */
+function plainErrorIn(body: string): string {
+  const text = body.trim();
+  return /^[a-z_]{1,64}$/.test(text) ? text : 'no error named';
 }
 
 export const VALIDITY_PROBES: readonly ValidityProbe[] = [
@@ -202,12 +258,61 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     },
   },
   {
+    // A webhook URL is the credential, and hooks.slack.com has no read-only
+    // endpoint for it: the one request it takes is a POST of a message. The
+    // body sent is {}, a message with no text, blocks or attachments, which
+    // Slack refuses as no_text; it checks the URL first (a URL it does not
+    // know is answered 404 no_team), so that refusal means the webhook is
+    // live, and nothing is posted either way.
+    patterns: ['slack-webhook'],
+    provider: 'Slack',
+    host: 'hooks.slack.com',
+    method: 'POST',
+    path: `/services/${URL_PATH_MARKER}`,
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+    // Errors come as a plain-text body with a 400, 403 or 404; each of those
+    // is decided on the error named, and every other status takes the default rule.
+    decide: (status, body) => {
+      if (status !== 400 && status !== 403 && status !== 404) return null;
+      const error = plainErrorIn(body);
+      if (status === 400 && SLACK_WEBHOOK_PAYLOAD_REFUSALS.has(error)) {
+        return { state: 'live', detail: `hooks.slack.com took the webhook and refused the empty message (${error})` };
+      }
+      const state: ValidityState = SLACK_WEBHOOK_REJECTIONS.has(error) ? 'rejected' : 'unknown';
+      return { state, detail: `hooks.slack.com answered ${status} (${error})` };
+    },
+  },
+  {
     patterns: ['discord-bot'],
     provider: 'Discord',
     host: 'discord.com',
     method: 'GET',
     path: '/api/v10/users/@me',
     headers: { Authorization: `Bot ${VALUE_MARKER}` },
+  },
+  {
+    // A webhook URL is the credential. A GET of it is the webhook's own
+    // read-only endpoint (Get Webhook with Token), which answers 200 with
+    // the webhook and posts nothing. The path goes to discord.com whether
+    // the found URL named discord.com or discordapp.com.
+    patterns: ['discord-webhook'],
+    provider: 'Discord',
+    host: 'discord.com',
+    urlHosts: ['discordapp.com'],
+    method: 'GET',
+    path: `/api/webhooks/${URL_PATH_MARKER}`,
+    headers: {},
+    // A webhook Discord no longer has is a 404 whose JSON body carries code
+    // 10015 (Unknown Webhook); a wrong token is a 401, which the default rule reads.
+    decide: (status, body) => {
+      if (status !== 404) return null;
+      const parsed = parseJson(body);
+      if (parsed === NOT_JSON) return { state: 'unknown', detail: 'discord.com answered 404 with a body that is not JSON' };
+      const code = (parsed as { code?: unknown } | null)?.code;
+      if (code === DISCORD_UNKNOWN_WEBHOOK) return { state: 'rejected', detail: `discord.com answered 404 (Unknown Webhook, code ${code})` };
+      return { state: 'unknown', detail: `discord.com answered 404 (${Number.isInteger(code) ? `code ${code}` : 'no code named'})` };
+    },
   },
   {
     patterns: ['telegram-bot'],
@@ -306,16 +411,68 @@ export interface ProbeRequest {
   url: string;
   method: 'GET' | 'POST';
   headers: Record<string, string>;
+  /** The probe's fixed body, when it has one. */
+  body?: string;
 }
 
-/** The request a probe sends for a value: the marker filled in, and nothing else added but a User-Agent. */
+/** The text before `{url-path}` in a probe's path, which a found URL's path must begin with; null for a probe without the marker. */
+function urlPathPrefix(probe: ValidityProbe): string | null {
+  const at = probe.path.indexOf(URL_PATH_MARKER);
+  return at < 0 ? null : probe.path.slice(0, at);
+}
+
+/**
+ * The part of a URL-shaped credential's path that replaces `{url-path}`, or
+ * null when the value is not an https URL, without port or userinfo, on the
+ * probe's `host` or one of its `urlHosts`, with a path that begins with the
+ * probe's prefix and goes on past it. A value with no scheme is read as
+ * https. Only the path is taken from the URL: a query or fragment is dropped.
+ */
+function foundUrlPath(probe: ValidityProbe, value: string): string | null {
+  const prefix = urlPathPrefix(probe);
+  if (prefix === null) return null;
+  let url: URL;
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(value) ? value : `https://${value}`);
+  } catch {
+    return null;
+  }
+  const hosts = [probe.host, ...(probe.urlHosts ?? [])];
+  if (url.protocol !== 'https:' || !hosts.includes(url.hostname) || url.port !== '' || url.username !== '' || url.password !== '') return null;
+  if (!url.pathname.startsWith(prefix) || url.pathname.length === prefix.length) return null;
+  return url.pathname.slice(prefix.length);
+}
+
+/** The reason a probe would not send a value, or null when it would. */
+export function notSentReason(probe: ValidityProbe, value: string): string | null {
+  const own = probe.skip?.(value) ?? null;
+  if (own !== null) return own;
+  const prefix = urlPathPrefix(probe);
+  if (prefix !== null && foundUrlPath(probe, value) === null) {
+    return `the found URL is not an https URL on ${[probe.host, ...(probe.urlHosts ?? [])].join(' or ')} under ${prefix}`;
+  }
+  return null;
+}
+
+/**
+ * The request a probe sends for a value: the markers filled in, and nothing
+ * else added but a User-Agent. Throws for a value `notSentReason` names a
+ * reason for, so check that first.
+ */
 export function buildProbeRequest(probe: ValidityProbe, value: string): ProbeRequest {
   const headers: Record<string, string> = { 'User-Agent': `secretless-ai/${VERSION}` };
   for (const [name, template] of Object.entries(probe.headers)) {
     headers[name] = template.split(VALUE_MARKER).join(value);
   }
-  const path = probe.path.split(VALUE_MARKER).join(encodeURIComponent(value));
-  return { url: `https://${probe.host}${path}`, method: probe.method, headers };
+  let path = probe.path.split(VALUE_MARKER).join(encodeURIComponent(value));
+  if (urlPathPrefix(probe) !== null) {
+    const rest = foundUrlPath(probe, value);
+    if (rest === null) throw new Error(`${probe.provider}: the value is not a URL this probe sends`);
+    path = path.split(URL_PATH_MARKER).join(rest);
+  }
+  const request: ProbeRequest = { url: `https://${probe.host}${path}`, method: probe.method, headers };
+  if (probe.body !== undefined) request.body = probe.body;
+  return request;
 }
 
 /** What a probe needs from `fetch`: the status, and the body for a probe that reads one. */
@@ -327,6 +484,8 @@ export interface ProbeResponse {
 export interface ProbeFetchInit {
   method: 'GET' | 'POST';
   headers: Record<string, string>;
+  /** The probe's fixed body; present only for a probe that has one. */
+  body?: string;
   /** Always `manual`: a 3xx is an answer, never a second request. */
   redirect: 'manual';
   signal: AbortSignal;
@@ -381,8 +540,8 @@ function withoutValue(value: string, result: ValidityResult): ValidityResult {
 export async function probeCredential(patternId: string, value: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
   const probe = probeFor(patternId);
   if (!probe) return { state: 'unchecked', detail: `no validity probe for ${patternNameOf(patternId)}` };
-  const reason = probe.skip?.(value) ?? null;
-  if (reason !== null) return { state: 'unchecked', detail: `not sent: ${reason}` };
+  const reason = notSentReason(probe, value);
+  if (reason !== null) return withoutValue(value, { state: 'unchecked', detail: `not sent: ${reason}` });
 
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl = deps.fetchImpl ?? defaultFetch;
@@ -395,6 +554,7 @@ export async function probeCredential(patternId: string, value: string, deps: Pr
     const response = await fetchImpl(request.url, {
       method: request.method,
       headers: request.headers,
+      ...(request.body !== undefined ? { body: request.body } : {}),
       redirect: 'manual',
       signal: controller.signal,
     });
@@ -482,9 +642,13 @@ export function stateLabel(state: ValidityState): string {
   return state === 'unchecked' ? 'not checked' : state;
 }
 
-/** The endpoint a probe contacts, host and path, with the place a value takes in the path shown as <value>. */
+/**
+ * The endpoint a probe contacts, host and path, with the place a value takes
+ * in the path shown as <value> and the rest of a found URL's path as
+ * <from the found URL>.
+ */
 export function probeEndpoint(probe: ValidityProbe): string {
-  return `${probe.host}${probe.path.split(VALUE_MARKER).join('<value>')}`;
+  return `${probe.host}${probe.path.split(VALUE_MARKER).join('<value>').split(URL_PATH_MARKER).join('<from the found URL>')}`;
 }
 
 /** A paragraph of the `scan --help` notes, wrapped to their width. */
@@ -524,8 +688,13 @@ export function validityHelpLines(): string[] {
     ...rows,
     ...helpParagraph('Types not listed are reported as not checked, and nothing is sent for them. Without the flag, '
       + 'no credential is sent anywhere. live: the host answered 200. rejected: it answered 401 (Slack: '
-      + 'ok: false in a 200; Google: invalid_token in a 400). unknown: any other answer, or none. A token '
-      + 'a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com, which '
-      + "did not issue it; read the answer as that host's. The answer does not change the exit code."),
+      + 'ok: false in a 200; Google: invalid_token in a 400). unknown: any other answer, or none.'),
+    ...helpParagraph('A webhook URL is itself the credential: the path of the found URL goes to the host above, and '
+      + 'nothing else from it. Discord: a GET of the webhook, its read-only endpoint, sent to discord.com '
+      + 'whether the URL named discord.com or discordapp.com; 404 Unknown Webhook reads rejected. Slack: a '
+      + 'POST whose body is {}, a message with no text, which Slack refuses before posting anything; a '
+      + '400 for that refusal (no_text) reads live, and invalid_token, no_service or no_team read rejected.'),
+    ...helpParagraph('A token a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com, '
+      + "which did not issue it; read the answer as that host's. The answer does not change the exit code."),
   ];
 }

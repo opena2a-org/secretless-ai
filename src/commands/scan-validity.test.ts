@@ -29,6 +29,11 @@ const GITHUB = ['ghp_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'].join('');
 const GITLAB = ['glpat-', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].join('');
 /** A Docker Hub token: a pattern no probe covers, so it reads "not checked". */
 const DOCKERHUB = ['dckr_pat_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].join('');
+/** Webhook URLs as the scanner matches them, host and path: each is itself the credential and is sent as its own path. */
+const DISCORD_HOOK = ['discord.com/api/webhooks/', '123456789012345678', '/', 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'].join('');
+const SLACK_HOOK = ['hooks.slack.com/services/', 'T0A1B2C3D4E', '/', 'B5F6G7H8I9J', '/', 'ABCDEFGHIJKLMNOPQRSTUVWX'].join('');
+/** The last path segment of a webhook URL: the part that must appear in no output and no header. */
+const tokenOf = (hook: string): string => hook.slice(hook.lastIndexOf('/') + 1);
 
 interface Call { url: string; init: ProbeFetchInit }
 
@@ -142,6 +147,42 @@ describe('runScan --check-validity', () => {
     expect(calls).toHaveLength(1);
     for (const f of doc.findings) expect(f.validity.state).toBe('live');
     expect(doc.summary.validity.live).toBe(2);
+  });
+
+  it('a webhook URL is sent as its own path to the host that serves it, with the answer read as that host states it', async () => {
+    const dir = project({ 'hooks.js': `const discord = "https://${DISCORD_HOOK}";\nconst slack = "https://${SLACK_HOOK}";\n` });
+    const calls: Call[] = [];
+    const byHost: ProbeFetch = async (url, init) => {
+      calls.push({ url, init });
+      return new URL(url).host === 'hooks.slack.com'
+        ? { status: 400, text: async () => 'no_text' }
+        : { status: 404, text: async () => '{"message": "Unknown Webhook", "code": 10015}' };
+    };
+    const code = await runScan(dir, { json: true, checkValidity: true, validityDeps: { fetchImpl: byHost } });
+    const text = out.join('\n');
+    const doc = JSON.parse(text);
+    expect(code).toBe(1);
+    for (const hook of [DISCORD_HOOK, SLACK_HOOK]) expect(text).not.toContain(tokenOf(hook));
+
+    const byId = (id: string) => doc.findings.find((f: { patternId: string }) => f.patternId === id);
+    expect(byId('discord-webhook').validity).toEqual({ state: 'rejected', host: 'discord.com', status: 404, detail: 'discord.com answered 404 (Unknown Webhook, code 10015)' });
+    expect(byId('slack-webhook').validity).toEqual({ state: 'live', host: 'hooks.slack.com', status: 400, detail: 'hooks.slack.com took the webhook and refused the empty message (no_text)' });
+    expect(doc.summary.validity).toEqual({ live: 1, rejected: 1, unknown: 0, unchecked: 0, hosts: ['discord.com', 'hooks.slack.com'] });
+
+    // Each URL went to its own host as its own path: a GET with no body for Discord, a POST of {} for Slack, and no header carries either.
+    expect(calls).toHaveLength(2);
+    const discord = calls.find((call) => call.url === `https://${DISCORD_HOOK}`);
+    const slack = calls.find((call) => call.url === `https://${SLACK_HOOK}`);
+    expect(discord?.init.method).toBe('GET');
+    expect(discord?.init.body).toBeUndefined();
+    expect(slack?.init.method).toBe('POST');
+    expect(slack?.init.body).toBe('{}');
+    expect(slack?.init.headers['Content-Type']).toBe('application/json');
+    for (const call of calls) {
+      expect(call.init.headers.Authorization).toBeUndefined();
+      for (const hook of [DISCORD_HOOK, SLACK_HOOK]) expect(JSON.stringify(call.init.headers)).not.toContain(tokenOf(hook));
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('a scan with nothing found reports zero counts under the flag and sends nothing', async () => {
