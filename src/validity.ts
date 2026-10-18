@@ -631,7 +631,12 @@ export type ProbeFetch = (url: string, init: ProbeFetchInit) => Promise<ProbeRes
 export interface ProbeDeps {
   /** Defaults to the global `fetch`. Tests pass a stand-in. */
   fetchImpl?: ProbeFetch;
-  /** The bound for one exchange, request and body read together. Default 10 seconds. */
+  /**
+   * The bound for one exchange, request and body read together. When it
+   * passes before the exchange ends, the signal handed to `fetchImpl` aborts
+   * and the result is `unknown`, whether or not `fetchImpl` honours that
+   * signal. Default 10 seconds.
+   */
   timeoutMs?: number;
   /** How many hosts are asked at once. Default 4. */
   concurrency?: number;
@@ -710,10 +715,14 @@ async function exchange(probe: ValidityProbe, request: ProbeRequest, hidden: rea
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl = deps.fetchImpl ?? defaultFetch;
   const controller = new AbortController();
+  // The fetch is handed the signal, and the exchange is also raced against
+  // its abort, so the deadline holds for a fetch that ignores the signal: an
+  // answer that comes later is not taken as the verdict.
+  const deadline = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener('abort', () => reject(controller.signal.reason));
+  });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let status: number;
-  let body = '';
-  try {
+  const exchange = async (): Promise<{ status: number; body: string }> => {
     const response = await fetchImpl(request.url, {
       method: request.method,
       headers: request.headers,
@@ -721,9 +730,14 @@ async function exchange(probe: ValidityProbe, request: ProbeRequest, hidden: rea
       redirect: 'manual',
       signal: controller.signal,
     });
-    status = response.status;
+    const status = response.status;
     // Only a probe that decides on the body reads one; the deadline covers the read.
-    if (probe.decide) body = await response.text();
+    return { status, body: probe.decide ? await response.text() : '' };
+  };
+  let status: number;
+  let body: string;
+  try {
+    ({ status, body } = await Promise.race([exchange(), deadline]));
   } catch (err) {
     const detail = controller.signal.aborted
       ? `no answer from ${probe.host} within ${formatDeadline(timeoutMs)}`

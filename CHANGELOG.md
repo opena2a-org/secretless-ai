@@ -46,7 +46,12 @@ only when the flag is given; `--format sarif` carries it as
 same AWS pair, found in several files is sent once, and an AWS access key ID
 paired with different secret access keys in different files is sent with none
 of them. Severity, confidence and the exit code do not change with the
-answer.
+answer. For library callers, `probeCredential` and
+`checkFindings`, exported from the package, take a `fetchImpl` in place of
+the global `fetch` and the bound as `timeoutMs`, 10 seconds by default. An
+exchange with no answer within the bound reads `unknown` at the bound
+whether or not that `fetchImpl` honours the abort signal it is handed, and
+an answer that comes after it is not taken (#449).
 
 **`scan --format sarif` writes the findings as SARIF 2.1.0.** The document
 holds one result per finding, with its file, line, pattern name and fix and

@@ -8,6 +8,9 @@
  *   one header or the path, never the query, and redirects unfollowed.
  * - 200 is live, 401 is rejected, anything else, an error or a timeout is
  *   unknown with the status or reason named; Slack is decided on its body.
+ * - The deadline holds for a fetch that ignores its signal: one that never
+ *   settles, an answer after the deadline and a body read that never settles
+ *   each read unknown at the deadline, and checkFindings settles.
  * - A webhook URL is sent as its own path to the host that serves it, and
  *   to no other host; the Discord and Slack webhook answers are decided as
  *   those hosts state them, and a URL off the host or its path is not sent.
@@ -20,7 +23,7 @@
  *   the finding object; for an AWS secret access key it keeps the secret alone.
  * - The help and docs/commands.md name what the flag contacts.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as net from 'net';
@@ -60,6 +63,13 @@ function answering(status: number, body = '', calls: Call[] = []): ProbeFetch {
     calls.push({ url, init });
     return { status, text: async () => body };
   };
+}
+
+/** A reader for what `promise` settles to: undefined until it has settled. */
+function settling<T>(promise: Promise<T>): () => T | undefined {
+  let settled: T | undefined;
+  void promise.then((value) => { settled = value; });
+  return () => settled;
 }
 
 /**
@@ -434,6 +444,56 @@ describe('probeCredential', () => {
     });
     const result = await probeCredential('slack', VALUE, { fetchImpl: stalledBody, timeoutMs: 50 });
     expect(result).toEqual({ state: 'unknown', host: 'slack.com', detail: 'no answer from slack.com within 50 ms' });
+  });
+
+  describe('the deadline holds for a fetch that ignores the signal', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    const UNANSWERED: ValidityResult = { state: 'unknown', host: 'api.github.com', detail: 'no answer from api.github.com within 500 ms' };
+
+    it('reads unknown at the deadline when the fetch never settles, and aborts the signal it was handed', async () => {
+      const signals: AbortSignal[] = [];
+      const never: ProbeFetch = (_url, init) => {
+        signals.push(init.signal);
+        return new Promise(() => {});
+      };
+      const result = settling(probeCredential('github-pat', VALUE, { fetchImpl: never, timeoutMs: 500 }));
+      await vi.advanceTimersByTimeAsync(499);
+      expect(result()).toBeUndefined();
+      expect(signals.map((s) => s.aborted)).toEqual([false]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(result()).toEqual(UNANSWERED);
+      expect(signals.map((s) => s.aborted)).toEqual([true]);
+    });
+
+    it('does not take an answer that comes after the deadline as the verdict', async () => {
+      const late: ProbeFetch = () => new Promise((resolve) => {
+        setTimeout(() => resolve({ status: 200, text: async () => '' }), 1500);
+      });
+      const result = settling(probeCredential('github-pat', VALUE, { fetchImpl: late, timeoutMs: 500 }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(result()).toEqual(UNANSWERED);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(result()).toEqual(UNANSWERED);
+    });
+
+    it('reads unknown at the deadline when the body read never settles', async () => {
+      const stalledBody: ProbeFetch = async () => ({ status: 200, text: () => new Promise<string>(() => {}) });
+      const result = settling(probeCredential('slack', VALUE, { fetchImpl: stalledBody, timeoutMs: 500 }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(result()).toEqual({ state: 'unknown', host: 'slack.com', detail: 'no answer from slack.com within 500 ms' });
+    });
+
+    it('checkFindings settles, with each value unknown at the deadline', async () => {
+      const never: ProbeFetch = () => new Promise(() => {});
+      const a = findingOf('github-pat', 'a.js');
+      const b = findingOf('npm', 'b.js');
+      const results = settling(checkFindings([a, b], (f) => `token-${f.file}`, { fetchImpl: never, timeoutMs: 500 }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(results()?.get(a)).toEqual(UNANSWERED);
+      expect(results()?.get(b)).toEqual({ state: 'unknown', host: 'registry.npmjs.org', detail: 'no answer from registry.npmjs.org within 500 ms' });
+    });
   });
 
   it('replaces the value in a detail a decider built from a body that echoed it', async () => {
