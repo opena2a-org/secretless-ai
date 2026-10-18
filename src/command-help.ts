@@ -330,7 +330,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       'push <NAME[,NAME2...]> --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>] [--dry-run]',
     ],
     flags: {
-      '--force': 'get: retrieve in non-interactive contexts. sync: replace local values that differ',
+      '--force': 'get: retrieve in non-interactive contexts; refused inside an AI agent runtime. sync: replace local values that differ',
       '--description': ['<text>', 'set: record what the secret is for'],
       '--meta': ['<key=value>', 'set: record a metadata field; repeatable; key= removes it'],
       '--from-clipboard': 'set: read the value from the clipboard, then clear it (recommended for a key copied from a web page)',

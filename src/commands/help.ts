@@ -50,7 +50,8 @@ ${banner}${description}
     ${CLI} secret exposed <NAME> --where NOTE  Record that a value was exposed
     ${CLI} secret list --needs-rotation  Exposed secrets not yet rotated (exit 1 if any)
     ${CLI} secret get <NAME>          Retrieve a secret value
-    ${CLI} secret get --force <NAME>  Retrieve in non-interactive contexts
+    ${CLI} secret get --force <NAME>
+                                      Retrieve in non-interactive contexts; refused inside an AI agent runtime
     ${CLI} secret rm <NAME>           Remove a secret
     ${CLI} secret sync --from <backend>  Copy .secretless names from a shared backend
     ${CLI} secret push NAME --to azure-kv --vault <name>

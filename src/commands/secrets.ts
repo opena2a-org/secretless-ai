@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretStore, isSettableSecretName, isValidSecretName, notSettableReason } from '../secret-store';
-import { planShellHook, writeShellHook } from '../env';
+import { detectAgentRuntime, planShellHook, writeShellHook } from '../env';
 import type { InstallShellHookOptions } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
 import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard } from '../display-safe';
@@ -324,6 +324,8 @@ export interface RunSecretOptions {
   stdinIsPiped?: () => boolean;
   /** Clipboard for `secret set --from-clipboard`. For DI/testing. */
   clipboard?: Clipboard;
+  /** Environment `secret get` reads for an AI-agent runtime marker. For DI/testing. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** True when a value may be arriving on stdin from a pipe or a redirected file. */
@@ -684,17 +686,36 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         return 1;
       }
 
+      // `--force` overrides the terminal check below, for a user who pipes a
+      // value on purpose. Inside an AI-agent runtime the value would enter the
+      // agent's context, so `--force` is refused there on the check `env` and
+      // `export` use. That check reads a variable the agent sets in the
+      // commands it runs, not the command line, so it holds where no guard
+      // hook or deny rule sees the command. The store is not opened first.
+      const force = parsed.rest.includes('--force');
+      const agentRuntime = detectAgentRuntime(options.env ?? process.env);
+      if (force && agentRuntime) {
+        console.error(`\n  Refused: '${CLI_BARE} secret get --force' prints a secret value.`);
+        console.error(`  An AI agent runtime is set (${agentRuntime}), so this output would enter the agent's context.\n`);
+        console.error('  Inject the secret into one command instead:');
+        console.error(`    ${CLI_BARE} run --only ${isSettableSecretName(name) ? name : 'NAME'} -- <command>\n`);
+        return 1;
+      }
+
       // Block output in non-interactive contexts (AI tools capture stdout).
-      if (!process.stdout.isTTY && !parsed.rest.includes('--force')) {
+      if (!process.stdout.isTTY && !force) {
         console.error('  secretless: Blocked -- secret values cannot be read in non-interactive contexts.');
         console.error('  AI tools capture stdout, which would expose the secret in their context.');
         console.error('');
         console.error('  To inject secrets into a command:');
         console.error(`    ${CLI} run -- <command>`);
         console.error('');
-        console.error('  To force output (e.g. piping to clipboard):');
-        console.error(`    ${CLI} secret get <NAME> --force`);
-        console.error('');
+        // Not offered where it is refused (above).
+        if (!agentRuntime) {
+          console.error('  To force output (e.g. piping to clipboard):');
+          console.error(`    ${CLI} secret get <NAME> --force`);
+          console.error('');
+        }
         console.error('  To see what a secret is for without its value:');
         console.error(`    ${CLI} secret show <NAME>`);
         return 1;
