@@ -54,6 +54,7 @@ npx secretless-ai ignore docs/migration.md     # append a path to .secretlessign
 npx secretless-ai ignore --pattern '*.golden.txt'
 npx secretless-ai diff main                    # audit secretless-managed file changes vs a git ref
 npx secretless-ai scan --json                  # machine-readable findings for CI
+npx secretless-ai scan --format sarif > secretless.sarif   # the same findings as SARIF 2.1.0, for GitHub code scanning
 npx secretless-ai status --json                # protection state for CI (gate on summary.verdict)
 ```
 

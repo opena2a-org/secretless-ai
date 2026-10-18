@@ -183,6 +183,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--max-files': true,
       '--max-file-size': true,
       '--json': false,
+      '--format': true,
     },
     unknownFlags: 'reject',
     honorsJson: true,

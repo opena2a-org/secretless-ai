@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+**`scan --format sarif` writes the findings as SARIF 2.1.0.** The document
+holds one result per finding, with its file, line, pattern name and fix and
+its `patternId` as the `ruleId`, and one rule per pattern id, carrying
+`security-severity` `9.0` for a `critical` finding and `7.0` for a `high`
+one. It is written for `github/codeql-action/upload-sarif`, which sends it to
+the repository's Security tab; the Scan in CI section of `docs/scanning.md`
+shows the workflow step, and the README's task list links to it. The exit
+code is the one `--json` gives, and the `--json` summary is on the run as
+`runs[0].properties.summary`. `--format json` is `--json`. A format the tool
+does not write, `--format` with no value, and `--json` beside `--format sarif`
+are refused with exit 2 before anything runs.
+
 **`secret get --force` is refused inside an AI agent runtime (#445).** `env`
 and `export` refuse with exit 1 when one of the variables an AI agent sets in
 the commands it runs holds a value: `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,

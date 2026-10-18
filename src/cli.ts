@@ -297,8 +297,32 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       const includeConfig = args.includes('--include-config');
       const explain = args.includes('--explain');
       const noIgnore = args.includes('--no-ignore');
-      const json = args.includes('--json');
+      const jsonFlag = args.includes('--json');
       const showPlaceholders = args.includes('--show-placeholders');
+      // --format <json|sarif>  One machine-readable document on stdout. `json`
+      // is `--json`; `sarif` is SARIF 2.1.0 for GitHub code scanning and the
+      // editors that read it. Any other value is refused: a format the tool
+      // does not write would otherwise fall through to the human report and
+      // exit as though it had answered.
+      let format: 'json' | 'sarif' | undefined;
+      const fmtIdx = args.indexOf('--format');
+      if (fmtIdx !== -1) {
+        const raw = args[fmtIdx + 1];
+        if (raw === 'json' || raw === 'sarif') {
+          format = raw;
+        } else {
+          return refuseFlagValue('scan', '--format', raw, 'json or sarif, e.g. --format sarif');
+        }
+      }
+      // Two formats cannot share one stdout: a reader expecting one document
+      // would get the other. Refused before anything runs, like any other
+      // command line the tool cannot bind.
+      if (jsonFlag && format === 'sarif') {
+        const detail = '--json and --format sarif ask for two formats on one output; give one of them.';
+        for (const line of formatArgvErrors('scan', [detail])) console.error(line);
+        return EXIT_USAGE;
+      }
+      const json = jsonFlag || format === 'json';
       // --min-confidence <n>  (n in [0, 1]). Drops findings whose composite
       // confidence score is below the threshold. Useful on noisy repos to
       // surface only high-confidence credentials.
@@ -369,7 +393,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       }
       const dirArg = positionalArgs[0];
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runScan(projectDir, { includeTests, includeConfig, explain, noIgnore, minConfidence, json, showPlaceholders, maxFiles, maxFileSizeBytes });
+      return runScan(projectDir, { includeTests, includeConfig, explain, noIgnore, minConfidence, json, format, showPlaceholders, maxFiles, maxFileSizeBytes });
     }
     case 'status': {
       const json = args.includes('--json');

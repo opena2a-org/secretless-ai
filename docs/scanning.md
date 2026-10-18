@@ -50,3 +50,38 @@ npx secretless-ai scan --json | jq '.summary'
 #   "walkBudgetExceeded": false, "unreadable": 0, "outOfRoot": 0, "oversize": 0, "skippedUnsupported": 0, "notEntered": 0,
 #   "unscannedConfig": 0 }
 ```
+
+`scan --format sarif` writes the same findings as SARIF 2.1.0, for `github/codeql-action/upload-sarif` and the editors that read SARIF. Each finding is one result: `ruleId` is its `patternId`, `locations[0].physicalLocation` carries its file and line, and `message.text` carries its pattern name and fix; the preview line is not in the document. Each pattern id is one rule, with `security-severity` `9.0` for a `critical` finding and `7.0` for a `high` one, the bands GitHub code scanning shows as Critical and High; every result is level `error`, as every finding sets exit 1. The `summary` above is on the run as `runs[0].properties.summary`, so `truncated` and `unreadable` are in the document, and the exit code is the one `--json` gives. A path under the scanned directory is relative to it, with `%SRCROOT%` in `originalUriBaseIds` naming the directory; a home-directory file such as `~/.claude/CLAUDE.md` is an absolute `file:` URI. `--format json` is `--json`. A format the tool does not write, and `--json` beside `--format sarif`, are refused with exit 2 before anything runs. [Scan in CI](#scan-in-ci) shows the upload step.
+
+## Scan in CI
+
+`scan` exits 1 when it finds a credential, so a step that runs it fails the job. `scan --format sarif` writes the same findings as SARIF:
+
+```bash
+npx secretless-ai scan --format sarif > secretless.sarif
+```
+
+[`github/codeql-action/upload-sarif`](https://github.com/github/codeql-action) sends that file to the repository's Security tab under Code scanning alerts:
+
+```yaml
+name: secretless
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npx secretless-ai scan --format sarif > secretless.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: secretless.sarif
+```
+
+Each alert carries the file and line, the pattern id as its rule, and the fix. `if: always()` runs the upload after the scan step has failed on a finding.

@@ -87,6 +87,8 @@ flip after `init`.
 
 ```bash
 $SL scan . --json | python3 -m json.tool >/dev/null && echo scan-json-ok
+$SL scan . --format sarif | python3 -c "import sys,json; d=json.load(sys.stdin); \
+  assert d['version']=='2.1.0'; print('sarif results:', len(d['runs'][0]['results']))"
 $SL status --json . | python3 -m json.tool >/dev/null && echo status-json-ok
 $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
   assert d['tool']=='secretless-ai'; \
@@ -96,6 +98,9 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
 
 - `scan --json`: single JSON document on stdout (`{tool, version, findings,
   summary}`). Exit 1 when findings exist (CI gating), 0 when clean.
+- `scan --format sarif`: single SARIF 2.1.0 document on stdout, one result per
+  `--json` finding (`ruleId` is the `patternId`); the same exit codes as `--json`.
+  `--format yaml`, and `--json` beside `--format sarif`, are refused with exit 2.
 - `status --json`: single JSON document (`{tool, version, isProtected,
   protectionScope, enforcement, hookInstalled, hookWired, denyRuleCount, detectedTools,
   configuredTools, ignoreFileTools, secretsFound, scanIncomplete, settingsUnreadable,

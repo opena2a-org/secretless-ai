@@ -177,6 +177,7 @@ ${banner}${description}
                              and build output (node_modules/, dist/, build/, ...)
                              is still not entered; scan one by its path.
     --min-confidence <n>     Drop findings with composite confidence below n (0-1)
+    --format <json|sarif>    JSON, or SARIF 2.1.0 for GitHub code scanning
 
   Options:
     -v, -V, --version    Show version
