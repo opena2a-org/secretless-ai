@@ -5,8 +5,9 @@
  * command printed before: no `validity` key in `--json`, no `Validity:` line.
  * With it, each finding carries the issuing host's answer in both renderers
  * and in the explanation view, the value appears in no output, the same value
- * in two files is sent once, and severity, confidence and the exit code are
- * what they are without the flag.
+ * in two files is sent once, an OpenAI project key value the pattern stopped
+ * at a _ is not sent, and severity, confidence and the exit code are what
+ * they are without the flag.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
@@ -34,6 +35,14 @@ const DISCORD_HOOK = ['discord.com/api/webhooks/', '123456789012345678', '/', 'A
 const SLACK_HOOK = ['hooks.slack.com/services/', 'T0A1B2C3D4E', '/', 'B5F6G7H8I9J', '/', 'ABCDEFGHIJKLMNOPQRSTUVWX'].join('');
 /** The last path segment of a webhook URL: the part that must appear in no output and no header. */
 const tokenOf = (hook: string): string => hook.slice(hook.lastIndexOf('/') + 1);
+/**
+ * An OpenAI project key value of 148 characters: sk-proj-, 130 letters, a _
+ * and 9 letters. The pattern stops at the _ and keeps the 138 before it. The
+ * part after the _, which the pattern does not keep, marks it a placeholder.
+ */
+const OPENAI_CUT = ['sk-proj-', 'a'.repeat(130), '_', 'FAKEVALUE'].join('');
+/** sk-proj- and 156 letters, with no - or _: the pattern keeps all 164 characters. */
+const OPENAI_WHOLE = ['sk-proj-', 'b'.repeat(156)].join('');
 
 interface Call { url: string; init: ProbeFetchInit }
 
@@ -147,6 +156,41 @@ describe('runScan --check-validity', () => {
     expect(calls).toHaveLength(1);
     for (const f of doc.findings) expect(f.validity.state).toBe('live');
     expect(doc.summary.validity.live).toBe(2);
+  });
+
+  it('an OpenAI project key value the pattern stopped at a _ is not sent, though it is longer than 132 characters, and the finding says why', async () => {
+    const dir = project({ 'config.js': `const cut = "${OPENAI_CUT}";\nconst whole = "${OPENAI_WHOLE}";\n` });
+    const kept = OPENAI_CUT.slice(0, OPENAI_CUT.indexOf('_'));
+    expect([OPENAI_CUT.length, kept.length, OPENAI_WHOLE.length]).toEqual([148, 138, 164]);
+    const calls: Call[] = [];
+    // A provider that accepts each whole key and refuses anything else, such as the part of one before its _.
+    const provider: ProbeFetch = async (url, init) => {
+      calls.push({ url, init });
+      const whole = [OPENAI_CUT, OPENAI_WHOLE].some((key) => init.headers.Authorization === `Bearer ${key}`);
+      return { status: whole ? 200 : 401, text: async () => '' };
+    };
+    const detail = 'not sent: the pattern stopped at a _, which an OpenAI project key can hold, so the value may be only the part of a key before it';
+
+    const code = await runScan(dir, { json: true, checkValidity: true, validityDeps: { fetchImpl: provider } });
+    const text = out.join('\n');
+    const doc = JSON.parse(text);
+    expect(code).toBe(1);
+    const byLine = (line: number) => doc.findings.find((f: { line: number }) => f.line === line);
+    expect(byLine(1).patternId).toBe('openai-proj');
+    expect(byLine(1).validity).toEqual({ state: 'unchecked', detail });
+    expect(byLine(2).patternId).toBe('openai-proj');
+    expect(byLine(2).validity).toEqual({ state: 'live', host: 'api.openai.com', status: 200, detail: 'api.openai.com answered 200' });
+    expect(doc.summary.validity).toEqual({ live: 1, rejected: 0, unknown: 0, unchecked: 1, hosts: ['api.openai.com'] });
+    for (const value of [kept, OPENAI_WHOLE]) expect(text).not.toContain(value);
+    // Only the whole key was sent; the part before the _ went nowhere.
+    expect(calls.map((call) => call.init.headers.Authorization)).toEqual([`Bearer ${OPENAI_WHOLE}`]);
+
+    out.length = 0;
+    expect(await runScan(dir, { checkValidity: true, validityDeps: { fetchImpl: provider } })).toBe(1);
+    expect(out.join('\n')).toContain(`Validity: not checked (${detail})`);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].init.headers.Authorization).toBe(`Bearer ${OPENAI_WHOLE}`);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('a webhook URL is sent as its own path to the host that serves it, with the answer read as that host states it', async () => {

@@ -52,7 +52,7 @@
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { VERSION, wrapList } from './commands/utils';
 import { signSigV4 } from './aws-sigv4';
-import type { ScanFinding } from './scan';
+import { matchedValueOf, charAfterValueOf, type ScanFinding } from './scan';
 
 export type ValidityState = 'live' | 'rejected' | 'unknown' | 'unchecked';
 
@@ -90,8 +90,12 @@ export interface ValidityProbe {
   readonly headers: Readonly<Record<string, string>>;
   /** A fixed request body, for a POST. Never carries the value. */
   readonly body?: string;
-  /** A reason not to send this value, or null to send it. */
-  readonly skip?: (value: string) => string | null;
+  /**
+   * A reason not to send this value, or null to send it. `charAfter` is the
+   * character after the value where the scanner found it, '' at the end of
+   * its line; undefined when that is not known.
+   */
+  readonly skip?: (value: string, charAfter?: string) => string | null;
   /**
    * The state for an answer the default rule does not cover (200 live, 401
    * rejected, anything else unknown). Return null for the default rule.
@@ -185,7 +189,11 @@ const LINEAR_VIEWER_QUERY = JSON.stringify({ query: '{ viewer { id } }' });
  * OpenAI detector names the same alphabet without a length). OpenAI
  * publishes no format. The openai-proj pattern stops at - or _, so a value
  * shorter than this may be only the part of a key before one of them, which
- * api.openai.com would refuse whatever the key's state; it is not sent.
+ * api.openai.com would refuse whatever the key's state; it is not sent. A
+ * value of this length or more can be such a part too, of a key of 148 or
+ * 164 characters whose first - or _ comes later: the scanner keeps the
+ * character after the value, and a value found with a - or _ after it is not
+ * sent either.
  */
 const OPENAI_PROJECT_KEY_MIN_LENGTH = 132;
 
@@ -293,11 +301,19 @@ export const VALIDITY_PROBES: readonly ValidityProbe[] = [
     method: 'GET',
     path: '/v1/models',
     headers: BEARER,
-    // A project key can hold - or _, where its pattern stops; a value too
-    // short to be a whole key may be the part before one, and is not sent.
-    skip: (value) => (value.startsWith('sk-proj-') && value.length < OPENAI_PROJECT_KEY_MIN_LENGTH
-      ? `a value shorter than ${OPENAI_PROJECT_KEY_MIN_LENGTH} characters may be only the part of an OpenAI project key before a - or _, where the pattern stops`
-      : null),
+    // A project key can hold - or _, where its pattern stops. A value found
+    // with one of them after it may be the part of a key before it, also at
+    // 132 characters or more, as may a value too short to be a whole key;
+    // neither is sent.
+    skip: (value, charAfter) => {
+      if (!value.startsWith('sk-proj-')) return null;
+      if (charAfter === '-' || charAfter === '_') {
+        return `the pattern stopped at a ${charAfter}, which an OpenAI project key can hold, so the value may be only the part of a key before it`;
+      }
+      return value.length < OPENAI_PROJECT_KEY_MIN_LENGTH
+        ? `a value shorter than ${OPENAI_PROJECT_KEY_MIN_LENGTH} characters may be only the part of an OpenAI project key before a - or _, where the pattern stops`
+        : null;
+    },
   },
   {
     patterns: ['groq'],
@@ -560,9 +576,13 @@ function foundUrlPath(probe: ValidityProbe, value: string): string | null {
   return url.pathname.slice(prefix.length);
 }
 
-/** The reason a probe would not send a value, or null when it would. */
-export function notSentReason(probe: ValidityProbe, value: string): string | null {
-  const own = probe.skip?.(value) ?? null;
+/**
+ * The reason a probe would not send a value, or null when it would.
+ * `charAfter` is the character after the value where it was found, when that
+ * is known (`ValidityProbe.skip`).
+ */
+export function notSentReason(probe: ValidityProbe, value: string, charAfter?: string): string | null {
+  const own = probe.skip?.(value, charAfter) ?? null;
   if (own !== null) return own;
   const prefix = urlPathPrefix(probe);
   if (prefix !== null && foundUrlPath(probe, value) === null) {
@@ -684,7 +704,9 @@ const PAIR_ONLY = 'an AWS key is checked as a pair, the access key ID with its s
 /**
  * Ask the issuing host about one value. Resolves to a result in every case; a
  * failed or slow request is `unknown`, never a thrown error. A value a probe
- * with `signing` covers is half of a pair and is not sent alone.
+ * with `signing` covers is half of a pair and is not sent alone. Only the
+ * value is given here, so a probe's `skip` is not told the character after
+ * it; `checkFindings` tells it that for a value the scanner kept.
  */
 export async function probeCredential(patternId: string, value: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
   const probe = probeFor(patternId);
@@ -829,12 +851,24 @@ function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFindi
 }
 
 /**
+ * The character the scanner found after a finding's value, when `value` is
+ * the one it kept for the finding (`retainValues` in scan.ts); undefined when
+ * `value` differs from it, as a value a caller's `valueOf` supplies can.
+ */
+function charAfterFound(finding: ScanFinding, value: string): string | undefined {
+  return matchedValueOf(finding) === value ? charAfterValueOf(finding) : undefined;
+}
+
+/**
  * A result for every finding. A type without a probe, or a finding whose
- * value was not kept, is `unchecked` and sends nothing. The same value found
- * in several places is one credential: its host is asked once, and each
- * finding that carries it receives that answer. An AWS access key ID and
- * secret access key are one credential when `awsPairs` pairs them, and each
- * finding of either is given the pair's answer.
+ * value was not kept, is `unchecked` and sends nothing, as is a value its
+ * probe does not send, told the character the scanner found after it. That
+ * is decided for each finding, since the character after one value can
+ * differ from place to place. The same value found in several places and
+ * sent is one credential: its host is asked once, and each finding that
+ * carries it receives that answer. An AWS access key ID and secret access
+ * key are one credential when `awsPairs` pairs them, and each finding of
+ * either is given the pair's answer.
  */
 export async function checkFindings(
   findings: readonly ScanFinding[],
@@ -867,6 +901,11 @@ export async function checkFindings(
       key = `\u0000${pair.keyId}\u0000${pair.secret}`;
       run = () => probeAwsKeyPair(pair.keyId, pair.secret, deps);
     } else {
+      const reason = notSentReason(probe, value, charAfterFound(finding, value));
+      if (reason !== null) {
+        results.set(finding, withoutValues([value], { state: 'unchecked', detail: `not sent: ${reason}` }));
+        continue;
+      }
       key = `${finding.patternId}\u0000${value}`;
       run = () => probeCredential(finding.patternId, value, deps);
     }

@@ -19,8 +19,11 @@
  *   a file without exactly one of each, or a key ID found with two secrets,
  *   sends nothing, and an STS answer about the clock is unknown.
  * - No result string holds the value, even when an error message does.
+ * - An OpenAI project key value the scanner found with a - or _ after it is
+ *   not sent, also at 132 characters or more; that is decided for each finding.
  * - The scanner keeps a matched value only under `retainValues`, and never on
  *   the finding object; for an AWS secret access key it keeps the secret alone.
+ *   With a value that is the whole match it keeps the character after it.
  * - The help and docs/commands.md name what the flag contacts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -35,7 +38,7 @@ import {
   type ProbeFetch, type ProbeFetchInit, type ValidityProbe, type ValidityResult,
 } from './validity';
 import { signSigV4 } from './aws-sigv4';
-import { scan, matchedValueOf, type ScanFinding } from './scan';
+import { scan, matchedValueOf, charAfterValueOf, type ScanFinding } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { VERBS, prepareArgv } from './argv';
 import { printCommandHelp } from './command-help';
@@ -370,6 +373,21 @@ describe('probeCredential', () => {
     expect(calls).toHaveLength(2);
     expect(calls[1].init.headers.Authorization).toBe(`Bearer ${legacy}`);
     expect(rejected).toEqual({ state: 'rejected', host: 'api.openai.com', status: 401, detail: 'api.openai.com answered 401' });
+  });
+
+  it('does not send an OpenAI project key value found with a - or _ after it, at 138 or 164 characters', () => {
+    const probe = probeFor('openai-proj')!;
+    // sk-proj- and 130 characters (138), and sk-proj- and 156 (164): both clear the 132 the length rule asks for.
+    for (const value of ['sk-proj-' + 'a'.repeat(130), 'sk-proj-' + 'a'.repeat(156)]) {
+      for (const charAfter of ['-', '_']) {
+        expect(notSentReason(probe, value, charAfter))
+          .toBe(`the pattern stopped at a ${charAfter}, which an OpenAI project key can hold, so the value may be only the part of a key before it`);
+      }
+      // A character the key does not hold, the end of the line, or nothing known of what followed: the value is sent.
+      for (const charAfter of ['"', ' ', '', undefined]) expect(notSentReason(probe, value, charAfter)).toBeNull();
+    }
+    // The rule is for project keys: a legacy key, which goes to the same probe, is sent with a _ after it.
+    expect(notSentReason(probeFor('openai-legacy')!, 'sk-' + 'a'.repeat(48), '_')).toBeNull();
   });
 
   it.each([
@@ -763,6 +781,79 @@ describe('checkFindings', () => {
   });
 });
 
+describe('checkFindings reads what the scanner found after an OpenAI project key value', () => {
+  // sk-proj-, 130 letters, a _ and 9 letters: 148 characters. The pattern stops
+  // at the _ and keeps the 138 before it. Joined at run time; the part after
+  // the _, which the pattern does not keep, marks the value a placeholder.
+  const KEY = ['sk-proj-', 'a'.repeat(130), '_', 'FAKEVALUE'].join('');
+  const KEPT = KEY.slice(0, KEY.indexOf('_'));
+  const reasonFor = (charAfter: string): string =>
+    `not sent: the pattern stopped at a ${charAfter}, which an OpenAI project key can hold, so the value may be only the part of a key before it`;
+  const REASON = reasonFor('_');
+
+  function scanned(files: Record<string, string>): { dir: string; findings: ScanFinding[] } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'validity-scan-'));
+    for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+    return { dir, findings: scan(dir, { scanGlobal: false, retainValues: true }) };
+  }
+
+  it('sends nothing for a value of 138 characters found with a _ or a - after it, and names the one found', async () => {
+    const dashed = KEY.replace('_', '-');
+    const { dir, findings } = scanned({ 'underscore.js': `const key = "${KEY}";\n`, 'dash.js': `const key = "${dashed}";\n` });
+    try {
+      expect(KEY).toHaveLength(148);
+      expect(KEPT).toHaveLength(138);
+      expect(findings.map((f) => f.patternId)).toEqual(['openai-proj', 'openai-proj']);
+      const calls: Call[] = [];
+      const results = await checkFindings(findings, matchedValueOf, { fetchImpl: answering(200, '', calls) });
+      for (const [file, charAfter] of [['underscore.js', '_'], ['dash.js', '-']]) {
+        const finding = findings.find((f) => f.file === file)!;
+        expect(matchedValueOf(finding)).toBe(KEPT);
+        expect(charAfterValueOf(finding)).toBe(charAfter);
+        expect(results.get(finding)).toEqual({ state: 'unchecked', detail: reasonFor(charAfter) });
+      }
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('decides for each finding: the same value found whole in another file is sent, once', async () => {
+    const { dir, findings } = scanned({ 'a.js': `const key = "${KEY}";\n`, 'b.js': `const key = "${KEPT}";\n` });
+    try {
+      expect(findings).toHaveLength(2);
+      const cut = findings.find((f) => f.file === 'a.js')!;
+      const whole = findings.find((f) => f.file === 'b.js')!;
+      expect(matchedValueOf(cut)).toBe(KEPT);
+      expect(matchedValueOf(whole)).toBe(KEPT);
+      expect(charAfterValueOf(whole)).toBe('"');
+      const calls: Call[] = [];
+      const results = await checkFindings(findings, matchedValueOf, { fetchImpl: answering(200, '', calls) });
+      expect(results.get(cut)).toEqual({ state: 'unchecked', detail: REASON });
+      expect(results.get(whole)).toEqual({ state: 'live', host: 'api.openai.com', status: 200, detail: 'api.openai.com answered 200' });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init.headers.Authorization).toBe(`Bearer ${KEPT}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the character after only to the value the scanner kept, not to a value the caller supplies', async () => {
+    const { dir, findings } = scanned({ 'config.js': `const key = "${KEY}";\n` });
+    try {
+      // sk-proj- and 156 characters: a value other than the one kept, with nothing known of what followed it.
+      const supplied = 'sk-proj-' + 'b'.repeat(156);
+      const calls: Call[] = [];
+      const results = await checkFindings(findings, () => supplied, { fetchImpl: answering(200, '', calls) });
+      expect(results.get(findings[0])?.state).toBe('live');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init.headers.Authorization).toBe(`Bearer ${supplied}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('checkFindings pairs an AWS access key ID with the secret access key in its file', () => {
   const REJECTED = { state: 'rejected', host: 'sts.amazonaws.com', status: 403, detail: 'sts.amazonaws.com answered 403 (InvalidClientTokenId)' };
 
@@ -1045,6 +1136,7 @@ describe('the scanner keeps a matched value only when asked', () => {
       const findings = scan(dir, { scanGlobal: false });
       expect(findings).toHaveLength(1);
       expect(matchedValueOf(findings[0])).toBeUndefined();
+      expect(charAfterValueOf(findings[0])).toBeUndefined();
       expect(JSON.stringify(findings[0])).not.toContain(TOKEN);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -1078,6 +1170,24 @@ describe('the scanner keeps a matched value only when asked', () => {
       const findings = scan(dir, { scanGlobal: false, retainValues: true, showPlaceholders: true });
       expect(findings.map((f) => f.patternId)).toEqual(['aws-secret']);
       expect(matchedValueOf(findings[0])).toBe(placeholder);
+      // A value taken from a capture group: the match does not give where it ends, so no character after it is kept.
+      expect(charAfterValueOf(findings[0])).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('under retainValues, keeps the character after a value that is the whole match, and an empty string at the end of the line', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'validity-scan-'));
+    fs.writeFileSync(path.join(dir, 'config.js'), `const token = "${TOKEN}";\n${TOKEN}\n`);
+    try {
+      const walked = scan(dir, { scanGlobal: false, retainValues: true });
+      const named = scan(path.join(dir, 'config.js'), { scanGlobal: false, retainValues: true });
+      for (const findings of [walked, named]) {
+        const rows = [...findings].sort((a, b) => a.line - b.line).map((f) => [f.line, matchedValueOf(f), charAfterValueOf(f)]);
+        expect(rows).toEqual([[1, TOKEN, '"'], [2, TOKEN, '']]);
+        expect(JSON.stringify(findings)).not.toContain('charAfter');
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
