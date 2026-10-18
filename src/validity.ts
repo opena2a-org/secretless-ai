@@ -34,7 +34,10 @@
  * or no_team, STS in a 403 naming InvalidClientTokenId or
  * SignatureDoesNotMatch). `unknown`: any other status, no connection, or no
  * answer in time, with the status or reason named; an STS refusal of the
- * request time is one. `unchecked`: no probe for the type, or a value the
+ * request time is one. So is a request that could not be built, which is not
+ * sent: a signed one whose clock threw or gave no valid date, or one whose
+ * path would carry a value holding a lone UTF-16 surrogate, which cannot be
+ * URL-encoded. `unchecked`: no probe for the type, or a value the
  * probe does not send, and nothing was sent. A result describes the host's
  * answer to the request this module sends, not the credential's history: a
  * token a self-managed GitHub or GitLab instance issued still goes to
@@ -602,14 +605,19 @@ export interface SigningInput {
  * else added but a User-Agent and, for a probe with `signing`, the headers of
  * a signature made with `signWith.secret`, in which `value` is the key ID.
  * Throws for a value `notSentReason` names a reason for, so check that first,
- * and for a probe with `signing` given nothing to sign with.
+ * and for a probe with `signing` given nothing to sign with. It throws as
+ * well for a value holding a lone UTF-16 surrogate when the path carries the
+ * value, and for a `signWith.now` that is not a valid date.
  */
 export function buildProbeRequest(probe: ValidityProbe, value: string, signWith?: SigningInput): ProbeRequest {
   const own: Record<string, string> = {};
   for (const [name, template] of Object.entries(probe.headers)) {
     own[name] = template.split(VALUE_MARKER).join(value);
   }
-  let path = probe.path.split(VALUE_MARKER).join(encodeURIComponent(value));
+  // encodeURIComponent throws for a lone UTF-16 surrogate, so a value is
+  // encoded only for a path that carries it.
+  let path = probe.path;
+  if (path.includes(VALUE_MARKER)) path = path.split(VALUE_MARKER).join(encodeURIComponent(value));
   if (urlPathPrefix(probe) !== null) {
     const rest = foundUrlPath(probe, value);
     if (rest === null) throw new Error(`${probe.provider}: the value is not a URL this probe sends`);
@@ -703,8 +711,9 @@ const PAIR_ONLY = 'an AWS key is checked as a pair, the access key ID with its s
 
 /**
  * Ask the issuing host about one value. Resolves to a result in every case; a
- * failed or slow request is `unknown`, never a thrown error. A value a probe
- * with `signing` covers is half of a pair and is not sent alone. Only the
+ * failed or slow request is `unknown`, never a thrown error, and so is a
+ * request that could not be built, which is not sent. A value a probe with
+ * `signing` covers is half of a pair and is not sent alone. Only the
  * value is given here, so a probe's `skip` is not told the character after
  * it; `checkFindings` tells it that for a value the scanner kept.
  */
@@ -714,26 +723,50 @@ export async function probeCredential(patternId: string, value: string, deps: Pr
   if (probe.signing) return { state: 'unchecked', detail: `not sent: ${PAIR_ONLY}` };
   const reason = notSentReason(probe, value);
   if (reason !== null) return withoutValues([value], { state: 'unchecked', detail: `not sent: ${reason}` });
-  return exchange(probe, buildProbeRequest(probe, value), [value], deps);
+  return exchange(probe, () => buildProbeRequest(probe, value), [value], deps);
+}
+
+/**
+ * The time a signed request is dated by, from `deps.now` or the system clock,
+ * or the reason there is none: the clock threw, or gave no valid date.
+ */
+function signingTime(deps: ProbeDeps): Date | string {
+  let now: Date;
+  try {
+    now = deps.now?.() ?? new Date();
+  } catch (err) {
+    return `the clock the request is dated by threw (${errorCode(err)})`;
+  }
+  return now instanceof Date && !Number.isNaN(now.getTime()) ? now : 'the clock the request is dated by gave no valid date';
 }
 
 /**
  * Ask AWS about an access key ID and the secret access key found with it:
  * STS GetCallerIdentity, signed with the secret, which goes in no part of the
  * request. Resolves to a result in every case, as `probeCredential` does, and
- * no result string holds either value.
+ * no result string holds either value. A clock (`deps.now`) that throws or
+ * gives no valid date sends nothing, and the result is `unknown`.
  */
 export async function probeAwsKeyPair(accessKeyId: string, secretAccessKey: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
-  const now = deps.now?.() ?? new Date();
-  const request = buildProbeRequest(AWS_PROBE, accessKeyId, { secret: secretAccessKey, now });
-  return exchange(AWS_PROBE, request, [accessKeyId, secretAccessKey], deps);
+  const hidden = [accessKeyId, secretAccessKey];
+  const now = signingTime(deps);
+  if (typeof now === 'string') return withoutValues(hidden, { state: 'unknown', detail: `not sent: ${now}` });
+  return exchange(AWS_PROBE, () => buildProbeRequest(AWS_PROBE, accessKeyId, { secret: secretAccessKey, now }), hidden, deps);
 }
 
 /**
- * Send one built request under the deadline and read the answer as the probe
- * decides it. `hidden` holds the values no result string may carry.
+ * Build one request, send it under the deadline, and read the answer as the
+ * probe decides it. A request `build` throws for is not sent, and is
+ * `unknown` with the error named. `hidden` holds the values no result string
+ * may carry.
  */
-async function exchange(probe: ValidityProbe, request: ProbeRequest, hidden: readonly string[], deps: ProbeDeps): Promise<ValidityResult> {
+async function exchange(probe: ValidityProbe, build: () => ProbeRequest, hidden: readonly string[], deps: ProbeDeps): Promise<ValidityResult> {
+  let request: ProbeRequest;
+  try {
+    request = build();
+  } catch (err) {
+    return withoutValues(hidden, { state: 'unknown', detail: `not sent: the request could not be built (${errorCode(err)})` });
+  }
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl = deps.fetchImpl ?? defaultFetch;
   const controller = new AbortController();

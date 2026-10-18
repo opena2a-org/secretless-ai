@@ -11,6 +11,9 @@
  * - The deadline holds for a fetch that ignores its signal: one that never
  *   settles, an answer after the deadline and a body read that never settles
  *   each read unknown at the deadline, and checkFindings settles.
+ * - A request that cannot be built is unknown and is not sent: a clock that
+ *   throws or gives no valid date, or a value holding a lone UTF-16
+ *   surrogate where the path carries it. The probe functions resolve then.
  * - A webhook URL is sent as its own path to the host that serves it, and
  *   to no other host; the Discord and Slack webhook answers are decided as
  *   those hosts state them, and a URL off the host or its path is not sent.
@@ -520,6 +523,25 @@ describe('probeCredential', () => {
     const result = await probeCredential('slack', 'invalid_auth', { fetchImpl: echoing });
     expect(result.detail).toBe('slack.com answered ok: false ([value])');
   });
+
+  it('URL-encodes a value only into a path that carries it, so a lone UTF-16 surrogate in a header-borne value builds', () => {
+    const value = `not-a-real\uD800token`;
+    expect(buildProbeRequest(probeFor('github-pat')!, value).headers.Authorization).toBe(`Bearer ${value}`);
+    expect(() => buildProbeRequest(probeFor('telegram-bot')!, value)).toThrow(URIError);
+  });
+
+  it('resolves for a value holding a lone UTF-16 surrogate: sent in a header as found, and unknown, with nothing sent, where the path would carry it', async () => {
+    const value = `not-a-real\uD800token`;
+    const calls: Call[] = [];
+    const inHeader = await probeCredential('github-pat', value, { fetchImpl: answering(200, '', calls) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init.headers.Authorization).toBe(`Bearer ${value}`);
+    expect(inHeader).toEqual({ state: 'live', host: 'api.github.com', status: 200, detail: 'api.github.com answered 200' });
+
+    const inPath = await probeCredential('telegram-bot', `12345678:${value}`, { fetchImpl: answering(200, '', calls) });
+    expect(calls).toHaveLength(1);
+    expect(inPath).toEqual({ state: 'unknown', detail: 'not sent: the request could not be built (URIError)' });
+  });
 });
 
 describe('a webhook URL is itself the credential', () => {
@@ -730,6 +752,32 @@ describe('an AWS key is checked as a pair, by a request signed with the secret',
 
   it('builds no request for the signed probe without a secret to sign with', () => {
     expect(() => buildProbeRequest(probeFor('aws-access')!, KEY_ID)).toThrow(/a signed probe needs the secret to sign with/);
+  });
+
+  it('builds no request for the signed probe dated by a time that is not a valid date', () => {
+    expect(() => buildProbeRequest(probeFor('aws-access')!, KEY_ID, { secret: SECRET, now: new Date(NaN) })).toThrow(RangeError);
+  });
+
+  it.each([
+    ['gives an invalid date', () => new Date(NaN), 'not sent: the clock the request is dated by gave no valid date'],
+    ['throws', () => { throw new Error('clock stopped'); }, 'not sent: the clock the request is dated by threw (Error)'],
+    ['throws an error whose code is the key ID', () => { throw Object.assign(new Error('clock stopped'), { code: KEY_ID }); },
+      'not sent: the clock the request is dated by threw ([value])'],
+  ])('resolves to unknown, and sends nothing, when the clock %s', async (_clock, now: () => Date, detail) => {
+    const calls: Call[] = [];
+    const result = await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: answering(200, '', calls), now });
+    expect(calls).toHaveLength(0);
+    expect(result).toEqual({ state: 'unknown', detail });
+  });
+
+  it('signs and sends a key ID holding a lone UTF-16 surrogate, which goes in no path', async () => {
+    const keyId = `NOTAREAL\uD800KEYID`;
+    const calls: Call[] = [];
+    const result = await probeAwsKeyPair(keyId, SECRET, { fetchImpl: answering(200, '', calls), now: () => SIGNED_AT });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://sts.amazonaws.com/');
+    expect(calls[0].init.headers.Authorization).toContain(`Credential=${keyId}/20260102/us-east-1/sts/aws4_request`);
+    expect(result).toEqual({ state: 'live', host: 'sts.amazonaws.com', status: 200, detail: 'sts.amazonaws.com answered 200' });
   });
 });
 
@@ -1012,6 +1060,20 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
     expect(results.get(secret)).toEqual(REJECTED);
     expect(results.get(alone)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Secret Access Key finding to sign the request with' });
     expect(results.get(github)).toEqual({ state: 'unknown', host: 'api.github.com', status: 403, detail: 'api.github.com answered 403' });
+  });
+
+  it('keeps the answers of the other findings when the clock gives no valid date, and reads the pair unknown with nothing sent', async () => {
+    const id = findingOf('aws-access', 'deploy.env', 1);
+    const secret = findingOf('aws-secret', 'deploy.env', 2);
+    const github = findingOf('github-pat', 'c.env', 1);
+    const values = new Map<ScanFinding, string>([[github, VALUE], [id, KEY_ID], [secret, SECRET]]);
+    const calls: Call[] = [];
+    const results = await checkFindings([github, id, secret], (f) => values.get(f), { fetchImpl: answering(200, '', calls), now: () => new Date(NaN) });
+    expect(calls.map((c) => c.url)).toEqual(['https://api.github.com/user']);
+    expect(results.get(github)).toEqual({ state: 'live', host: 'api.github.com', status: 200, detail: 'api.github.com answered 200' });
+    const unsigned = { state: 'unknown', detail: 'not sent: the clock the request is dated by gave no valid date' };
+    expect(results.get(id)).toEqual(unsigned);
+    expect(results.get(secret)).toEqual(unsigned);
   });
 
   it('pairs only findings whose values were kept', async () => {
