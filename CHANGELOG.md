@@ -174,7 +174,18 @@ under the same pinned prefix as the Stop hook, adds it to an existing install
 on re-run and lists the file as modified, and `status` reports it as
 `Prompt check installed`, at project or user scope; `status --json` carries
 `promptCheckInstalled`, `promptCheckScope` and `watcherDirs` under
-`transcriptProtection`. `init` then offers the transcript watcher: on a
+`transcriptProtection`. As the Stop hook does, a prompt check that names the
+copy by path tests that its CLI file is there before running it: once that
+copy is gone it prints
+`secretless-ai: prompt check not found at <path>. Reinstall: npx secretless-ai init`
+and exits 1, so Claude Code shows that line and sends the prompt unchecked;
+`status` prints
+`⚠ Prompt check installed, target missing: <path> (a credential in a prompt is sent, then redacted)`
+with `npx secretless-ai init` as the fix (`npx secretless-ai init ~` for the
+user-level settings file) and counts it as a warning, and `status --json`
+carries the path as `transcriptProtection.promptCheckTargetMissing`, and as
+`userSettings.promptCheckTargetMissing` for the user-level file. `init` then
+offers the transcript watcher: on a
 terminal it asks (default yes) and installs it; `init --no-watch` skips the
 question; with no terminal to ask on, or no transcript directory yet, it names
 `watch install`. `watch install` now starts the watcher in the background and,

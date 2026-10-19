@@ -531,7 +531,7 @@ function configureClaudeCode(
   // re-run the same way. The file is listed as modified when it is added, so
   // an install made before the check existed reports the change.
   if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
-  const promptCommand = promptCheckCommand();
+  const promptCommand = promptCheckCommand(hookPrefix.prefix);
   for (const h of settings.hooks.UserPromptSubmit) {
     if (!Array.isArray(h?.hooks)) continue;
     for (const hh of h.hooks) {
@@ -758,13 +758,30 @@ function hasTranscriptStopHook(stop: any[]): boolean {
 /** What the UserPromptSubmit hook runs after the prefix: the prompt check (#237). */
 const PROMPT_CHECK_TAIL = ' hook --check-prompt';
 
-function promptCheckCommand(): string {
-  return `${commandPrefixForHooks()}${PROMPT_CHECK_TAIL}`;
+/**
+ * The prompt-check command for `prefix`. A prefix that names a copy by path
+ * is preceded by a test that its CLI file is there, which prints one line
+ * and exits 1 when it is not: Claude Code shows the line and sends the
+ * prompt, as it does for any failure of the hook, and `status` names the
+ * file (`promptCheckTargetMissing`).
+ */
+export function promptCheckCommand(prefix: string = commandPrefixForHooks()): string {
+  return `${targetCheck(prefix, 'prompt check', 'npx secretless-ai init', 1)}${prefix}${PROMPT_CHECK_TAIL}`;
 }
 
 /** True for a prompt-check command `init` wrote, under any prefix. */
 function isOwnPromptCheckCommand(command: unknown): boolean {
   return typeof command === 'string' && command.endsWith(PROMPT_CHECK_TAIL);
+}
+
+/**
+ * The file a prompt-check command `init` wrote runs and that is missing: its
+ * CLI script, or else its node binary. Null for any other command, for the
+ * npx form, and when both files exist.
+ */
+export function promptCheckTargetMissing(command: string): string | null {
+  if (!command.endsWith(PROMPT_CHECK_TAIL)) return null;
+  return missingPrefixTarget(command.slice(0, -PROMPT_CHECK_TAIL.length));
 }
 
 /** True when a UserPromptSubmit entry runs the prompt check. */
