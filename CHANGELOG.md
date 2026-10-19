@@ -55,7 +55,7 @@ message, a line for each. The refusals under `--history`, the
 `--format sarif` one included, name
 `Supported with --history: --format json, --help, --json` where they listed
 every `scan` flag. `scan --history`, `scan --history --json` and
-`scan --history --format json` scan as before.
+`scan --history --format json` are not refused.
 `src/scan-history-refusals.test.ts` runs each case through the built CLI.
 
 **`scan --history --json` writes one JSON document (#458).** `scan --history`
