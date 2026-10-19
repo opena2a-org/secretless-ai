@@ -52,12 +52,12 @@ by `Verify: ls -l ~/.bash_history`); on the second it prints
 `No credentials found in the lines that were read.` and lists the line
 (`~/.bash_history:1: longer than 4096 characters`), as `scan --history` lists
 them, on a dry run and on a real run. A run that redacts a line while
-something was not read ends with
+something was not read prints
 `History cleaned in the lines that were read. Backups saved with .bak extension.`
-in place of `History cleaned. Backups saved with .bak extension.` The exit
-code is unchanged, 0, and a line longer than 4096 characters is still left as
-it is. `cleanHistory()` returns the two lists as `filesNotRead` and
-`linesNotRead`, as `scanHistory()` does.
+in place of `History cleaned. Backups saved with .bak extension.`, followed by
+the same lists. The exit code is unchanged, 0, and a line longer than 4096
+characters is still left as it is. `cleanHistory()` returns the two lists as
+`filesNotRead` and `linesNotRead`, as `scanHistory()` does.
 `src/clean-history-not-read.test.ts` runs these homes through the built CLI,
 and `src/history.test.ts` covers the lists `cleanHistory` returns.
 
@@ -147,10 +147,9 @@ and the summary `{"total": 1, "filesScanned": 1}`. The exit code is the text
 report's, 1 with a credential found and 0 with none, and `--format json`
 writes the same document. Under `--history`, `--format sarif` is refused with
 exit 2, as `scan --history` has no SARIF form, and a `--format` value the tool
-does not write and `--json` beside `--format sarif` are refused with exit 2
-and the message they get without `--history`; each of the three printed the
-text report before. `scan --help` shows the form as
-`scan --history [--json]`. `src/scan-history-json.test.ts` runs each case
+does not write and `--json` beside `--format sarif` are refused with exit 2;
+each of the three printed the text report before. `scan --help` shows the form
+as `scan --history [--json]`. `src/scan-history-json.test.ts` runs each case
 through the built CLI.
 
 **Every preview replaces every credential on the line with its labelled
