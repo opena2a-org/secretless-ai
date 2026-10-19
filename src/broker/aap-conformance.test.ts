@@ -160,10 +160,13 @@ class FakeIdp implements TokenExchangeTransport {
 /** Fake downstream "orders API" — records the token it saw, returns order rows. */
 class FakeOrdersApi implements DownstreamCaller {
   sawAuthorization?: string;
+  /** When set, the response body carries this value as well (the CONTROL tests' leak). */
+  echo?: string;
   async call(audience: string, op: AgentOperation, cred: ScopedCredential): Promise<OperationResult> {
     this.sawAuthorization = `${cred.tokenType} ${cred.token}`;
     expect(audience).toContain(BACKEND_HOST); // the worker DID reach the real backend
-    return { status: 200, body: { rows: [{ id: 1, customer: 'c-123', total: 42 }], path: op.path } };
+    const body = { rows: [{ id: 1, customer: 'c-123', total: 42 }], path: op.path };
+    return { status: 200, body: this.echo === undefined ? body : { ...body, echo: this.echo } };
   }
 }
 
@@ -359,9 +362,39 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
     expect(agentVisible).not.toContain('okta');             // no vendor name
     expect(agentVisible).not.toContain(OKTA_ENDPOINT);      // no IdP endpoint
     expect(agentVisible).not.toMatch(/eyJ[A-Za-z0-9_-]+\./); // no broker assertion JWT
+    // Nor the downstream scope, the audience or the CPI mode the grant resolved with.
+    const { scope, audience, mode } = ORDERS_BINDING.resolve;
+    expect(agentVisible).not.toContain(scope);              // no downstream scope
+    expect(agentVisible).not.toContain(audience);           // no audience
+    expect(agentVisible).not.toContain(mode);               // no CPI mode name
     // The grant reference itself IS allowed in context.
     expect(agentVisible).toContain('grant://orders-db');
   });
+
+  it.each(['scope', 'audience', 'mode'] as const)(
+    'CONTROL: the agent-context assertion on the %s fails when the agent receives it',
+    async (field) => {
+      // Proves the scope, audience and mode assertions of the previous test are not vacuous:
+      // a downstream response that carries the value reaches the agent through the broker, and
+      // the assertion, run on its own on what the agent then sees, fails. Run on its own because
+      // the audience holds the backend host, so the host assertion fails on that response too.
+      const value = ORDERS_BINDING.resolve[field];
+      ordersApi.echo = value;
+      const agentRequest = {
+        agentId: 'aim_orders_reader',
+        atx: (globalThis as any).__aapTestAtx,
+        grant: 'grant://orders-db',
+        operation: { method: 'GET', path: '/orders', query: { customer: 'c-123' } },
+      };
+
+      const res = await brokerPost(socketPath, '/grant', brokerToken, agentRequest);
+
+      expect(res.status).toBe(200);
+      expect(res.json.result.body.echo).toBe(value);
+      const agentVisible = JSON.stringify(agentRequest) + res.text;
+      expect(() => expect(agentVisible).not.toContain(value)).toThrow();
+    },
+  );
 
   it('refuses a credential whose signature does not cover the predicates it is matched on', async () => {
     // The refusal path the v1.1 fixture would otherwise leave untested.
