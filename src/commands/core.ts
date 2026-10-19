@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips, unreadReason, matchedValueOf, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
+import { scan, emptySkips, unreadReason, matchedValueOf, lineValuesOf, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
 import { startsWithIgnoreHeader } from './ignore';
 import { scanToSarif } from '../sarif';
@@ -856,7 +856,7 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
   // Asked only under the flag, and only about the findings of this scan. A
   // scan with nothing found sends nothing.
   const validityOf = async (findings: ScanFinding[]): Promise<Map<ScanFinding, ValidityResult> | null> =>
-    options?.checkValidity ? checkFindings(findings, matchedValueOf, options.validityDeps) : null;
+    options?.checkValidity ? checkFindings(findings, matchedValueOf, options.validityDeps, lineValuesOf) : null;
   const capUsed = options?.maxFiles ?? 5000;
 
   // --json: emit a single valid JSON document to stdout and nothing else, so the

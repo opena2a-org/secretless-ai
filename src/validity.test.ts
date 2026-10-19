@@ -23,12 +23,17 @@
  *   order. A file whose findings do not pair that way, a key ID paired with
  *   two secrets or a secret paired with two key IDs sends nothing, and an STS
  *   answer about the clock is unknown.
+ * - A key ID and a secret on one line, which the scanner reports as one
+ *   finding, are paired from the values on that line, and a line's values
+ *   are never split between two pairs.
  * - No result string holds the value, even when an error message does.
  * - An OpenAI project key value the scanner found with a - or _ after it is
  *   not sent, also at 132 characters or more; that is decided for each finding.
  * - The scanner keeps a matched value only under `retainValues`, and never on
  *   the finding object; for an AWS secret access key it keeps the secret alone.
  *   With a value that is the whole match it keeps the character after it.
+ *   Under the same option it keeps every value the patterns match on a
+ *   finding's line, each as a finding of it would be reported.
  * - The help and docs/commands.md name what the flag contacts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -43,8 +48,9 @@ import {
   type ProbeFetch, type ProbeFetchInit, type ValidityProbe, type ValidityResult,
 } from './validity';
 import { signSigV4 } from './aws-sigv4';
-import { scan, matchedValueOf, charAfterValueOf, type ScanFinding } from './scan';
-import { CREDENTIAL_PATTERNS } from './patterns';
+import { scan, matchedValueOf, charAfterValueOf, lineValuesOf, type ScanFinding, type LineValue } from './scan';
+import { CREDENTIAL_PATTERNS, KNOWN_EXAMPLE_KEYS } from './patterns';
+import { scoreFinding } from './confidence';
 import { VERBS, prepareArgv } from './argv';
 import { printCommandHelp } from './command-help';
 
@@ -910,21 +916,34 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
   /**
    * Findings with their kept values, and a fetch stand-in that answers the way
    * STS answered a made-up key ID, or the one `fetchFor` builds on the calls list.
+   * A row may name the other values its line
+   * holds, as [patternId, value]; the line then lists the finding's own value
+   * and those, as the scanner's `lineValuesOf` does. A row without them has no
+   * line values, as a caller that passes none.
    */
   function setup(
-    rows: Array<[patternId: string, file: string, line: number, value: string]>,
+    rows: Array<[patternId: string, file: string, line: number, value: string, onLine?: Array<[patternId: string, value: string]>]>,
     fetchFor: (calls: Call[]) => ProbeFetch = (calls) => answering(403, stsError('InvalidClientTokenId', 'The security token included in the request is invalid.'), calls),
   ) {
     const values = new Map<ScanFinding, string>();
-    const findings = rows.map(([patternId, file, line, value]) => {
+    const lines = new Map<ScanFinding, LineValue[]>();
+    const findings = rows.map(([patternId, file, line, value, onLine]) => {
       const finding = findingOf(patternId, file, line);
       values.set(finding, value);
+      if (onLine) lines.set(finding, [{ patternId, value }, ...onLine.map(([id, v]) => ({ patternId: id, value: v }))]);
       return finding;
     });
     const calls: Call[] = [];
     const fetchImpl = fetchFor(calls);
-    const check = () => checkFindings(findings, (f) => values.get(f), { fetchImpl, now: () => SIGNED_AT });
-    return { findings, calls, check };
+    const check = () => checkFindings(findings, (f) => values.get(f), { fetchImpl, now: () => SIGNED_AT }, (f) => lines.get(f));
+    return { findings, calls, check, values };
+  }
+
+  /** The Authorization header of the STS request signed for this key ID with this secret. */
+  async function signedWith(keyId: string, secret: string): Promise<string> {
+    const signed: Call[] = [];
+    await probeAwsKeyPair(keyId, secret, { fetchImpl: answering(200, '', signed), now: () => SIGNED_AT });
+    return signed[0].init.headers.Authorization;
   }
 
   /** The key ID a recorded request was signed for, read from its Credential field. */
@@ -1200,6 +1219,106 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
     expect(results.get(id)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Secret Access Key finding to sign the request with' });
     expect(results.get(secret)).toEqual({ state: 'unchecked', detail: 'the matched value was not kept for checking' });
   });
+
+  it('pairs a key ID with the secret on its line, which the scanner reports as one finding, and signs the request with that secret', async () => {
+    const { findings: [id], calls, check, values } = setup([['aws-access', 'deploy.sh', 3, KEY_ID, [['aws-secret', SECRET]]]]);
+    const results = await check();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://sts.amazonaws.com/');
+    expect(calls[0].init.headers.Authorization).toBe(await signedWith(KEY_ID, SECRET));
+    expect(JSON.stringify({ url: calls[0].url, init: { ...calls[0].init, signal: undefined } })).not.toContain(SECRET);
+    expect(results.get(id)).toEqual(REJECTED);
+
+    // Without the line's values the same finding has no secret to sign with.
+    const alone = await checkFindings([id], (f) => values.get(f), { fetchImpl: answering(200, '') });
+    expect(alone.get(id)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Secret Access Key finding to sign the request with' });
+  });
+
+  it('pairs lines that each hold a key ID and its secret, beside a key ID and a secret on lines of their own, each with its own pair', async () => {
+    const pairs: Array<[keyId: string, secret: string]> = [
+      [KEY_ID, SECRET], ['NOTAREALKEYID001', 'another-not-real-secret'], ['NOTAREALKEYID002', 'third-not-real-secret'],
+    ];
+    const { findings, calls, check } = setup([
+      ['aws-access', 'deploy.sh', 8, pairs[2][0], [['aws-secret', pairs[2][1]]]],
+      ['aws-secret', 'deploy.sh', 5, pairs[1][1]],
+      ['aws-access', 'deploy.sh', 1, pairs[0][0], [['aws-secret', pairs[0][1]]]],
+      ['aws-access', 'deploy.sh', 4, pairs[1][0]],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(3);
+    const expected = await Promise.all(pairs.map(([keyId, secret]) => signedWith(keyId, secret)));
+    expect(calls.map((c) => c.init.headers.Authorization).sort()).toEqual(expected.sort());
+    for (const finding of findings) expect(results.get(finding), `line ${finding.line}`).toEqual(REJECTED);
+  });
+
+  it('sends nothing for a file whose findings, taken in line order two at a time, would split the key ID and the secret of one line', async () => {
+    const { findings, calls, check } = setup([
+      ['aws-secret', 'split.env', 1, SECRET],
+      ['aws-access', 'split.env', 2, KEY_ID, [['aws-secret', 'another-not-real-secret']]],
+      ['aws-access', 'split.env', 3, 'NOTAREALKEYID001'],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    for (const finding of findings) {
+      expect(results.get(finding), `line ${finding.line}`).toEqual({
+        state: 'unchecked',
+        detail: "not sent: the file's findings hold 2 AWS access key IDs and 2 secret access keys, which cannot be taken in line order "
+          + 'two at a time without splitting the values on line 2',
+      });
+    }
+  });
+
+  it('counts every AWS value on a finding\'s line, so a line holding two key IDs and one secret sends nothing', async () => {
+    const { findings: [id], calls, check } = setup([
+      ['aws-access', 'rotate.sh', 1, KEY_ID, [['aws-access', 'NOTAREALKEYID001'], ['aws-secret', SECRET]]],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    expect(results.get(id)).toEqual({
+      state: 'unchecked',
+      detail: "not sent: the file's findings hold 2 AWS access key IDs and 1 secret access key, which do not pair one to one",
+    });
+  });
+
+  it('reads the AWS values on the line of a finding of another type: they pair with an AWS finding of the file, count across files, and are not sent alone', async () => {
+    const { findings: [token, id, otherToken, idC, secretC], calls, check } = setup([
+      // A secret on a GitHub token's line pairs with the key ID finding of its file.
+      ['github-pat', 'a.env', 1, VALUE, [['aws-secret', SECRET]]],
+      ['aws-access', 'a.env', 2, KEY_ID],
+      // A key ID and a secret on a GitHub token's line, with no AWS finding in their file: no finding asks about them.
+      ['github-pat', 'b.env', 1, 'another-not-real-token', [['aws-access', 'NOTAREALKEYID001'], ['aws-secret', 'another-not-real-secret']]],
+      // The same key ID with another secret in a third file: the key ID is now paired with two secrets.
+      ['aws-access', 'c.env', 1, 'NOTAREALKEYID001'], ['aws-secret', 'c.env', 2, 'third-not-real-secret'],
+    ]);
+    const results = await check();
+    const sts = calls.filter((c) => c.url === 'https://sts.amazonaws.com/');
+    expect(sts.map((c) => c.init.headers.Authorization)).toEqual([await signedWith(KEY_ID, SECRET)]);
+    expect(calls.filter((c) => c.url === 'https://api.github.com/user')).toHaveLength(2);
+    expect(results.get(id)).toEqual(REJECTED);
+    for (const finding of [token, otherToken]) {
+      expect(results.get(finding)).toEqual({ state: 'unknown', host: 'api.github.com', status: 403, detail: 'api.github.com answered 403' });
+    }
+    for (const finding of [idC, secretC]) {
+      expect(results.get(finding)).toEqual({
+        state: 'unchecked',
+        detail: 'not sent: the access key ID is paired with 2 different secret access keys in the scanned files, and is sent with none of them',
+      });
+    }
+  });
+
+  it('pairs a temporary key ID with the secret on its line, which then pairs with no other key ID, and sends neither', async () => {
+    const { findings: [temporary, id], calls, check } = setup([
+      ['aws-sts', 'session.env', 1, 'NOTAREALTEMPKEY0', [['aws-secret', SECRET]]],
+      ['aws-access', 'a.env', 1, KEY_ID, [['aws-secret', SECRET]]],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    expect(results.get(temporary)).toEqual({ state: 'unchecked', detail: 'no validity probe for AWS STS Temporary Key' });
+    expect(results.get(id)).toEqual({
+      state: 'unchecked',
+      detail: 'not sent: the secret access key is paired with 2 different access key IDs in the scanned files, and is sent with none of them',
+    });
+  });
 });
 
 describe('summarizeValidity and stateLabel', () => {
@@ -1413,9 +1532,80 @@ describe('the scanner keeps a matched value only when asked', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // The AWS documentation's example key pair, taken from the scanner's own
+  // list of known examples so that no source line holds a key; the scans
+  // below report it because they are told to show placeholders.
+  const awsAccess = CREDENTIAL_PATTERNS.find((p) => p.id === 'aws-access')!;
+  const awsSecret = CREDENTIAL_PATTERNS.find((p) => p.id === 'aws-secret')!;
+  const DOCS_KEY_ID = [...KNOWN_EXAMPLE_KEYS].find((k) => awsAccess.regex.test(k))!;
+  const DOCS_SECRET = [...KNOWN_EXAMPLE_KEYS].find((k) => k.length === 40)!;
+  const PAIR_LINE = `const s3 = new S3({ accessKeyId: '${DOCS_KEY_ID}', secretAccessKey: '${DOCS_SECRET}' });`;
+
+  function projectWith(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'validity-scan-'));
+    fs.writeFileSync(path.join(dir, 'client.js'), content);
+    return dir;
+  }
+
+  it('under retainValues, lineValuesOf lists every value the patterns match on a finding\'s line, its own among them, for a directory scan and a named file', () => {
+    const dir = projectWith(`${PAIR_LINE}\n`);
+    try {
+      const expected = [{ patternId: 'aws-access', value: DOCS_KEY_ID }, { patternId: 'aws-secret', value: DOCS_SECRET }];
+      for (const target of [dir, path.join(dir, 'client.js')]) {
+        const unkept = scan(target, { scanGlobal: false, showPlaceholders: true });
+        expect(unkept.map((f) => f.patternId), target).toEqual(['aws-access']);
+        expect(lineValuesOf(unkept[0]), target).toBeUndefined();
+
+        const findings = scan(target, { scanGlobal: false, retainValues: true, showPlaceholders: true });
+        expect(findings, target).toEqual(unkept);
+        expect(lineValuesOf(findings[0]), target).toEqual(expected);
+        expect(JSON.stringify(findings[0])).not.toContain(DOCS_SECRET);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('lists a value on the line only as a finding of it would be reported: a known example only when placeholders are shown', () => {
+    const TOKEN_LINE = `${PAIR_LINE} const token = "${TOKEN}";`;
+    const dir = projectWith(`${TOKEN_LINE}\n`);
+    try {
+      const hidden = scan(dir, { scanGlobal: false, retainValues: true });
+      expect(hidden.map((f) => f.patternId)).toEqual(['github-pat']);
+      expect(lineValuesOf(hidden[0])).toEqual([{ patternId: 'github-pat', value: TOKEN }]);
+
+      const shown = scan(dir, { scanGlobal: false, retainValues: true, showPlaceholders: true });
+      expect(shown.map((f) => f.patternId)).toEqual(['aws-access']);
+      expect(lineValuesOf(shown[0])).toEqual([
+        { patternId: 'aws-access', value: DOCS_KEY_ID }, { patternId: 'aws-secret', value: DOCS_SECRET }, { patternId: 'github-pat', value: TOKEN },
+      ]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('lists no value on the line whose score is under the minimum confidence, as no finding of it would be', () => {
+    const scoreOf = (pattern: typeof awsAccess): number =>
+      scoreFinding({ pattern: { id: pattern.id, regex: pattern.regex }, value: PAIR_LINE.match(pattern.regex)![0], filePath: 'client.js' }).score;
+    const keyIdScore = scoreOf(awsAccess);
+    expect(scoreOf(awsSecret)).toBeLessThan(keyIdScore);
+    const dir = projectWith(`${PAIR_LINE}\n`);
+    try {
+      const findings = scan(dir, { scanGlobal: false, retainValues: true, showPlaceholders: true, minConfidence: keyIdScore });
+      expect(findings.map((f) => f.patternId)).toEqual(['aws-access']);
+      expect(lineValuesOf(findings[0])).toEqual([{ patternId: 'aws-access', value: DOCS_KEY_ID }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('the flag, the help and docs/commands.md name what --check-validity contacts', () => {
+  /** How the help and docs/commands.md say a key ID and a secret on one line are paired. */
+  const ONE_LINE_PAIR = 'A key ID and a secret found on one line, which the scan reports as one finding, both count, '
+    + 'and are never split between two pairs.';
+
   it('scan registers --check-validity as a flag without a value, so the parser accepts it', () => {
     expect(VERBS.scan.flags['--check-validity']).toBe(false);
     const prepared = prepareArgv('scan', ['scan', '--check-validity']);
@@ -1451,6 +1641,7 @@ describe('the flag, the help and docs/commands.md name what --check-validity con
     expect(text).toContain('AWS: InvalidClientTokenId or SignatureDoesNotMatch in a 403');
     expect(text).toContain('An AWS key is checked as a pair: the access key ID and the secret access key found with it in one file, '
       + 'when the file holds one of each, or several of each that, taken in line order two at a time, are each one key ID and one secret.');
+    expect(text).toContain(ONE_LINE_PAIR);
     expect(text).toContain('the key ID and the signature are sent, and the secret is not');
     expect(text).toContain('A SignatureDoesNotMatch that names the request time reads unknown');
     expect(text).toContain('a key from the AWS China or GovCloud partition still goes to sts.amazonaws.com');
@@ -1496,6 +1687,7 @@ describe('the flag, the help and docs/commands.md name what --check-validity con
     for (const probe of VALIDITY_PROBES) {
       expect(paragraph[0], probe.provider).toContain(probe.provider);
     }
+    expect(paragraph[0]).toContain(ONE_LINE_PAIR);
     expect(doc).toContain('npx secretless-ai scan --check-validity');
   });
 });

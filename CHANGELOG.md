@@ -140,7 +140,11 @@ GetCallerIdentity request to `sts.amazonaws.com` signed with the secret
 (Signature Version 4), so the key ID and the signature are sent and the
 secret is not. A file is paired when its findings hold one of each, or
 several of each that, taken in line order two at a time, are each one key
-ID and one secret. The answer is printed
+ID and one secret. A key ID and a secret found on one line, which the scan
+reports as one finding, both count, and are never split between two pairs,
+so `AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=…` on one command line, or
+`accessKeyId` and `secretAccessKey` in one object literal, is paired as the
+two values on lines of their own are. The answer is printed
 under the finding as `Validity: live` when the host answered 200 (or, for a
 Slack webhook, when hooks.slack.com refused the empty message with 400
 `no_text` rather than refusing the URL), `rejected` when it answered 401

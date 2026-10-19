@@ -1,5 +1,5 @@
 export { init } from './init';
-export { scan, matchedValueOf, type ScanFinding, type ScanOptions } from './scan';
+export { scan, matchedValueOf, lineValuesOf, type ScanFinding, type ScanOptions, type LineValue } from './scan';
 export {
   checkFindings, probeCredential, probeAwsKeyPair, probeFor, buildProbeRequest, summarizeValidity, VALIDITY_PROBES,
   type ValidityProbe, type ValidityResult, type ValidityState, type ValiditySummary, type ProbeDeps, type ProbeFetch,

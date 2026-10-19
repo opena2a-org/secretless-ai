@@ -81,6 +81,52 @@ function keepMatchedValue(finding: ScanFinding, match: RegExpMatchArray): void {
   MATCHED_VALUES.set(finding, { value: match[1] ?? match[0], charAfter });
 }
 
+/** A value a credential pattern matched on a line. */
+export interface LineValue {
+  /** The id, from src/patterns.ts, of the pattern that matched it. */
+  patternId: string;
+  value: string;
+}
+
+/**
+ * The values the patterns match on a finding's line, kept only under
+ * `ScanOptions.retainValues` and held beside the finding as MATCHED_VALUES is.
+ * A line is reported as one finding at most, for the first pattern that
+ * matches it, so a line holding an AWS access key ID and its secret access key
+ * reports the key ID alone; the validity check pairs the two from here.
+ */
+const LINE_VALUES = new WeakMap<ScanFinding, readonly LineValue[]>();
+
+/**
+ * Every value the patterns match on a finding's line, the finding's own among
+ * them, when the scan was run with `retainValues`; undefined otherwise. A
+ * value is listed when it would be reported were it the line's finding: a
+ * known example only when the scan shows placeholders, and a confidence score
+ * at or over the scan's minimum.
+ */
+export function lineValuesOf(finding: ScanFinding): readonly LineValue[] | undefined {
+  return LINE_VALUES.get(finding);
+}
+
+/**
+ * The values on `text` that `lineValuesOf` lists, each match scored for
+ * `scoredPath` as a finding made from it would be. Run only under
+ * `retainValues`, for a line that holds a finding.
+ */
+function valuesOnLine(text: string, includeExamples: boolean, minConfidence: number, scoredPath: string): LineValue[] {
+  const values: LineValue[] = [];
+  for (const pattern of CREDENTIAL_PATTERNS) {
+    const flags = pattern.regex.flags.includes('g') ? pattern.regex.flags : `${pattern.regex.flags}g`;
+    for (const match of text.matchAll(new RegExp(pattern.regex.source, flags))) {
+      if (!includeExamples && isKnownExample(text, match)) continue;
+      const { score } = scoreFinding({ pattern: { id: pattern.id, regex: pattern.regex }, value: match[0], filePath: scoredPath });
+      if (score < minConfidence) continue;
+      values.push({ patternId: pattern.id, value: match[1] ?? match[0] });
+    }
+  }
+  return values;
+}
+
 /** Per-pattern fix guidance. Tells users exactly how to fix each finding. */
 const FIX_GUIDANCE: Record<string, string> = {
   'anthropic': 'Move to env var ANTHROPIC_API_KEY. Rotate at console.anthropic.com > API Keys.',
@@ -229,8 +275,9 @@ export interface ScanOptions {
   confidenceFactors?: boolean;
   /**
    * Keep each finding's matched value reachable through `matchedValueOf()`,
-   * and the character after it through `charAfterValueOf()`.
-   * Default: false, and then no value is kept anywhere. The value is held
+   * the character after it through `charAfterValueOf()`,
+   * and the values the patterns match on its line through `lineValuesOf()`.
+   * Default: false, and then no value is kept anywhere. The values are held
    * beside the finding, never on it, so a finding printed or serialized to
    * JSON carries no more than it does without this option. Backs
    * `scan --check-validity`, which hands the value to the credential's own
@@ -654,7 +701,10 @@ function scanSingleFile(
               looksLikeFixture: false,
               ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
             };
-            if (options?.retainValues) keepMatchedValue(finding, match);
+            if (options?.retainValues) {
+              keepMatchedValue(finding, match);
+              LINE_VALUES.set(finding, valuesOnLine(line, matchOpts.includeExamples, minConfidence, name));
+            }
             findings.push(finding);
           }
           break;
@@ -742,6 +792,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   const includeTestsOpt = options?.includeTests ?? false;
 
   // Helper: classify a match into a `ScanFinding` with confidence + fixture flag.
+  // `lineText` is the line the match is on, read only under `retainValues`.
   function buildFinding(
     file: string,
     line: number,
@@ -749,6 +800,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     match: RegExpMatchArray,
     severity: 'critical' | 'high',
     masked: string,
+    lineText: string,
   ): ScanFinding | null {
     const breakdown = scoreFinding({
       pattern: { id: pattern.id, regex: pattern.regex },
@@ -773,7 +825,10 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       looksLikeFixture,
       ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
     };
-    if (options?.retainValues) keepMatchedValue(finding, match);
+    if (options?.retainValues) {
+      keepMatchedValue(finding, match);
+      LINE_VALUES.set(finding, valuesOnLine(lineText, matchOpts.includeExamples, minConfidence, file));
+    }
     return finding;
   }
 
@@ -798,7 +853,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
             const masked = maskCredentials(line);
-            const finding = buildFinding(global.label, i + 1, pattern, match, 'critical', masked);
+            const finding = buildFinding(global.label, i + 1, pattern, match, 'critical', masked, line);
             if (finding) findings.push(finding);
             break;
           }
@@ -898,7 +953,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
             // Mask every credential on the line in the preview
             const masked = maskCredentials(line);
 
-            const finding = buildFinding(configFile, i + 1, pattern, match, 'critical', masked);
+            const finding = buildFinding(configFile, i + 1, pattern, match, 'critical', masked, line);
             if (finding) findings.push(finding);
             break; // One finding per line
           }
@@ -971,7 +1026,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
             if (match) {
               const masked = maskCredentials(line);
 
-              const finding = buildFinding(relPath, i + 1, pattern, match, 'high', masked);
+              const finding = buildFinding(relPath, i + 1, pattern, match, 'high', masked, line);
               if (finding) findings.push(finding);
               break;
             }
@@ -1052,7 +1107,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         for (let i = 0; i < lines.length; i++) {
           const match = findRealMatch(lines[i], pemPattern);
           if (match) {
-            const finding = buildFinding(relPath, i + 1, pemPattern, match, 'high', '[PEM Private Key REDACTED]');
+            const finding = buildFinding(relPath, i + 1, pemPattern, match, 'high', '[PEM Private Key REDACTED]', lines[i]);
             if (finding) findings.push(finding);
             break;
           }

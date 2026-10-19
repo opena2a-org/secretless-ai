@@ -6,7 +6,8 @@
  * With it, each finding carries the issuing host's answer in both renderers
  * and in the explanation view, the value appears in no output, the same value
  * in two files is sent once, an OpenAI project key value the pattern stopped
- * at a _ is not sent, and severity, confidence and the exit code are what
+ * at a _ is not sent, an AWS key ID and its secret on one line are
+ * checked as a pair, and severity, confidence and the exit code are what
  * they are without the flag.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -21,6 +22,7 @@ vi.mock('../nanomind', () => ({
 
 import { runScan } from './core';
 import type { ProbeFetch, ProbeFetchInit } from '../validity';
+import { CREDENTIAL_PATTERNS, KNOWN_EXAMPLE_KEYS } from '../patterns';
 
 // Real-shape tokens joined at run time, as scan-json.test.ts does, so no
 // source line has the shape of a provider token. Not marked FAKE: a marked
@@ -43,6 +45,13 @@ const tokenOf = (hook: string): string => hook.slice(hook.lastIndexOf('/') + 1);
 const OPENAI_CUT = ['sk-proj-', 'a'.repeat(130), '_', 'FAKEVALUE'].join('');
 /** sk-proj- and 156 letters, with no - or _: the pattern keeps all 164 characters. */
 const OPENAI_WHOLE = ['sk-proj-', 'b'.repeat(156)].join('');
+/**
+ * The AWS documentation's example key pair, taken from the scanner's own list
+ * of known examples so that no source line holds a key; a scan reports it
+ * when told to show placeholders.
+ */
+const AWS_KEY_ID = [...KNOWN_EXAMPLE_KEYS].find((k) => CREDENTIAL_PATTERNS.find((p) => p.id === 'aws-access')!.regex.test(k))!;
+const AWS_SECRET = [...KNOWN_EXAMPLE_KEYS].find((k) => k.length === 40)!;
 
 interface Call { url: string; init: ProbeFetchInit }
 
@@ -226,6 +235,31 @@ describe('runScan --check-validity', () => {
       expect(call.init.headers.Authorization).toBeUndefined();
       for (const hook of [DISCORD_HOOK, SLACK_HOOK]) expect(JSON.stringify(call.init.headers)).not.toContain(tokenOf(hook));
     }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('an AWS key ID and its secret on one line, reported as one finding, are checked as a pair: the key ID is named in the signature, and the secret is in no request and no output', async () => {
+    const dir = project({ 'deploy.sh': `AWS_ACCESS_KEY_ID=${AWS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET} aws s3 ls\n` });
+    expect(await runScan(dir, { json: true, showPlaceholders: true })).toBe(1);
+    const before = JSON.parse(out.join('\n'));
+    expect(before.findings.map((f: { patternId: string }) => f.patternId)).toEqual(['aws-access']);
+
+    out.length = 0;
+    const calls: Call[] = [];
+    const code = await runScan(dir, { json: true, showPlaceholders: true, checkValidity: true, validityDeps: { fetchImpl: answering(200, calls) } });
+    const text = out.join('\n');
+    const after = JSON.parse(text);
+    expect(code).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://sts.amazonaws.com/');
+    expect(calls[0].init.headers.Authorization).toContain(`Credential=${AWS_KEY_ID}/`);
+    expect(JSON.stringify({ url: calls[0].url, init: { ...calls[0].init, signal: undefined } })).not.toContain(AWS_SECRET);
+    expect(text).not.toContain(AWS_SECRET);
+    expect(after.findings).toHaveLength(1);
+    const { validity, ...rest } = after.findings[0];
+    expect(validity).toEqual({ state: 'live', host: 'sts.amazonaws.com', status: 200, detail: 'sts.amazonaws.com answered 200' });
+    expect(rest).toEqual(before.findings[0]);
+    expect(after.summary.validity).toEqual({ live: 1, rejected: 0, unknown: 0, unchecked: 0, hosts: ['sts.amazonaws.com'] });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
