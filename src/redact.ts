@@ -132,10 +132,33 @@ export function redactMatches(
   label: string,
   opts?: { preferCaptureGroup?: boolean; onSpan?: (span: string) => void },
 ): string {
-  const flags = regex.flags.includes('g') ? regex.flags : regex.flags + 'g';
-  const scanner = new RegExp(regex.source, flags);
   let out = '';
   let cursor = 0;
+  for (const { from, to } of credentialSpans(text, regex, opts)) {
+    opts?.onSpan?.(text.slice(from, to));
+    out += text.slice(cursor, from) + label;
+    cursor = to;
+  }
+  return cursor === 0 ? text : out + text.slice(cursor);
+}
+
+/**
+ * The spans `redactMatches` replaces, as offsets into `text`: one per match of
+ * `regex`, in order and never overlapping, each from the match (or from its
+ * first capture group, under `preferCaptureGroup`) through the credential
+ * characters that follow it.
+ *
+ * Exported for `maskCredentials` (line-mask.ts), which finds the spans of every
+ * pattern on a line before it replaces any of them.
+ */
+export function credentialSpans(
+  text: string,
+  regex: RegExp,
+  opts?: { preferCaptureGroup?: boolean },
+): Array<{ from: number; to: number }> {
+  const flags = regex.flags.includes('g') ? regex.flags : regex.flags + 'g';
+  const scanner = new RegExp(regex.source, flags);
+  const spans: Array<{ from: number; to: number }> = [];
   let m: RegExpExecArray | null;
 
   while ((m = scanner.exec(text)) !== null) {
@@ -163,13 +186,11 @@ export function redactMatches(
     let cutTo = matchStart + m[0].length;
     while (cutTo < text.length && CREDENTIAL_TAIL.test(text[cutTo])) cutTo++;
 
-    opts?.onSpan?.(text.slice(cutFrom, cutTo));
-    out += text.slice(cursor, cutFrom) + label;
-    cursor = cutTo;
+    spans.push({ from: cutFrom, to: cutTo });
     // The tail is consumed, so continue scanning after it rather than from the
     // match end — otherwise the same characters are re-examined.
     scanner.lastIndex = cutTo;
   }
 
-  return cursor === 0 ? text : out + text.slice(cursor);
+  return spans;
 }

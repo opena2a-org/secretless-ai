@@ -10,7 +10,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, type CredentialPattern } from './patterns';
-import { redactMatches } from './redact';
+import { maskCredentials } from './line-mask';
 
 export interface HistoryFinding {
   /** Display path with ~ for home directory */
@@ -21,7 +21,7 @@ export interface HistoryFinding {
   patternId: string;
   /** Human-readable pattern name */
   patternName: string;
-  /** Masked preview of the matching line */
+  /** The matching line, each credential on it replaced by `[<pattern name> REDACTED]` */
   preview: string;
 }
 
@@ -80,29 +80,6 @@ function displayPath(filePath: string): string {
 function stripZshTimestamp(line: string): string {
   const match = line.match(/^: \d+:\d+;(.*)$/);
   return match ? match[1] : line;
-}
-
-/**
- * Mask a credential match in a line for preview display.
- * Replaces the matched credential with asterisks, keeping first/last 4 chars.
- */
-function maskCredential(line: string, regex: RegExp): string {
-  return line.replace(regex, (match: string, ...args: unknown[]) => {
-    // A pattern that names its `value` group has all of that group masked:
-    // a `secret set` value can be shorter than the four characters kept below.
-    const groups = args[args.length - 1];
-    const value = typeof groups === 'object' && groups !== null
-      ? (groups as Record<string, string | undefined>).value
-      : undefined;
-    if (value) {
-      const at = match.lastIndexOf(value);
-      return match.slice(0, at) + '****' + match.slice(at + value.length);
-    }
-    if (match.length <= 12) {
-      return match.slice(0, 4) + '****';
-    }
-    return match.slice(0, 4) + '****' + match.slice(-4);
-  });
 }
 
 /**
@@ -171,7 +148,10 @@ export async function scanHistory(): Promise<HistoryScanResult> {
       const match = matchLine(line);
       if (match) {
         const lineNumber = startIdx + i + 1;
-        const preview = maskCredential(line, match.regex);
+        // Every credential on the line, by every pattern. A pattern whose
+        // `value` group is the secret (`secret set NAME=VALUE`) keeps the
+        // command and the name in front of it.
+        const preview = maskCredentials(line, { commandPatterns: COMMAND_PATTERNS });
 
         findings.push({
           file: displayPath(filePath),
@@ -231,12 +211,16 @@ export async function cleanHistory(dryRun = false): Promise<HistoryCleanResult> 
         modified = true;
 
         if (!dryRun) {
-          // Replace the credential value with a redaction marker.
-          // redactMatches, not String.replace: the pattern's quantifier is not
-          // the credential's length, so replacing exactly the match left the
-          // tail of an over-length value in the file this function REWRITES,
-          // under a line that says it was redacted.
-          lines[i] = redactMatches(rawLine, match.regex, `[REDACTED:${match.id}]`);
+          // Replace every pattern's matches on the line with a redaction
+          // marker, each through the credential characters that follow it: the
+          // pattern's quantifier is not the credential's length, and the line
+          // `linesRedacted` counts may hold more than one credential. The same
+          // masker builds the `scan-history` preview, so the two cannot drift.
+          lines[i] = maskCredentials(rawLine, {
+            commandPatterns: COMMAND_PATTERNS,
+            label: (pattern) => `[REDACTED:${pattern.id}]`,
+            preferCaptureGroup: false,
+          });
         }
       }
     }

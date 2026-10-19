@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, isConfigShaped, type CredentialPattern } from './patterns';
 import { redactMatches } from './redact';
+import { maskCredentials } from './line-mask';
 import { loadSecretlessIgnore, buildMatcher, defaultIgnoreLines, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceBreakdown, type ConfidenceTier } from './confidence';
 import { BUNDLE_EXTENSION } from './bundle';
@@ -153,20 +154,24 @@ function envFileOperand(filePath: string): string | undefined {
 }
 
 /**
- * Mask the credential in a line for preview.
+ * Mask the matches of one pattern in a line.
+ *
+ * Previews are not built here: a finding's preview goes through
+ * `maskCredentials` (line-mask.ts), which masks every pattern on the line.
  *
  * For name-gated patterns the regex match SPANS the variable name (the name is
  * the gate, not a lookbehind), so replacing the whole match erased the name and
  * rendered `AWS_SECRET_ACCESS_KEY = "…"` as a bare `"`. When the pattern
- * captures the value in group 1, only that group is redacted, so the preview
+ * captures the value in group 1, only that group is redacted, so the line
  * still shows which variable is exposed. Patterns with no capture group keep
  * whole-match redaction.
  */
 export function maskLine(line: string, pattern: Pick<CredentialPattern, 'name' | 'regex'>): string {
-  // Shared with the transcript and shell-history redactors, so the preview and
-  // the file rewrite cannot drift: all three used to replace exactly the regex
-  // match, which left the tail of any value longer than the pattern's fixed
-  // quantifier (#133 — `ghp_` + 37 chars printed the 37th verbatim).
+  // redactMatches replaces each match through the credential characters that
+  // follow it, as the transcript rewrite does and as `maskCredentials` does for
+  // previews and the shell-history rewrite: replacing exactly the regex match
+  // left the tail of any value longer than the pattern's fixed quantifier
+  // (#133 — `ghp_` + 37 chars printed the 37th verbatim).
   return redactMatches(line, pattern.regex, `[${pattern.name} REDACTED]`, {
     preferCaptureGroup: true,
   });
@@ -630,7 +635,7 @@ function scanSingleFile(
               patternId: pattern.id,
               patternName: pattern.name,
               severity,
-              preview: maskLine(line, pattern).trim().substring(0, 80),
+              preview: maskCredentials(line).trim().substring(0, 80),
               fix: fixFor(pattern, { envFile }),
               confidence: breakdown.score,
               confidenceTier: breakdown.tier,
@@ -780,7 +785,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         for (const pattern of CREDENTIAL_PATTERNS) {
           const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
-            const masked = maskLine(line, pattern);
+            const masked = maskCredentials(line);
             const finding = buildFinding(global.label, i + 1, pattern, match, 'critical', masked);
             if (finding) findings.push(finding);
             break;
@@ -876,8 +881,8 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         for (const pattern of CREDENTIAL_PATTERNS) {
           const match = findRealMatch(line, pattern, matchOpts);
           if (match) {
-            // Mask the actual secret in the preview (replace ALL occurrences)
-            const masked = maskLine(line, pattern);
+            // Mask every credential on the line in the preview
+            const masked = maskCredentials(line);
 
             const finding = buildFinding(configFile, i + 1, pattern, match, 'critical', masked);
             if (finding) findings.push(finding);
@@ -948,7 +953,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           for (const pattern of CREDENTIAL_PATTERNS) {
             const match = findRealMatch(line, pattern, matchOpts);
             if (match) {
-              const masked = maskLine(line, pattern);
+              const masked = maskCredentials(line);
 
               const finding = buildFinding(relPath, i + 1, pattern, match, 'high', masked);
               if (finding) findings.push(finding);
