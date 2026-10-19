@@ -34,6 +34,30 @@ lines are matched. `src/scan-history-not-read.test.ts` runs the three homes
 above through the built CLI, and `src/history.test.ts` covers the window and
 the runs of over-length lines.
 
+**`scan --history` refuses a path and the directory-scan flags (#463).**
+`scan --history` returned before the path and these flags were read:
+`--include-tests`, `--include-config`, `--explain`, `--no-ignore`,
+`--show-placeholders`, `--check-validity`, `--min-confidence`, `--max-files`
+and `--max-file-size`. Each was accepted and had no effect, and its value was
+not checked: with a `.bash_history` holding
+`npx secretless-ai secret set STRIPE_KEY=not-a-real-value`,
+`scan --history --min-confidence 7` printed the full report at exit 1 with
+nothing on stderr, where `scan . --min-confidence 7` is refused with exit 2,
+and `scan --history ./some-dir` and `scan --history --check-validity` printed
+the report `scan --history` prints alone. Under `--history`, a path and each
+of these flags are now refused with exit 2 and nothing on stdout, as
+`--format sarif` is:
+`--history does not use --min-confidence, which applies to a directory scan; give it without --history, or leave it out.`
+and
+`--history scans shell history and takes no path; give the path without --history to scan it: ./some-dir`.
+`--format sarif`, a flag and a path given together are refused in one
+message, a line for each. The refusals under `--history`, the
+`--format sarif` one included, name
+`Supported with --history: --format json, --help, --json` where they listed
+every `scan` flag. `scan --history`, `scan --history --json` and
+`scan --history --format json` scan as before.
+`src/scan-history-refusals.test.ts` runs each case through the built CLI.
+
 **`scan --history --json` writes one JSON document (#458).** `scan --history`
 returned before `--json` and `--format` were read, so `scan --history --json`
 printed the text report and a caller parsing stdout failed on

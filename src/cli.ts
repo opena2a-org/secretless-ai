@@ -10,7 +10,7 @@ import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode':
 import { VERSION, CLI_BARE, formatCommandError } from './commands/utils';
 // @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
 // so they're loaded via dynamic import() inside the async main().
-import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize, pathOperand } from './commands/core';
+import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize, pathOperand, listedPath } from './commands/core';
 import { escapeForDisplay, escapePathForDisplay } from './display-safe';
 import { runClean, runWatch, runScanHistory, runCleanHistory, offerTranscriptWatcher } from './commands/transcript';
 import { runSecret } from './commands/secrets';
@@ -54,11 +54,15 @@ import {
  * Each error is printed escaped: it quotes the token the user typed, and a
  * line feed in that token started a line of its own under this message.
  */
-function formatArgvErrors(verb: string, errors: string[]): string[] {
+function formatArgvErrors(verb: string, errors: string[], supported?: string): string[] {
   const spec = VERBS[verb];
   const lines = errors.map((e) => `  ${escapeForDisplay(e)}`);
   lines.push(`  \`${verb}\` was not run. Nothing was changed.`);
-  if (spec) {
+  // `supported` stands in for the verb's list on a form of the verb that takes
+  // fewer flags, so the line does not offer a flag the error above refused.
+  if (supported !== undefined) {
+    lines.push(`  ${supported}`);
+  } else if (spec) {
     lines.push(`  Supported: ${supportedFlags(spec).join(', ')}`);
   }
   // CLI_BARE, not a literal: an embedding host sets SECRETLESS_CLI_PREFIX and
@@ -286,6 +290,55 @@ function refuseFlagValue(verb: string, flag: string, raw: string, expected: stri
   return EXIT_USAGE;
 }
 
+/**
+ * The `scan` flags the history scan reads. `--format` is here for `json`:
+ * `--format sarif` is refused under `--history` on a line of its own.
+ */
+const HISTORY_SCAN_FLAGS: ReadonlySet<string> = new Set(['--history', '--json', '--format']);
+/** The supported line of a refusal under `--history`: HISTORY_SCAN_FLAGS but `--history` itself, and `--help`. */
+const HISTORY_SUPPORTED = 'Supported with --history: --format json, --help, --json';
+
+/**
+ * Why `scan --history` cannot run as given, one line for each reason, or none
+ * when it can.
+ *
+ * The history scan reads the shell history files in the home directory, so it
+ * takes no path, and of `scan`'s flags it reads only HISTORY_SCAN_FLAGS. The
+ * others were accepted and had no effect, their values unchecked (#463):
+ * `scan --history --min-confidence 7` printed the full report at exit 1,
+ * where `scan . --min-confidence 7` is refused, and
+ * `scan --history ./some-dir` printed the report without naming ./some-dir.
+ * They are refused as `--format sarif` is. The flags are read from the
+ * registry, so a flag `scan` gains later is refused here until the history
+ * scan reads it and it is added above.
+ */
+function historyScanRefusals(args: string[], positionals: string[], format: string | undefined): string[] {
+  const refusals: string[] = [];
+  if (format === 'sarif') {
+    refusals.push('--history has no SARIF output; give --json or --format json for JSON, or neither for text.');
+  }
+  // In the order typed, each named once.
+  const unused = [...new Set(args.slice(1).filter((a) => (
+    Object.prototype.hasOwnProperty.call(VERBS.scan.flags, a) && !HISTORY_SCAN_FLAGS.has(a)
+  )))];
+  if (unused.length > 1) {
+    const named = `${unused.slice(0, -1).join(', ')} or ${unused[unused.length - 1]}`;
+    refusals.push(`--history does not use ${named}, which apply to a directory scan; give them without --history, or leave them out.`);
+  } else if (unused.length === 1) {
+    refusals.push(`--history does not use ${unused[0]}, which applies to a directory scan; give it without --history, or leave it out.`);
+  }
+  // Named as `scan` names a path it did not read: quoted where the shell needs
+  // it, and escaped where it holds a character that would reach the terminal
+  // as a control, so a line feed in it cannot start a line of its own.
+  const paths = positionals.map((p) => listedPath(p)).join(', ');
+  if (positionals.length > 1) {
+    refusals.push(`--history scans shell history and takes no path; scan each path on its own, without --history: ${paths}`);
+  } else if (positionals.length === 1) {
+    refusals.push(`--history scans shell history and takes no path; give the path without --history to scan it: ${paths}`);
+  }
+  return refusals;
+}
+
 async function dispatch(args: string[], command: string | undefined, prepared: PreparedArgv): Promise<number> {
   switch (command) {
     case 'init': {
@@ -329,11 +382,13 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       // read above it so that it honors them as well: it returned before they
       // were read, and `scan --history --json` printed the text report (#458).
       // It writes text or JSON. It has no SARIF form, so `--format sarif` is
-      // refused rather than answered with text.
+      // refused rather than answered with text. It takes no path and none of
+      // the directory-scan flags read below, so each of those is refused too,
+      // rather than accepted and ignored (#463).
       if (args.includes('--history')) {
-        if (format === 'sarif') {
-          const detail = '--history has no SARIF output; give --json or --format json for JSON, or neither for text.';
-          for (const line of formatArgvErrors('scan', [detail])) console.error(line);
+        const refusals = historyScanRefusals(args, prepared.positionals, format);
+        if (refusals.length > 0) {
+          for (const line of formatArgvErrors('scan', refusals, HISTORY_SUPPORTED)) console.error(line);
           return EXIT_USAGE;
         }
         return runScanHistory({ json });
