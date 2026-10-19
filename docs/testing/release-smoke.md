@@ -30,7 +30,7 @@ cd secretless-ai
 git status                 # clean, or only the branch you intend to ship
 npm ci                     # lockfile valid
 npm run build              # zero output, zero errors
-npm test                   # all green (baseline: 1206 tests)
+npm test                   # all green
 ```
 
 Fail the release if any step is red.
