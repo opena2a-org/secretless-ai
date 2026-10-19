@@ -10,7 +10,7 @@ import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, KNOWN_EXAMPLE_KEYS, PLACEHOL
 import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlocks, customRulesToFilePatterns, filePatternToDenyRules, filesystemPathForm, mergeRules } from './custom-rules';
 import type { CustomRules, RulesFileIssue } from './custom-rules';
 import { scan, newScanStats, coverageIncomplete } from './scan';
-import { commandPrefixForHooks } from './hook-prefix';
+import { commandPrefixForHooks, missingPrefixTarget, resolveHookPrefix, targetCheck } from './hook-prefix';
 
 /**
  * Secret file extensions, matched as a suffix (`server.key`, `prod.env`). The
@@ -103,6 +103,12 @@ interface InitResult {
    * outdated hook would persist across upgrades.
    */
   hookRefreshed: boolean;
+  /**
+   * The prefix the Stop hook command carries when this copy runs from the
+   * npx cache: npm may remove that copy, so the versioned npx form was
+   * written in place of its path. Unset otherwise.
+   */
+  hookPrefixFromNpxCache?: string;
   /**
    * Set when `.claude/settings.json` exists but could not be merged into, so
    * `init` deliberately left it untouched. Its presence means the deny rules
@@ -365,7 +371,9 @@ function configureClaudeCode(
 
   // A Stop hook an earlier `init` wrote is brought to the current command, so
   // a re-run replaces an unversioned prefix or a node path that has moved.
-  const stopCommand = stopHookCommand();
+  const hookPrefix = resolveHookPrefix();
+  if (hookPrefix.npxCache) result.hookPrefixFromNpxCache = hookPrefix.prefix;
+  const stopCommand = stopHookCommand(hookPrefix.prefix);
   for (const h of settings.hooks.Stop) {
     if (!Array.isArray(h?.hooks)) continue;
     for (const hh of h.hooks) {
@@ -561,13 +569,28 @@ const STOP_HOOK_TAIL = ' clean --last || echo "secretless-ai clean --last failed
 /** The Stop hook command an earlier `init` wrote. */
 const UNVERSIONED_STOP_HOOK = 'npx secretless-ai clean --last 2>/dev/null || true';
 
-function stopHookCommand(): string {
-  return `${commandPrefixForHooks()}${STOP_HOOK_TAIL}`;
+/**
+ * The Stop hook command for `prefix`. A prefix that names a copy by path is
+ * preceded by a test that its CLI file is there, which prints one line and
+ * exits 0 when it is not: the same best effort as the tail.
+ */
+export function stopHookCommand(prefix: string = commandPrefixForHooks()): string {
+  return `${targetCheck(prefix, 'transcript cleaner', 'npx secretless-ai init', 0)}${prefix}${STOP_HOOK_TAIL}`;
 }
 
 /** True for a Stop hook command `init` wrote, under any prefix. */
 function isOwnStopCommand(command: unknown): boolean {
   return typeof command === 'string' && (command === UNVERSIONED_STOP_HOOK || command.endsWith(STOP_HOOK_TAIL));
+}
+
+/**
+ * The file a Stop hook command `init` wrote runs and that is missing: its CLI
+ * script, or else its node binary. Null for any other command, for the npx
+ * form, and when both files exist.
+ */
+export function stopHookTargetMissing(command: string): string | null {
+  if (!command.endsWith(STOP_HOOK_TAIL)) return null;
+  return missingPrefixTarget(command.slice(0, -STOP_HOOK_TAIL.length));
 }
 
 /** True when a Stop hook entry runs a `secretless-ai` command. */

@@ -1,12 +1,11 @@
-import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled } from '../git-hook';
+import { installPreCommitHook, uninstallPreCommitHook, isHookInstalled, preCommitTargetMissing } from '../git-hook';
 import { scanStagedFiles } from '../scan-staged';
 import { runHookCheck } from '../session/hook';
-import { escapeForDisplay } from '../display-safe';
+import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard, shellQuote } from '../display-safe';
 import { EXIT_USAGE } from '../argv';
 
-export function runHook(args: string[]): number {
+export function runHook(args: string[], projectDir: string = process.cwd()): number {
   const subcommand = args[0];
-  const projectDir = process.cwd();
 
   // Fast path: --check-only for Claude Code PreToolUse hook (must be first arg).
   // runHookCheck calls process.exit() internally — this path bypasses telemetry
@@ -31,6 +30,17 @@ export function runHook(args: string[]): number {
 
     case 'status': {
       const installed = isHookInstalled(projectDir);
+      // The hook names the copy that installed it by path. Once that copy is
+      // gone the hook blocks every commit, so it is not reported as installed
+      // alone.
+      const missing = installed ? preCommitTargetMissing(projectDir) : null;
+      if (missing !== null) {
+        console.log(`\n  Pre-commit hook: installed, target missing: ${escapePathForDisplay(missing)}`);
+        console.log(`  Verify: ls -l ${hasDisplayHazard(missing) ? '<path>' : shellQuote(missing)}`);
+        console.log('  Fix:    npx secretless-ai hook install');
+        console.log();
+        return 0;
+      }
       console.log(`\n  Pre-commit hook: ${installed ? 'installed' : 'not installed'}`);
       if (!installed) {
         console.log('  Install: npx secretless-ai hook install');

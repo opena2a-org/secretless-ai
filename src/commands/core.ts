@@ -164,6 +164,13 @@ export function runInit(projectDir: string): number {
     console.log('  Already up to date. No files changed.');
   }
 
+  // The Stop hook names the copy that wrote it, except a copy in the npx
+  // cache: the line says which form went in its place, and why.
+  if (result.hookPrefixFromNpxCache) {
+    console.log();
+    console.log(`  Hook command: ${result.hookPrefixFromNpxCache} (this copy runs from the npm cache, which npm may remove)`);
+  }
+
   // Surface inline observations: secrets found + shell profile fix. Each
   // observation ends in a runnable verb (no dead ends).
   //
@@ -1586,8 +1593,19 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     }
   }
 
-  // Stop hook (transcript redaction).
-  if (tp.stopHookInstalled && tp.stopHookScope === 'user') {
+  // Stop hook (transcript redaction). A hook whose node or CLI file is gone
+  // runs nothing, so it is a warning row, never a ✓: re-running `init` where
+  // that settings file lives writes it for the copy that runs then.
+  if (tp.stopHookInstalled && tp.stopHookTargetMissing !== null) {
+    const missing = escapePathForDisplay(tp.stopHookTargetMissing);
+    addRow(tp.stopHookScope === 'user'
+      ? {
+        glyph: '⚠',
+        label: `Stop hook installed at user level (${USER_SETTINGS_PATH}), target missing: ${missing} (transcripts unredacted)`,
+        action: `${CLI} init ~`,
+      }
+      : { glyph: '⚠', label: `Stop hook installed, target missing: ${missing} (transcripts unredacted)`, action: `${CLI} init` });
+  } else if (tp.stopHookInstalled && tp.stopHookScope === 'user') {
     addRow({ glyph: '✓', label: `Stop hook installed at user level (${USER_SETTINGS_PATH}, transcript redaction)` });
   } else if (tp.stopHookInstalled) {
     addRow({ glyph: '✓', label: 'Stop hook installed (transcript redaction)' });
@@ -1746,6 +1764,8 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       userSettings: user
         ? { ...user, unreadable: user.unreadable ?? null, ambiguous: user.ambiguous ?? null }
         : null,
+      // `stopHookTargetMissing`: the node or CLI file the installed Stop hook
+      // names and that is gone, so the hook cleans nothing; null otherwise.
       transcriptProtection: tp,
       // Null when the metadata file could not be read, never 0 (#236).
       exposuresOpen: s.exposuresOpen,

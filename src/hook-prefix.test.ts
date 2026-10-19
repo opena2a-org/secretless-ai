@@ -1,18 +1,20 @@
 /**
  * The command prefix written into the pre-commit hook, the Claude Code Stop
  * hook and the git credential helper: the running copy's node and CLI paths
- * when they resolve, otherwise `npx --yes secretless-ai@<version>` run
- * offline, and never a bare `npx secretless-ai`.
+ * when they resolve and the copy is not in the npx cache, otherwise
+ * `npx --yes secretless-ai@<version>` run offline, and never a bare
+ * `npx secretless-ai`. A body that names the copy by path checks that its CLI
+ * file is there before it runs it.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { commandPrefixForHooks } from './hook-prefix';
+import { commandPrefixForHooks, resolveHookPrefix } from './hook-prefix';
 import { shellHookCommand } from './env';
-import { installPreCommitHook } from './git-hook';
-import { init } from './init';
+import { installPreCommitHook, hookScript, isHookInstalled, preCommitTargetMissing } from './git-hook';
+import { init, stopHookCommand, stopHookTargetMissing } from './init';
 import { helperCommand, helperKey, installHelper, uninstallHelper, readGlobalValues, isOurHelper, type GitRunner } from './git-credential';
 import { runGitCredential } from './commands/git-credential';
 import { VERSION } from './commands/utils';
@@ -318,5 +320,203 @@ describe('the git credential helper runs the pinned prefix', () => {
     expect(readGlobalValues(git, KEY)).toEqual(['', helperCommand(pinned, mapping)]);
     expect(uninstallHelper(git, 'github.com').changed).toBe(true);
     expect(readGlobalValues(git, KEY)).toEqual([]);
+  });
+});
+
+describe('a copy that runs from the npx cache is not named by path', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-hook-prefix-cache-')); });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('pins the running version for a copy under an _npx directory, and says that is why', () => {
+    const script = fakeInstall(path.join(tmp, '_npx', 'abc', 'node_modules', 'secretless-ai'));
+    expect(commandPrefixForHooks({ script, execPath: process.execPath })).toBe(PINNED_NPX);
+    expect(resolveHookPrefix({ script, execPath: process.execPath })).toEqual({ prefix: PINNED_NPX, npxCache: true });
+  });
+
+  it('pins the running version for a copy reached through a link into an _npx directory', () => {
+    const pkg = path.join(tmp, '_npx', 'abc', 'node_modules', 'secretless-ai');
+    fakeInstall(pkg);
+    fs.symlinkSync(pkg, path.join(tmp, 'linked'));
+    const script = path.join(tmp, 'linked', 'dist', 'cli.js');
+    expect(resolveHookPrefix({ script, execPath: process.execPath })).toEqual({ prefix: PINNED_NPX, npxCache: true });
+  });
+
+  it('names the copy by path when a directory name only contains _npx', () => {
+    const script = fakeInstall(path.join(tmp, 'my_npx', 'node_modules', 'secretless-ai'));
+    expect(resolveHookPrefix({ script, execPath: process.execPath, pathEnv: '' })).toEqual({
+      prefix: shellHookCommand(process.execPath, '', script).map(quote).join(' '),
+      npxCache: false,
+    });
+  });
+
+  it('does not give the npx cache as the reason when the copy does not resolve', () => {
+    const script = path.join(tmp, '_npx', 'gone', 'node_modules', 'secretless-ai', 'dist', 'cli.js');
+    expect(resolveHookPrefix({ script, execPath: process.execPath })).toEqual({ prefix: PINNED_NPX, npxCache: false });
+  });
+});
+
+describe('a hook that names its copy by path checks the CLI file is there first', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-hook-target-')); });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  /** A copy whose path needs quoting, and the prefix that names it. */
+  function copy(): { root: string; script: string; prefix: string } {
+    const root = path.join(tmp, 'with space', "it's here");
+    const script = fakeInstall(root);
+    return { root, script, prefix: commandPrefixForHooks({ script, execPath: process.execPath, pathEnv: '' }) };
+  }
+
+  it('the pre-commit hook runs the copy, and once it is gone blocks the commit with one line', () => {
+    const { root, script, prefix } = copy();
+    const content = hookScript(prefix);
+    expect(content).toContain(`[ -f ${quote(script)} ] || `);
+    expect(content).toContain(`${prefix} scan-staged\n`);
+    const hook = path.join(tmp, 'pre-commit');
+    fs.writeFileSync(hook, content, { mode: 0o755 });
+
+    let res = spawnSync(hook, [], { encoding: 'utf-8' });
+    expect(res.status, res.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(root, 'real-ran'), 'utf-8')).toBe('scan-staged');
+
+    fs.rmSync(root, { recursive: true });
+    res = spawnSync(hook, [], { encoding: 'utf-8' });
+    expect(res.status).toBe(1);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toBe(`secretless-ai: pre-commit scanner not found at ${script}. Reinstall: npx secretless-ai hook install\n`);
+  });
+
+  it('the Stop hook runs the copy, and once it is gone exits 0 with one line', () => {
+    const { root, script, prefix } = copy();
+    const command = stopHookCommand(prefix);
+    expect(command.startsWith(`[ -f ${quote(script)} ] || `)).toBe(true);
+    expect(command.endsWith(`${prefix} clean --last || echo "secretless-ai clean --last failed (exit $?)" >&2 || true`)).toBe(true);
+
+    let res = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf-8' });
+    expect(res.status, res.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(root, 'real-ran'), 'utf-8')).toBe('clean --last');
+
+    fs.rmSync(root, { recursive: true });
+    res = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf-8' });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toBe(`secretless-ai: transcript cleaner not found at ${script}. Reinstall: npx secretless-ai init\n`);
+  });
+
+  it('the credential helper runs the copy, and once it is gone exits 1 with one line', () => {
+    const { root, script, prefix } = copy();
+    const entry = helperCommand(prefix, { host: 'github.com', name: 'GITHUB_TOKEN', username: 'octo' });
+    // Git runs an entry that starts with `!` as a shell command, the action appended.
+    const run = () => spawnSync('/bin/sh', ['-c', `${entry.slice(1)} get`], { encoding: 'utf-8', input: '' });
+
+    let res = run();
+    expect(res.status, res.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(root, 'real-ran'), 'utf-8'))
+      .toBe('git-credential --host github.com --name GITHUB_TOKEN --username octo get');
+
+    fs.rmSync(root, { recursive: true });
+    res = run();
+    expect(res.status).toBe(1);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toBe(`secretless-ai: credential helper not found at ${script}. Reinstall: npx secretless-ai git-credential install --host github.com --name GITHUB_TOKEN --username octo\n`);
+  });
+
+  it('the npx form carries no file test', () => {
+    expect(hookScript(PINNED_NPX)).not.toContain('[ -f');
+    expect(hookScript(PINNED_NPX)).toContain(`\n${PINNED_NPX} scan-staged\n`);
+    expect(stopHookCommand(PINNED_NPX))
+      .toBe(`${PINNED_NPX} clean --last || echo "secretless-ai clean --last failed (exit $?)" >&2 || true`);
+    expect(helperCommand(PINNED_NPX, { host: 'github.com', name: 'GITHUB_TOKEN' }))
+      .toBe(`!${PINNED_NPX} git-credential --host github.com --name GITHUB_TOKEN`);
+  });
+
+  it('hook install, init and git-credential still recognise the checked bodies as their own', () => {
+    const { prefix } = copy();
+
+    const repo = path.join(tmp, 'repo');
+    const hookPath = path.join(repo, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(hookPath, hookScript(prefix), { mode: 0o755 });
+    expect(isHookInstalled(repo)).toBe(true);
+    expect(installPreCommitHook(repo).message).toBe('Pre-commit hook updated.');
+
+    const entry = helperCommand(prefix, { host: 'github.com', name: 'GITHUB_TOKEN' });
+    expect(isOurHelper(entry, 'github.com')).toBe(true);
+    expect(isOurHelper(entry, 'gitlab.com')).toBe(false);
+
+    // A re-run of init replaces the checked Stop hook an earlier run wrote,
+    // rather than adding a second one beside it, and keeps the user's own.
+    const project = path.join(tmp, 'project');
+    fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({
+      hooks: {
+        Stop: [
+          { matcher: '', hooks: [{ type: 'command', command: stopHookCommand(prefix) }] },
+          { matcher: '', hooks: [{ type: 'command', command: 'echo done' }] },
+        ],
+      },
+    }));
+    init(project);
+    const settings = JSON.parse(fs.readFileSync(path.join(project, '.claude', 'settings.json'), 'utf-8'));
+    const commands = (settings.hooks.Stop as any[]).flatMap((h) => h.hooks.map((hh: any) => hh.command));
+    expect(commands).toEqual([stopHookCommand(), 'echo done']);
+  });
+});
+
+describe('the file a hook body names and is missing', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-hook-missing-')); });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  const TAIL = ' clean --last || echo "secretless-ai clean --last failed (exit $?)" >&2 || true';
+
+  function repoWithHook(content: string): string {
+    const repo = path.join(tmp, 'repo');
+    fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.git', 'hooks', 'pre-commit'), content, { mode: 0o755 });
+    return repo;
+  }
+
+  it('is null while the copy is there, and the CLI file once it is gone, for the checked and the earlier body', () => {
+    const root = path.join(tmp, 'with space', "it's here");
+    const script = fakeInstall(root);
+    const prefix = commandPrefixForHooks({ script, execPath: process.execPath, pathEnv: '' });
+    // What 0.23.1 wrote: the prefix and the subcommand, with no file test.
+    const earlierHook = `#!/bin/sh\n# secretless-ai pre-commit hook\n\n${prefix} scan-staged\n`;
+    const earlierStop = `${prefix}${TAIL}`;
+
+    for (const content of [hookScript(prefix), earlierHook]) {
+      expect(preCommitTargetMissing(repoWithHook(content))).toBeNull();
+    }
+    for (const command of [stopHookCommand(prefix), earlierStop]) {
+      expect(stopHookTargetMissing(command)).toBeNull();
+    }
+
+    fs.rmSync(root, { recursive: true });
+    for (const content of [hookScript(prefix), earlierHook]) {
+      expect(preCommitTargetMissing(repoWithHook(content))).toBe(script);
+    }
+    for (const command of [stopHookCommand(prefix), earlierStop]) {
+      expect(stopHookTargetMissing(command)).toBe(script);
+    }
+  });
+
+  it('names a node binary that is gone', () => {
+    const script = fakeInstall(path.join(tmp, 'pkg'));
+    const node = path.join(tmp, 'old-node', 'bin', 'node');
+    const prefix = `${quote(node)} ${quote(script)}`;
+    expect(preCommitTargetMissing(repoWithHook(hookScript(prefix)))).toBe(node);
+    expect(stopHookTargetMissing(stopHookCommand(prefix))).toBe(node);
+  });
+
+  it('is null for the npx form, a hook this tool did not write, and no hook at all', () => {
+    expect(preCommitTargetMissing(repoWithHook(hookScript(PINNED_NPX)))).toBeNull();
+    expect(stopHookTargetMissing(stopHookCommand(PINNED_NPX))).toBeNull();
+    expect(stopHookTargetMissing(LEGACY_STOP)).toBeNull();
+    const gone = `${quote(path.join(tmp, 'node'))} ${quote(path.join(tmp, 'cli.js'))}`;
+    expect(preCommitTargetMissing(repoWithHook(`#!/bin/sh\n${gone} scan-staged\n`))).toBeNull();
+    expect(stopHookTargetMissing(`${gone} clean --last`)).toBeNull();
+    expect(preCommitTargetMissing(path.join(tmp, 'no-repo'))).toBeNull();
   });
 });
