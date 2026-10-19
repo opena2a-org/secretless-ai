@@ -8,23 +8,30 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { commandPrefixForHooks } from './hook-prefix';
+import { commandPrefixForHooks, missingPrefixTarget, targetCheck } from './hook-prefix';
 
 const HOOK_MARKER = '# secretless-ai pre-commit hook';
 
-/** The line the hook runs. */
-function hookCommand(): string {
-  return `${commandPrefixForHooks()} scan-staged`;
+const SUBCOMMAND = ' scan-staged';
+
+/**
+ * The line the hook runs. A prefix that names a copy by path is preceded by
+ * a test that its CLI file is there; without it, a commit after that copy was
+ * removed died with a Node stack trace. The hook blocks the commit then, as
+ * it does when it cannot scan, and `--no-verify` stays the way past it.
+ */
+function hookCommand(prefix: string): string {
+  return `${targetCheck(prefix, 'pre-commit scanner', 'npx secretless-ai hook install', 1)}${prefix}${SUBCOMMAND}`;
 }
 
-function hookScript(): string {
+export function hookScript(prefix: string = commandPrefixForHooks()): string {
   return `#!/bin/sh
 ${HOOK_MARKER}
 # Automatically scans staged files for hardcoded secrets.
 # Installed by: secretless-ai hook install
 # Bypass with: git commit --no-verify (use with caution)
 
-${hookCommand()}
+${hookCommand(prefix)}
 `;
 }
 
@@ -59,7 +66,7 @@ export function installPreCommitHook(projectDir: string): {
     // Foreign hook — don't overwrite
     return {
       installed: false,
-      message: `A pre-commit hook already exists (not from secretless). Append this line to it: ${hookCommand()}`,
+      message: `A pre-commit hook already exists (not from secretless). Append this line to it: ${hookCommand(commandPrefixForHooks())}`,
     };
   }
 
@@ -101,4 +108,26 @@ export function isHookInstalled(projectDir: string): boolean {
 
   const content = fs.readFileSync(hookPath, 'utf-8');
   return content.includes(HOOK_MARKER);
+}
+
+/**
+ * The file the secretless pre-commit hook runs and that is missing: its CLI
+ * script, or else its node binary. Null when there is no such hook, when it
+ * runs the npx form, and when both files exist.
+ */
+export function preCommitTargetMissing(projectDir: string): string | null {
+  const hookPath = path.join(projectDir, '.git', 'hooks', 'pre-commit');
+  let content: string;
+  try {
+    content = fs.readFileSync(hookPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  if (!content.includes(HOOK_MARKER)) return null;
+  for (const line of content.split('\n')) {
+    if (!line.endsWith(SUBCOMMAND)) continue;
+    const missing = missingPrefixTarget(line.slice(0, -SUBCOMMAND.length));
+    if (missing !== null) return missing;
+  }
+  return null;
 }

@@ -16,6 +16,7 @@
 import { spawnSync } from 'child_process';
 import { isValidSecretName } from './secret-store';
 import { escapeForDisplay, hasDisplayHazard } from './display-safe';
+import { targetCheck } from './hook-prefix';
 
 /** The protocol actions git sends as the helper's last argument. */
 export const GIT_PROTOCOL_ACTIONS: readonly string[] = ['get', 'store', 'erase'];
@@ -239,11 +240,15 @@ export function helperKey(host: string): string {
  * The helper entry's value. Git runs a value that starts with `!` as a shell
  * command and appends the action (`get`, `store`, `erase`) as its last word.
  * `cli` arrives already quoted for the shell (commandPrefixForHooks); every
- * other part is validated to need no quoting.
+ * other part is validated to need no quoting. A `cli` that names a copy by
+ * path is preceded by a test that its CLI file is there, which prints one
+ * line naming the `install` command and exits 1 when it is not.
  */
 export function helperCommand(cli: string, mapping: HelperMapping): string {
   const user = mapping.username ? ` --username ${mapping.username}` : '';
-  return `!${cli} git-credential --host ${mapping.host} --name ${mapping.name}${user}`;
+  const args = `--host ${mapping.host} --name ${mapping.name}${user}`;
+  const check = targetCheck(cli, 'credential helper', `npx secretless-ai git-credential install ${args}`, 1);
+  return `!${check}${cli} git-credential ${args}`;
 }
 
 const OUR_HELPER = /^!.*\sgit-credential --host (\S+) --name ([A-Za-z0-9_-]+)(?: --username \S+)?$/;

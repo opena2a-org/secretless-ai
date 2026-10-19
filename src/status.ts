@@ -11,6 +11,7 @@ import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
 import { defaultAnnotationsPath, readAnnotations } from './secret-annotations';
 import { needsRotation } from './secret-exposure';
+import { stopHookTargetMissing } from './init';
 
 /**
  * How many of the most recent transcripts `status` reads. A full pass is a
@@ -44,6 +45,8 @@ export interface UserSettingsStatus {
   /** Null when the file could not be read as written, as for the project. */
   denyRuleCount: number | null;
   stopHookInstalled: boolean;
+  /** See `StatusResult.transcriptProtection.stopHookTargetMissing`; this file's Stop hook. */
+  stopHookTargetMissing: string | null;
   unreadable?: { path: string; reason: string };
   ambiguous?: { path: string; reason: string };
   /**
@@ -147,6 +150,13 @@ export interface StatusResult {
     stopHookInstalled: boolean;
     /** Which settings file the Stop hook was found in, project first. */
     stopHookScope: 'project' | 'user' | null;
+    /**
+     * The file the Stop hook in that settings file runs and that is missing:
+     * the CLI script, or else the node binary, of the copy that ran `init`.
+     * The hook then cleans no transcript. Null when the hook names no file
+     * (the npx form) and when both files exist.
+     */
+    stopHookTargetMissing: string | null;
     watcherRunning: boolean;
     transcriptFiles: number;
     /**
@@ -312,6 +322,19 @@ function guardWiring(settings: any, projectDir: string, homeDir: string): { wire
   return { wired: commands.length > 0, reachable };
 }
 
+/**
+ * The file a Stop hook `init` wrote into a settings object runs and that is
+ * missing, or null. The hook names the copy that ran `init` by path, so it
+ * stops working once that copy is removed, or on a machine that never had it.
+ */
+function stopTargetMissing(settings: any): string | null {
+  for (const command of hookCommands(settings, 'Stop')) {
+    const missing = stopHookTargetMissing(command);
+    if (missing !== null) return missing;
+  }
+  return null;
+}
+
 /** True when `filePath` is a regular file whose text holds one of `markers`. */
 function fileCarries(filePath: string, markers: string[]): boolean {
   try {
@@ -415,6 +438,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     transcriptProtection: {
       stopHookInstalled: false,
       stopHookScope: null,
+      stopHookTargetMissing: null,
       watcherRunning: false,
       transcriptFiles: 0,
       transcriptFilesScanned: 0,
@@ -441,6 +465,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     if (hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'))) {
       result.transcriptProtection.stopHookInstalled = true;
       result.transcriptProtection.stopHookScope = 'project';
+      result.transcriptProtection.stopHookTargetMissing = stopTargetMissing(read.settings);
     }
   }
 
@@ -464,6 +489,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       guardReachable,
       denyRuleCount: read.denyRuleCount,
       stopHookInstalled,
+      stopHookTargetMissing: stopHookInstalled ? stopTargetMissing(read.settings) : null,
       coversProject: secretlessInstalled
         && !read.unreadable
         && !read.ambiguous
@@ -476,6 +502,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     if (stopHookInstalled && !result.transcriptProtection.stopHookInstalled) {
       result.transcriptProtection.stopHookInstalled = true;
       result.transcriptProtection.stopHookScope = 'user';
+      result.transcriptProtection.stopHookTargetMissing = user.stopHookTargetMissing;
     }
   }
 

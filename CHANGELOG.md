@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+**A hook whose copy of Secretless is gone says so, and `status` no longer
+reports it installed.** The pre-commit hook, the Claude Code Stop hook and
+the git credential helper name the node binary and CLI file of the copy that
+installed them. Once that copy was removed, `status` still printed
+`✓ Stop hook installed`, `hook status` printed `Pre-commit hook: installed`,
+a commit died with a Node `MODULE_NOT_FOUND` stack trace and the Stop hook
+printed `secretless-ai clean --last failed (exit 1)` on every turn. Each of
+them now tests that its CLI file is there before running it and, when it is
+not, prints one line naming the file and the command that reinstalls it: the
+pre-commit hook exits 1 and blocks the commit (`git commit --no-verify`
+still bypasses it), the credential helper exits 1 and the Stop hook exits 0.
+`status` prints
+`⚠ Stop hook installed, target missing: <path> (transcripts unredacted)`
+with `npx secretless-ai init` as the fix (`npx secretless-ai init ~` for the
+user-level settings file) and counts it as a warning; `status --json`
+carries the path as `transcriptProtection.stopHookTargetMissing`, and as
+`userSettings.stopHookTargetMissing` for the user-level file; `hook status`
+prints `Pre-commit hook: installed, target missing: <path>` with a Verify and
+a Fix line. Each names the CLI file, or the node binary when only that is
+gone. A copy that runs from the npx cache, a path with an `_npx` directory
+on it, is no longer written into a hook: `init`, `hook install` and
+`git-credential install` write
+`npm_config_offline=true npx --yes secretless-ai@<version>` for it, and
+`init` prints a `Hook command:` line that says so. Re-run `init`,
+`hook install` or `git-credential install` to rewrite a hook an earlier
+version wrote.
+
 **`scan --check-validity` asks the provider that issued a found credential whether it still accepts it.**
 Off by default: without the flag the scanner keeps no matched value, sends no
 credential anywhere, and prints what it printed before. With it, each finding
