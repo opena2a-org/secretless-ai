@@ -50,12 +50,14 @@
  * An AWS key is two values: the access key ID and the secret access key from
  * one file are checked as a pair (`awsPairs`), by an STS request signed with
  * the secret (`signing`). The request names the key ID in its signature and
- * holds no part of the secret.
+ * holds no part of the secret. A line is one finding at most, so a key ID and
+ * its secret on one line are one finding; the values on a finding's line
+ * (`lineValuesOf` in scan.ts) are read for the pair too.
  */
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { VERSION, wrapList } from './commands/utils';
 import { signSigV4 } from './aws-sigv4';
-import { matchedValueOf, charAfterValueOf, type ScanFinding } from './scan';
+import { matchedValueOf, charAfterValueOf, type ScanFinding, type LineValue } from './scan';
 
 export type ValidityState = 'live' | 'rejected' | 'unknown' | 'unchecked';
 
@@ -829,11 +831,13 @@ interface FilePair extends KeyPair {
   temporary?: string;
 }
 
-/** An AWS finding and its kept value. */
+/** An AWS value a file holds, on the line of one of its findings. */
 interface AwsEntry {
-  finding: ScanFinding;
   value: string;
   isKeyId: boolean;
+  /** The pattern that matched it, which tells a temporary key ID. */
+  patternId: string;
+  line: number;
 }
 
 function counted(n: number, one: string, many: string): string {
@@ -847,30 +851,31 @@ function temporaryReason(keyIdPatternId: string, subject: string): string | unde
 }
 
 /**
- * The pair each AWS finding of one file is checked as, or the reason it is not
+ * The pair each AWS value of one file is checked as, or the reason it is not
  * sent. One access key ID and one secret access key (one value on several
  * lines counts once) are a pair, whatever lines they are on. Several of each
- * are paired when there are as many key IDs as secrets and the findings,
- * taken in line order two at a time, are each one key ID and one secret; each
- * two is then a pair. A sequence has at most one such division, so no file is
- * paired two ways.
+ * are paired when there are as many key IDs as secrets and the values, taken
+ * in line order two at a time, are each one key ID and one secret, and no
+ * line's values are split between two twos; each two is then a pair. A key ID
+ * and a secret on one line are thus paired with each other or not at all. A
+ * sequence has at most one such division, so no file is paired two ways.
  */
-function pairsInFile(entries: readonly AwsEntry[]): Map<ScanFinding, FilePair | string> {
+function pairsInFile(entries: readonly AwsEntry[]): Map<AwsEntry, FilePair | string> {
   const { keyIdPattern, secretPattern } = AWS_SIGNING;
   const keyIds = new Map<string, string>();
   const secrets = new Set<string>();
-  for (const { finding, value, isKeyId } of entries) {
-    if (isKeyId) keyIds.set(value, finding.patternId);
+  for (const { value, isKeyId, patternId } of entries) {
+    if (isKeyId) keyIds.set(value, patternId);
     else secrets.add(value);
   }
-  const outcomes = new Map<ScanFinding, FilePair | string>();
-  const every = (outcome: FilePair | string): Map<ScanFinding, FilePair | string> => {
-    for (const { finding } of entries) outcomes.set(finding, outcome);
+  const outcomes = new Map<AwsEntry, FilePair | string>();
+  const every = (outcome: FilePair | string): Map<AwsEntry, FilePair | string> => {
+    for (const entry of entries) outcomes.set(entry, outcome);
     return outcomes;
   };
   if (keyIds.size === 0 || secrets.size === 0) {
-    for (const { finding, isKeyId } of entries) {
-      outcomes.set(finding, isKeyId
+    for (const entry of entries) {
+      outcomes.set(entry, entry.isKeyId
         ? `the file has no ${patternNameOf(secretPattern)} finding to sign the request with`
         : `the file has no ${patternNameOf(keyIdPattern)} finding to pair it with`);
     }
@@ -885,48 +890,69 @@ function pairsInFile(entries: readonly AwsEntry[]): Map<ScanFinding, FilePair | 
     + `${counted(secrets.size, 'secret access key', 'secret access keys')}`;
   if (keyIds.size !== secrets.size) return every(`${held}, which do not pair one to one`);
   const notInTwos = `${held}, which, taken in line order two at a time, are not each one key ID and one secret`;
-  // Array sort is stable: findings on one line keep the order they were given in.
-  const ordered = [...entries].sort((a, b) => a.finding.line - b.finding.line);
+  // Array sort is stable: the values of one line keep the order they were given in.
+  const ordered = [...entries].sort((a, b) => a.line - b.line);
   if (ordered.length % 2 !== 0) return every(notInTwos);
   for (let i = 0; i < ordered.length; i += 2) {
-    const [first, second] = [ordered[i], ordered[i + 1]];
+    const [first, second, next] = [ordered[i], ordered[i + 1], ordered[i + 2]];
     if (first.isKeyId === second.isKeyId) return every(notInTwos);
+    if (next !== undefined && next.line === second.line) {
+      return every(`${held}, which cannot be taken in line order two at a time without splitting the values on line ${second.line}`);
+    }
     const [id, secret] = first.isKeyId ? [first, second] : [second, first];
     const pair: FilePair = {
       keyId: id.value,
       secret: secret.value,
-      temporary: temporaryReason(id.finding.patternId, 'the access key ID it is paired with'),
+      temporary: temporaryReason(id.patternId, 'the access key ID it is paired with'),
     };
-    outcomes.set(first.finding, pair);
-    outcomes.set(second.finding, pair);
+    outcomes.set(first, pair);
+    outcomes.set(second, pair);
   }
   return outcomes;
 }
 
 /**
  * The pair each AWS finding is checked as, or the reason it is not sent: the
- * pairs of each file (`pairsInFile`), compared across the scanned files. A key
- * ID paired with different secrets, or a secret paired with different key IDs,
- * is sent with none of them, so AWS is never asked about one value with two
- * others in a scan. A pair whose key ID and secret are both so paired is
- * given the key ID's reason. A pair whose key ID is temporary counts in that
- * comparison and is not sent.
+ * pairs of each file (`pairsInFile`), compared across the scanned files. A
+ * file's values are its AWS findings' own and the AWS values on the line of
+ * any of its findings (`lineValuesOf`), each value counted once per line, so
+ * a key ID and a secret on one line, which the scanner reports as one
+ * finding, both count. A key ID paired with different secrets, or a secret
+ * paired with different key IDs, is sent with none of them, so AWS is never
+ * asked about one value with two others in a scan. A pair whose key ID and
+ * secret are both so paired is given the key ID's reason. Every pair formed
+ * counts in that comparison, sent or not: one whose key ID is temporary is
+ * not sent, and neither is one whose values no AWS finding holds, such as a
+ * key ID and a secret on the line of a finding of another type.
  */
-function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFinding) => string | undefined): Map<ScanFinding, KeyPair | string> {
-  const files = new Map<string, AwsEntry[]>();
-  for (const finding of findings) {
-    const isKeyId = AWS_KEY_ID_PATTERNS.has(finding.patternId);
-    if (!isKeyId && finding.patternId !== AWS_SIGNING.secretPattern) continue;
-    const value = valueOf(finding);
-    if (value === undefined || value === '') continue;
-    const entries = files.get(finding.file) ?? [];
+function awsPairs(
+  findings: readonly ScanFinding[],
+  valueOf: (finding: ScanFinding) => string | undefined,
+  lineValuesOf: (finding: ScanFinding) => readonly LineValue[] | undefined,
+): Map<ScanFinding, KeyPair | string> {
+  // Per file, its AWS values keyed by line and value.
+  const files = new Map<string, Map<string, AwsEntry>>();
+  const entryFor = (finding: ScanFinding, patternId: string, value: string | undefined): AwsEntry | undefined => {
+    const isKeyId = AWS_KEY_ID_PATTERNS.has(patternId);
+    if (!isKeyId && patternId !== AWS_SIGNING.secretPattern) return undefined;
+    if (value === undefined || value === '') return undefined;
+    const entries = files.get(finding.file) ?? new Map<string, AwsEntry>();
     files.set(finding.file, entries);
-    entries.push({ finding, value, isKeyId });
+    const key = `${finding.line}:${value}`;
+    const entry = entries.get(key) ?? { value, isKeyId, patternId, line: finding.line };
+    entries.set(key, entry);
+    return entry;
+  };
+  const own = new Map<ScanFinding, AwsEntry>();
+  for (const finding of findings) {
+    const entry = entryFor(finding, finding.patternId, valueOf(finding));
+    if (entry) own.set(finding, entry);
+    for (const { patternId, value } of lineValuesOf(finding) ?? []) entryFor(finding, patternId, value);
   }
 
-  const formed = new Map<ScanFinding, FilePair | string>();
+  const formed = new Map<AwsEntry, FilePair | string>();
   for (const entries of files.values()) {
-    for (const [finding, outcome] of pairsInFile(entries)) formed.set(finding, outcome);
+    for (const [entry, outcome] of pairsInFile([...entries.values()])) formed.set(entry, outcome);
   }
   const secretsOfKeyId = new Map<string, Set<string>>();
   const keyIdsOfSecret = new Map<string, Set<string>>();
@@ -937,7 +963,8 @@ function awsPairs(findings: readonly ScanFinding[], valueOf: (finding: ScanFindi
   }
 
   const outcomes = new Map<ScanFinding, KeyPair | string>();
-  for (const [finding, outcome] of formed) {
+  for (const [finding, entry] of own) {
+    const outcome = formed.get(entry) ?? 'it was not paired';
     if (typeof outcome === 'string') {
       outcomes.set(finding, outcome);
       continue;
@@ -974,16 +1001,19 @@ function charAfterFound(finding: ScanFinding, value: string): string | undefined
  * sent is one credential: its host is asked once, and each finding that
  * carries it receives that answer. An AWS access key ID and secret access
  * key are one credential when `awsPairs` pairs them, and each finding of
- * either is given the pair's answer.
+ * either is given the pair's answer. `lineValuesOf` gives the
+ * values on a finding's line, from which a pair also takes the AWS values;
+ * without it, only the findings' own values are paired.
  */
 export async function checkFindings(
   findings: readonly ScanFinding[],
   valueOf: (finding: ScanFinding) => string | undefined,
   deps: ProbeDeps = {},
+  lineValuesOf: (finding: ScanFinding) => readonly LineValue[] | undefined = () => undefined,
 ): Promise<Map<ScanFinding, ValidityResult>> {
   const results = new Map<ScanFinding, ValidityResult>();
   const pending = new Map<string, { run: () => Promise<ValidityResult>; findings: ScanFinding[] }>();
-  const pairs = awsPairs(findings, valueOf);
+  const pairs = awsPairs(findings, valueOf, lineValuesOf);
   for (const finding of findings) {
     const probe = probeFor(finding.patternId);
     if (!probe) {
@@ -1111,7 +1141,9 @@ export function validityHelpLines(): string[] {
       + '400 for that refusal (no_text) reads live, and invalid_token, no_service or no_team read rejected.'),
     ...helpParagraph('An AWS key is checked as a pair: the access key ID and the secret access key found with it '
       + 'in one file, when the file holds one of each, or several of each that, taken in line order two at a '
-      + 'time, are each one key ID and one secret. The request, GetCallerIdentity, is signed with '
+      + 'time, are each one key ID and one secret. A key ID and a secret found on one line, which the scan '
+      + 'reports as one finding, both count, and are never split between two pairs. '
+      + 'The request, GetCallerIdentity, is signed with '
       + 'the secret (Signature Version 4): the key ID and the signature are sent, and the secret is not. A '
       + 'SignatureDoesNotMatch that names the request time reads unknown; check the clock.'),
     ...helpParagraph('A token a self-managed GitHub or GitLab instance issued still goes to api.github.com or gitlab.com, '
