@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+**Every preview replaces every credential on the line with its labelled
+marker, and `clean-history` redacts every pattern on a line.** The preview
+under a `scan` finding, in text and in `--json`, masked the matches of the
+pattern the finding reports and printed any other credential on the line as
+written. `scan --history` printed the text it matched as its first four
+characters, `****` and its last four, so the last four characters of a token
+stayed in the preview, or printed `****` for the value of
+`secret set NAME=VALUE`; and `clean-history` rewrote the matches of the one
+pattern it reported and left any other credential on the line in the file.
+Every preview (`scan` text and `--json`, `scan --history` and `diff`) is now
+built by one masker, which finds the spans of every credential pattern on the
+line as written, each through the credential characters that follow it,
+merges spans that overlap, and replaces each with `[<pattern name> REDACTED]`,
+the marker `scan` prints, so no character of any value is kept; `scan` cuts
+its preview to 80 characters only after masking. A `.env` line holding a
+GitHub token and an OpenAI project key, `gh=<token> key=<key>`, is reported
+with the preview `gh=[GitHub Token REDACTED] key=[OpenAI Project Key REDACTED]`,
+and a credential another pattern matches part of, such as a PyPI token with a
+Hugging Face token shape inside it, is replaced whole. `scan --history`
+prints the same markers: the `.bash_history` line
+`npx secretless-ai secret set STRIPE_KEY=not-a-real-value` is reported with
+the preview
+`npx secretless-ai secret set STRIPE_KEY=[Secret in secret set NAME=VALUE REDACTED]`
+and `export GITHUB_TOKEN=<token>` with
+`export GITHUB_TOKEN=[GitHub Token REDACTED]`, the command and the variable
+kept and the value's own marker in its place. `clean-history` rewrites each
+line it counts through the same masker, with its `[REDACTED:<id>]` markers
+and whole-match replacement, so every pattern's matches on the line are
+replaced (`export GITHUB_TOKEN=<token>` becomes
+`export GITHUB_TOKEN=[REDACTED:github-pat]`); `linesRedacted` still counts
+lines. Findings, severity and exit codes do not change.
+
 **`status` and `diff` read the generated hook scripts, and `init` says when
 it replaced one that differed.** `status` printed `✓ Claude Code hook
 installed` because the guard script was on disk and `.claude/settings.json`
@@ -539,8 +571,9 @@ On a `.bash_history` holding
 `npx secretless-ai secret set STRIPE_KEY=not-a-real-value`, `scan --history`
 printed `No credentials found in shell history.` at exit 0; it now reports
 the line as `cmd-secret-set` with the preview
-`npx secretless-ai secret set STRIPE_KEY=****` at exit 1, and `clean-history`
-rewrites it to `npx secretless-ai [REDACTED:cmd-secret-set]`. A
+`npx secretless-ai secret set STRIPE_KEY=[Secret in secret set NAME=VALUE REDACTED]`
+at exit 1, and `clean-history` rewrites it to
+`npx secretless-ai [REDACTED:cmd-secret-set]`. A
 three-character value such as `PIN=abc` is reported with the whole value
 masked, flags before the name such as `--meta app=web` are passed over, and
 a line is not reported when it gives no value or the value opens
