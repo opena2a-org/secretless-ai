@@ -10,6 +10,10 @@ import { pathToFileURL } from 'url';
  * command name. The suite asserts the default `npx secretless-ai`, so
  * vitest.config.ts removes a prefix set where the suite runs before vitest
  * copies process.env into the workers (#349).
+ *
+ * CLAUDE_CONFIG_DIR moves the default transcript directory away from
+ * ~/.claude (#237). The tests give each CLI child its own HOME to keep it off
+ * real transcripts, so vitest.config.ts removes that variable the same way.
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -18,18 +22,26 @@ const CONFIG = pathToFileURL(path.join(REPO_ROOT, 'vitest.config.ts')).href;
 const VITEST = path.join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs');
 
 const FIRST_CASE = 'the prefix is unset in this worker';
+const CONFIG_DIR_CASE = 'CLAUDE_CONFIG_DIR is unset in this worker';
+
+/** A configuration directory as a Claude Code session sets it; never created. */
+const HOST_CONFIG_DIR = path.join(os.tmpdir(), 'secretless-host-claude-config');
 
 interface ConfigModule {
   default: { test?: { env?: Record<string, string> } };
 }
 
-// Read before this file loads the config, which removes the variable here too.
+// Read before this file loads the config, which removes the variables here too.
 const PREFIX_IN_WORKER = process.env.SECRETLESS_CLI_PREFIX;
+const CONFIG_DIR_IN_WORKER = process.env.CLAUDE_CONFIG_DIR;
 
 const before = process.env.SECRETLESS_CLI_PREFIX;
+const configDirBefore = process.env.CLAUDE_CONFIG_DIR;
 afterEach(() => {
   if (before === undefined) delete process.env.SECRETLESS_CLI_PREFIX;
   else process.env.SECRETLESS_CLI_PREFIX = before;
+  if (configDirBefore === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = configDirBefore;
 });
 
 // Each start of the nested run is bounded: `vitest run` sometimes prints
@@ -44,9 +56,9 @@ interface Start {
   timedOut: boolean;
 }
 
-/** One start of `node <entry>` on the first case, ended with SIGKILL after `limitMs`. */
-function startFirstCase(entry: string, env: NodeJS.ProcessEnv, limitMs: number): Start {
-  const run = spawnSync(process.execPath, [entry, 'run', 'src/vitest-config-env.test.ts', '--testNamePattern', FIRST_CASE], {
+/** One start of `node <entry>` on the first case, or on `testName`, ended with SIGKILL after `limitMs`. */
+function startFirstCase(entry: string, env: NodeJS.ProcessEnv, limitMs: number, testName: string = FIRST_CASE): Start {
+  const run = spawnSync(process.execPath, [entry, 'run', 'src/vitest-config-env.test.ts', '--testNamePattern', testName], {
     cwd: REPO_ROOT,
     env,
     encoding: 'utf8',
@@ -155,12 +167,35 @@ describe('vitest.config.ts and SECRETLESS_CLI_PREFIX', () => {
     });
   });
 
-  it('loading the config removes a prefix set in the process that loads it, and keeps the keychain and telemetry switches', async () => {
+  // The one import of the config in this worker, so CLAUDE_CONFIG_DIR is
+  // checked here too: a second import would not run the config again.
+  it('loading the config removes a prefix and a CLAUDE_CONFIG_DIR set in the process that loads it, and keeps the keychain and telemetry switches', async () => {
     process.env.SECRETLESS_CLI_PREFIX = 'host secrets';
+    process.env.CLAUDE_CONFIG_DIR = HOST_CONFIG_DIR;
 
     const { default: config } = (await import(CONFIG)) as ConfigModule;
 
     expect(process.env.SECRETLESS_CLI_PREFIX).toBeUndefined();
+    expect(process.env.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(config.test?.env).toEqual({ SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' });
+  });
+});
+
+describe('vitest.config.ts and CLAUDE_CONFIG_DIR', () => {
+  it(`${CONFIG_DIR_CASE}; if this fails, vitest.config.ts lost its delete line and a CLI child started with its own HOME reads the transcripts of the session running the suite`, () => {
+    expect(CONFIG_DIR_IN_WORKER).toBeUndefined();
+  });
+
+  it('the case above passes in a run started with CLAUDE_CONFIG_DIR set, so it holds whatever the environment of this run', { timeout: 120_000 }, (ctx) => {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('VITEST')));
+    const run = firstStartThatPrinted(() =>
+      startFirstCase(VITEST, { ...env, CLAUDE_CONFIG_DIR: HOST_CONFIG_DIR }, START_LIMIT_MS, CONFIG_DIR_CASE),
+    );
+    if (run === null) {
+      return ctx.skip(`not measured: two starts of vitest run printed nothing in ${START_LIMIT_MS / 1000} s and were ended`);
+    }
+
+    expect(run.output).toMatch(/Tests\s+1 passed/);
+    expect(run.status, run.output).toBe(0);
   });
 });

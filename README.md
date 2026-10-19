@@ -68,6 +68,8 @@ On a terminal, `secret set` asks before it adds a hook to `~/.zshenv` or `~/.bas
 
 The guard hook and the deny rules that `init` installs check a command before it runs and cannot see what it prints. A command whose own output is a credential puts the value in AI context, and nothing in Secretless blocks it: see [What the guard cannot see](docs/managing-secrets.md#what-the-guard-cannot-see).
 
+`init` also registers a prompt-submit hook that refuses a prompt holding a credential-shaped value or a stored secret's value, and offers a watcher that redacts a credential reaching a saved transcript. Both are local hooks; a chat in a browser is outside their reach.
+
 ## Install
 
 ```bash

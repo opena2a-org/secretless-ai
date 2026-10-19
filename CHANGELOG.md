@@ -151,6 +151,43 @@ written to them. `protect-mcp` now rewrites a server map under the key it was
 read from: a config whose servers were under `mcp-servers` had its secrets
 stored and listed as encrypted while the file kept them in plaintext.
 
+**`init` registers a prompt check that refuses a prompt holding a credential before Claude Code sends it, and offers the transcript watcher (#237).**
+Nothing looked at the text a user submits: a key pasted into a prompt was
+sent, then redacted from the local transcript afterwards, and nothing said
+so. `hook --check-prompt` reads the prompt on stdin (the `prompt` member of
+the JSON a Claude Code UserPromptSubmit hook receives, or plain text) and
+compares it, in its own process and with no network call, with the credential
+catalog and with the values of the stored secrets. On a match it exits 2,
+prints `{"decision":"block","reason":...}` on stdout and the reason on stderr;
+the reason names the pattern (`GitHub Token`) or the stored secret's name and
+the fix (`secret set NAME`, then `$NAME` in the prompt), never the value. A
+variable reference such as `$API_KEY`, a documented example key such as the
+access key id in the AWS docs, and a value carrying a placeholder word pass; a
+stored value shorter than 8 characters is not looked for. A store that cannot
+be read leaves the stored-value comparison out and the catalog comparison in.
+Measured on a 10 KB prompt against the catalog and 20 stored values: the
+check itself takes 0.08 ms (median of 31 runs, in process); a whole
+`hook --check-prompt` process takes 113 ms (median of 11 runs) on the
+machine where this was measured, of which starting Node takes 47 ms. The hook
+sends no usage event. `init` writes the hook into `.claude/settings.json`
+under the same pinned prefix as the Stop hook, adds it to an existing install
+on re-run and lists the file as modified, and `status` reports it as
+`Prompt check installed`, at project or user scope; `status --json` carries
+`promptCheckInstalled`, `promptCheckScope` and `watcherDirs` under
+`transcriptProtection`. `init` then offers the transcript watcher: on a
+terminal it asks (default yes) and installs it; `init --no-watch` skips the
+question; with no terminal to ask on, or no transcript directory yet, it names
+`watch install`. `watch install` now starts the watcher in the background and,
+on macOS, also writes the login agent; before, it wrote the agent only, and on
+Linux it did nothing. `watch start --dir <path>` and `watch install --dir
+<path>`, repeatable, watch each directory given besides the default, and the
+default is `projects/` under `CLAUDE_CONFIG_DIR` where that variable is set,
+for `watch`, `clean`, `status` and `verify` alike. `watch status` and `status`
+list the directories the running watcher covers. Each file the watcher redacts
+is also shown as a desktop notification (`osascript` on macOS, `notify-send`
+on Linux) naming the count, the patterns and the file, never a value. A chat
+in a browser is outside the reach of these local hooks; the README says so.
+
 **`scan --check-validity` asks the provider that issued a found credential whether it still accepts it.**
 Off by default: without the flag the scanner keeps no matched value, sends no
 credential anywhere, and prints what it printed before. With it, each finding

@@ -8,6 +8,15 @@ import { defineConfig } from 'vitest/config';
 // src/vitest-config-env.test.ts.
 delete process.env.SECRETLESS_CLI_PREFIX;
 
+// CLAUDE_CONFIG_DIR moves the transcript directory `watch`, `clean`, `status`
+// and `verify` read by default away from ~/.claude (#237). The tests keep
+// those commands off real transcripts by giving each CLI child its own HOME,
+// so a value set where the suite runs, as inside a Claude Code session with
+// its own configuration directory, is removed here the same way. A test of
+// the variable sets it itself. Removing this line is caught by
+// src/vitest-config-env.test.ts.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],

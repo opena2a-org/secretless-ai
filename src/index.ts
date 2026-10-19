@@ -15,8 +15,12 @@ export { verify, type VerifyResult } from './verify';
 export { detectAITools, toolDisplayName, type AITool, type Enforcement } from './detect';
 export { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, type CredentialPattern } from './patterns';
 export { loadSecretlessIgnore, buildMatcher, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher, type LoadOptions as IgnoreLoadOptions } from './secretlessignore';
-export { cleanTranscripts, discoverTranscripts, type CleanResult, type CleanOptions, type TranscriptFinding } from './transcript';
-export { startWatch, stopWatch, isWatchRunning } from './watch';
+export { cleanTranscripts, discoverTranscripts, defaultTranscriptDir, type CleanResult, type CleanOptions, type TranscriptFinding } from './transcript';
+export { startWatch, stopWatch, isWatchRunning, watchStatus, installWatcher, resolveWatchDirs, type WatchStatus, type InstallWatcherResult } from './watch';
+export {
+  checkPromptText, matchedPatterns, storedValuesIn, refusalReason, promptTextOf, runPromptCheck,
+  CHECK_PROMPT_FLAG, PROMPT_REFUSED_EXIT, type PromptCheck, type MatchedPattern,
+} from './prompt-check';
 export { doctor, quickDiagnosis, fixProfiles, type DoctorOptions, type DoctorResult, type DoctorFinding, type QuickDiagnosisResult, type ProfileInfo, type SecretExport, type FixResult, type Severity, type HealthStatus } from './doctor';
 
 // MCP protection

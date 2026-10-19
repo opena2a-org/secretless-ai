@@ -55,7 +55,8 @@ export function runHook(args: string[], projectDir: string = process.cwd()): num
       console.log('    secretless-ai hook install       Install pre-commit hook');
       console.log('    secretless-ai hook uninstall     Remove pre-commit hook');
       console.log('    secretless-ai hook status        Check hook status');
-      console.log('    secretless-ai hook --check-only  Session gate for Claude Code hooks (silent, fast)\n');
+      console.log('    secretless-ai hook --check-only  Session gate for Claude Code hooks (silent, fast)');
+      console.log('    secretless-ai hook --check-prompt  Refuse a prompt that holds a credential (UserPromptSubmit hook, prompt on stdin)\n');
       return EXIT_USAGE;
   }
 }

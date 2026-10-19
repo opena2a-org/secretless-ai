@@ -239,7 +239,8 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
     flags: { '--only': true },
     unknownFlags: 'reject',
   },
-  init: { flags: {}, unknownFlags: 'reject' },
+  // `--no-watch`: leave the transcript watcher as it is, and do not ask (#237).
+  init: { flags: { '--no-watch': false }, unknownFlags: 'reject' },
   doctor: { flags: { '--fix': false }, unknownFlags: 'reject' },
   import: { flags: { '--detect': false, '--force': false }, unknownFlags: 'reject' },
   export: { flags: { '--out': true, '--only': true }, unknownFlags: 'reject' },
@@ -277,8 +278,10 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
     honorsJson: true,
     repeatable: ['--meta'],
   },
-  watch: { flags: {}, unknownFlags: 'reject' },
-  hook: { flags: { '--check-only': false }, unknownFlags: 'reject' },
+  // `--dir` is read once per occurrence by `watch start` and `watch install`
+  // (commands/transcript.ts), each adding a directory to watch (#237).
+  watch: { flags: { '--dir': true }, unknownFlags: 'reject', repeatable: ['--dir'] },
+  hook: { flags: { '--check-only': false, '--check-prompt': false }, unknownFlags: 'reject' },
   // `install` and `uninstall` write the global git config. `get`, `store` and
   // `erase` are run by git with the flags `install` wrote, so a refusal there
   // reaches the user as git's own prompt, never as a wrong credential.

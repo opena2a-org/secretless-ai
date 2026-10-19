@@ -3,7 +3,7 @@
   "command": "npx secretless-ai init",
   "tool": "secretless-ai",
   "version": "0.23.1",
-  "capturedAt": "2026-10-16",
+  "capturedAt": "2026-10-19",
   "capturedFrom": "a build of this repository's source, run as the built CLI",
   "fixture": "a new project directory holding an empty .claude/ directory, and a new empty home directory",
   "environment": {
