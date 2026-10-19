@@ -5,7 +5,7 @@ import { cleanTranscripts, transcriptTarget, MAX_LINE_SIZE, type CleanResult } f
 import { startWatch, stopWatch, isWatchRunning, watchStatus, installWatcher, uninstallLaunchAgent, resolveWatchDirs } from '../watch';
 import type { InstallWatcherResult, WatchStatus } from '../watch';
 import { askOnTerminal } from './secrets';
-import { scanHistory, cleanHistory, type HistoryScanResult } from '../history';
+import { scanHistory, cleanHistory, HISTORY_LINES_NOT_READ, MAX_LINES as HISTORY_MAX_LINES, type HistoryScanResult } from '../history';
 import { pathOperand, shellQuote } from './core';
 import { CLI, CLI_BARE, VERSION } from './utils';
 import { escapeForDisplay, escapePathForDisplay } from '../display-safe';
@@ -361,6 +361,44 @@ export interface RunScanHistoryOptions {
   json?: boolean;
 }
 
+/** How many lines a run of lines not read holds. */
+function runLength(run: { firstLine: number; lastLine: number }): number {
+  return run.lastLine - run.firstLine + 1;
+}
+
+/**
+ * Name what the history scan did not read (#462): a history file that is
+ * present and could not be read, and the lines before the last 10000 or
+ * longer than 4096 characters. The scan skipped each without a word, so
+ * "No credentials found in shell history." at exit 0 also covered history it
+ * never read.
+ */
+function reportHistoryNotRead(result: HistoryScanResult): void {
+  const files = result.filesNotRead ?? [];
+  if (files.length > 0) {
+    const n = files.length;
+    console.log(`  ${n} history file${n > 1 ? 's' : ''} not read, so not known to be clean:`);
+    for (const f of files) console.log(`    ${f.file}: ${f.reason}`);
+    console.log(`  Verify: ls -l ${files.map((f) => f.file).join(' ')}\n`);
+  }
+  const runs = result.linesNotRead ?? [];
+  if (runs.length > 0) {
+    const n = runs.reduce((sum, run) => sum + runLength(run), 0);
+    console.log(`  ${n} line${n > 1 ? 's' : ''} not read, so not known to be clean:`);
+    for (const run of runs.slice(0, 10)) {
+      const at = run.firstLine === run.lastLine ? `${run.firstLine}` : `${run.firstLine}-${run.lastLine}`;
+      console.log(`    ${run.file}:${at}: ${run.reason}`);
+    }
+    if (runs.length > 10) console.log(`    … and ${runs.length - 10} more`);
+    // `clean-history` has no line window, so its dry run counts a credential
+    // on a line before the window.
+    if (runs.some((run) => run.reason === HISTORY_LINES_NOT_READ.beforeWindow)) {
+      console.log(`  Verify: ${CLI} clean-history --dry-run   # clean-history has no ${HISTORY_MAX_LINES}-line limit`);
+    }
+    console.log();
+  }
+}
+
 /**
  * `scan --history --json`: one JSON document on stdout and nothing else, so a
  * caller can parse it (#458: the flag was not read and the text report was
@@ -384,6 +422,20 @@ async function runScanHistoryJson(): Promise<number> {
       { file, line, patternId, patternName, preview }
     )),
     summary: { total: result.findingCount, filesScanned: result.filesScanned },
+    // What the scan did not read, and why (#462): history files that are
+    // present and could not be read, and runs of lines it did not match. Both
+    // lists are written whether or not they are empty, so a consumer reads an
+    // empty list as nothing left unread rather than as a field left out.
+    notRead: {
+      files: (result.filesNotRead ?? []).map(({ file, reason }) => ({ file, reason })),
+      lines: (result.linesNotRead ?? []).map((run) => ({
+        file: run.file,
+        firstLine: run.firstLine,
+        lastLine: run.lastLine,
+        count: runLength(run),
+        reason: run.reason,
+      })),
+    },
   }, null, 2));
   return result.findingCount > 0 ? 1 : 0;
 }
@@ -395,8 +447,18 @@ export async function runScanHistory(options: RunScanHistoryOptions = {}): Promi
   try {
     const result = await scanHistory();
     console.log(`  Files scanned: ${result.filesScanned}`);
+    const notRead = (result.filesNotRead?.length ?? 0) > 0 || (result.linesNotRead?.length ?? 0) > 0;
 
     if (result.findingCount === 0) {
+      if (notRead) {
+        // Nothing was found in what was read, which is a different claim, and
+        // with no file read there is nothing to claim.
+        console.log(result.filesScanned === 0
+          ? '  No history file was read.\n'
+          : '  No credentials found in the lines that were read.\n');
+        reportHistoryNotRead(result);
+        return 0;
+      }
       console.log('  No credentials found in shell history.\n');
       return 0;
     }
@@ -411,6 +473,7 @@ export async function runScanHistory(options: RunScanHistoryOptions = {}): Promi
 
     console.log('  Run `npx secretless-ai clean-history` to redact credentials.');
     console.log('  Run `npx secretless-ai clean-history --dry-run` to preview changes.\n');
+    reportHistoryNotRead(result);
     return 1;
   } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);

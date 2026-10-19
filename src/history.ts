@@ -25,10 +25,49 @@ export interface HistoryFinding {
   preview: string;
 }
 
+/** A history file that is present and could not be read (#462). */
+export interface HistoryFileNotRead {
+  /** Display path with ~ for home directory */
+  file: string;
+  /** `could not be read (<error code>)` */
+  reason: string;
+}
+
+/** A run of lines of one history file that the scan did not read for one reason (#462). */
+export interface HistoryLinesNotRead {
+  /** Display path with ~ for home directory */
+  file: string;
+  /** First line of the run (1-based) */
+  firstLine: number;
+  /** Last line of the run (1-based); `firstLine` for a run of one line */
+  lastLine: number;
+  reason: HistoryLinesNotReadReason;
+}
+
+/** Why a run of lines was not read: one of the values of `HISTORY_LINES_NOT_READ`. */
+export type HistoryLinesNotReadReason = (typeof HISTORY_LINES_NOT_READ)[keyof typeof HISTORY_LINES_NOT_READ];
+
 export interface HistoryScanResult {
   filesScanned: number;
   findingCount: number;
   findings: HistoryFinding[];
+  /**
+   * History files that are present and could not be read (#462). They were
+   * skipped without a word, so a `.bash_history` with mode 000 printed
+   * "Files scanned: 0" and "No credentials found in shell history." at exit 0,
+   * the report for a home with no history file. `scanHistory()` fills it in;
+   * it is optional so a result built by hand still compiles, and an absent
+   * list reads as empty.
+   */
+  filesNotRead?: HistoryFileNotRead[];
+  /**
+   * The lines of the files read that were not matched (#462): the lines before
+   * the last `MAX_LINES`, and each run of lines longer than `MAX_LINE_LENGTH`
+   * characters. Neither was reported, so a credential on one of them left
+   * "No credentials found in shell history." standing. Written and read like
+   * `filesNotRead`.
+   */
+  linesNotRead?: HistoryLinesNotRead[];
 }
 
 export interface HistoryCleanResult {
@@ -39,8 +78,14 @@ export interface HistoryCleanResult {
 }
 
 const HISTORY_FILES = ['.bash_history', '.zsh_history'];
-const MAX_LINES = 10_000;
-const MAX_LINE_LENGTH = 4096;
+export const MAX_LINES = 10_000;
+export const MAX_LINE_LENGTH = 4096;
+
+/** Why `scanHistory` did not read a run of lines of a file it read (#462). */
+export const HISTORY_LINES_NOT_READ = {
+  beforeWindow: `before the last ${MAX_LINES} lines`,
+  tooLong: `longer than ${MAX_LINE_LENGTH} characters`,
+} as const;
 
 /** Additional command-line patterns for history context. */
 const COMMAND_PATTERNS: Array<{ id: string; name: string; regex: RegExp }> = [
@@ -109,36 +154,65 @@ function matchLine(line: string): { id: string; name: string; regex: RegExp } | 
  *
  * Reads .bash_history and .zsh_history from the user's home directory,
  * checking the last MAX_LINES lines of each against credential patterns
- * and command-line patterns.
+ * and command-line patterns. A file that is present and could not be read,
+ * and the lines it did not match, are listed in the result.
  */
 export async function scanHistory(): Promise<HistoryScanResult> {
   const home = os.homedir();
   const findings: HistoryFinding[] = [];
+  const filesNotRead: HistoryFileNotRead[] = [];
+  const linesNotRead: HistoryLinesNotRead[] = [];
   let filesScanned = 0;
 
   for (const fileName of HISTORY_FILES) {
     const filePath = path.join(home, fileName);
+    const file = displayPath(filePath);
 
     let content: string;
     try {
       content = await fs.readFile(filePath, 'utf-8');
-    } catch {
-      // File does not exist or is not readable -- skip
+    } catch (err) {
+      // A file that is not there is no history to read. One that is there and
+      // could not be read is history this scan did not read.
+      const code = (err as NodeJS.ErrnoException | null)?.code ?? 'unknown error';
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        filesNotRead.push({ file, reason: `could not be read (${code})` });
+      }
       continue;
     }
 
     filesScanned++;
     const allLines = content.split('\n');
+    // The empty string after the final newline is not a line of history.
+    // Counted as one, it took a place in the window, so the scan matched only
+    // the last MAX_LINES - 1 lines of a longer file ending in a newline (#462).
+    if (allLines[allLines.length - 1] === '') allLines.pop();
 
     // Only scan the last MAX_LINES lines
     const startIdx = Math.max(0, allLines.length - MAX_LINES);
     const lines = allLines.slice(startIdx);
+    if (startIdx > 0) {
+      linesNotRead.push({ file, firstLine: 1, lastLine: startIdx, reason: HISTORY_LINES_NOT_READ.beforeWindow });
+    }
 
     for (let i = 0; i < lines.length; i++) {
       const rawLine = lines[i];
+      const lineNumber = startIdx + i + 1;
 
-      // Skip empty lines and lines that are too long
-      if (!rawLine || rawLine.length > MAX_LINE_LENGTH) {
+      // Skip empty lines
+      if (!rawLine) {
+        continue;
+      }
+
+      // A line over the length cap is not matched. It is listed, joined to the
+      // run of over-length lines right before it when there is one.
+      if (rawLine.length > MAX_LINE_LENGTH) {
+        const run = linesNotRead[linesNotRead.length - 1];
+        if (run && run.file === file && run.reason === HISTORY_LINES_NOT_READ.tooLong && run.lastLine === lineNumber - 1) {
+          run.lastLine = lineNumber;
+        } else {
+          linesNotRead.push({ file, firstLine: lineNumber, lastLine: lineNumber, reason: HISTORY_LINES_NOT_READ.tooLong });
+        }
         continue;
       }
 
@@ -147,14 +221,13 @@ export async function scanHistory(): Promise<HistoryScanResult> {
 
       const match = matchLine(line);
       if (match) {
-        const lineNumber = startIdx + i + 1;
         // Every credential on the line, by every pattern. A pattern whose
         // `value` group is the secret (`secret set NAME=VALUE`) keeps the
         // command and the name in front of it.
         const preview = maskCredentials(line, { commandPatterns: COMMAND_PATTERNS });
 
         findings.push({
-          file: displayPath(filePath),
+          file,
           line: lineNumber,
           patternId: match.id,
           patternName: match.name,
@@ -168,6 +241,8 @@ export async function scanHistory(): Promise<HistoryScanResult> {
     filesScanned,
     findingCount: findings.length,
     findings,
+    filesNotRead,
+    linesNotRead,
   };
 }
 

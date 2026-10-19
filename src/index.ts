@@ -64,6 +64,7 @@ export {
 export {
   scanHistory, cleanHistory,
   type HistoryFinding, type HistoryScanResult, type HistoryCleanResult,
+  type HistoryFileNotRead, type HistoryLinesNotRead, type HistoryLinesNotReadReason,
 } from './history';
 
 // Broker service

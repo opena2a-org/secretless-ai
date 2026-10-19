@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+**`scan --history` names the lines and the history files it did not read
+(#462).** `scan --history` matches the last 10000 lines of `~/.bash_history`
+and `~/.zsh_history`, does not match a line longer than 4096 characters, and
+does not read a history file that fails to open. None of the three was
+reported: a `.bash_history` holding
+`npx secretless-ai secret set STRIPE_KEY=not-a-real-value` on line 1 before
+10000 lines of `ls`, on a line of more than 4096 characters, or in a file of
+mode 000 printed `No credentials found in shell history.` at exit 0, and
+`scan --history --json` wrote the summary `{"total": 0, ...}`; for the file of
+mode 000 the document was the one written for a home with no history file.
+With no credential found and something not read, the text report now prints
+`No credentials found in the lines that were read.`, or
+`No history file was read.` when no file was read. It lists a history file
+not read with its error code (`~/.bash_history: could not be read (EACCES)`,
+followed by `Verify: ls -l ~/.bash_history`), and the runs of lines not read
+by line number and reason (`~/.bash_history:1: before the last 10000 lines`,
+`~/.bash_history:2: longer than 4096 characters`), ten runs at most followed
+by `… and N more`. When lines before the last 10000 are listed it prints
+`Verify: npx secretless-ai clean-history --dry-run`, as `clean-history` has no
+10000-line limit: on the first home above its dry run reports
+`Lines that would be redacted: 1`. A finding is reported as before, followed
+by the same lists. The JSON document adds `notRead`, holding `files` (`file`,
+`reason`) and `lines` (`file`, `firstLine`, `lastLine`, `count`, `reason`),
+written as empty lists when nothing was left unread; `summary` is unchanged.
+The exit code is unchanged: 0 with no credential found, 1 with one. The
+10000-line window also counted the empty string after the final newline, so
+in a 12000-line file of findings ending in a newline the first line reported
+was line 2002 and 9999 lines were matched; it is now line 2001, and 10000
+lines are matched. `src/scan-history-not-read.test.ts` runs the three homes
+above through the built CLI, and `src/history.test.ts` covers the window and
+the runs of over-length lines.
+
 **`scan --history --json` writes one JSON document (#458).** `scan --history`
 returned before `--json` and `--format` were read, so `scan --history --json`
 printed the text report and a caller parsing stdout failed on
