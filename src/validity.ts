@@ -37,8 +37,8 @@
  * request time is one. So is a request that could not be built, which is not
  * sent: a signed one whose clock threw or gave no valid date, or one whose
  * path would carry a value holding a lone UTF-16 surrogate, which cannot be
- * URL-encoded. `unchecked`: no probe for the type, or a value the
- * probe does not send, and nothing was sent. A result describes the host's
+ * URL-encoded. `unchecked`: no probe for the type, an empty value, or a value
+ * the probe does not send, and nothing was sent. A result describes the host's
  * answer to the request this module sends, not the credential's history: a
  * token a self-managed GitHub or GitLab instance issued still goes to
  * api.github.com or gitlab.com, which did not issue it, and a key from the
@@ -714,14 +714,16 @@ const PAIR_ONLY = 'an AWS key is checked as a pair, the access key ID with its s
 /**
  * Ask the issuing host about one value. Resolves to a result in every case; a
  * failed or slow request is `unknown`, never a thrown error, and so is a
- * request that could not be built, which is not sent. A value a probe with
- * `signing` covers is half of a pair and is not sent alone. Only the
+ * request that could not be built, which is not sent. An empty value is
+ * `unchecked` and is not sent, as `checkFindings` reads one. A value a probe
+ * with `signing` covers is half of a pair and is not sent alone. Only the
  * value is given here, so a probe's `skip` is not told the character after
  * it; `checkFindings` tells it that for a value the scanner kept.
  */
 export async function probeCredential(patternId: string, value: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
   const probe = probeFor(patternId);
   if (!probe) return { state: 'unchecked', detail: `no validity probe for ${patternNameOf(patternId)}` };
+  if (value === '') return { state: 'unchecked', detail: 'not sent: the value is empty' };
   if (probe.signing) return { state: 'unchecked', detail: `not sent: ${PAIR_ONLY}` };
   const reason = notSentReason(probe, value);
   if (reason !== null) return withoutValues([value], { state: 'unchecked', detail: `not sent: ${reason}` });
@@ -746,10 +748,13 @@ function signingTime(deps: ProbeDeps): Date | string {
  * Ask AWS about an access key ID and the secret access key found with it:
  * STS GetCallerIdentity, signed with the secret, which goes in no part of the
  * request. Resolves to a result in every case, as `probeCredential` does, and
- * no result string holds either value. A clock (`deps.now`) that throws or
+ * no result string holds either value. An empty key ID or secret sends
+ * nothing, and the result is `unchecked`. A clock (`deps.now`) that throws or
  * gives no valid date sends nothing, and the result is `unknown`.
  */
 export async function probeAwsKeyPair(accessKeyId: string, secretAccessKey: string, deps: ProbeDeps = {}): Promise<ValidityResult> {
+  if (accessKeyId === '') return { state: 'unchecked', detail: 'not sent: the access key ID is empty' };
+  if (secretAccessKey === '') return { state: 'unchecked', detail: 'not sent: the secret access key is empty' };
   const hidden = [accessKeyId, secretAccessKey];
   const now = signingTime(deps);
   if (typeof now === 'string') return withoutValues(hidden, { state: 'unknown', detail: `not sent: ${now}` });

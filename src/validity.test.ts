@@ -14,6 +14,9 @@
  * - A request that cannot be built is unknown and is not sent: a clock that
  *   throws or gives no valid date, or a value holding a lone UTF-16
  *   surrogate where the path carries it. The probe functions resolve then.
+ * - An empty value is not checked and is not sent: one given to
+ *   probeCredential, as checkFindings reads one, and an AWS pair whose key ID
+ *   or secret is empty.
  * - A webhook URL is sent as its own path to the host that serves it, and
  *   to no other host; the Discord and Slack webhook answers are decided as
  *   those hosts state them, and a URL off the host or its path is not sent.
@@ -339,6 +342,21 @@ describe('probeCredential', () => {
     const calls: Call[] = [];
     const result = await probeCredential('postgres', 'anything', { fetchImpl: answering(200, '', calls) });
     expect(result).toEqual({ state: 'unchecked', detail: 'no validity probe for PostgreSQL Connection String' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not send an empty value for any type with a probe, and reads it not checked, as checkFindings does', async () => {
+    const calls: Call[] = [];
+    for (const patternId of VALIDITY_PROBES.flatMap((probe) => probe.patterns)) {
+      const result = await probeCredential(patternId, '', { fetchImpl: answering(401, '', calls) });
+      expect(result, patternId).toEqual({ state: 'unchecked', detail: 'not sent: the value is empty' });
+      const finding = findingOf(patternId);
+      const results = await checkFindings([finding], () => '', { fetchImpl: answering(401, '', calls) });
+      expect(results.get(finding), patternId).toEqual({ state: 'unchecked', detail: 'the matched value was not kept for checking' });
+    }
+    // A type without a probe is named first, as checkFindings names it.
+    expect(await probeCredential('postgres', '', { fetchImpl: answering(401, '', calls) }))
+      .toEqual({ state: 'unchecked', detail: 'no validity probe for PostgreSQL Connection String' });
     expect(calls).toHaveLength(0);
   });
 
@@ -775,6 +793,17 @@ describe('an AWS key is checked as a pair, by a request signed with the secret',
     const result = await probeAwsKeyPair(KEY_ID, SECRET, { fetchImpl: answering(200, '', calls), now });
     expect(calls).toHaveLength(0);
     expect(result).toEqual({ state: 'unknown', detail });
+  });
+
+  it.each([
+    ['the access key ID', '', SECRET, 'not sent: the access key ID is empty'],
+    ['the secret access key', KEY_ID, '', 'not sent: the secret access key is empty'],
+    ['each value', '', '', 'not sent: the access key ID is empty'],
+  ])('resolves to not checked, and sends nothing, when %s is empty', async (_what, keyId, secret, detail) => {
+    const calls: Call[] = [];
+    const result = await probeAwsKeyPair(keyId, secret, { fetchImpl: answering(403, stsError('InvalidClientTokenId', 'x'), calls), now: () => SIGNED_AT });
+    expect(calls).toHaveLength(0);
+    expect(result).toEqual({ state: 'unchecked', detail });
   });
 
   it('signs and sends a key ID holding a lone UTF-16 surrogate, which goes in no path', async () => {
