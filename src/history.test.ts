@@ -158,10 +158,9 @@ describe('scanHistory', () => {
     const result = await scanHistory();
     expect(result.findingCount).toBeGreaterThanOrEqual(1);
     const preview = result.findings[0].preview;
-    // Preview should contain masking (asterisks)
-    expect(preview).toContain('****');
-    // Should not contain the full token
-    expect(preview).not.toBe('curl -H "x-api-key: ghp_abcdefghijklmnopqrstuvwxyz1234567890" https://api.example.com');
+    // The credential is replaced by the marker `scan` prints, and no character
+    // of it is kept; the rest of the command is left as it was.
+    expect(preview).toBe('curl -H "x-api-key: [GitHub Token REDACTED]" https://api.example.com');
   });
 
   it('scans both history files when present', async () => {
@@ -184,6 +183,8 @@ describe('scanHistory', () => {
  */
 describe('scanHistory — secret set NAME=VALUE', () => {
   const VALUE = 'not-a-real-value';
+  /** The value's marker: the command and the name stay, no character of the value does. */
+  const MARK = '[Secret in secret set NAME=VALUE REDACTED]';
 
   it('reports the line as cmd-secret-set and masks the whole value in the preview', async () => {
     mockHistoryFiles({
@@ -193,14 +194,14 @@ describe('scanHistory — secret set NAME=VALUE', () => {
     const result = await scanHistory();
     expect(result.findingCount).toBe(1);
     expect(result.findings[0]).toMatchObject({ file: '~/.bash_history', line: 2, patternId: 'cmd-secret-set' });
-    expect(result.findings[0].preview).toBe('npx secretless-ai secret set STRIPE_KEY=****');
+    expect(result.findings[0].preview).toBe(`npx secretless-ai secret set STRIPE_KEY=${MARK}`);
   });
 
   for (const [label, line, preview] of [
-    ['a zsh timestamp and a short value', ': 1700000000:0;secretless-ai secret set PIN=abc', 'secretless-ai secret set PIN=****'],
-    ['a quoted value with a space', `secretless-ai secret set DB_PASSWORD='two words'`, 'secretless-ai secret set DB_PASSWORD=****'],
-    ['flags before the name', `secretless-ai secret set --description "Stripe key" --meta app=web STRIPE_KEY=${VALUE}`, 'secretless-ai secret set --description "Stripe key" --meta app=web STRIPE_KEY=****'],
-    ['a flag after the value', `secretless-ai secret set STRIPE_KEY=${VALUE} --meta app=web`, 'secretless-ai secret set STRIPE_KEY=**** --meta app=web'],
+    ['a zsh timestamp and a short value', ': 1700000000:0;secretless-ai secret set PIN=abc', `secretless-ai secret set PIN=${MARK}`],
+    ['a quoted value with a space', `secretless-ai secret set DB_PASSWORD='two words'`, `secretless-ai secret set DB_PASSWORD=${MARK}`],
+    ['flags before the name', `secretless-ai secret set --description "Stripe key" --meta app=web STRIPE_KEY=${VALUE}`, `secretless-ai secret set --description "Stripe key" --meta app=web STRIPE_KEY=${MARK}`],
+    ['a flag after the value', `secretless-ai secret set STRIPE_KEY=${VALUE} --meta app=web`, `secretless-ai secret set STRIPE_KEY=${MARK} --meta app=web`],
   ] as const) {
     it(`reports it with ${label}, and the preview carries no part of the value`, async () => {
       mockHistoryFiles({ '.zsh_history': line });
@@ -252,7 +253,7 @@ describe('scanHistory — secret set NAME=VALUE', () => {
     expect(elapsed).toBeLessThan(50);
     expect(result.findings.map(f => f.line)).toEqual([2]);
     expect(result.findings[0].patternId).toBe('cmd-secret-set');
-    expect(result.findings[0].preview).toBe(`secretless-ai secret set ${flags}STRIPE_KEY=****`);
+    expect(result.findings[0].preview).toBe(`secretless-ai secret set ${flags}STRIPE_KEY=${MARK}`);
   });
 
   it('cleanHistory redacts the command and leaves no run of the value', async () => {

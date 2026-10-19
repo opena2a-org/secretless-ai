@@ -244,6 +244,7 @@ function scanString(
   if (value.length > MAX_LINE_SIZE) return value;
 
   let result = value;
+  const matched: Array<Pick<CredentialPattern, 'id' | 'name'>> = [];
   for (const pattern of TRANSCRIPT_PATTERNS) {
     if (pattern.regex.test(result)) {
       // redactMatches replaces ALL occurrences AND extends across the tail of a
@@ -253,21 +254,26 @@ function scanString(
       const onSpan = fileInfo.onRedacted
         ? (span: string) => fileInfo.onRedacted!(span, { file: fileInfo.file, line: fileInfo.line })
         : undefined;
-      const redacted = redactMatches(result, pattern.regex, `[REDACTED:${pattern.id}]`, {
+      result = redactMatches(result, pattern.regex, `[REDACTED:${pattern.id}]`, {
         preferCaptureGroup: pattern === SECRET_ASSIGNMENT_PATTERN,
         onSpan,
       });
-      const preview = redacted.substring(0, 80);
-      findings.push({
-        file: fileInfo.file,
-        line: fileInfo.line,
-        jsonPath,
-        patternId: pattern.id,
-        patternName: pattern.name,
-        preview,
-      });
-      result = redacted;
+      matched.push(pattern);
     }
+  }
+
+  // Every finding on the string takes its preview from the string once all
+  // the patterns have been applied to it.
+  const preview = result.substring(0, 80);
+  for (const pattern of matched) {
+    findings.push({
+      file: fileInfo.file,
+      line: fileInfo.line,
+      jsonPath,
+      patternId: pattern.id,
+      patternName: pattern.name,
+      preview,
+    });
   }
 
   return result;
