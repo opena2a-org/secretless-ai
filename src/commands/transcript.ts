@@ -5,9 +5,9 @@ import { cleanTranscripts, transcriptTarget, MAX_LINE_SIZE, type CleanResult } f
 import { startWatch, stopWatch, isWatchRunning, watchStatus, installWatcher, uninstallLaunchAgent, resolveWatchDirs } from '../watch';
 import type { InstallWatcherResult, WatchStatus } from '../watch';
 import { askOnTerminal } from './secrets';
-import { scanHistory, cleanHistory } from '../history';
+import { scanHistory, cleanHistory, type HistoryScanResult } from '../history';
 import { pathOperand, shellQuote } from './core';
-import { CLI, CLI_BARE } from './utils';
+import { CLI, CLI_BARE, VERSION } from './utils';
 import { escapeForDisplay, escapePathForDisplay } from '../display-safe';
 import { EXIT_USAGE } from '../argv';
 import { SecretStore } from '../secret-store';
@@ -356,7 +356,40 @@ export async function offerTranscriptWatcher(options: WatcherOfferOptions = {}):
   console.log();
 }
 
-export async function runScanHistory(): Promise<number> {
+export interface RunScanHistoryOptions {
+  /** `scan --history --json` or `--format json`: one JSON document on stdout. */
+  json?: boolean;
+}
+
+/**
+ * `scan --history --json`: one JSON document on stdout and nothing else, so a
+ * caller can parse it (#458: the flag was not read and the text report was
+ * printed). The exit codes are the text report's: 1 when a credential is
+ * found, 0 when none is, and 1 with the error on stderr when the scan fails.
+ */
+async function runScanHistoryJson(): Promise<number> {
+  let result: HistoryScanResult;
+  try {
+    result = await scanHistory();
+  } catch (err) {
+    console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+  console.log(JSON.stringify({
+    tool: 'secretless-ai',
+    version: VERSION,
+    // Named one by one, so a field added to the finding later is not written
+    // here until it is added to this list.
+    findings: result.findings.map(({ file, line, patternId, patternName, preview }) => (
+      { file, line, patternId, patternName, preview }
+    )),
+    summary: { total: result.findingCount, filesScanned: result.filesScanned },
+  }, null, 2));
+  return result.findingCount > 0 ? 1 : 0;
+}
+
+export async function runScanHistory(options: RunScanHistoryOptions = {}): Promise<number> {
+  if (options.json) return runScanHistoryJson();
   console.log('\n  Shell History Scanner\n');
 
   try {
