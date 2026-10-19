@@ -137,8 +137,18 @@ describe('secretlessignore — glob semantics', () => {
   });
 
   it('Windows backslashes normalize to forward slashes', () => {
-    const m = buildMatcher(['test/']);
+    const m = buildMatcher(['test/'], '\\');
     expect(m.matches('test\\foo.ts')).toBe(true);
+  });
+
+  it('on POSIX a backslash is a character of the name, matched as written', () => {
+    // A rule for the real name matches it; a directory rule does not cover a
+    // file at the root whose name starts with that directory and a backslash.
+    expect(buildMatcher(['n\\x.txt'], '/').matches('n\\x.txt')).toBe(true);
+    expect(buildMatcher(['dir/n\\x.txt'], '/').matches('dir/n\\x.txt')).toBe(true);
+    expect(buildMatcher(['dir/n\\x.txt'], '/').matches('dir/n/x.txt')).toBe(false);
+    expect(buildMatcher(['test/'], '/').matches('test\\foo.ts')).toBe(false);
+    expect(buildMatcher(['test/'], '/').matches('test/foo.ts')).toBe(true);
   });
 
   it('rejects path traversal in input', () => {

@@ -439,6 +439,24 @@ export function pathOperand(p: string, sep: string = path.sep): string {
 }
 
 /**
+ * @internal A path as a name in a list of paths `scan` did not read. Quoted so
+ * it can be copied, unless it holds a character that would reach the terminal
+ * as a control (a line feed in a config file's name printed a forged
+ * `Scan one:` line): then it is shown escaped inside `$'...'`. The escaped
+ * form describes the name rather than quoting it for pasting, and the quotes
+ * mark where it ends, so a `: ` inside it cannot pass for the one before the
+ * reason.
+ *
+ * On Windows both forms name the path with `/` between its parts, as the
+ * command under the list does (`pathOperand`). The quoted form kept `\`, so
+ * a list that held an escaped name printed two separators. `sep` as in
+ * `pathOperand`.
+ */
+export function listedPath(p: string, sep: string = path.sep): string {
+  return hasDisplayHazard(p) ? quotePathForDisplay(p, sep) : pathOperand(p, sep);
+}
+
+/**
  * `p` without a trailing `/.` or `/`: `notes.txt/.` names `notes.txt` itself,
  * and `path.dirname` of the longer spelling is the file, not the directory
  * that holds it. A trailing `..` names another directory and is kept.
@@ -914,7 +932,9 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
       oversizeFiles: stats.oversize,
       // Samples, capped. The counts above carry the magnitude; these carry the
       // REASON, because `notEntered: 171` on a repo with dependencies installed
-      // is not something a human can act on without knowing which 171.
+      // is not something a human can act on without knowing which 171. Config
+      // files off the built-in list and the other skipped files are capped
+      // apart, so a tree full of the one still names some of the other.
       skippedUnsupportedFiles: stats.skips.files,
       notEnteredDirs: stats.skips.dirs,
       unscannedConfigFiles: stats.unscannedConfig.files,
@@ -968,27 +988,19 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
     // read as a flag; anything else falls back to the absolute path.
     return relToCwd && !atRoot && !relToCwd.startsWith('..') && !relToCwd.startsWith('-') ? relToCwd : abs;
   };
-  // A name in a list. Quoted so it can be copied, unless it holds a character
-  // that would reach the terminal as a control (a line feed in a config file's
-  // name printed a forged `Scan one:` line): then it is shown escaped inside `$'...'`.
-  // The escaped form describes the name rather than quoting it for pasting, and
-  // the quotes mark where it ends, so a `: ` inside it cannot pass for the one
-  // before the reason.
-  const shown = (rel: string) => {
-    const p = fromCwd(rel);
-    return hasDisplayHazard(p) ? quotePathForDisplay(p) : shellQuote(p);
-  };
+  // A name in a list, quoted or escaped as `listedPath` renders it.
+  const shown = (rel: string) => listedPath(fromCwd(rel));
   // Every listed path prints through this line, in every block: the name as
   // `shown` renders it, then `: <reason>` or ` (<size>)`.
   const listLine = (rel: string, after = '') => console.log(`  ${c.dim(`  ${shown(rel)}${after}`)}`);
-  // The first candidate that prints as itself, quoted for pasting, or null. A
-  // name that cannot be printed as itself cannot be an operand: the raw form is
-  // the hazard and the escaped form names a different file. `toPath` runs only
-  // until a candidate is chosen.
+  // The first candidate that prints as itself, quoted for pasting as
+  // `pathOperand` quotes it, or null. A name that cannot be printed as itself
+  // cannot be an operand: the raw form is the hazard and the escaped form
+  // names a different file. `toPath` runs only until a candidate is chosen.
   const firstOperand = (candidates: string[], toPath: (rel: string) => string = (rel) => rel) => {
     for (const rel of candidates) {
       const p = fromCwd(toPath(rel));
-      if (!hasDisplayHazard(p)) return shellQuote(p);
+      if (!hasDisplayHazard(p)) return pathOperand(p);
     }
     return null;
   };
@@ -1156,11 +1168,13 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
     if (notOpenedCount > 0) {
       const n = notOpenedCount;
       console.log(`  ${c.dim(`${n} file${n > 1 ? 's' : ''} not read for credentials`)}: declared boundaries, not findings.`);
-      // The sample is shared with the config files left out above, so it can
-      // hold fewer than eight of these while more exist, or none at all.
+      // These are sampled apart from the config files left out above, so the
+      // sample names the first eight of them however many config files sort
+      // ahead. With one sample for both, twenty config files filled it and
+      // this heading printed with no name under it and no `Scan one:` line.
       const listed = notOpened.slice(0, 8);
       for (const f of listed) listLine(f.path, `: ${f.reason}`);
-      if (listed.length > 0 && n > listed.length) console.log(`  ${c.dim(`  … and ${n - listed.length} more`)}`);
+      if (n > listed.length) console.log(`  ${c.dim(`  … and ${n - listed.length} more`)}`);
       // The command names the first listed file that is neither in
       // SCAN_ONE_FILE_NAMES_NOT_OFFERED nor an ignore file, and is left out
       // when none is. A name that cannot be printed as itself cannot be
