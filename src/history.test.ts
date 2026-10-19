@@ -382,3 +382,99 @@ describe('cleanHistory — no residue for an over-length credential', () => {
     });
   }
 });
+
+/**
+ * What the scan did not read (#462). The lines before the last 10000, a line
+ * longer than 4096 characters and a history file present but unreadable were
+ * each skipped without a word, so a credential on one of them left "No
+ * credentials found in shell history." standing at exit 0.
+ */
+describe('scanHistory — what it did not read (#462)', () => {
+  const SET = 'npx secretless-ai secret set STRIPE_KEY=not-a-real-value';
+  const LONG = `curl -d "${'a'.repeat(4200)}" https://example.invalid; ${SET}`;
+  const BEFORE_WINDOW = 'before the last 10000 lines';
+  const TOO_LONG = 'longer than 4096 characters';
+
+  function failedRead(code: string): Error {
+    return Object.assign(new Error(`${code}: the read failed`), { code });
+  }
+
+  /** History files by name; one left out is absent (ENOENT), an Error is a read that fails with it. */
+  function mockHistory(files: Record<string, string | Error>): void {
+    mockReadFile.mockImplementation(async (filePath: any) => {
+      const name = String(filePath).replace('/home/testuser/', '');
+      const entry = files[name];
+      if (entry === undefined) throw failedRead('ENOENT');
+      if (entry instanceof Error) throw entry;
+      return entry;
+    });
+  }
+
+  it('reads the last 10000 lines of a file that ends in a newline, and lists the lines before them as one run', async () => {
+    mockHistory({ '.bash_history': `${Array(12000).fill(SET).join('\n')}\n` });
+
+    const result = await scanHistory();
+    expect(result.findings).toHaveLength(10000);
+    expect(result.findings[0].line).toBe(2001);
+    expect(result.findings[result.findings.length - 1].line).toBe(12000);
+    expect(result.linesNotRead).toEqual([
+      { file: '~/.bash_history', firstLine: 1, lastLine: 2000, reason: BEFORE_WINDOW },
+    ]);
+    expect(result.filesNotRead).toEqual([]);
+  });
+
+  it('reads line 1 of a file of exactly 10000 lines that ends in a newline', async () => {
+    const lines = Array(10000).fill('ls');
+    lines[0] = SET;
+    mockHistory({ '.bash_history': `${lines.join('\n')}\n` });
+
+    const result = await scanHistory();
+    expect(result.findings.map((f) => f.line)).toEqual([1]);
+    expect(result.linesNotRead).toEqual([]);
+  });
+
+  it('lists each run of lines longer than 4096 characters, and still reads the lines between them', async () => {
+    mockHistory({
+      '.bash_history': ['ls', LONG, LONG, SET, LONG, '', LONG].join('\n'),
+      '.zsh_history': LONG,
+    });
+
+    const result = await scanHistory();
+    expect(result.findings.map((f) => [f.file, f.line])).toEqual([['~/.bash_history', 4]]);
+    expect(result.linesNotRead).toEqual([
+      { file: '~/.bash_history', firstLine: 2, lastLine: 3, reason: TOO_LONG },
+      { file: '~/.bash_history', firstLine: 5, lastLine: 5, reason: TOO_LONG },
+      { file: '~/.bash_history', firstLine: 7, lastLine: 7, reason: TOO_LONG },
+      { file: '~/.zsh_history', firstLine: 1, lastLine: 1, reason: TOO_LONG },
+    ]);
+  });
+
+  it('counts a long line before the window once, in the run before the window', async () => {
+    mockHistory({ '.bash_history': [LONG, ...Array(10000).fill('ls')].join('\n') });
+
+    const result = await scanHistory();
+    expect(result.linesNotRead).toEqual([
+      { file: '~/.bash_history', firstLine: 1, lastLine: 1, reason: BEFORE_WINDOW },
+    ]);
+  });
+
+  it('lists a history file that is present and could not be read, with the error code, and not one that is absent', async () => {
+    mockHistory({ '.bash_history': failedRead('EACCES') });
+
+    const result = await scanHistory();
+    expect(result.filesScanned).toBe(0);
+    expect(result.findings).toEqual([]);
+    expect(result.filesNotRead).toEqual([{ file: '~/.bash_history', reason: 'could not be read (EACCES)' }]);
+    expect(result.linesNotRead).toEqual([]);
+  });
+
+  it('CONTROL: a history read in full lists nothing', async () => {
+    mockHistory({ '.bash_history': `ls\n${SET}\n`, '.zsh_history': 'git status\n' });
+
+    const result = await scanHistory();
+    expect(result.filesScanned).toBe(2);
+    expect(result.findings.map((f) => f.line)).toEqual([2]);
+    expect(result.filesNotRead).toEqual([]);
+    expect(result.linesNotRead).toEqual([]);
+  });
+});
