@@ -2,7 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 vi.mock('../mcp/protect', () => ({ protectMcp: vi.fn() }));
 
-import { protectMcp } from '../mcp/protect';
+import * as path from 'path';
+import { protectMcp, type ProtectResult } from '../mcp/protect';
+import { mcpConfigLocations } from '../mcp/discover';
 import { runProtectMcp } from './mcp';
 import { findSecretValueProblem, unstorableMcpSecretError } from '../secret-value';
 
@@ -30,6 +32,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       injectionWarnings: [],
       unparsed: [],
       unchecked: [],
+      projectLevel: [],
     });
 
     const output = await protectOutput();
@@ -49,6 +52,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       injectionWarnings: [],
       unparsed: [],
       unchecked: [],
+      projectLevel: [],
     });
 
     expect(await protectOutput()).toContain('\n      GITHUB_TOKEN (encrypted)');
@@ -64,6 +68,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       injectionWarnings: [],
       unparsed: [],
       unchecked: [],
+      projectLevel: [],
     });
 
     expect(await protectOutput()).toContain('      "\\"X\\\\u001b[2J_TOKEN\\"" (encrypted)');
@@ -79,6 +84,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       injectionWarnings: [{ client: 'cursor', server: 'github', key: 'NOTE\x1b[2J', injectionType: 'instruction', severity: 'high' }],
       unparsed: [],
       unchecked: [],
+      projectLevel: [],
     });
 
     const output = await protectOutput();
@@ -97,6 +103,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       injectionWarnings: [],
       unparsed: [{ client: 'windsurf', filePath: '/home/u/.windsurf/mcp.json', reason: 'not valid JSON (line 2, column 1)' }],
       unchecked: [],
+      projectLevel: [],
     });
 
     const output = await protectOutput();
@@ -123,6 +130,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
           servers: [{ name: 'gh', part: 'env value API_TOKEN', reason: 'not a string' }],
         },
       ],
+      projectLevel: [],
     });
 
     const output = await protectOutput();
@@ -156,6 +164,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
           servers: [{ name: 'api', part: 'env values PORT, FLAGS', reason: 'not strings' }],
         },
       ],
+      projectLevel: [],
     });
 
     const output = await protectOutput();
@@ -185,5 +194,90 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
     expect(output).not.toMatch(RAW_CONTROL);
     expect(output).toContain('"X\\u001b[2J_TOKEN" for MCP server claude-code/demo was not stored');
     expect(output).toContain('  Fix:     correct "X\\u001b[2J_TOKEN" in the "demo" env block of that file,');
+  });
+});
+
+describe('protect-mcp names where it looked, and each project-level config it left as it is', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const nothingFound: ProtectResult = {
+    clientsScanned: 0,
+    secretsFound: 0,
+    serversProtected: 0,
+    servers: [],
+    alreadyProtected: 0,
+    injectionWarnings: [],
+    unparsed: [],
+    unchecked: [],
+    projectLevel: [],
+  };
+
+  it('lists every path in the discovery list, home paths with ~, then says no config was found', async () => {
+    vi.mocked(protectMcp).mockResolvedValue(nothingFound);
+
+    const output = await protectOutput();
+
+    const looked = mcpConfigLocations().map(
+      (l) => `    ${l.scope === 'home' ? path.join('~', l.relativePath) : l.relativePath}`,
+    );
+    expect(looked).toContain(`    ${path.join('~', '.cursor', 'mcp.json')}`);
+    expect(looked).toContain(`    ${path.join('.cursor', 'mcp.json')}`);
+    expect(looked).toContain(`    ${path.join('.vscode', 'mcp.json')}`);
+    expect(looked).toContain('    mcp.json');
+    expect(output).toContain(['  Looked in:', ...looked, '', '  No MCP configurations found.'].join('\n'));
+    expect(output.trimEnd().endsWith('  No MCP configurations found.')).toBe(true);
+    expect(output).not.toContain('Looked for configs from');
+  });
+
+  it('names each project-level config it left by its path from the project, instead of "No MCP configurations found."', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      ...nothingFound,
+      projectLevel: [
+        { client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' },
+        { client: 'unknown', filePath: '/home/u/proj/mcp.json', projectPath: 'mcp.json' },
+      ],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).not.toContain('No MCP configurations found.');
+    expect(output).toContain('  cursor (.cursor/mcp.json)\n    ? not checked: project-level config: see mcp-status');
+    expect(output).toContain('\n  mcp.json\n    ? not checked: project-level config: see mcp-status');
+    expect(output).toContain('2 project-level config(s) were not checked, so no secret in them was encrypted.');
+    expect(output).toContain("protect-mcp would write this machine's wrapper path into them, and these files are usually committed.");
+    expect(output).toContain('Run `npx secretless-ai mcp-status` to list their servers.');
+    expect(output).not.toContain('/home/u/proj');
+  });
+
+  it('does not call the configs clean when it left a project-level config', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      ...nothingFound,
+      clientsScanned: 1,
+      projectLevel: [{ client: 'vscode', filePath: '/home/u/proj/.vscode/mcp.json', projectPath: '.vscode/mcp.json' }],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).toContain('Scanned 1 client(s)');
+    expect(output).not.toContain('Already clean.');
+    expect(output).toContain('No plaintext secrets found in the MCP configs that were checked.');
+    expect(output).toContain('  vscode (.vscode/mcp.json)\n    ? not checked: project-level config: see mcp-status');
+  });
+
+  it('names a project-level config it left after the secrets it encrypted', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      ...nothingFound,
+      clientsScanned: 1,
+      secretsFound: 1,
+      serversProtected: 1,
+      servers: [{ client: 'claude-code', server: 'slack', secretKeys: ['SLACK_BOT_TOKEN'] }],
+      projectLevel: [{ client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' }],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).toContain('1 secret(s) encrypted across 1 server(s).');
+    expect(output).toContain('  cursor (.cursor/mcp.json)\n    ? not checked: project-level config: see mcp-status');
+    expect(output).toContain('1 project-level config(s) were not checked, so no secret in them was encrypted.');
   });
 });

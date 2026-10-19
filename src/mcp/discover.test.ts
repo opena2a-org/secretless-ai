@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { discoverMcpConfigs, discoverMcpConfigsDetailed, McpConfigFile } from './discover';
+import { discoverMcpConfigs, discoverMcpConfigsDetailed, mcpConfigLocations, McpConfigFile } from './discover';
+import { CONFIG_FILES } from '../patterns';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-test-'));
@@ -427,5 +428,123 @@ describe('discoverMcpConfigs — project-scope .mcp.json (release-test P1)', () 
   it('does not invent a project entry when .mcp.json is absent', () => {
     const results = discoverMcpConfigs(home, project);
     expect(results.filter(r => r.filePath.startsWith(project)).length).toBe(0);
+  });
+});
+
+describe('discoverMcpConfigsDetailed — project-level client configs', () => {
+  let home: string;
+  let project: string;
+
+  beforeEach(() => { home = tmpDir(); project = tmpDir(); });
+  afterEach(() => { cleanup(home); cleanup(project); });
+
+  // A Slack-shaped bot token, built at runtime so the file holds no token literal.
+  const slackToken = ['xox', 'b-1234567890-1234567890-', 'FAKEabcdefghijklmnopqrst'].join('');
+  const slackServer = () => ({ command: 'npx', args: ['-y', 'slack-mcp'], env: { SLACK_BOT_TOKEN: slackToken } });
+
+  it('finds .cursor/mcp.json in the project with an empty home, as a cursor config', () => {
+    writeConfig(project, '.cursor/mcp.json', { mcpServers: { slack: slackServer() } });
+
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+
+    expect(unparsed).toEqual([]);
+    expect(configs.map((c) => [c.client, c.filePath, c.projectPath])).toEqual([
+      ['cursor', path.join(project, '.cursor', 'mcp.json'), path.join('.cursor', 'mcp.json')],
+    ]);
+    expect(configs[0].servers.map((s) => [s.name, s.env])).toEqual([['slack', { SLACK_BOT_TOKEN: slackToken }]]);
+  });
+
+  it('finds .vscode/mcp.json in the project, reading the servers key the VS Code workspace file carries', () => {
+    writeConfig(project, '.vscode/mcp.json', { servers: { slack: { type: 'stdio', ...slackServer() } } });
+
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+
+    expect(unparsed).toEqual([]);
+    expect(configs.map((c) => [c.client, c.filePath, c.projectPath])).toEqual([
+      ['vscode', path.join(project, '.vscode', 'mcp.json'), path.join('.vscode', 'mcp.json')],
+    ]);
+    expect(configs[0].servers.map((s) => [s.name, s.env])).toEqual([['slack', { SLACK_BOT_TOKEN: slackToken }]]);
+  });
+
+  it('finds .windsurf/mcp.json and a bare mcp.json in the project, naming no client for the bare file', () => {
+    writeConfig(project, '.windsurf/mcp.json', { mcpServers: { slack: slackServer() } });
+    writeConfig(project, 'mcp.json', { mcpServers: { slack: slackServer() } });
+
+    const { configs } = discoverMcpConfigsDetailed(home, project);
+
+    expect(configs.map((c) => [c.client, c.projectPath])).toEqual([
+      ['windsurf', path.join('.windsurf', 'mcp.json')],
+      ['unknown', 'mcp.json'],
+    ]);
+  });
+
+  it('reports a project-level config it could not parse, with its path from the project', () => {
+    const configPath = path.join(project, '.vscode', 'mcp.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, '{\n  "servers": {\n    "gh": { "command": "npx" },\n  }\n}\n');
+
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+
+    expect(configs).toEqual([]);
+    expect(unparsed.map((u) => [u.client, u.filePath, u.projectPath, u.reason])).toEqual([
+      ['vscode', configPath, path.join('.vscode', 'mcp.json'), 'not valid JSON (line 4, column 3)'],
+    ]);
+  });
+
+  it('gives a home config no project path, beside the same file in the project', () => {
+    writeConfig(home, '.cursor/mcp.json', { mcpServers: { slack: slackServer() } });
+    writeConfig(project, '.cursor/mcp.json', { mcpServers: { slack: slackServer() } });
+
+    const { configs } = discoverMcpConfigsDetailed(home, project);
+
+    expect(configs.map((c) => [c.filePath, c.projectPath])).toEqual([
+      [path.join(home, '.cursor', 'mcp.json'), undefined],
+      [path.join(project, '.cursor', 'mcp.json'), path.join('.cursor', 'mcp.json')],
+    ]);
+  });
+
+  it('reads each file once, as a home config, when the project directory is the home directory', () => {
+    writeConfig(home, '.cursor/mcp.json', { mcpServers: { slack: slackServer() } });
+    writeConfig(home, '.vscode/mcp.json', { servers: { slack: slackServer() } });
+
+    const { configs } = discoverMcpConfigsDetailed(home, home);
+
+    expect(configs.map((c) => [c.client, c.filePath, c.projectPath])).toEqual([
+      ['cursor', path.join(home, '.cursor', 'mcp.json'), undefined],
+      ['vscode', path.join(home, '.vscode', 'mcp.json'), undefined],
+    ]);
+  });
+
+  it('reads a file once when the project directory reaches the home directory through a symlink', () => {
+    writeConfig(home, '.cursor/mcp.json', { mcpServers: { slack: slackServer() } });
+    const link = path.join(project, 'home-link');
+    fs.symlinkSync(home, link);
+
+    const { configs } = discoverMcpConfigsDetailed(home, link);
+
+    expect(configs.map((c) => [c.client, c.filePath, c.projectPath])).toEqual([
+      ['cursor', path.join(home, '.cursor', 'mcp.json'), undefined],
+    ]);
+  });
+
+  it('looks in each project-level MCP config the scanner reads, and the scanner reads each one it looks in', () => {
+    const projectPaths = mcpConfigLocations()
+      .filter((l) => l.scope === 'project')
+      .map((l) => l.relativePath.split(path.sep).join('/'));
+    const scannerMcpConfigs = CONFIG_FILES.filter((f) => /(^|\/)\.?mcp\.json$/.test(f));
+
+    expect([...projectPaths].sort()).toEqual([...scannerMcpConfigs].sort());
+    expect([...projectPaths].sort()).toEqual(['.cursor/mcp.json', '.mcp.json', '.vscode/mcp.json', '.windsurf/mcp.json', 'mcp.json']);
+  });
+
+  it('gives every location a scope and the client it is read as', () => {
+    const locations = mcpConfigLocations().map((l) => [l.scope, l.client, l.relativePath]);
+
+    expect(locations).toContainEqual(['home', 'cursor', path.join('.cursor', 'mcp.json')]);
+    expect(locations).toContainEqual(['project', 'claude-code', '.mcp.json']);
+    expect(locations).toContainEqual(['project', 'cursor', path.join('.cursor', 'mcp.json')]);
+    expect(locations).toContainEqual(['project', 'vscode', path.join('.vscode', 'mcp.json')]);
+    expect(locations).toContainEqual(['project', 'windsurf', path.join('.windsurf', 'mcp.json')]);
+    expect(locations).toContainEqual(['project', 'unknown', 'mcp.json']);
   });
 });

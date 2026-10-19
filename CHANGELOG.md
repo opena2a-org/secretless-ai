@@ -89,6 +89,36 @@ it, use `--min-confidence`, or give a sample value a placeholder word such as
 of a scan run after it, and `src/scan-ignore-file-gap.test.ts` the header,
 including the one written before #178 and a file with CRLF line endings.
 
+**`mcp-status` reads the project-level MCP configs that `scan` reads, and
+names every path it looked in when it finds none.** Before, a project holding
+`.cursor/mcp.json` or `.vscode/mcp.json` got `No MCP configurations found.`
+from `mcp-status` while `scan` reported a credential in the same file.
+Discovery now looks in `.cursor/mcp.json`, `.vscode/mcp.json`,
+`.windsurf/mcp.json` and `mcp.json` in the current directory, beside
+`.mcp.json` and the home directory configs, and reads a server map under
+`servers`, the key the VS Code workspace file carries, when there is none
+under `mcpServers` or `mcp-servers`. A file reached both as a home config and
+as a project config (`mcp-status` run in the home directory) is read once, as
+the home config. `mcp-status` shows a project-level config by its path from
+the project (`cursor (.cursor/mcp.json)`), with the same `EXPOSED`,
+`protected`, `clean` and `not checked` lines as a home config, and shows a
+bare `mcp.json`, whose client is not established, by that path alone. A
+server name holding a control character is written as an escape. When
+`mcp-status` or `protect-mcp` finds no config, it prints `Looked in:` and each
+path, generated from the discovery list (home paths with `~`), before
+`No MCP configurations found.`; `protect-mcp` no longer prints its
+`Looked for configs from:` and `Supported clients:` lines. `protect-mcp`
+still rewrites `.mcp.json` and the home directory configs. It leaves the
+other project-level configs as they are and lists each one as
+`? not checked: project-level config: see mcp-status`, because it writes this
+machine's wrapper path into each config it rewrites and a project-level
+config is usually committed. For an exposed server in one of those files,
+`mcp-status` says to move each value out of its file and rotate it, not to
+run `protect-mcp`, and `mcp-unprotect` does not list them, since nothing was
+written to them. `protect-mcp` now rewrites a server map under the key it was
+read from: a config whose servers were under `mcp-servers` had its secrets
+stored and listed as encrypted while the file kept them in plaintext.
+
 **`scan --check-validity` asks the provider that issued a found credential whether it still accepts it.**
 Off by default: without the flag the scanner keeps no matched value, sends no
 credential anywhere, and prints what it printed before. With it, each finding

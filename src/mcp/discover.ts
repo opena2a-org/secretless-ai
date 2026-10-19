@@ -2,7 +2,8 @@
  * MCP config file auto-discovery across 5 clients.
  *
  * Finds MCP server configurations in Claude Desktop, Cursor,
- * Claude Code, VS Code, and Windsurf config files.
+ * Claude Code, VS Code, and Windsurf config files, in the home
+ * directory and in the project directory.
  */
 
 import * as fs from 'fs';
@@ -14,7 +15,15 @@ import { listedName } from '../secret-value';
 // Types
 // ---------------------------------------------------------------------------
 
-export type McpClient = 'claude-desktop' | 'cursor' | 'claude-code' | 'vscode' | 'windsurf';
+/**
+ * The client a config is read as. 'unknown' is a project-level mcp.json:
+ * which client writes a bare mcp.json is not established, so it is named by
+ * its path alone, as `scan` names it.
+ */
+export type McpClient = 'claude-desktop' | 'cursor' | 'claude-code' | 'vscode' | 'windsurf' | 'unknown';
+
+/** 'home': a per-user client config. 'project': a config in the project directory. */
+export type McpConfigScope = 'home' | 'project';
 
 export interface McpServerEntry {
   name: string;
@@ -38,6 +47,8 @@ export interface UncheckedMcpServer {
 export interface McpConfigFile {
   client: McpClient;
   filePath: string;
+  /** The path from the project directory, for a config found there. Absent for a config in the home directory. */
+  projectPath?: string;
   servers: McpServerEntry[];
   /** Server entries with a part that could not be read. A caller never reports one of these as clean. */
   unchecked: UncheckedMcpServer[];
@@ -49,6 +60,8 @@ export interface McpConfigFile {
 export interface UnparsedMcpConfig {
   client: McpClient;
   filePath: string;
+  /** The path from the project directory, for a config found there. Absent for a config in the home directory. */
+  projectPath?: string;
   /** What stopped the parse, e.g. "not valid JSON (line 4, column 1)". Never quotes the file's content. */
   reason: string;
 }
@@ -62,60 +75,76 @@ export interface McpConfigDiscovery {
 // Client config path definitions
 // ---------------------------------------------------------------------------
 
-interface ClientConfigPath {
+/** A place a client config is looked for. */
+export interface McpConfigLocation {
   client: McpClient;
-  /** Relative path from home directory */
+  scope: McpConfigScope;
+  /** From the home directory for scope 'home', from the project directory for scope 'project'. */
   relativePath: string;
 }
 
-/**
- * Returns the list of config file paths to search, relative to the home directory.
- * Platform-aware: Claude Desktop has different paths on macOS vs Linux.
- */
-function getClientConfigPaths(): ClientConfigPath[] {
-  const paths: ClientConfigPath[] = [];
+/** The Claude Code project-scope config: the one project-level config protect-mcp rewrites. */
+const CLAUDE_CODE_PROJECT_CONFIG = '.mcp.json';
 
+/**
+ * Every place a client config is looked for, home first, in the order they
+ * are read. `mcp-status` and `protect-mcp` print this list when they find no
+ * config, so a path added here is a path they name.
+ */
+const MCP_CONFIG_LOCATIONS: readonly McpConfigLocation[] = [
   // Claude Desktop: search both macOS and Linux paths on all platforms.
   // The check is just existsSync (harmless miss), and searching both enables
   // cross-platform testing via homeOverride.
-  paths.push({
+  {
     client: 'claude-desktop',
+    scope: 'home',
     relativePath: path.join('Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),
-  });
-  paths.push({
-    client: 'claude-desktop',
-    relativePath: path.join('.config', 'Claude', 'claude_desktop_config.json'),
-  });
-
-  // Cursor
-  paths.push({
-    client: 'cursor',
-    relativePath: path.join('.cursor', 'mcp.json'),
-  });
-
+  },
+  { client: 'claude-desktop', scope: 'home', relativePath: path.join('.config', 'Claude', 'claude_desktop_config.json') },
+  { client: 'cursor', scope: 'home', relativePath: path.join('.cursor', 'mcp.json') },
   // Claude Code: two possible settings files
-  paths.push({
-    client: 'claude-code',
-    relativePath: path.join('.claude', 'settings.json'),
-  });
-  paths.push({
-    client: 'claude-code',
-    relativePath: path.join('.claude', 'settings.local.json'),
-  });
+  { client: 'claude-code', scope: 'home', relativePath: path.join('.claude', 'settings.json') },
+  { client: 'claude-code', scope: 'home', relativePath: path.join('.claude', 'settings.local.json') },
+  { client: 'vscode', scope: 'home', relativePath: path.join('.vscode', 'mcp.json') },
+  { client: 'windsurf', scope: 'home', relativePath: path.join('.windsurf', 'mcp.json') },
+  // Project level: the MCP configs `scan` reads in a project. These files are
+  // usually committed, so plaintext env values in them leak beyond one machine.
+  { client: 'claude-code', scope: 'project', relativePath: CLAUDE_CODE_PROJECT_CONFIG },
+  { client: 'cursor', scope: 'project', relativePath: path.join('.cursor', 'mcp.json') },
+  { client: 'vscode', scope: 'project', relativePath: path.join('.vscode', 'mcp.json') },
+  { client: 'windsurf', scope: 'project', relativePath: path.join('.windsurf', 'mcp.json') },
+  { client: 'unknown', scope: 'project', relativePath: 'mcp.json' },
+];
 
-  // VS Code
-  paths.push({
-    client: 'vscode',
-    relativePath: path.join('.vscode', 'mcp.json'),
-  });
+/** Every place a client config is looked for, home first, in the order they are read. */
+export function mcpConfigLocations(): readonly McpConfigLocation[] {
+  return MCP_CONFIG_LOCATIONS;
+}
 
-  // Windsurf
-  paths.push({
-    client: 'windsurf',
-    relativePath: path.join('.windsurf', 'mcp.json'),
-  });
+/**
+ * Whether protect-mcp rewrites a config: every home config, and the project's
+ * .mcp.json. protect-mcp writes this machine's wrapper path into a config it
+ * rewrites, and a project-level config is usually committed, so it leaves the
+ * other project-level configs as they are and names them.
+ */
+export function rewrittenByProtectMcp(config: { projectPath?: string }): boolean {
+  return config.projectPath === undefined || config.projectPath === CLAUDE_CODE_PROJECT_CONFIG;
+}
 
-  return paths;
+/**
+ * The top-level keys a server map is read from, in this order: `mcpServers`,
+ * `mcp-servers`, and `servers`, the key the VS Code workspace file
+ * `.vscode/mcp.json` carries.
+ */
+const SERVER_MAP_KEYS = ['mcpServers', 'mcp-servers', 'servers'] as const;
+
+/**
+ * The key of the server map in a parsed config: the first of SERVER_MAP_KEYS
+ * whose value is not null. protect-mcp rewrites the map under this key, the
+ * one its secrets were read from.
+ */
+export function serverMapKey(raw: Record<string, unknown>): string | undefined {
+  return SERVER_MAP_KEYS.find((key) => raw[key] !== undefined && raw[key] !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,15 +177,14 @@ function isNotJsonObject(value: unknown): boolean {
 
 /**
  * Extract MCP server entries from a parsed JSON config.
- * Supports both `mcpServers` and `mcp-servers` keys.
+ * Reads the server map under the key serverMapKey names.
  *
  * A part that does not have the shape of a server entry is passed over and
  * returned in `unchecked`: a secret in it was not seen.
  */
 function parseServers(raw: Record<string, unknown>): { servers: McpServerEntry[]; unchecked: UncheckedMcpServer[] } | null {
-  const serversObj =
-    (raw['mcpServers'] as Record<string, unknown> | undefined) ??
-    (raw['mcp-servers'] as Record<string, unknown> | undefined);
+  const key = serverMapKey(raw);
+  const serversObj = (key === undefined ? undefined : raw[key]) as Record<string, unknown> | undefined;
 
   if (!serversObj || typeof serversObj !== 'object') {
     return null;
@@ -232,8 +260,10 @@ function describeJsonError(err: unknown, content: string): string {
 /**
  * Discover all MCP configuration files on the developer's machine.
  *
- * Searches across 5 clients: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf —
- * plus the Claude Code project-scope config (.mcp.json at the project root).
+ * Searches every location in mcpConfigLocations(): the home directory configs
+ * of 5 clients (Claude Desktop, Cursor, Claude Code, VS Code, Windsurf), and
+ * the project-level configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json,
+ * .windsurf/mcp.json and mcp.json in the project directory).
  *
  * @param homeOverride - Override home directory (for testing). Defaults to os.homedir().
  * @param projectDirOverride - Override project directory (for testing). Defaults to process.cwd().
@@ -254,23 +284,24 @@ export function discoverMcpConfigsDetailed(homeOverride?: string, projectDirOver
   const projectDir = projectDirOverride ?? process.cwd();
   const results: McpConfigFile[] = [];
   const unparsed: UnparsedMcpConfig[] = [];
+  // A project directory that is the home directory reaches some files twice.
+  // Each is read once, as the home config it is listed first as.
+  const filesRead = new Set<string>();
 
-  const candidates: Array<{ client: McpClient; fullPath: string }> = getClientConfigPaths().map(
-    ({ client, relativePath }) => ({ client, fullPath: path.join(home, relativePath) }),
-  );
-  // Claude Code project-scope MCP config: .mcp.json at the project root is
-  // committed to repos, so plaintext env values there leak beyond one machine.
-  candidates.push({ client: 'claude-code', fullPath: path.join(projectDir, '.mcp.json') });
-
-  for (const { client, fullPath } of candidates) {
+  for (const { client, scope, relativePath } of MCP_CONFIG_LOCATIONS) {
+    const fullPath = path.join(scope === 'home' ? home : projectDir, relativePath);
     if (!fs.existsSync(fullPath)) continue;
+    const file = realPathOf(fullPath);
+    if (filesRead.has(file)) continue;
+    filesRead.add(file);
+    const where = { client, filePath: fullPath, ...(scope === 'project' ? { projectPath: relativePath } : {}) };
 
     let content: string;
     try {
       content = fs.readFileSync(fullPath, 'utf-8');
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      unparsed.push({ client, filePath: fullPath, reason: code ? `could not be read (${code})` : 'could not be read' });
+      unparsed.push({ ...where, reason: code ? `could not be read (${code})` : 'could not be read' });
       continue;
     }
     if (content.trim() === '') continue;
@@ -279,27 +310,27 @@ export function discoverMcpConfigsDetailed(homeOverride?: string, projectDirOver
     try {
       parsed = JSON.parse(content);
     } catch (err) {
-      unparsed.push({ client, filePath: fullPath, reason: describeJsonError(err, content) });
+      unparsed.push({ ...where, reason: describeJsonError(err, content) });
       continue;
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      unparsed.push({ client, filePath: fullPath, reason: 'not a JSON object' });
+      unparsed.push({ ...where, reason: 'not a JSON object' });
       continue;
     }
     const raw = parsed as Record<string, unknown>;
 
-    const serversValue = raw['mcpServers'] ?? raw['mcp-servers'];
-    if (serversValue !== undefined && serversValue !== null && typeof serversValue !== 'object') {
-      unparsed.push({ client, filePath: fullPath, reason: 'its MCP server list is not a JSON object' });
+    const key = serverMapKey(raw);
+    const serversValue = key === undefined ? undefined : raw[key];
+    if (serversValue !== undefined && typeof serversValue !== 'object') {
+      unparsed.push({ ...where, reason: 'its MCP server list is not a JSON object' });
       continue;
     }
 
     const parsedServers = parseServers(raw);
-    if (!parsedServers) continue; // No mcpServers key
+    if (!parsedServers) continue; // No server map
 
     results.push({
-      client,
-      filePath: fullPath,
+      ...where,
       servers: parsedServers.servers,
       unchecked: parsedServers.unchecked,
       raw,
@@ -307,4 +338,13 @@ export function discoverMcpConfigsDetailed(homeOverride?: string, projectDirOver
   }
 
   return { configs: results, unparsed };
+}
+
+/** The file a path reaches, so a file reached by two paths is read once. */
+function realPathOf(fullPath: string): string {
+  try {
+    return fs.realpathSync(fullPath);
+  } catch {
+    return path.resolve(fullPath);
+  }
 }
