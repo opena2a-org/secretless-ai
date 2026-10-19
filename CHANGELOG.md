@@ -135,10 +135,12 @@ URL is fetched with GET, the webhook's read-only endpoint, at discord.com
 whether the URL named discord.com or discordapp.com; a Slack webhook URL is
 sent a POST whose body is `{}`, a message with no text, which Slack refuses
 before posting anything. An AWS key is checked as a pair: the access key ID
-and the secret access key found with it in one file, when the file's
-findings hold exactly one of each, make one GetCallerIdentity request to
-`sts.amazonaws.com` signed with the secret (Signature Version 4), so the key
-ID and the signature are sent and the secret is not. The answer is printed
+and the secret access key found with it in one file make one
+GetCallerIdentity request to `sts.amazonaws.com` signed with the secret
+(Signature Version 4), so the key ID and the signature are sent and the
+secret is not. A file is paired when its findings hold one of each, or
+several of each that, taken in line order two at a time, are each one key
+ID and one secret. The answer is printed
 under the finding as `Validity: live` when the host answered 200 (or, for a
 Slack webhook, when hooks.slack.com refused the empty message with 400
 `no_text` rather than refusing the URL), `rejected` when it answered 401
@@ -161,9 +163,9 @@ before one, and the finding says so. `--json` carries the
 same as `validity` on each finding and counts under `summary.validity`,
 only when the flag is given; `--format sarif` carries it as
 `properties.validity` on each result (#448). The same value, or the
-same AWS pair, found in several files is sent once. An AWS access key ID
-paired with different secret access keys in different files is sent with none
-of them, and so is a secret access key paired with different access key IDs.
+same AWS pair, found in several files is sent once, and an AWS access key ID
+paired with different secret access keys, or a secret access key paired with
+different access key IDs, in the scanned files is sent with none of them.
 Severity, confidence and the exit code do not change with the
 answer. For library callers, `probeCredential` and
 `checkFindings`, exported from the package, take a `fetchImpl` in place of

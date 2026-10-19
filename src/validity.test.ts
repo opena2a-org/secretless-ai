@@ -19,9 +19,10 @@
  *   those hosts state them, and a URL off the host or its path is not sent.
  * - An AWS access key ID and secret access key found in one file are checked
  *   as a pair, by a request signed with the secret, which no request holds;
- *   a file without exactly one of each, a key ID paired with two secrets, or
- *   a secret paired with two key IDs, sends nothing, and an STS answer about
- *   the clock is unknown.
+ *   a file of several of each is paired two findings at a time in line
+ *   order. A file whose findings do not pair that way, a key ID paired with
+ *   two secrets or a secret paired with two key IDs sends nothing, and an STS
+ *   answer about the clock is unknown.
  * - No result string holds the value, even when an error message does.
  * - An OpenAI project key value the scanner found with a - or _ after it is
  *   not sent, also at 132 characters or more; that is decided for each finding.
@@ -959,7 +960,7 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
     expect(results.get(secret)).toEqual({ state: 'unchecked', detail: 'not sent: the file has no AWS Access Key finding to pair it with' });
   });
 
-  it('sends nothing for a file holding more than one key ID or more than one secret', async () => {
+  it('sends nothing for a file holding more key IDs than secrets, or more secrets than key IDs', async () => {
     const { findings, calls, check } = setup([
       ['aws-access', 'two-ids.env', 1, KEY_ID], ['aws-access', 'two-ids.env', 2, 'NOTAREALKEYID001'], ['aws-secret', 'two-ids.env', 3, SECRET],
       ['aws-access', 'two-secrets.env', 1, KEY_ID], ['aws-secret', 'two-secrets.env', 2, SECRET], ['aws-secret', 'two-secrets.env', 3, 'another-not-real-secret'],
@@ -969,15 +970,97 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
     for (const finding of findings.slice(0, 3)) {
       expect(results.get(finding)).toEqual({
         state: 'unchecked',
-        detail: "not sent: the file's findings hold 2 AWS access key IDs and 1 secret access key, and a pair is formed only from one of each",
+        detail: "not sent: the file's findings hold 2 AWS access key IDs and 1 secret access key, which do not pair one to one",
       });
     }
     for (const finding of findings.slice(3)) {
       expect(results.get(finding)).toEqual({
         state: 'unchecked',
-        detail: "not sent: the file's findings hold 1 AWS access key ID and 2 secret access keys, and a pair is formed only from one of each",
+        detail: "not sent: the file's findings hold 1 AWS access key ID and 2 secret access keys, which do not pair one to one",
       });
     }
+  });
+
+  it('pairs a file of several of each two findings at a time in line order, and signs each request with its own pair', async () => {
+    const pairs: Array<[keyId: string, secret: string]> = [
+      [KEY_ID, SECRET], ['NOTAREALKEYID001', 'another-not-real-secret'],
+      ['NOTAREALKEYID002', 'third-not-real-secret'], ['NOTAREALKEYID003', 'fourth-not-real-secret'],
+    ];
+    const rows: Array<[patternId: string, file: string, line: number, value: string]> = [
+      // Given out of line order, as scan() sorts its findings by severity and confidence, not by line.
+      ['aws-secret', 'aws.ini', 7, pairs[1][1]], ['aws-access', 'aws.ini', 2, pairs[0][0]],
+      ['aws-access', 'aws.ini', 6, pairs[1][0]], ['aws-secret', 'aws.ini', 3, pairs[0][1]],
+      // The second two puts its secret before its key ID, with a line between them.
+      ['aws-access', 'deploy.env', 1, pairs[2][0]], ['aws-secret', 'deploy.env', 2, pairs[2][1]],
+      ['aws-secret', 'deploy.env', 3, pairs[3][1]], ['aws-access', 'deploy.env', 5, pairs[3][0]],
+    ];
+    const values = new Map<ScanFinding, string>();
+    const findings = rows.map(([patternId, file, line, value]) => {
+      const finding = findingOf(patternId, file, line);
+      values.set(finding, value);
+      return finding;
+    });
+    const signedFor = new Map<string, [keyId: string, secret: string]>();
+    for (const [keyId, secret] of pairs) {
+      const signed: Call[] = [];
+      await probeAwsKeyPair(keyId, secret, { fetchImpl: answering(200, '', signed), now: () => SIGNED_AT });
+      signedFor.set(signed[0].init.headers.Authorization, [keyId, secret]);
+    }
+    // STS takes the second pair only: a request signed with any other pairing is refused.
+    const calls: Call[] = [];
+    const fetchImpl: ProbeFetch = async (url, init) => {
+      calls.push({ url, init });
+      return signedFor.get(init.headers.Authorization)?.[0] === pairs[1][0]
+        ? { status: 200, text: async () => '' }
+        : { status: 403, text: async () => stsError('SignatureDoesNotMatch', 'The request signature we calculated does not match the signature you provided.') };
+    };
+    const results = await checkFindings(findings, (f) => values.get(f), { fetchImpl, now: () => SIGNED_AT });
+    expect(calls).toHaveLength(4);
+    expect(calls.map((c) => signedFor.get(c.init.headers.Authorization)).sort()).toEqual([...pairs].sort());
+    const live = { state: 'live', host: 'sts.amazonaws.com', status: 200, detail: 'sts.amazonaws.com answered 200' };
+    const refused = { state: 'rejected', host: 'sts.amazonaws.com', status: 403, detail: 'sts.amazonaws.com answered 403 (SignatureDoesNotMatch)' };
+    for (const [i, finding] of findings.entries()) {
+      const value = rows[i][3];
+      expect(results.get(finding), `${finding.file}:${finding.line}`).toEqual(pairs[1].includes(value) ? live : refused);
+    }
+  });
+
+  it('sends nothing for a file of several of each whose findings, taken in line order two at a time, are not each one key ID and one secret', async () => {
+    const { findings, calls, check } = setup([
+      // Both key IDs, then both secrets.
+      ['aws-access', 'grouped.env', 1, KEY_ID], ['aws-access', 'grouped.env', 2, 'NOTAREALKEYID001'],
+      ['aws-secret', 'grouped.env', 3, SECRET], ['aws-secret', 'grouped.env', 4, 'another-not-real-secret'],
+      // Two key IDs, each beside a secret, and the first key ID again further down.
+      ['aws-access', 'repeated.env', 1, KEY_ID], ['aws-secret', 'repeated.env', 2, SECRET],
+      ['aws-access', 'repeated.env', 3, 'NOTAREALKEYID001'], ['aws-secret', 'repeated.env', 4, 'another-not-real-secret'],
+      ['aws-access', 'repeated.env', 9, KEY_ID],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    for (const finding of findings) {
+      expect(results.get(finding), `${finding.file}:${finding.line}`).toEqual({
+        state: 'unchecked',
+        detail: "not sent: the file's findings hold 2 AWS access key IDs and 2 secret access keys, which, taken in line order two at a time, "
+          + 'are not each one key ID and one secret',
+      });
+    }
+  });
+
+  it('checks the other pairs of a file of several when one of its key IDs is temporary', async () => {
+    const { findings: [id, secret, temporary, secret2], calls, check } = setup([
+      ['aws-access', 'aws.ini', 1, KEY_ID], ['aws-secret', 'aws.ini', 2, SECRET],
+      ['aws-sts', 'aws.ini', 5, 'NOTAREALTEMPKEY0'], ['aws-secret', 'aws.ini', 6, 'another-not-real-secret'],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(1);
+    expect(keyIdOf(calls[0])).toBe(KEY_ID);
+    expect(results.get(id)).toEqual(REJECTED);
+    expect(results.get(secret)).toEqual(REJECTED);
+    expect(results.get(temporary)).toEqual({ state: 'unchecked', detail: 'no validity probe for AWS STS Temporary Key' });
+    expect(results.get(secret2)).toEqual({
+      state: 'unchecked',
+      detail: 'not sent: the access key ID it is paired with is an AWS STS Temporary Key, which STS takes only with its session token',
+    });
   });
 
   it('pairs no secret with a temporary key ID, and counts the temporary key ID when a file is paired', async () => {
@@ -992,7 +1075,7 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
       state: 'unchecked',
       detail: "not sent: the file's access key ID is an AWS STS Temporary Key, which STS takes only with its session token",
     });
-    const ambiguous = "not sent: the file's findings hold 2 AWS access key IDs and 1 secret access key, and a pair is formed only from one of each";
+    const ambiguous = "not sent: the file's findings hold 2 AWS access key IDs and 1 secret access key, which do not pair one to one";
     expect(results.get(id)).toEqual({ state: 'unchecked', detail: ambiguous });
     expect(results.get(secret2)).toEqual({ state: 'unchecked', detail: ambiguous });
     expect(results.get(temporary2)).toEqual({ state: 'unchecked', detail: 'no validity probe for AWS STS Temporary Key' });
@@ -1048,6 +1131,38 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
     const byKeyId = { state: 'unchecked', detail: 'not sent: the access key ID is paired with 2 different secret access keys in the scanned files, and is sent with none of them' };
     const bySecret = { state: 'unchecked', detail: 'not sent: the secret access key is paired with 2 different access key IDs in the scanned files, and is sent with none of them' };
     expect(findings.map((f) => results.get(f))).toEqual([byKeyId, byKeyId, byKeyId, byKeyId, bySecret, bySecret, REJECTED, REJECTED]);
+  });
+
+  it('sends a secret paired with different key IDs, in different files or in one, with none of them', async () => {
+    const { findings, calls, check } = setup([
+      ['aws-access', 'a.env', 1, KEY_ID], ['aws-secret', 'a.env', 2, SECRET],
+      ['aws-access', 'b.env', 1, 'NOTAREALKEYID001'], ['aws-secret', 'b.env', 2, SECRET],
+      // Beside a temporary key ID in one file and a key ID in another.
+      ['aws-sts', 'session.env', 1, 'NOTAREALTEMPKEY0'], ['aws-secret', 'session.env', 2, 'another-not-real-secret'],
+      ['aws-access', 'c.env', 1, 'NOTAREALKEYID002'], ['aws-secret', 'c.env', 2, 'another-not-real-secret'],
+      // One file whose second key ID takes the first secret, then a second one.
+      ['aws-access', 'mixed.env', 1, 'NOTAREALKEYID003'], ['aws-secret', 'mixed.env', 2, 'third-not-real-secret'],
+      ['aws-access', 'mixed.env', 3, 'NOTAREALKEYID004'], ['aws-secret', 'mixed.env', 4, 'third-not-real-secret'],
+      ['aws-access', 'mixed.env', 5, 'NOTAREALKEYID004'], ['aws-secret', 'mixed.env', 6, 'fourth-not-real-secret'],
+    ]);
+    const results = await check();
+    expect(calls).toHaveLength(0);
+    const secretWithTwo = {
+      state: 'unchecked',
+      detail: 'not sent: the secret access key is paired with 2 different access key IDs in the scanned files, and is sent with none of them',
+    };
+    const idWithTwo = {
+      state: 'unchecked',
+      detail: 'not sent: the access key ID is paired with 2 different secret access keys in the scanned files, and is sent with none of them',
+    };
+    const [a, aSecret, b, bSecret, temporary, temporarySecret, c, cSecret, ...inMixed] = findings;
+    for (const finding of [a, aSecret, b, bSecret, c, cSecret]) expect(results.get(finding), finding.file).toEqual(secretWithTwo);
+    expect(results.get(temporary)).toEqual({ state: 'unchecked', detail: 'no validity probe for AWS STS Temporary Key' });
+    expect(results.get(temporarySecret)).toEqual({
+      state: 'unchecked',
+      detail: "not sent: the file's access key ID is an AWS STS Temporary Key, which STS takes only with its session token",
+    });
+    expect(inMixed.map((f) => results.get(f))).toEqual([secretWithTwo, secretWithTwo, idWithTwo, idWithTwo, idWithTwo, idWithTwo]);
   });
 
   it('checks the pair of one file and not the same key ID alone in another, beside a single-value probe', async () => {
@@ -1335,7 +1450,7 @@ describe('the flag, the help and docs/commands.md name what --check-validity con
     expect(probeEndpoint(probeFor('aws-access')!)).toBe('sts.amazonaws.com/');
     expect(text).toContain('AWS: InvalidClientTokenId or SignatureDoesNotMatch in a 403');
     expect(text).toContain('An AWS key is checked as a pair: the access key ID and the secret access key found with it in one file, '
-      + 'when the file holds exactly one of each.');
+      + 'when the file holds one of each, or several of each that, taken in line order two at a time, are each one key ID and one secret.');
     expect(text).toContain('the key ID and the signature are sent, and the secret is not');
     expect(text).toContain('A SignatureDoesNotMatch that names the request time reads unknown');
     expect(text).toContain('a key from the AWS China or GovCloud partition still goes to sts.amazonaws.com');
