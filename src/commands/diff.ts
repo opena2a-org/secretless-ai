@@ -6,7 +6,8 @@
  * exactly what was added/modified — without inspecting each file by hand
  * or running `git diff` against a noisy diff that includes unrelated work.
  * This subcommand restricts `git diff` to the small set of paths
- * secretless owns: `.claude/settings.json`, `.secretlessignore`, and
+ * secretless owns: `.claude/settings.json`, the guard and output check hook
+ * scripts in `.claude/hooks/`, `.secretlessignore`, and
  * `.secretless-rules.yaml` (custom rules — see src/custom-rules.ts).
  *
  * Output: a unified-diff-like report, headered by file with an INTRODUCED /
@@ -76,9 +77,16 @@ export function gitDiscoveryFreeEnv(base: NodeJS.ProcessEnv = process.env): Node
   return env;
 }
 
-/** Files secretless considers "managed" — only these are diffed. */
+/**
+ * Files secretless considers "managed" — only these are diffed. The two hook
+ * scripts are what `.claude/settings.json` makes Claude Code execute: an edit
+ * to either changes what the guard allows or what the output check reports,
+ * and the settings file beside them reads the same.
+ */
 const MANAGED_PATHS: readonly string[] = Object.freeze([
   '.claude/settings.json',
+  '.claude/hooks/secretless-guard.sh',
+  '.claude/hooks/secretless-output-check.cjs',
   '.secretlessignore',
   '.secretless-rules.yaml',
 ]);

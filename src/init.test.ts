@@ -2273,6 +2273,21 @@ describe('init', { timeout: 30_000 }, () => {
       return /"permissionDecision":"deny"/.test(out);
     }
 
+    // `init` keeps a copy of a generated hook it replaces under
+    // ~/.secretless-ai/replaced, so HOME is a scratch directory here.
+    let home: string;
+    let savedHome: string | undefined;
+    beforeEach(() => {
+      home = tmpDir();
+      savedHome = process.env.HOME;
+      process.env.HOME = home;
+    });
+    afterEach(() => {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      cleanup(home);
+    });
+
     function seedStaleConfig(): void {
       const claudeDir = path.join(dir, '.claude');
       fs.mkdirSync(path.join(claudeDir, 'hooks'), { recursive: true });

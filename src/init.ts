@@ -3,7 +3,9 @@
  * Auto-detects AI tools and installs appropriate protections.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { detectAITools, toolDisplayName, AIDER_IGNORE_FILE, type AITool } from './detect';
 import { SECRET_FILE_PATTERNS, CREDENTIAL_PATTERNS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS } from './patterns';
@@ -98,11 +100,18 @@ interface InitResult {
   denyRulesRemoved: number;
   /**
    * True when the managed guard hook (`.claude/hooks/secretless-guard.sh`) was
-   * rewritten this run because its content was stale relative to the version
-   * `init` generates. Older `init` only wrote the hook when absent, so an
-   * outdated hook would persist across upgrades.
+   * rewritten this run because its content differed from the text `init`
+   * generates. Older `init` only wrote the hook when absent, so an outdated
+   * hook would persist across upgrades. A difference is not proof of an older
+   * version: `hooksReplaced` carries what was replaced.
    */
   hookRefreshed: boolean;
+  /**
+   * The generated hooks this run replaced because they differed from the text
+   * it writes, each with the digest of the bytes it replaced and where a copy
+   * of them was kept.
+   */
+  hooksReplaced: ReplacedHook[];
   /**
    * The prefix the Stop hook command carries when this copy runs from the
    * npx cache: npm may remove that copy, so the versioned npx form was
@@ -143,6 +152,22 @@ interface InitResult {
   pathsRefused: Array<{ tool: AITool; path: string; reason: string }>;
 }
 
+/** The two scripts `init` generates for Claude Code to execute. */
+export type ManagedHookKind = 'guard' | 'output-check';
+
+/** A generated hook `init` found different from the text it writes, and replaced. */
+export interface ReplacedHook {
+  /** The script, relative to the project. */
+  file: string;
+  kind: ManagedHookKind;
+  /** SHA-256 of the replaced bytes, in hex. */
+  sha256: string;
+  /** Where the replaced bytes were copied. Unset when they could not be. */
+  copy?: string;
+  /** Why no copy was kept. */
+  copyError?: string;
+}
+
 /**
  * Deny rules that older versions of `init` generated but newer versions no
  * longer do — `init` prunes these on every run so an upgrade actually migrates
@@ -174,6 +199,7 @@ export function init(projectDir: string): InitResult {
     denyRulesAdded: 0,
     denyRulesRemoved: 0,
     hookRefreshed: false,
+    hooksReplaced: [],
     pathsRefused: [],
   };
 
@@ -256,8 +282,119 @@ export function init(projectDir: string): InitResult {
 // Claude Code Configuration
 // ============================================================================
 
+const GUARD_FILE = 'secretless-guard.sh';
 const OUTPUT_CHECK_NAME = 'secretless-output-check';
 const OUTPUT_CHECK_FILE = `${OUTPUT_CHECK_NAME}.cjs`;
+
+/**
+ * How a generated hook script compares with the text this version of `init`
+ * writes for it. `unreadable` is a script that could not be read and, for the
+ * guard, a rules file that could not be loaded: the guard `init` writes
+ * carries those rules, so without them there is nothing to compare with, and
+ * that is never read as `current`.
+ */
+export type ManagedHookState = 'current' | 'differs' | 'missing' | 'unreadable';
+
+/**
+ * Compare a generated hook script with the text this version writes for it,
+ * byte for byte. `kind` defaults to the one the file name names. The guard is
+ * generated from the rules file in the directory `init` writes
+ * `.claude/hooks/` under, loaded the way `init` loads it there. Neither text
+ * carries a path or anything else that differs between two copies of one
+ * version, so a byte comparison is stable across projects and machines.
+ */
+export function compareManagedHook(file: string, kind?: ManagedHookKind): { state: ManagedHookState; reason?: string } {
+  const name = path.basename(file);
+  const which = kind ?? (name === GUARD_FILE ? 'guard' : name === OUTPUT_CHECK_FILE ? 'output-check' : null);
+  if (!which) return { state: 'unreadable', reason: `${name} is not a script init writes` };
+
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(file);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { state: 'missing' };
+    return { state: 'unreadable', reason: (err as Error).message };
+  }
+
+  let text: string;
+  if (which === 'output-check') {
+    text = generateClaudeOutputCheckScript();
+  } else {
+    try {
+      text = generateClaudeHookScript(loadCustomRulesDetailed(path.resolve(file, '..', '..', '..')).rules);
+    } catch (err) {
+      // `init` writes the guard without rules it cannot load, and exits 1.
+      return { state: 'unreadable', reason: (err as Error).message.split('\n')[0].replace(/:$/, '') };
+    }
+  }
+  return { state: bytes.equals(Buffer.from(text, 'utf-8')) ? 'current' : 'differs' };
+}
+
+/** `compareManagedHook` for the state alone. */
+export function managedHookState(file: string): ManagedHookState {
+  return compareManagedHook(file).state;
+}
+
+/** Where `init` keeps the bytes of a generated hook it replaced. */
+export function replacedHooksDir(): string {
+  return path.join(os.homedir(), '.secretless-ai', 'replaced');
+}
+
+/**
+ * Copy the bytes of a generated hook `init` is about to replace to
+ * `~/.secretless-ai/replaced/<UTC yyyymmddThhmmssZ>-<file name>`, the
+ * directory at 0700 and the copy at 0600. A copy that cannot be written is
+ * reported in `copyError`, and the caller replaces the hook anyway.
+ */
+function keepReplacedHook(bytes: Buffer, file: string, kind: ManagedHookKind): ReplacedHook {
+  const record: ReplacedHook = { file, kind, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  try {
+    const dir = replacedHooksDir();
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // A link here would put the copy, and the mode below, on another path.
+    if (!fs.lstatSync(dir).isDirectory()) throw new Error(`${dir} is not a directory`);
+    fs.chmodSync(dir, 0o700);
+    const stamp = new Date().toISOString().replace(/\.\d+Z$/, 'Z').replace(/[-:]/g, '');
+    for (let n = 1; !record.copy; n++) {
+      const copy = path.join(dir, n === 1 ? `${stamp}-${path.basename(file)}` : `${stamp}-${n}-${path.basename(file)}`);
+      try {
+        // `wx` creates a new file or fails, so nothing at that name, a link
+        // included, is written through.
+        fs.writeFileSync(copy, bytes, { mode: 0o600, flag: 'wx' });
+        record.copy = copy;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || n >= 100) throw err;
+      }
+    }
+  } catch (err) {
+    record.copyError = (err as Error).message;
+  }
+  return record;
+}
+
+/**
+ * Write a generated hook unless the file already holds exactly that text, and
+ * say whether one that differed was replaced. A difference is not assumed to
+ * come from an older version: it may be an edit, so its bytes are kept before
+ * the file is replaced, and the control is restored whether or not they could
+ * be.
+ */
+function writeManagedHook(hooksDir: string, name: string, kind: ManagedHookKind, text: string, result: InitResult): boolean {
+  const file = path.join(hooksDir, name);
+  const shown = `.claude/hooks/${name}`;
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, text, { mode: 0o755 });
+    result.filesCreated.push(shown);
+    return false;
+  }
+  const current = fs.readFileSync(file);
+  if (current.equals(Buffer.from(text, 'utf-8'))) return false;
+  result.hooksReplaced.push(keepReplacedHook(current, shown, kind));
+  fs.writeFileSync(file, text, { mode: 0o755 });
+  result.filesModified.push(shown);
+  return true;
+}
 
 function configureClaudeCode(
   projectDir: string,
@@ -275,28 +412,13 @@ function configureClaudeCode(
   // (e.g. one without the template-exempt arm shipped in 0.18.1) would survive
   // an upgrade. Regenerate and compare: write only when the content differs, so
   // a fresh project Creates it and an upgraded project Modifies it in place.
-  const hookPath = path.join(hooksDir, 'secretless-guard.sh');
-  const desiredHook = generateClaudeHookScript(projectCustomRules);
-  if (!fs.existsSync(hookPath)) {
-    fs.writeFileSync(hookPath, desiredHook, { mode: 0o755 });
-    result.filesCreated.push('.claude/hooks/secretless-guard.sh');
-  } else if (fs.readFileSync(hookPath, 'utf-8') !== desiredHook) {
-    fs.writeFileSync(hookPath, desiredHook, { mode: 0o755 });
-    result.filesModified.push('.claude/hooks/secretless-guard.sh');
+  if (writeManagedHook(hooksDir, GUARD_FILE, 'guard', generateClaudeHookScript(projectCustomRules), result)) {
     result.hookRefreshed = true;
   }
 
   // The PostToolUse output check is managed the same way: regenerated, written
   // only when it differs. It covers what the guard above cannot see (#129).
-  const outputCheckPath = path.join(hooksDir, OUTPUT_CHECK_FILE);
-  const desiredOutputCheck = generateClaudeOutputCheckScript();
-  if (!fs.existsSync(outputCheckPath)) {
-    fs.writeFileSync(outputCheckPath, desiredOutputCheck, { mode: 0o755 });
-    result.filesCreated.push(`.claude/hooks/${OUTPUT_CHECK_FILE}`);
-  } else if (fs.readFileSync(outputCheckPath, 'utf-8') !== desiredOutputCheck) {
-    fs.writeFileSync(outputCheckPath, desiredOutputCheck, { mode: 0o755 });
-    result.filesModified.push(`.claude/hooks/${OUTPUT_CHECK_FILE}`);
-  }
+  writeManagedHook(hooksDir, OUTPUT_CHECK_FILE, 'output-check', generateClaudeOutputCheckScript(), result);
 
   // 2. Update settings.json with hook config and deny rules.
   //

@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+**`status` and `diff` read the generated hook scripts, and `init` says when
+it replaced one that differed.** `status` printed `✓ Claude Code hook
+installed` because the guard script was on disk and `.claude/settings.json`
+ran it, and it did not read the PostToolUse output check at all, so a guard
+edited to allow every read still reported installed and `Protected`. It now
+compares `.claude/hooks/secretless-guard.sh` and
+`.claude/hooks/secretless-output-check.cjs`, byte for byte, with the text
+this version writes (the guard with the project's `.secretless-rules.yaml`),
+and prints the ✓ guard row only for a guard that matches. Otherwise it prints
+`⚠ Claude Code guard script differs from the one secretless-ai <version>
+writes: <path>`, or `⚠ Claude Code guard script could not be compared:
+<reason>` when the script or the rules file cannot be read, with
+`secretless-ai init` as the fix and the row counted as a warning; in a
+repository that tracks the file, `git diff -- <path>` shows the difference
+before `init` replaces it, and re-running `status` verifies the fix. The output
+check gets a row of its own: `✓ Output check hook installed (PostToolUse)`,
+`⚠ Output check hook differs from the one secretless-ai <version> writes (its
+credential patterns may be out of date): <path>`, or `⚠ Output check hook not
+installed`. `status --json` carries `guardScript` and `outputCheck`, and
+`userSettings.guardScript` for the guard the user-level settings file runs,
+each `current`, `differs`, `missing` or `unreadable`; `isProtected` and
+`enforcement` keep their meaning. `diff` lists the two hook scripts with the
+files it already audited. `init` still rewrites a hook that differs, and no
+longer labels it `(refreshed to current version)`, a cause it never checked:
+it prints `replaced: it differed from the guard secretless-ai <version>
+writes`, keeps the replaced bytes in `~/.secretless-ai/replaced/` (directory
+0700, file 0600) with the first 12 hex digits of their SHA-256, and names
+`git log -p -- <path>` to check for a change you did not make. When the copy
+cannot be written it says so and replaces the file anyway. A project set up
+with 0.23.0 or earlier has no output check, and its guard reads as differing
+where this version writes different text; `npx secretless-ai init` writes
+both.
+
 **A hook whose copy of Secretless is gone says so, and `status` no longer
 reports it installed.** The pre-commit hook, the Claude Code Stop hook and
 the git credential helper name the node binary and CLI file of the copy that

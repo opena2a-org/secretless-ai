@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
@@ -5,7 +6,7 @@ import { scan, emptySkips, unreadReason, matchedValueOf, SOURCE_SKIP_REASONS, UN
 import { IGNORE_FILENAME } from '../secretlessignore';
 import { scanToSarif } from '../sarif';
 import { checkFindings, summarizeValidity, stateLabel, type ProbeDeps, type ValidityResult, type ValidityState } from '../validity';
-import { status, protection, USER_SETTINGS_PATH } from '../status';
+import { status, protection, USER_SETTINGS_PATH, type HookScript } from '../status';
 import { verify } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles, noKeysFinding, type StoreCount } from '../doctor';
@@ -144,8 +145,20 @@ export function runInit(projectDir: string): number {
       }
     }
     for (const f of otherModified) {
-      const suffix = (f === '.claude/hooks/secretless-guard.sh' && result.hookRefreshed) ? ' (refreshed to current version)' : '';
-      console.log(`    ~ ${f}${suffix}`);
+      // A generated hook that differed is not called refreshed: an edit and an
+      // older version look the same from here. The replaced bytes are named
+      // by digest and kept, so the edit is not erased with the file.
+      const replaced = result.hooksReplaced.find(h => h.file === f);
+      if (!replaced) {
+        console.log(`    ~ ${f}`);
+        continue;
+      }
+      const digest = `(sha256 ${replaced.sha256.slice(0, 12)})`;
+      console.log(`    ~ ${f} (replaced: it differed from the ${replaced.kind === 'guard' ? 'guard' : 'output check'} secretless-ai ${VERSION} writes)`);
+      console.log(replaced.copy
+        ? `      previous copy: ${escapePathForDisplay(homeForm(replaced.copy))} ${digest}`
+        : `      previous copy not kept: ${escapeForDisplay(replaced.copyError ?? 'unknown error')} ${digest}`);
+      console.log(`      if you did not change this file: git log -p -- ${f}`);
     }
   }
 
@@ -306,6 +319,12 @@ export function runInit(projectDir: string): number {
   // cases above are, and exiting 0 over the "Not configured" block reported
   // success for it.
   return result.pathsRefused.length > 0 ? 1 : 0;
+}
+
+/** `p` with the home directory written as `~`, the way the reports name a path under it. */
+function homeForm(p: string): string {
+  const home = os.homedir();
+  return p === home || p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p;
 }
 
 /**
@@ -1519,6 +1538,34 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     ? 'secretless-ai init'
     : 'for Claude Code: mkdir -p .claude && secretless-ai init';
 
+  // A generated script that a settings file runs, compared with the one this
+  // version writes. The guard decides what a tool call may read and one
+  // inserted line can make it allow everything, so its ✓ rests on the bytes,
+  // not on the file being there. `init` run where the script lives writes it
+  // again and keeps a copy of what it replaces.
+  const scriptShown = (file: string | undefined): string => {
+    if (!file) return '';
+    const rel = path.relative(path.resolve(projectDir), file);
+    return escapePathForDisplay(rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : homeForm(file));
+  };
+  const scriptFix = (file: string | undefined): string => {
+    const setUpIn = file ? path.resolve(file, '..', '..', '..') : '';
+    return setUpIn !== path.resolve(projectDir) && setUpIn === path.resolve(os.homedir())
+      ? 'secretless-ai init ~'
+      : claudeCodeInit;
+  };
+  const guardScriptRow = (script: HookScript): Row => (script.state === 'differs'
+    ? {
+      glyph: '⚠',
+      label: `Claude Code guard script differs from the one secretless-ai ${VERSION} writes: ${scriptShown(script.file)}`,
+      action: scriptFix(script.file),
+    }
+    : {
+      glyph: '⚠',
+      label: `Claude Code guard script could not be compared: ${escapeForDisplay(script.reason ?? 'it could not be read')}`,
+      action: scriptFix(script.file),
+    });
+
   // Protection / hook.
   //
   // The guard script on disk is inert until settings.json wires it into
@@ -1544,12 +1591,16 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // a grep and a diff review. Re-running status is what actually re-checks.
       action: 'delete the repeated key, then re-run: secretless-ai status',
     });
-  } else if (s.hookWired) {
+  } else if (s.hookWired && s.guardScript === 'current') {
     const denyText = (s.denyRuleCount ?? 0) > 0 ? ` — ${s.denyRuleCount} deny pattern${s.denyRuleCount === 1 ? '' : 's'}` : '';
     addRow({ glyph: '✓', label: `Claude Code hook installed (.claude/settings.json${denyText})` });
-  } else if (user?.coversProject && user.guardReachable) {
+  } else if (s.hookWired) {
+    addRow(guardScriptRow(s.hookScripts.guard));
+  } else if (user?.coversProject && user.guardReachable && user.guardScript === 'current') {
     const denyText = (user.denyRuleCount ?? 0) > 0 ? ` — ${user.denyRuleCount} deny pattern${user.denyRuleCount === 1 ? '' : 's'}` : '';
     addRow({ glyph: '✓', label: `Claude Code hook installed at user level (${user.path}${denyText})` });
+  } else if (user?.coversProject && user.guardReachable && s.hookScripts.userGuard) {
+    addRow(guardScriptRow(s.hookScripts.userGuard));
   } else if (s.hookInstalled) {
     // The script is on disk and no settings file runs it, so Claude Code never
     // calls it. `init` adds the PreToolUse entry back to the file it reads.
@@ -1591,6 +1642,33 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     } else if (user.coversProject && !user.guardReachable) {
       addRow({ glyph: '✓', label: `User-level deny patterns apply (${user.path} — ${user.denyRuleCount} deny pattern${user.denyRuleCount === 1 ? '' : 's'})` });
     }
+  }
+
+  // Output check (PostToolUse). It carries the credential patterns of the
+  // version that wrote it, and a later version's patterns reach it only when
+  // `init` runs again, so a copy that differs is named, never a ✓.
+  const outputCheck = s.hookScripts.outputCheck;
+  if (outputCheck.state === 'current') {
+    addRow({
+      glyph: '✓',
+      label: outputCheck.scope === 'user'
+        ? `Output check hook installed at user level (${USER_SETTINGS_PATH}, PostToolUse)`
+        : 'Output check hook installed (PostToolUse)',
+    });
+  } else if (outputCheck.state === 'differs') {
+    addRow({
+      glyph: '⚠',
+      label: `Output check hook differs from the one secretless-ai ${VERSION} writes (its credential patterns may be out of date): ${scriptShown(outputCheck.file)}`,
+      action: scriptFix(outputCheck.file),
+    });
+  } else if (outputCheck.state === 'unreadable') {
+    addRow({
+      glyph: '⚠',
+      label: `Output check hook could not be compared: ${escapeForDisplay(outputCheck.reason ?? 'it could not be read')}`,
+      action: scriptFix(outputCheck.file),
+    });
+  } else {
+    addRow({ glyph: '⚠', label: 'Output check hook not installed', action: claudeCodeInit });
   }
 
   // Stop hook (transcript redaction). A hook whose node or CLI file is gone
@@ -1741,6 +1819,12 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // project's settings run it. Claude Code runs only the second.
       hookInstalled: s.hookInstalled,
       hookWired: s.hookWired,
+      // `guardScript`: the guard script that runs, compared with the one this
+      // version writes. `outputCheck`: the PostToolUse output check a settings
+      // file runs, compared the same way. Each is `current`, `differs`,
+      // `missing` or `unreadable`; only `current` is the script `init` wrote.
+      guardScript: s.guardScript,
+      outputCheck: s.outputCheck,
       denyRuleCount: s.denyRuleCount,
       // `detectedTools`: found in the project, configured or not.
       // `configuredTools`: configured, by an instruction file or an ignore
