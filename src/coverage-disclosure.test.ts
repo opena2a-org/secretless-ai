@@ -527,6 +527,25 @@ describe('the human report names a file it did not open', () => {
     expect(code).toBe(1);
   });
 
+  it('lists a file of a type no walk reads as an unsupported file type, even when an ignore or test-file rule covers it', async () => {
+    // The ignore-rule and test-file reasons are for key files, which the flag
+    // they name reads. `--no-ignore` and `--include-tests` read neither of
+    // these, and an ignore-rule reason would count `ignored.txt` as a path the
+    // tree's own ignore file kept from the scan.
+    const dir = tree({
+      'app.js': 'const a = 1;\n',
+      'ignored.txt': 'x\n',
+      'notes.test.txt': 'x\n',
+      '.secretlessignore': 'ignored.txt\n',
+    });
+    const { text, code } = await report(dir);
+
+    expect(text).toMatch(/ignored\.txt: unsupported file type$/m);
+    expect(text).toMatch(/notes\.test\.txt: unsupported file type$/m);
+    expect(text).not.toMatch(/ignore rule \(--no-ignore\)|test file \(--include-tests\)/);
+    expect(code).toBe(0);
+  });
+
   it('lists a config file off the built-in list once, under the heading that says it is not known to be clean', async () => {
     // It was also listed under "files not opened: declared boundaries", with a
     // second `Scan one:` line for it.
@@ -552,18 +571,50 @@ describe('the human report names a file it did not open', () => {
     expect(text.match(/Scan one:/g)).toHaveLength(1);
   });
 
-  it('counts the other unopened files when config files fill the shared sample', async () => {
-    // Twenty-one config files sort ahead of the two text files and fill the
-    // twenty-entry sample, so no name is left to list under the heading.
+  it('names the other unopened files and offers one when config files sort ahead of them', async () => {
+    // Twenty-one config files sort ahead of the two text files. With one
+    // twenty-entry sample for both, the config files filled it, and the
+    // heading for the text files printed with no name and no `Scan one:`.
     const files: Record<string, string> = { 'z1.txt': 'x\n', 'z2.txt': 'x\n' };
     for (let i = 0; i < 21; i++) files[`c${String(i).padStart(2, '0')}.json`] = '{}\n';
-    const { text } = await report(tree(files));
+    const dir = tree(files);
+    const base = path.basename(dir);
+    const { text } = await report(dir);
 
     expect(text).toContain('21 config files not scanned');
     expect(text).not.toMatch(/c\d\d\.json: config file not on the built-in list/);
-    // The heading carries the count; no "… and 2 more" hangs under it.
     const block = text.slice(text.indexOf('2 files not read for credentials'));
-    expect(block.split('\n\n')[0]).toBe('2 files not read for credentials: declared boundaries, not findings.');
+    expect(block.split('\n\n')[0].split('\n')).toEqual([
+      '2 files not read for credentials: declared boundaries, not findings.',
+      `    ${base}/z1.txt: unsupported file type`,
+      `    ${base}/z2.txt: unsupported file type`,
+      `  Scan one: npx secretless-ai scan ${base}/z1.txt`,
+    ]);
+  });
+
+  it('samples the config files and the other unopened files apart, twenty of each, in --json too', async () => {
+    const configs = Array.from({ length: 25 }, (_, i) => `c${String(i).padStart(2, '0')}.json`);
+    const others = Array.from({ length: 25 }, (_, i) => `z${String(i).padStart(2, '0')}.txt`);
+    const files: Record<string, string> = {};
+    for (const f of configs) files[f] = '{}\n';
+    for (const f of others) files[f] = 'x\n';
+    const dir = tree(files);
+    const base = path.basename(dir);
+
+    const { text: json } = await report(dir, { json: true });
+    const doc = JSON.parse(json);
+    expect(doc.summary.skippedUnsupported).toBe(50);
+    expect(doc.summary.unscannedConfig).toBe(25);
+    const configNotListed = SOURCE_SKIP_REASONS.configNotListed;
+    const sampled = doc.skippedUnsupportedFiles as Array<{ path: string; reason: string }>;
+    expect(sampled.filter((f) => f.reason === configNotListed).map((f) => f.path)).toEqual(configs.slice(0, 20));
+    expect(sampled.filter((f) => f.reason !== configNotListed).map((f) => f.path)).toEqual(others.slice(0, 20));
+
+    vi.restoreAllMocks();
+    const { text } = await report(dir);
+    const block = text.slice(text.indexOf('25 files not read for credentials')).split('\n\n')[0].split('\n');
+    expect(block.slice(1, 9)).toEqual(others.slice(0, 8).map((f) => `    ${base}/${f}: unsupported file type`));
+    expect(block.slice(9)).toEqual(['    … and 17 more', `  Scan one: npx secretless-ai scan ${base}/z00.txt`]);
   });
 
   it('gives the ignore rule, not "still scanned", for a hidden directory an ignore rule covers', async () => {

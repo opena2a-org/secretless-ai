@@ -558,6 +558,33 @@ const GLOBAL_CONFIG_FILES = [
 export const GLOBAL_CONFIG_LABELS: readonly string[] = GLOBAL_CONFIG_FILES.map((g) => g.label);
 
 /**
+ * @internal The path a finding in a single named file reports, and the path
+ * listed when that file is over the size cap. A path the reader can act on:
+ * the basename alone does not resolve from the caller's cwd, so a CI job
+ * annotating file:line from --json pointed at the wrong file or at nothing.
+ * From cwd when the file lies inside it, otherwise the path as given, which
+ * the CLI makes absolute. Both sides are resolved through links: on macOS the
+ * temp dir and /tmp are symlinks, so a literal cwd-vs-path comparison escapes
+ * with `../../..` and loses the relative form for paths inside the tree.
+ *
+ * Both forms print `/` between the parts of a Windows path, as the lists of
+ * paths the scan skipped do: the path as given used to keep `\`, so a named
+ * file inside cwd was reported as `sub/x.env` and one outside it as
+ * `C:\other\x.env`. On Linux and macOS a backslash is a character a name can
+ * hold and is kept. `sep` is a parameter so both platforms can be tested on
+ * either.
+ */
+export function namedFilePath(filePath: string, sep: string = path.sep): string {
+  try {
+    const rel = path.relative(fs.realpathSync(process.cwd()), fs.realpathSync(filePath));
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return withSlashSeparators(rel, sep);
+  } catch {
+    // fall through to the path as given
+  }
+  return withSlashSeparators(filePath, sep);
+}
+
+/**
  * Scan project config files for hardcoded credentials.
  * Also scans global AI tool configs (e.g. ~/.claude/CLAUDE.md).
  * Returns findings sorted by severity then file.
@@ -576,22 +603,7 @@ function scanSingleFile(
 ): ScanFinding[] {
   const findings: ScanFinding[] = [];
   const name = path.basename(filePath);
-  // Report a path the reader can act on. The basename alone does not resolve
-  // from the caller's cwd, so a CI job annotating file:line from --json pointed
-  // at the wrong file or at nothing. Prefer cwd-relative; fall back to the
-  // absolute path when the target is outside the tree.
-  // realpath both sides: on macOS the temp dir and /tmp are symlinks, so a
-  // literal cwd-vs-path comparison escapes with `../../..` and loses the
-  // relative form for paths that are genuinely inside the tree.
-  const display = (() => {
-    try {
-      const rel = path.relative(fs.realpathSync(process.cwd()), fs.realpathSync(filePath));
-      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel.replace(/\\/g, '/');
-    } catch {
-      // fall through to the path as given
-    }
-    return filePath;
-  })();
+  const display = namedFilePath(filePath);
   const isConfig = CONFIG_FILES.some(c => c === name || filePath.replace(/\\/g, '/').endsWith('/' + c));
   const severity: 'critical' | 'high' = isConfig ? 'critical' : 'high';
   const envFile = envFileOperand(filePath);
@@ -747,7 +759,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
       return null;
     }
-    const looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(file.replace(/\\/g, '/')));
+    const looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(file)));
     const finding: ScanFinding = {
       file,
       line,
@@ -842,7 +854,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       stats.skips.dirCount += walk.skips.dirCount;
       stats.skips.fileCount += walk.skips.fileCount;
       for (const d of walk.skips.dirs) if (stats.skips.dirs.length < SKIP_SAMPLE_CAP) stats.skips.dirs.push(d);
-      for (const f of walk.skips.files) if (stats.skips.files.length < SKIP_SAMPLE_CAP) stats.skips.files.push(f);
+      for (const f of walk.skips.files) {
+        if (joinsFileSample(stats.skips.files, f.reason === SOURCE_SKIP_REASONS.configNotListed)) stats.skips.files.push(f);
+      }
     }
   };
 
@@ -919,8 +933,10 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       // Skip files already covered by config scan
       if (configFileSet.has(relPath)) continue;
       // Apply user/default ignore filter at file level too — defends
-      // against entries inside an otherwise-walked directory.
-      if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
+      // against entries inside an otherwise-walked directory. Matched as the
+      // walk matched it: a backslash in a name on POSIX is kept, so a file
+      // the walk kept is not dropped here, unlisted, as another path.
+      if (ignore && ignore.matches(withSlashSeparators(relPath))) continue;
 
       try {
         const stat = fs.statSync(filePath);
@@ -980,7 +996,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     absorbWalk(keyWalk);
     for (const filePath of keyWalk.files) {
       const relPath = path.relative(projectDir, filePath);
-      if (ignore && ignore.matches(relPath.replace(/\\/g, '/'))) continue;
+      if (ignore && ignore.matches(withSlashSeparators(relPath))) continue;
       try {
         const stat = fs.statSync(filePath);
         if (!stat.isFile()) continue;
@@ -998,7 +1014,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
             fix: 'Import it on the machine it was made for, then delete it. Never commit a bundle.',
             confidence: 0.95,
             confidenceTier: 'high',
-            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(relPath.replace(/\\/g, '/'))),
+            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(relPath))),
           });
           continue;
         }
@@ -1025,7 +1041,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
             fix: 'Never commit keystores. Store in a secrets manager and reference at runtime.',
             confidence: 0.95,
             confidenceTier: 'high',
-            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(relPath.replace(/\\/g, '/'))),
+            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(relPath))),
           });
           continue;
         }
@@ -1205,7 +1221,11 @@ interface WalkResult {
 export interface CoverageSkips {
   /** Directories not descended into: `{ path, reason }`, capped. */
   dirs: Array<{ path: string; reason: SkipReasonText }>;
-  /** Files enumerated but not opened: `{ path, reason }`, capped. */
+  /**
+   * Files enumerated but not opened: `{ path, reason }`, capped. Config files
+   * off the built-in list and the other files are capped apart (see
+   * `joinsFileSample`), so this holds up to twice the cap.
+   */
   files: Array<{ path: string; reason: SkipReasonText }>;
   /** True counts, which keep rising after the samples above stop growing. */
   dirCount: number;
@@ -1334,6 +1354,19 @@ export function unreadReason(projectDir: string, listedPath: string): UnreadReas
 
 /** Samples are for a human; the counts carry the magnitude. */
 const SKIP_SAMPLE_CAP = 20;
+
+/**
+ * Whether one more skipped file joins the sample `files`: a config file off
+ * the built-in list (`configNotListed`) and any other skipped file are capped
+ * apart, at SKIP_SAMPLE_CAP each. The report lists the two under different
+ * headings, and with one cap for both, twenty config files sorting first left
+ * the heading for the others with a count and no name under it.
+ */
+function joinsFileSample(files: CoverageSkips['files'], configNotListed: boolean): boolean {
+  let held = 0;
+  for (const f of files) if ((f.reason === SOURCE_SKIP_REASONS.configNotListed) === configNotListed) held++;
+  return held < SKIP_SAMPLE_CAP;
+}
 
 export function emptySkips(): CoverageSkips {
   return { dirs: [], files: [], dirCount: 0, fileCount: 0 };
@@ -1593,11 +1626,8 @@ interface WalkSpec {
    * The text printed for it is `coverageReason`'s.
    */
   skipDir(name: string, relFromRoot: string): SkipReason | false;
-  /**
-   * The rule that rejects this file, or false to keep it. Same rule.
-   * `listedFromRoot` is the path as a report lists it (see `walkTree`).
-   */
-  rejectFile(name: string, relFromRoot: string, listedFromRoot: string): SkipReason | false;
+  /** The rule that rejects this file, or false to keep it. Same rule. */
+  rejectFile(name: string, relFromRoot: string): SkipReason | false;
   /**
    * True when another walk reads this file, so this one leaves it out WITHOUT
    * disclosing it: `config.json` is read by the config walk, and counting it
@@ -1607,12 +1637,12 @@ interface WalkSpec {
   coveredElsewhere?(name: string, relFromRoot: string): boolean;
   /**
    * What to push into `files` — an absolute path or a root-relative one.
-   * The root-relative one is `listedFromRoot`, never `relFromRoot`: a caller
-   * opens it, and `relFromRoot` names a different path for a file whose name
-   * holds a backslash. The config walk collected it, so `.env.back\slash` was
-   * opened as `.env.back/slash`, found absent, and neither read nor listed.
+   * A caller opens the root-relative one, which is why `relFromRoot` keeps a
+   * backslash in a name on POSIX (see `walkTree`): when it turned one into
+   * `/`, the config walk collected `.env.back\slash` as `.env.back/slash`,
+   * which was opened, found absent, and neither read nor listed.
    */
-  collect(entryPath: string, listedFromRoot: string): string;
+  collect(entryPath: string, relFromRoot: string): string;
   /**
    * Record what was skipped. Only the SOURCE walk sets this: all three walks
    * prune `node_modules` and friends, so disclosing every walk would treble the
@@ -1671,13 +1701,14 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   const visitsByReal = new Map<string, number>();
   let dirsVisited = 0;
 
-  const rel = (p: string) => path.relative(dir, p).replace(/\\/g, '/');
-  // What the lists of skipped, unread and unfollowed paths record. `rel` above
-  // is what the filters match against, and it turns every backslash into `/`,
-  // which on POSIX names a different path: a file named `n\x.txt` was listed,
-  // and offered as `Scan one:`, as `n/x.txt`. A listed path changes only the
-  // platform's own separator.
-  const listed = (p: string) => withSlashSeparators(path.relative(dir, p));
+  // The path from the root: what the filters match against, and what the lists
+  // of skipped, unread and unfollowed paths record. Only the platform's own
+  // separator becomes `/`. On POSIX a backslash is a character a name can hold,
+  // and turning it into `/` as well named a different path: a file named
+  // `n\x.txt` was listed, and offered as `Scan one:`, as `n/x.txt`, and the
+  // ignore and config-name rules were matched against `n/x.txt`, so a rule for
+  // the real name did not apply and `test/` covered a file named `test\x.js`.
+  const rel = (p: string) => withSlashSeparators(path.relative(dir, p));
   // The text of a disclosed skip. Only the sampled entries pay for the
   // filesystem calls, so the count can keep rising without them.
   const reasonText = (rule: SkipReason, entryPath: string): SkipReasonText =>
@@ -1696,7 +1727,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     const { dir: current, ancestors, hidden } = (queue.length > 0 ? queue : deferred).shift()!;
 
     const currentReal = realpathOrNull(current);
-    if (currentReal === null) { unreadable.push(listed(current)); continue; }
+    if (currentReal === null) { unreadable.push(rel(current)); continue; }
     // A directory inside its own ancestry is a genuine loop.
     if (ancestors.includes(currentReal)) continue;
     // Bound how many distinct routes to one directory we follow (see the
@@ -1713,7 +1744,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     } catch {
       // Was a bare `continue`: an unreadable directory vanished from the result
       // while the scan still reported itself complete.
-      unreadable.push(listed(current));
+      unreadable.push(rel(current));
       continue;
     }
     // The samples and the `Scan one:` command name the first entries the walk
@@ -1724,10 +1755,9 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     for (const entry of entries) {
       const entryPath = path.join(current, entry.name);
       const relFromRoot = rel(entryPath);
-      const listedFromRoot = listed(entryPath);
       const kind = classifyEntry(entryPath, entry);
 
-      if (kind === 'unreadable') { unreadable.push(listedFromRoot); continue; }
+      if (kind === 'unreadable') { unreadable.push(relFromRoot); continue; }
       if (kind === 'skip') continue;
 
       if (kind === 'dir') {
@@ -1739,7 +1769,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (skipReason) {
           if (spec.discloseSkips) {
             skips.dirCount++;
-            if (skips.dirs.length < SKIP_SAMPLE_CAP) skips.dirs.push({ path: listedFromRoot, reason: reasonText(skipReason, entryPath) });
+            if (skips.dirs.length < SKIP_SAMPLE_CAP) skips.dirs.push({ path: relFromRoot, reason: reasonText(skipReason, entryPath) });
           }
           continue;
         }
@@ -1750,7 +1780,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         if (entry.isSymbolicLink()) {
           const target = realpathOrNull(entryPath);
           if (target === null) continue;
-          if (!isWithinRoot(target, rootReal)) { outOfRoot.push(listedFromRoot); continue; }
+          if (!isWithinRoot(target, rootReal)) { outOfRoot.push(relFromRoot); continue; }
         }
 
         const childHidden = hidden || entry.name.startsWith('.');
@@ -1758,11 +1788,13 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
           .push({ dir: entryPath, ancestors: childAncestors, hidden: childHidden });
       } else {
         if (spec.coveredElsewhere?.(entry.name, relFromRoot)) continue;
-        const rejectReason = spec.rejectFile(entry.name, relFromRoot, listedFromRoot);
+        const rejectReason = spec.rejectFile(entry.name, relFromRoot);
         if (rejectReason) {
           if (spec.discloseSkips) {
             skips.fileCount++;
-            if (skips.files.length < SKIP_SAMPLE_CAP) skips.files.push({ path: listedFromRoot, reason: reasonText(rejectReason, entryPath) });
+            if (joinsFileSample(skips.files, rejectReason === 'configNotListed')) {
+              skips.files.push({ path: relFromRoot, reason: reasonText(rejectReason, entryPath) });
+            }
           }
           continue;
         }
@@ -1775,7 +1807,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         // Checked AFTER the filters, so only a real candidate trips the cap.
         eligible += 1;
         if (files.length >= maxFiles) { truncated = true; continue; }
-        files.push(spec.collect(entryPath, listedFromRoot));
+        files.push(spec.collect(entryPath, relFromRoot));
       }
     }
   }
@@ -1830,7 +1862,7 @@ function walkConfigFiles(
     rejectFile: (name, rel) =>
       (!matchesConfigName(name, rel, matcher) && 'unsupportedType')
       || (!!(ignore && ignore.matches(rel)) && 'ignoreRule'),
-    collect: (_entryPath, listedRel) => listedRel,
+    collect: (_entryPath, rel) => rel,
   });
 }
 
@@ -1890,7 +1922,7 @@ function walkSourceFiles(
       return KEY_FILE_EXTENSIONS.has(ext) && !SOURCE_FILE_EXTENSIONS.has(ext)
         && (includeTests || !isTestFile(name));
     },
-    rejectFile: (name, rel, listedRel) => {
+    rejectFile: (name, rel) => {
       // #124 — a config-format file off the CONFIG_FILES list was "unsupported
       // file type" to this walk and unknown to the config walk: read by
       // neither, and a clean scan said nothing. It now takes the test and
@@ -1920,7 +1952,7 @@ function walkSourceFiles(
       if (ignore && ignore.matches(rel)) return byIgnoreRule(rel);
       if (configShaped && !includeConfig) {
         unscannedConfig.count++;
-        if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(listedRel);
+        if (unscannedConfig.files.length < SKIP_SAMPLE_CAP) unscannedConfig.files.push(rel);
         return 'configNotListed';
       }
       return false;

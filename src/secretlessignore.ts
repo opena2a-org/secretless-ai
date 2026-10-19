@@ -14,6 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { withSlashSeparators } from './display-safe';
 
 /**
  * @internal The user's ignore file, read from the root of the directory being
@@ -190,15 +191,18 @@ function compileAll(lines: readonly string[]): CompiledPattern[] {
 
 /**
  * Normalize a relative path for matching:
- * - Convert backslashes to forward slashes (Windows compatibility).
+ * - Convert the separator `sep` to forward slashes. On Windows that is `\`.
+ *   On Linux and macOS a backslash is a character a name can hold, so it is
+ *   kept: turning it into `/` made a rule for a file named `n\x.txt` match
+ *   nothing, and made `test/` match a file named `test\x.js` at the root.
  * - Remove leading `./`.
  * - Reject any input that traverses out of root via `..`.
  *
  * Returns null if the path is not safe to match (caller should treat as
  * "do not ignore" — we never block a scan due to a malformed path).
  */
-function normalize(relativePath: string): string | null {
-  let p = relativePath.replace(/\\/g, '/');
+function normalize(relativePath: string, sep: string): string | null {
+  let p = withSlashSeparators(relativePath, sep);
   while (p.startsWith('./')) p = p.slice(2);
   if (p === '.' || p === '') return null;
   // Reject traversal — caller is using us as a safety filter, not a sandbox,
@@ -266,14 +270,17 @@ export function loadSecretlessIgnore(rootDir: string, options?: LoadOptions): Ig
  * Build a matcher from an explicit list of pattern strings. Useful for
  * tests and for callers that want to compose patterns programmatically
  * without touching disk.
+ *
+ * `sep` is the separator of the paths the matcher is given: the platform's
+ * own by default, and a parameter so both platforms can be tested on either.
  */
-export function buildMatcher(patternLines: readonly string[]): IgnoreMatcher {
+export function buildMatcher(patternLines: readonly string[], sep: string = path.sep): IgnoreMatcher {
   const compiled = compileAll(patternLines);
 
   return {
     patternCount: compiled.length,
     matches(relativePath: string): boolean {
-      const norm = normalize(relativePath);
+      const norm = normalize(relativePath, sep);
       if (norm === null) return false;
       // Last-write-wins semantics: walk through compiled patterns in order
       // and let later negations override earlier ignores.

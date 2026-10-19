@@ -319,6 +319,104 @@ describe('scan prints names and excerpts from the repository escaped', () => {
     expect(fix).toContain(path.basename(outside));
   });
 
+  it.skipIf(process.platform === 'win32')('lists a config file whose name holds a backslash under that name, and Scan one: names it', async () => {
+    // The block for config files off the built-in list records its own path
+    // for each, apart from the list of files not opened.
+    const dir = tree({ 'src/app.ts': 'export {};\n', 'cfg\\x.json': '{}\n' });
+    await scanFromParent(dir);
+
+    const base = path.basename(dir);
+    const lines = printedLines();
+    const at = lines.indexOf('  1 config file not scanned: its name is not on the built-in config list, so not known to be clean.');
+    expect(at, lines.join(LF)).toBeGreaterThan(-1);
+    expect(lines[at + 1]).toBe(`    '${base}/cfg\\x.json'`);
+    expect(scanOneLines()).toEqual([`  Scan one: npx secretless-ai scan '${base}/cfg\\x.json'`]);
+
+    out.length = 0;
+    await runScan(dir, { json: true });
+    const doc = JSON.parse(out.join('\n'));
+    expect(doc.unscannedConfigFiles).toEqual(['cfg\\x.json']);
+  });
+
+  it.skipIf(process.platform === 'win32')('reports a finding in a file named on the command line under the name it has', async () => {
+    // Taken from cwd, the path had its backslash turned into `/`: `n/x.js`.
+    const dir = tree({ 'n\\x.js': `const t = "${TOKEN}";\n` });
+    cwdSpy.mockReturnValue(dir);
+    await runScan(path.join(dir, 'n\\x.js'), { json: true });
+    const doc = JSON.parse(out.join('\n'));
+
+    expect(doc.findings.map((f: { file: string }) => f.file)).toEqual(['n\\x.js']);
+  });
+
+  it.skipIf(process.platform === 'win32')('applies an ignore rule written for a name that holds a backslash', async () => {
+    // The rules were matched against the name with its backslash turned into
+    // `/`, so a rule for `n\x.js` or `k\x.pem` matched nothing and both files
+    // were read.
+    const dir = tree({
+      'src/app.ts': 'export {};\n',
+      'n\\x.js': 'export {};\n',
+      'k\\x.pem': 'not a key\n',
+      '.secretlessignore': 'n\\x.js\nk\\x.pem\n',
+    });
+    await scanFromParent(dir);
+
+    const base = path.basename(dir);
+    expect(printedLines()).toEqual(expect.arrayContaining([
+      `    '${base}/k\\x.pem': ignore rule (--no-ignore)`,
+      `    '${base}/n\\x.js': ignore rule (--no-ignore)`,
+    ]));
+
+    out.length = 0;
+    const code = await runScan(dir, { json: true });
+    const doc = JSON.parse(out.join('\n'));
+    expect(doc.skippedUnsupportedFiles).toEqual([
+      { path: '.secretlessignore', reason: 'unsupported file type' },
+      { path: 'k\\x.pem', reason: 'ignore rule (--no-ignore)' },
+      { path: 'n\\x.js', reason: 'ignore rule (--no-ignore)' },
+    ]);
+    expect(doc.summary.ignoreFileExcluded).toBe(2);
+    expect(code).toBe(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('reads a file at the root named `test\\y.js`, which the default `test/` rule does not cover', async () => {
+    // Matched as `test/y.js`, the file fell under that rule: it was listed as
+    // skipped by an ignore rule and the token in it was not reported.
+    const dir = tree({ 'test\\y.js': `const t = "${TOKEN}";\n` });
+    await scanFromParent(dir, { json: true });
+    const doc = JSON.parse(out.join('\n'));
+
+    expect(doc.findings.map((f: { file: string }) => f.file)).toEqual(['test\\y.js']);
+    expect(doc.skippedUnsupportedFiles).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('under --no-ignore, calls a finding a test fixture only for a path the default list covers', async () => {
+    const dir = tree({
+      'docs\\vhs\\y.js': `const t = "${TOKEN}";\n`,
+      'docs/vhs/z.js': `const t = "${TOKEN}";\n`,
+    });
+    await scanFromParent(dir, { json: true, noIgnore: true });
+    const doc = JSON.parse(out.join('\n'));
+
+    const fixture = Object.fromEntries(
+      doc.findings.map((f: { file: string; looksLikeFixture: boolean }) => [f.file, f.looksLikeFixture]),
+    );
+    expect(fixture).toEqual({ 'docs\\vhs\\y.js': false, 'docs/vhs/z.js': true });
+  });
+
+  it.skipIf(process.platform === 'win32')('does not read a file at the root named `.mcp\\config.json` as `.mcp/config.json`', async () => {
+    // The built-in list names `.mcp/config.json`. Matched with its backslash
+    // turned into `/`, the file at the root was read as that file; it is a
+    // config file off the list, like `secrets.json`.
+    const dir = tree({ '.mcp\\config.json': '{}\n', '.mcp/config.json': '{}\n' });
+    await scanFromParent(dir, { json: true });
+    const doc = JSON.parse(out.join('\n'));
+
+    expect(doc.unscannedConfigFiles).toEqual(['.mcp\\config.json']);
+    expect(doc.skippedUnsupportedFiles).toEqual([
+      { path: '.mcp\\config.json', reason: 'config file not on the built-in list (--include-config)' },
+    ]);
+  });
+
   it('vault scan prints a finding name escaped', async () => {
     const dir = tree({ [path.join(OSC_DIR, 'app.ts')]: `const t = "${TOKEN}";\n` });
     cwdSpy.mockReturnValue(dir);
