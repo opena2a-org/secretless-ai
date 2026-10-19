@@ -145,11 +145,30 @@ describe('a settings file whose keys collide is reported as unknown, not as zero
   const THREE_DENY = '{"permissions":{"deny":["Read(./alpha/**)","Read(./bravo/**)","Bash(charlie --list)"]}}';
   const REPEATED = '{"permissions":{"deny":["Read(./alpha/**)","Read(./bravo/**)","Bash(charlie --list)"]},"permissions":{"deny":[]}}';
 
+  // `status` also reads the machine it runs on: it walks ~/.claude/projects,
+  // scans the newest transcripts there and reads the user-level settings. None
+  // of that is what these tests assert, and all of it is paid on every call.
+  // On a machine whose sessions write transcripts of tens of megabytes one
+  // call measured ~220 ms, and the three-state test, three calls, crossed
+  // vitest's 5,000 ms cap under load. An empty HOME gives the same
+  // project-local answers at ~7 ms a call, and the assertions on the human
+  // report below no longer depend on what the user-level settings hold.
+  async function withEmptyHome<T>(fn: () => Promise<T>): Promise<T> {
+    const savedHome = process.env.HOME;
+    process.env.HOME = tmpProject();
+    try {
+      return await fn();
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+  }
+
   async function statusOf(settings: string, extra: Record<string, string> = {}) {
     const dir = tmpProject({ '.claude/settings.json': settings, ...extra });
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
-    await runStatus(dir, { json: true });
+    await withEmptyHome(() => runStatus(dir, { json: true }));
     return JSON.parse(lines.join('\n'));
   }
 
@@ -199,7 +218,7 @@ describe('a settings file whose keys collide is reported as unknown, not as zero
     });
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
-    await runStatus(dir);
+    await withEmptyHome(() => runStatus(dir));
     const out = lines.join('\n');
 
     expect(out).not.toMatch(/✓ Claude Code hook installed/);

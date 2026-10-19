@@ -318,20 +318,32 @@ describe('near-miss hint work is bounded (CI review finding, measured)', () => {
     // The realistic shape: stored secret names look alike. The row cutoff is no
     // help here — every row stays under the threshold, so the cutoff never
     // fires and the whole name is walked. Only the band bounds this.
-    // Measured: 15,603,880 cells banded; 202,749,440 with the band removed.
+    //
+    // The store holds 500 names. The property is per comparison (the band caps
+    // the cells each one evaluates), so the size of the store sets the cost of
+    // the test and nothing else. Measured: 500 names evaluate 1,570,000 cells
+    // banded and 5,000 names 15,603,880, the same share of the ceiling below.
+    // The 5,000-name store ran this test's two passes in ~310 ms idle, which a
+    // loaded machine stretched past vitest's 5,000 ms cap (2,354 ms under a
+    // load of 50; twice timed out in the pre-push suite). The band-removed
+    // figure was measured at 5,000 names and is tabled in near-miss.ts:
+    // 202,749,440 cells, thirteen times the banded count, a ratio the size of
+    // the store does not change.
     const names: string[] = [];
-    for (let i = 0; i < 5000; i++) names.push('A'.repeat(60) + String(i).padStart(4, '0'));
+    for (let i = 0; i < 500; i++) names.push('A'.repeat(60) + String(i).padStart(4, '0'));
     const requested = requestedLike('A'.repeat(60));
 
     // The bound is the band's own ceiling, not a round number with room in it:
     // at most (2 * NEAR_MISS_MAX + 1) = 5 cells per row, at most 64 rows because
-    // of the length cap, over MAX_HINTED * 5000 = 50,000 comparisons. A looser
-    // bound is not free — at 20,000,000 a band widened by a single cell scores
-    // 18.7M and slips through. Written as a literal on purpose: raising
-    // NEAR_MISS_MAX must fail here and be re-measured, not silently re-derive
-    // a wider bound from the value it just changed.
+    // of the length cap, over MAX_HINTED * 500 = 5,000 comparisons. A looser
+    // bound is not free — a band one cell wider evaluates 6 cells per row, by
+    // that arithmetic about 1.88M here against the 1.6M bound (measured at
+    // 5,000 names: 18.7M, which a round 20,000,000 bound let through). Written
+    // as a literal on purpose: raising NEAR_MISS_MAX must fail here and be
+    // re-measured, not silently re-derive a wider bound from the value it just
+    // changed.
     const cells = await cellsFor(names, requested);
-    expect(cells).toBeLessThanOrEqual(5 * 64 * 50_000);
+    expect(cells).toBeLessThanOrEqual(5 * 64 * 5_000);
     // Same input, same count — no clock, no tolerance, no flake.
     expect(await cellsFor(names, requested)).toBe(cells);
   });

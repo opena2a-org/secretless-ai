@@ -139,11 +139,15 @@ describe('guard keys on the file a command opens, not on text it only carries', 
 
   // Without python3 nothing is reduced, so the guard falls back to matching the
   // whole command and refuses the pattern-only shapes as it always did. The PATH
-  // holds no sed, so the fallback extraction must not need it.
+  // holds the tools the other without-python3 tests give the guard, sed among
+  // them. It used to leave sed out. The verdicts were the same either way
+  // (measured over these shapes with and without it), but the guard calls sed
+  // by name when it builds a deny reason, so bash printed `sed: command not
+  // found` into every run of the suite for a case no verdict depended on.
   it('without python3 the pattern-only shapes are refused, not let through', () => {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-guard-nopy-'));
     try {
-      for (const tool of ['cat', 'grep', 'head', 'cut', 'sort', 'basename', 'tr']) {
+      for (const tool of ['cat', 'grep', 'head', 'cut', 'sed', 'sort', 'basename', 'tr']) {
         const real = execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim();
         fs.symlinkSync(real, path.join(bin, tool));
       }
