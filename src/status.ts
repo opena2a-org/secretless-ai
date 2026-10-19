@@ -11,7 +11,7 @@ import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
 import { defaultAnnotationsPath, readAnnotations } from './secret-annotations';
 import { needsRotation } from './secret-exposure';
-import { stopHookTargetMissing } from './init';
+import { stopHookTargetMissing, compareManagedHook, type ManagedHookKind, type ManagedHookState } from './init';
 
 /**
  * How many of the most recent transcripts `status` reads. A full pass is a
@@ -42,6 +42,12 @@ export interface UserSettingsStatus {
    * the home directory where `init` ran. Wired is not the same as running.
    */
   guardReachable: boolean;
+  /**
+   * The guard script this file runs from this project, compared with the one
+   * this version of `init` writes, as `StatusResult.guardScript` is;
+   * `missing` when it runs none that exists.
+   */
+  guardScript: ManagedHookState;
   /** Null when the file could not be read as written, as for the project. */
   denyRuleCount: number | null;
   stopHookInstalled: boolean;
@@ -102,6 +108,31 @@ export interface StatusResult {
    * here enforces nothing: `hookInstalled` alone is not the hook.
    */
   hookWired: boolean;
+  /**
+   * The guard script compared, byte for byte, with the text this version of
+   * `init` writes for it: the script `.claude/settings.json` runs, or
+   * `.claude/hooks/secretless-guard.sh` when it runs none. `hookInstalled` and
+   * `hookWired` say the script is there and run; this says whether it is the
+   * one `init` wrote. A one-line edit can make it allow every read.
+   */
+  guardScript: ManagedHookState;
+  /**
+   * The PostToolUse output check a settings file runs in this project, this
+   * project's settings first, compared the same way; `missing` when none runs.
+   * It carries the credential patterns of the version that wrote it.
+   */
+  outputCheck: ManagedHookState;
+  /**
+   * The scripts behind `guardScript`, `outputCheck` and
+   * `userSettings.guardScript`, for the rows that name them. `--json` carries
+   * the states only.
+   */
+  hookScripts: {
+    guard: HookScript;
+    outputCheck: HookScript & { scope: 'project' | 'user' | null };
+    /** Null when there is no user-level settings file to read. */
+    userGuard: HookScript | null;
+  };
   /**
    * Deny patterns in effect, or NULL when the count was not measured.
    *
@@ -180,6 +211,15 @@ export interface StatusResult {
    * when that file could not be read: a count over an unread file is not one.
    */
   exposuresOpen: number | null;
+}
+
+/** A generated hook script as `status` compared it. */
+export interface HookScript {
+  state: ManagedHookState;
+  /** The script compared. Unset when no settings file runs one that exists. */
+  file?: string;
+  /** Why it could not be compared, when `state` is `unreadable`. */
+  reason?: string;
 }
 
 /** A Claude Code settings file, read the way `status` reports on one. */
@@ -310,16 +350,45 @@ function isFile(p: string): boolean {
 }
 
 /**
+ * Whether a settings object runs a command naming `marker` for one hook event,
+ * and each script such a command names that exists when it runs from this
+ * project.
+ */
+function wiredScripts(settings: any, event: string, marker: string, projectDir: string, homeDir: string): { wired: boolean; scripts: string[] } {
+  const commands = hookCommands(settings, event).filter(c => c.includes(marker));
+  const scripts: string[] = [];
+  for (const c of commands) {
+    const script = hookScriptPath(c, marker, projectDir, homeDir);
+    if (script !== null && isFile(script) && !scripts.includes(script)) scripts.push(script);
+  }
+  return { wired: commands.length > 0, scripts };
+}
+
+/**
  * Whether a settings object wires the guard into PreToolUse, and whether a
  * command it wires names a script that exists when it runs from this project.
  */
-function guardWiring(settings: any, projectDir: string, homeDir: string): { wired: boolean; reachable: boolean } {
-  const commands = hookCommands(settings, 'PreToolUse').filter(c => c.includes('secretless-guard'));
-  const reachable = commands.some(c => {
-    const script = hookScriptPath(c, 'secretless-guard', projectDir, homeDir);
-    return script !== null && isFile(script);
-  });
-  return { wired: commands.length > 0, reachable };
+function guardWiring(settings: any, projectDir: string, homeDir: string): { wired: boolean; reachable: boolean; scripts: string[] } {
+  const { wired, scripts } = wiredScripts(settings, 'PreToolUse', 'secretless-guard', projectDir, homeDir);
+  return { wired, reachable: scripts.length > 0, scripts };
+}
+
+/** The output check scripts a settings object runs from PostToolUse. */
+function outputCheckScripts(settings: any, projectDir: string, homeDir: string): string[] {
+  return wiredScripts(settings, 'PostToolUse', 'secretless-output-check', projectDir, homeDir).scripts;
+}
+
+/**
+ * The scripts a settings file runs, compared with what `init` writes for
+ * them. Claude Code runs each one, so one that differs is reported first,
+ * then one that could not be compared; `missing` when there are none.
+ */
+function compareScripts(scripts: string[], kind: ManagedHookKind): HookScript {
+  const read: HookScript[] = scripts.map(file => ({ file, ...compareManagedHook(file, kind) }));
+  return read.find(r => r.state === 'differs')
+    ?? read.find(r => r.state !== 'current')
+    ?? read[0]
+    ?? { state: 'missing' };
 }
 
 /**
@@ -432,6 +501,13 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     ignoreFileTools: [],
     hookInstalled: false,
     hookWired: false,
+    guardScript: 'missing',
+    outputCheck: 'missing',
+    hookScripts: {
+      guard: { state: 'missing' },
+      outputCheck: { state: 'missing', scope: null },
+      userGuard: null,
+    },
     denyRuleCount: 0,
     secretsFound: 0,
     scanIncomplete: false,
@@ -450,6 +526,12 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
   // Check Claude Code hook
   const hookPath = path.join(projectDir, '.claude', 'hooks', 'secretless-guard.sh');
   result.hookInstalled = fs.existsSync(hookPath);
+  // What the settings files run, read below. The guard and the output check
+  // are compared with the text this version writes, not taken from their
+  // existence: they are what Claude Code executes.
+  let guardScripts: string[] = [];
+  let outputChecks: string[] = [];
+  let outputCheckScope: 'project' | 'user' | null = null;
 
   // Check Claude Code deny rules and Stop hook
   const settingsPath = path.join(projectDir, '.claude', 'settings.json');
@@ -459,7 +541,11 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     if (read.unreadable) result.settingsUnreadable = read.unreadable;
     if (read.ambiguous) result.settingsAmbiguous = read.ambiguous;
     result.denyRuleCount = read.denyRuleCount;
-    result.hookWired = guardWiring(read.settings, projectDir, homeDir).reachable;
+    const guard = guardWiring(read.settings, projectDir, homeDir);
+    result.hookWired = guard.reachable;
+    guardScripts = guard.scripts;
+    outputChecks = outputCheckScripts(read.settings, projectDir, homeDir);
+    if (outputChecks.length > 0) outputCheckScope = 'project';
 
     // Check for Stop hook
     if (hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'))) {
@@ -482,11 +568,20 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     const guardReachable = guard.reachable;
     const stopHookInstalled = hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'));
     const secretlessInstalled = guard.wired || stopHookInstalled;
+    // The guard this file runs from here: the project's own script for the
+    // "$CLAUDE_PROJECT_DIR" form `init` writes, the one in the home directory
+    // for a `$HOME` or `~` form.
+    result.hookScripts.userGuard = compareScripts(guard.scripts, 'guard');
+    if (outputCheckScope === null) {
+      outputChecks = outputCheckScripts(read.settings, projectDir, homeDir);
+      if (outputChecks.length > 0) outputCheckScope = 'user';
+    }
     const user: UserSettingsStatus = {
       path: USER_SETTINGS_PATH,
       secretlessInstalled,
       guardWired: guard.wired,
       guardReachable,
+      guardScript: result.hookScripts.userGuard.state,
       denyRuleCount: read.denyRuleCount,
       stopHookInstalled,
       stopHookTargetMissing: stopHookInstalled ? stopTargetMissing(read.settings) : null,
@@ -505,6 +600,15 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       result.transcriptProtection.stopHookTargetMissing = user.stopHookTargetMissing;
     }
   }
+
+  // With no guard run from the project's settings, the script `init` writes
+  // there is the one compared: `hookInstalled` reads the same file.
+  result.hookScripts.guard = guardScripts.length > 0
+    ? compareScripts(guardScripts, 'guard')
+    : { file: hookPath, ...compareManagedHook(hookPath, 'guard') };
+  result.hookScripts.outputCheck = { ...compareScripts(outputChecks, 'output-check'), scope: outputCheckScope };
+  result.guardScript = result.hookScripts.guard.state;
+  result.outputCheck = result.hookScripts.outputCheck.state;
 
   // Check which tools have Secretless AI instructions: a tool counts once any
   // file `init` writes its block into carries it. Read through the detector's

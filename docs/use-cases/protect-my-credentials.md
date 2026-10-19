@@ -78,6 +78,7 @@ Expected output in the project from Step 1:
 
   ── Observations ────────────────────────────────────────────
   ✓ Claude Code hook installed (.claude/settings.json — 147 deny patterns)
+  ✓ Output check hook installed (PostToolUse)
   ✓ Stop hook installed (transcript redaction)
   ✓ Tool instructions: Claude Code, Cursor (advisory, not enforced)
   ✓ No credentials detected in scanned files

@@ -102,7 +102,8 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
   `--json` finding (`ruleId` is the `patternId`); the same exit codes as `--json`.
   `--format yaml`, and `--json` beside `--format sarif`, are refused with exit 2.
 - `status --json`: single JSON document (`{tool, version, isProtected,
-  protectionScope, enforcement, hookInstalled, hookWired, denyRuleCount, detectedTools,
+  protectionScope, enforcement, hookInstalled, hookWired, guardScript, outputCheck,
+  denyRuleCount, detectedTools,
   configuredTools, ignoreFileTools, secretsFound, scanIncomplete, settingsUnreadable,
   settingsAmbiguous, userSettings, transcriptProtection, exposuresOpen, gitCredentials, backend,
   configuredBackend, gcpProject, session, broker, summary}`).
