@@ -7,7 +7,7 @@
  */
 
 import * as path from 'path';
-import { discoverMcpConfigsDetailed } from './discover';
+import { discoverMcpConfigsDetailed, rewrittenByProtectMcp } from './discover';
 import type { UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
 import { McpVault } from './vault';
@@ -30,6 +30,8 @@ export interface InjectionWarning {
 export interface ProtectOptions {
   /** Override home directory (for testing) */
   homeDir?: string;
+  /** Override project directory (for testing). Defaults to process.cwd(). */
+  projectDir?: string;
   /** Override data directory for vault + backups (default: ~/.secretless-ai) */
   dataDir?: string;
   /** Absolute path to the secretless-mcp wrapper */
@@ -48,7 +50,17 @@ export interface ProtectedServer {
 export interface UncheckedMcpConfig {
   client: string;
   filePath: string;
+  /** The path from the project directory, for a config found there. Absent for a config in the home directory. */
+  projectPath?: string;
   servers: UncheckedMcpServer[];
+}
+
+/** A project-level config protect-mcp leaves as it is (see rewrittenByProtectMcp). */
+export interface ProjectLevelMcpConfig {
+  client: string;
+  filePath: string;
+  /** The path from the project directory. */
+  projectPath: string;
 }
 
 export interface ProtectResult {
@@ -63,6 +75,11 @@ export interface ProtectResult {
   unparsed: UnparsedMcpConfig[];
   /** Server entries with a part that could not be read: a secret in that part was not found or protected. */
   unchecked: UncheckedMcpConfig[];
+  /**
+   * Project-level configs left as they are, parsed or not: nothing in them was
+   * checked or protected. `mcp-status` lists their servers.
+   */
+  projectLevel: ProjectLevelMcpConfig[];
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +89,8 @@ export interface ProtectResult {
 /**
  * Main orchestrator: discover → classify → encrypt → rewrite.
  *
- * 1. Discovers all MCP config files across supported clients.
+ * 1. Discovers all MCP config files across supported clients. A project-level
+ *    config other than .mcp.json is returned in `projectLevel`, unchanged.
  * 2. For each server entry, classifies env vars into secrets vs non-secrets.
  * 3. Stores secrets in the encrypted vault.
  * 4. Rewrites config files to use the secretless-mcp wrapper.
@@ -105,8 +123,17 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     ...(options.backendType ? { backendType: options.backendType } : {}),
   });
 
-  // 1. Discover all MCP configs
-  const { configs, unparsed } = discoverMcpConfigsDetailed(home);
+  // 1. Discover all MCP configs. A project-level config other than .mcp.json
+  // is left as it is and returned by name (see rewrittenByProtectMcp).
+  const discovered = discoverMcpConfigsDetailed(home, options.projectDir);
+  const configs = discovered.configs.filter(rewrittenByProtectMcp);
+  const unparsed = discovered.unparsed.filter(rewrittenByProtectMcp);
+  const projectLevel: ProjectLevelMcpConfig[] = [];
+  for (const { client, filePath, projectPath } of [...discovered.configs, ...discovered.unparsed]) {
+    if (projectPath !== undefined && !rewrittenByProtectMcp({ projectPath })) {
+      projectLevel.push({ client, filePath, projectPath });
+    }
+  }
 
   const result: ProtectResult = {
     clientsScanned: configs.length,
@@ -118,7 +145,13 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     unparsed,
     unchecked: configs
       .filter((config) => config.unchecked.length > 0)
-      .map((config) => ({ client: config.client, filePath: config.filePath, servers: config.unchecked })),
+      .map(({ client, filePath, projectPath, unchecked }) => ({
+        client,
+        filePath,
+        ...(projectPath === undefined ? {} : { projectPath }),
+        servers: unchecked,
+      })),
+    projectLevel,
   };
 
   // 2. For each config: classify, encrypt, rewrite

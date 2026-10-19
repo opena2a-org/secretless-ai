@@ -254,3 +254,120 @@ describe('protectMcp', () => {
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
   });
 });
+
+describe('protectMcp — project-level client configs', () => {
+  let homeDir: string;
+  let dataDir: string;
+  let projectDir: string;
+
+  beforeEach(() => {
+    homeDir = tmpDir();
+    dataDir = tmpDir();
+    projectDir = tmpDir();
+  });
+  afterEach(() => {
+    cleanup(homeDir);
+    cleanup(dataDir);
+    cleanup(projectDir);
+  });
+
+  // A Slack-shaped bot token, built at runtime so the file holds no token literal.
+  const slackToken = ['xox', 'b-1234567890-1234567890-', 'FAKEabcdefghijklmnopqrst'].join('');
+
+  function write(baseDir: string, relativePath: string, content: string): string {
+    const fullPath = path.join(baseDir, relativePath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content);
+    return fullPath;
+  }
+
+  const protect = () => protectMcp({
+    homeDir,
+    dataDir,
+    projectDir,
+    wrapperPath: '/usr/local/bin/secretless-mcp',
+    backendType: 'local',
+  });
+
+  it('leaves .cursor/mcp.json and .vscode/mcp.json in the project as they are, and returns them', async () => {
+    const cursor = JSON.stringify({ mcpServers: { slack: { command: 'npx', env: { SLACK_BOT_TOKEN: slackToken } } } });
+    const vscode = JSON.stringify({ servers: { slack: { type: 'stdio', command: 'npx', env: { SLACK_BOT_TOKEN: slackToken } } } });
+    const cursorPath = write(projectDir, '.cursor/mcp.json', cursor);
+    const vscodePath = write(projectDir, '.vscode/mcp.json', vscode);
+
+    const result = await protect();
+
+    expect(result.clientsScanned).toBe(0);
+    expect(result.secretsFound).toBe(0);
+    expect(result.servers).toEqual([]);
+    expect(result.projectLevel).toEqual([
+      { client: 'cursor', filePath: cursorPath, projectPath: path.join('.cursor', 'mcp.json') },
+      { client: 'vscode', filePath: vscodePath, projectPath: path.join('.vscode', 'mcp.json') },
+    ]);
+    expect(fs.readFileSync(cursorPath, 'utf-8')).toBe(cursor);
+    expect(fs.readFileSync(vscodePath, 'utf-8')).toBe(vscode);
+  });
+
+  it('returns a project-level config it could not parse with the others it leaves, not as one to fix and protect', async () => {
+    const configPath = write(projectDir, 'mcp.json', '{\n  "mcpServers": {\n    "gh": { "command": "npx" },\n  }\n}\n');
+
+    const result = await protect();
+
+    expect(result.unparsed).toEqual([]);
+    expect(result.projectLevel).toEqual([{ client: 'unknown', filePath: configPath, projectPath: 'mcp.json' }]);
+  });
+
+  it('CONTROL: still rewrites the project .mcp.json', async () => {
+    const configPath = write(
+      projectDir,
+      '.mcp.json',
+      JSON.stringify({ mcpServers: { slack: { command: 'npx', env: { SLACK_BOT_TOKEN: slackToken } } } }),
+    );
+
+    const result = await protect();
+
+    expect(result.clientsScanned).toBe(1);
+    expect(result.secretsFound).toBe(1);
+    expect(result.serversProtected).toBe(1);
+    expect(result.projectLevel).toEqual([]);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(config.mcpServers.slack.command).toBe('/usr/local/bin/secretless-mcp');
+    expect(config.mcpServers.slack.env).not.toHaveProperty('SLACK_BOT_TOKEN');
+  });
+
+  it('rewrites a home VS Code config under the servers key it read the secret from', async () => {
+    const configPath = write(
+      homeDir,
+      '.vscode/mcp.json',
+      JSON.stringify({ servers: { slack: { type: 'stdio', command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: slackToken, SLACK_TEAM_ID: 'T0FAKE' } } } }),
+    );
+
+    const result = await protect();
+
+    expect(result.servers).toEqual([{ client: 'vscode', server: 'slack', secretKeys: ['SLACK_BOT_TOKEN'] }]);
+    expect(result.serversProtected).toBe(1);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(config).not.toHaveProperty('mcpServers');
+    expect(config.servers.slack.type).toBe('stdio');
+    expect(config.servers.slack.command).toBe('/usr/local/bin/secretless-mcp');
+    expect(config.servers.slack.args).toEqual(['--server', 'slack', '--client', 'vscode', '--', 'npx', 'slack-mcp']);
+    expect(config.servers.slack.env).toEqual({ SLACK_TEAM_ID: 'T0FAKE' });
+  });
+
+  it('rewrites a config whose server map is under mcp-servers, the key its secret was read from', async () => {
+    const configPath = write(
+      homeDir,
+      '.cursor/mcp.json',
+      JSON.stringify({ 'mcp-servers': { slack: { command: 'npx', env: { SLACK_BOT_TOKEN: slackToken } } } }),
+    );
+
+    const result = await protect();
+
+    expect(result.secretsFound).toBe(1);
+    expect(result.serversProtected).toBe(1);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(config['mcp-servers'].slack.command).toBe('/usr/local/bin/secretless-mcp');
+    expect(config['mcp-servers'].slack.env).toEqual({});
+    expect(fs.readFileSync(configPath, 'utf-8')).not.toContain(slackToken);
+  });
+});

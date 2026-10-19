@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { protectMcp } from '../mcp/protect';
-import { discoverMcpConfigsDetailed } from '../mcp/discover';
+import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
 import type { UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
@@ -15,13 +15,37 @@ function getWrapperPath(): string {
 }
 
 /**
+ * A config as output names it: a home config by its client and full path, a
+ * project-level config by its client and its path from the project, and a
+ * bare mcp.json, whose client is not established, by that path alone.
+ */
+function configLabel(config: { client: string; filePath: string; projectPath?: string }): string {
+  const where = config.projectPath ?? config.filePath;
+  return config.client === 'unknown' ? where : `${config.client} (${where})`;
+}
+
+/**
+ * The answer when no config was found: every path looked in, generated from
+ * the discovery list (home paths with ~, project paths from the project
+ * directory), then the verdict.
+ */
+function printNoConfigFound(): void {
+  console.log('  Looked in:');
+  for (const location of mcpConfigLocations()) {
+    console.log(`    ${location.scope === 'home' ? path.join('~', location.relativePath) : location.relativePath}`);
+  }
+  console.log();
+  console.log('  No MCP configurations found.\n');
+}
+
+/**
  * List each MCP config that exists but could not be read or parsed. A command
  * that passes over one names it: the servers in it, and any plaintext secrets
  * there, were not acted on, so leaving it out reads as clean or absent.
  */
 function printUnparsedConfigs(unparsed: UnparsedMcpConfig[], marker: string): void {
   for (const config of unparsed) {
-    console.log(`  ${config.client} (${config.filePath})`);
+    console.log(`  ${configLabel(config)}`);
     console.log(`    ? ${marker}: ${config.reason}`);
     console.log();
   }
@@ -70,31 +94,41 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 
   try {
     const result = await protectMcp({ wrapperPath, backendType });
-    const { unparsed, unchecked } = result;
+    const { unparsed, unchecked, projectLevel } = result;
     const notChecked = () => {
       if (unchecked.length > 0) {
         let servers = 0;
         for (const config of unchecked) {
-          console.log(`  ${config.client} (${config.filePath})`);
+          console.log(`  ${configLabel(config)}`);
           printUncheckedServers(config.servers);
           console.log();
           servers += config.servers.length;
         }
         printUncheckedFix(servers, 'protect-mcp');
       }
-      if (unparsed.length === 0) return;
-      printUnparsedConfigs(unparsed, 'not checked');
-      printUnparsedFix(unparsed.length, 'the servers in them were not checked', 'protect-mcp');
+      if (unparsed.length > 0) {
+        printUnparsedConfigs(unparsed, 'not checked');
+        printUnparsedFix(unparsed.length, 'the servers in them were not checked', 'protect-mcp');
+      }
+      // A project-level config is left as it is, so `mcp-status` is where its servers are listed.
+      if (projectLevel.length > 0) {
+        for (const config of projectLevel) {
+          console.log(`  ${configLabel(config)}`);
+          console.log('    ? not checked: project-level config: see mcp-status');
+          console.log();
+        }
+        console.log(`  ${projectLevel.length} project-level config(s) were not checked, so no secret in them was encrypted.`);
+        console.log("  protect-mcp would write this machine's wrapper path into them, and these files are usually committed.");
+        console.log('  Run `npx secretless-ai mcp-status` to list their servers.\n');
+      }
     };
 
     if (result.clientsScanned === 0) {
-      if (unparsed.length > 0) {
+      if (unparsed.length > 0 || projectLevel.length > 0) {
         notChecked();
         return 0;
       }
-      console.log('  No MCP configurations found.\n');
-      console.log('  Looked for configs from: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf');
-      console.log('  Supported clients: Claude Desktop, Cursor, Claude Code, VS Code, Windsurf\n');
+      printNoConfigFound();
       return 0;
     }
 
@@ -110,6 +144,11 @@ export async function runProtectMcp(args: string[]): Promise<number> {
       }
       if (unparsed.length > 0) {
         console.log('  No plaintext secrets found in the MCP configs that were read.\n');
+        notChecked();
+        return 0;
+      }
+      if (projectLevel.length > 0) {
+        console.log('  No plaintext secrets found in the MCP configs that were checked.\n');
         notChecked();
         return 0;
       }
@@ -163,30 +202,40 @@ export function runMcpStatus(): number {
   const { configs, unparsed } = discoverMcpConfigsDetailed();
 
   if (configs.length === 0 && unparsed.length === 0) {
-    console.log('  No MCP configurations found.\n');
+    printNoConfigFound();
     return 0;
   }
 
   let protectedCount = 0;
   let exposedCount = 0;
   let uncheckedCount = 0;
+  // Exposed servers in the project-level configs protect-mcp leaves as they are.
+  let leftExposedCount = 0;
+  const leftExposedFiles = new Set<string>();
 
   for (const config of configs) {
-    console.log(`  ${config.client} (${config.filePath})`);
+    console.log(`  ${configLabel(config)}`);
     // A server with a part that could not be read is never listed as clean:
     // a plaintext secret in that part was not looked for.
     const unchecked = new Set(config.unchecked.map((server) => server.name));
+    // Names are written as escapes where they hold a control character: a
+    // project-level config arrives with the repository it is in.
     for (const server of config.servers) {
       if (server.alreadyProtected) {
-        console.log(`    + ${server.name}: protected`);
+        console.log(`    + ${listedName(server.name)}: protected`);
         protectedCount++;
       } else {
         const secretCount = Object.keys(classifyEnvVars(server.env).secrets).length;
         if (secretCount > 0) {
-          console.log(`    ! ${server.name}: EXPOSED (${secretCount} plaintext secret(s))`);
-          exposedCount++;
+          console.log(`    ! ${listedName(server.name)}: EXPOSED (${secretCount} plaintext secret(s))`);
+          if (rewrittenByProtectMcp(config)) {
+            exposedCount++;
+          } else {
+            leftExposedCount++;
+            leftExposedFiles.add(config.projectPath ?? config.filePath);
+          }
         } else if (!unchecked.has(server.name)) {
-          console.log(`    * ${server.name}: clean (no secrets in env)`);
+          console.log(`    * ${listedName(server.name)}: clean (no secrets in env)`);
         }
       }
     }
@@ -204,6 +253,13 @@ export function runMcpStatus(): number {
   } else if (protectedCount > 0) {
     console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
   }
+  if (leftExposedCount > 0) {
+    console.log(
+      `  ${leftExposedCount} exposed server(s) are in project-level configs that protect-mcp does not rewrite: ${[...leftExposedFiles].join(', ')}.`,
+    );
+    console.log("  protect-mcp would write this machine's wrapper path into them, and these files are usually committed.");
+    console.log('  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.\n');
+  }
   if (uncheckedCount > 0) {
     printUncheckedFix(uncheckedCount, 'mcp-status');
   }
@@ -220,7 +276,11 @@ export function runMcpUnprotect(): number {
   const home = os.homedir();
   const backupDir = path.join(home, '.secretless-ai', 'mcp-backups');
 
-  const { configs, unparsed } = discoverMcpConfigsDetailed();
+  // protect-mcp leaves a project-level config other than .mcp.json as it is,
+  // so there is no backup of one to restore.
+  const discovered = discoverMcpConfigsDetailed();
+  const configs = discovered.configs.filter(rewrittenByProtectMcp);
+  const unparsed = discovered.unparsed.filter(rewrittenByProtectMcp);
   let restored = 0;
 
   for (const config of configs) {

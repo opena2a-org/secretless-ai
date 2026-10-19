@@ -37,7 +37,9 @@ npx secretless-ai protect-mcp
   Run `npx secretless-ai mcp-unprotect` to restore originals.
 ```
 
-Scans configs across Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf. Secrets move to your configured backend. Non-secret env vars (URLs, regions) stay untouched.
+Scans the configs of Claude Desktop, Cursor, Claude Code, VS Code, and Windsurf in your home directory, and `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, `.windsurf/mcp.json` and `mcp.json` in the current directory. Secrets move to your configured backend. Non-secret env vars (URLs, regions) stay untouched.
+
+Of the project-level configs, `protect-mcp` rewrites `.mcp.json` only. It writes this machine's wrapper path into each config it rewrites, and a project-level config is usually committed, so it lists the others as not checked and leaves them as they are; `mcp-status` shows their servers. When either command finds no config, it lists every path it looked in.
 
 ```bash
 npx secretless-ai protect-mcp --backend 1password   # store MCP secrets in 1Password

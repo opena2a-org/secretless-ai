@@ -9,6 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { serverMapKey } from './discover';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -132,7 +133,8 @@ function writeManifest(backupDir: string, manifest: Record<string, string>): voi
 /**
  * Rewrite an MCP config file to wrap server commands with the secretless-mcp wrapper.
  *
- * For each server entry in `mcpServers`:
+ * For each server entry in the server map, under the key serverMapKey names
+ * (the key discovery read the secrets from):
  * - Skips servers that are already protected
  * - Skips servers with no secrets in `serverSecrets`
  * - Replaces the command with `wrapperPath`
@@ -161,7 +163,8 @@ export function rewriteConfig(
   const content = fs.readFileSync(configPath, 'utf-8');
   const config = JSON.parse(content) as Record<string, unknown>;
 
-  const mcpServers = config['mcpServers'] as Record<string, Record<string, unknown>> | undefined;
+  const key = serverMapKey(config);
+  const mcpServers = (key === undefined ? undefined : config[key]) as Record<string, Record<string, unknown>> | undefined;
   if (!mcpServers || typeof mcpServers !== 'object') {
     return { serversRewritten: 0, backupPath: null };
   }

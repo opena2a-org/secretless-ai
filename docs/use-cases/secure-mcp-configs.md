@@ -7,15 +7,19 @@ MCP (Model Context Protocol) client configs often hold API keys in plaintext JSO
 
 ## Where MCP credentials live
 
-Each AI tool stores MCP server configs in a different location:
+Each AI tool stores MCP server configs in a different location. `protect-mcp` and `mcp-status` look in these paths, under your home directory (`~`) and under the directory you run them in:
 
-| Client | Config Path |
-|--------|-------------|
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
-| Claude Code | `.claude/settings.json` or `~/.claude/settings.json` |
-| Cursor | `~/.cursor/mcp.json` |
-| VS Code | `.vscode/mcp.json` |
-| Windsurf | `~/.windsurf/mcp.json` |
+| Client | Home directory | Project |
+|--------|----------------|---------|
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `~/.config/Claude/claude_desktop_config.json` (Linux) | |
+| Claude Code | `~/.claude/settings.json`, `~/.claude/settings.local.json` | `.mcp.json` |
+| Cursor | `~/.cursor/mcp.json` | `.cursor/mcp.json` |
+| VS Code | `~/.vscode/mcp.json` | `.vscode/mcp.json` |
+| Windsurf | `~/.windsurf/mcp.json` | `.windsurf/mcp.json` |
+
+They read `mcp.json` in the project too. Which client writes a bare `mcp.json` is not established, so it is shown by its path alone, as `scan` shows it. When neither command finds a config, it lists every path it looked in.
+
+A project-level config is usually committed with the repository. `protect-mcp` rewrites `.mcp.json` and leaves the other project-level configs as they are, because the wrapper path it writes belongs to one machine. It lists them as not checked, and `mcp-status` shows their servers.
 
 A typical MCP config looks like this:
 
