@@ -421,8 +421,11 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     },
     notes: [
       '--check-prompt compares the prompt with the credential catalog and with the values',
-      'of the stored secrets, in this process and with no network call. A refusal names',
-      'the pattern or the stored secret, never the value. A variable reference such as',
+      'of the stored secrets, in this process. The stored values are read through the',
+      'configured backend: a local read for the local store and the OS keychain; for Vault',
+      'and GCP Secret Manager a request to that service, and for 1Password a run of the op',
+      'CLI, whenever the value cache (300 s by default) has expired. A refusal names the',
+      'pattern or the stored secret, never the value. A variable reference such as',
       '$API_KEY, or a documented example key, is not refused. init registers it for',
       'Claude Code.',
     ],

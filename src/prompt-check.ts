@@ -8,12 +8,18 @@
  * reached the provider it has to be rotated; refusing the prompt is the one
  * point where nothing needs rotating.
  *
- * Two comparisons, both in this process and with no network call:
+ * Two comparisons, both made in this process:
  *   - the credential catalog (`patterns.ts`), with the scanner's placeholder
- *     allowlist, so a documented example key is not refused;
+ *     allowlist, so a documented example key is not refused; this one reads
+ *     nothing outside the process;
  *   - the values of the stored secrets, read through the configured backend
  *     and compared in memory, so a prompt that pastes `secret set` output of
- *     a format outside the catalog is refused too.
+ *     a format outside the catalog is refused too. That read is local for
+ *     the local store and the OS keychain. For Vault and GCP Secret Manager
+ *     it is a request to that service, and for 1Password a run of the `op`
+ *     CLI, on the first prompt and again whenever the value cache (300 s by
+ *     default) has expired; a GCP project named by a manifest has no cache,
+ *     so every prompt sends one.
  *
  * Claude Code runs it as a UserPromptSubmit hook. Exit 2 with the reason on
  * stderr is "do not send this prompt, show the user why"; the same decision

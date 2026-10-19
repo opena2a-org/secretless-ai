@@ -156,8 +156,13 @@ Nothing looked at the text a user submits: a key pasted into a prompt was
 sent, then redacted from the local transcript afterwards, and nothing said
 so. `hook --check-prompt` reads the prompt on stdin (the `prompt` member of
 the JSON a Claude Code UserPromptSubmit hook receives, or plain text) and
-compares it, in its own process and with no network call, with the credential
-catalog and with the values of the stored secrets. On a match it exits 2,
+compares it, in its own process, with the credential catalog and with the
+values of the stored secrets, read through the configured backend: a local
+read for the local store and the OS keychain; for Vault and GCP Secret Manager
+a request to that service, and for 1Password a run of the `op` CLI, on the
+first prompt and again whenever the value cache (300 s by default) has
+expired, and on every prompt for a GCP project named by a manifest, which has
+no cache. On a match it exits 2,
 prints `{"decision":"block","reason":...}` on stdout and the reason on stderr;
 the reason names the pattern (`GitHub Token`) or the stored secret's name and
 the fix (`secret set NAME`, then `$NAME` in the prompt), never the value. A

@@ -88,8 +88,8 @@ const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '-V', '--he
  * a network call to every authenticated git operation. `install` and
  * `uninstall` are tracked like any other command. The Claude Code hook checks
  * (`hook --check-only` on each tool call, `hook --check-prompt` on each prompt,
- * #237) are left out for the same reason: a prompt check that sends a usage
- * event is not a check with no network call.
+ * #237) are left out for the same reason: a usage event from the prompt check
+ * would be a network call of its own on every prompt.
  */
 function isUntrackedCall(command: string, prepared: PreparedArgv): boolean {
   return NON_TRACKED.has(command)
