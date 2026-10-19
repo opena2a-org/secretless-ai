@@ -75,13 +75,30 @@ export interface HistoryCleanResult {
   filesModified: number;
   linesRedacted: number;
   backupPaths: string[];
+  /**
+   * History files that are present and could not be read, so were not cleaned
+   * (#466). They were skipped without a word, as the scan skipped them before
+   * #462, and `clean-history` printed "No credentials found in shell history."
+   * over them. `cleanHistory()` fills it in; optional as on `HistoryScanResult`.
+   */
+  filesNotRead?: HistoryFileNotRead[];
+  /**
+   * The runs of lines longer than `MAX_LINE_LENGTH` characters in the files
+   * read (#466): they are not matched, so not redacted. `cleanHistory` reads
+   * every line of a file, so it lists no lines before a window. Written and
+   * read like `filesNotRead`.
+   */
+  linesNotRead?: HistoryLinesNotRead[];
 }
 
 const HISTORY_FILES = ['.bash_history', '.zsh_history'];
 export const MAX_LINES = 10_000;
 export const MAX_LINE_LENGTH = 4096;
 
-/** Why `scanHistory` did not read a run of lines of a file it read (#462). */
+/**
+ * Why `scanHistory` did not read a run of lines of a file it read (#462).
+ * `cleanHistory` lists runs of the second kind (#466).
+ */
 export const HISTORY_LINES_NOT_READ = {
   beforeWindow: `before the last ${MAX_LINES} lines`,
   tooLong: `longer than ${MAX_LINE_LENGTH} characters`,
@@ -109,13 +126,49 @@ const COMMAND_PATTERNS: Array<{ id: string; name: string; regex: RegExp }> = [
 
 /**
  * Get the display path with ~ substitution for the home directory.
+ *
+ * The home directory is matched as `path.join` writes it into the path of a
+ * history file: normalized, and followed by one separator. A HOME that ends in
+ * a separator (`HOME=/home/user/`) was matched as given, so the separator went
+ * with it and the file was shown as `~.bash_history` (#466).
  */
 function displayPath(filePath: string): string {
-  const home = os.homedir();
-  if (filePath.startsWith(home)) {
-    return '~' + filePath.slice(home.length);
+  const home = path.normalize(os.homedir());
+  const prefix = home.endsWith(path.sep) ? home : home + path.sep;
+  if (filePath.startsWith(prefix)) {
+    return '~' + path.sep + filePath.slice(prefix.length);
   }
   return filePath;
+}
+
+/**
+ * The content of a history file, or null when there is none to read. A file
+ * that is present and could not be read is added to `filesNotRead` with the
+ * error code (#462); a file that is not there is no history to read.
+ */
+async function readHistoryFile(filePath: string, filesNotRead: HistoryFileNotRead[]): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code ?? 'unknown error';
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      filesNotRead.push({ file: displayPath(filePath), reason: `could not be read (${code})` });
+    }
+    return null;
+  }
+}
+
+/**
+ * List line `lineNumber` of `file` as longer than MAX_LINE_LENGTH characters,
+ * joined to the run of such lines right before it when there is one.
+ */
+function addTooLongLine(linesNotRead: HistoryLinesNotRead[], file: string, lineNumber: number): void {
+  const run = linesNotRead[linesNotRead.length - 1];
+  if (run && run.file === file && run.reason === HISTORY_LINES_NOT_READ.tooLong && run.lastLine === lineNumber - 1) {
+    run.lastLine = lineNumber;
+  } else {
+    linesNotRead.push({ file, firstLine: lineNumber, lastLine: lineNumber, reason: HISTORY_LINES_NOT_READ.tooLong });
+  }
 }
 
 /**
@@ -168,18 +221,8 @@ export async function scanHistory(): Promise<HistoryScanResult> {
     const filePath = path.join(home, fileName);
     const file = displayPath(filePath);
 
-    let content: string;
-    try {
-      content = await fs.readFile(filePath, 'utf-8');
-    } catch (err) {
-      // A file that is not there is no history to read. One that is there and
-      // could not be read is history this scan did not read.
-      const code = (err as NodeJS.ErrnoException | null)?.code ?? 'unknown error';
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-        filesNotRead.push({ file, reason: `could not be read (${code})` });
-      }
-      continue;
-    }
+    const content = await readHistoryFile(filePath, filesNotRead);
+    if (content === null) continue;
 
     filesScanned++;
     const allLines = content.split('\n');
@@ -207,12 +250,7 @@ export async function scanHistory(): Promise<HistoryScanResult> {
       // A line over the length cap is not matched. It is listed, joined to the
       // run of over-length lines right before it when there is one.
       if (rawLine.length > MAX_LINE_LENGTH) {
-        const run = linesNotRead[linesNotRead.length - 1];
-        if (run && run.file === file && run.reason === HISTORY_LINES_NOT_READ.tooLong && run.lastLine === lineNumber - 1) {
-          run.lastLine = lineNumber;
-        } else {
-          linesNotRead.push({ file, firstLine: lineNumber, lastLine: lineNumber, reason: HISTORY_LINES_NOT_READ.tooLong });
-        }
+        addTooLongLine(linesNotRead, file, lineNumber);
         continue;
       }
 
@@ -251,7 +289,9 @@ export async function scanHistory(): Promise<HistoryScanResult> {
  *
  * Creates a backup of each modified file (.bak extension) before
  * overwriting with redacted content. In dry-run mode, reports what
- * would be changed without modifying files.
+ * would be changed without modifying files. A file that is present and
+ * could not be read, and the lines longer than MAX_LINE_LENGTH characters,
+ * are not cleaned; both are listed in the result, as `scanHistory` lists them.
  */
 export async function cleanHistory(dryRun = false): Promise<HistoryCleanResult> {
   const home = os.homedir();
@@ -259,16 +299,15 @@ export async function cleanHistory(dryRun = false): Promise<HistoryCleanResult> 
   let filesModified = 0;
   let linesRedacted = 0;
   const backupPaths: string[] = [];
+  const filesNotRead: HistoryFileNotRead[] = [];
+  const linesNotRead: HistoryLinesNotRead[] = [];
 
   for (const fileName of HISTORY_FILES) {
     const filePath = path.join(home, fileName);
+    const file = displayPath(filePath);
 
-    let content: string;
-    try {
-      content = await fs.readFile(filePath, 'utf-8');
-    } catch {
-      continue;
-    }
+    const content = await readHistoryFile(filePath, filesNotRead);
+    if (content === null) continue;
 
     filesScanned++;
     const lines = content.split('\n');
@@ -276,7 +315,13 @@ export async function cleanHistory(dryRun = false): Promise<HistoryCleanResult> 
 
     for (let i = 0; i < lines.length; i++) {
       const rawLine = lines[i];
-      if (!rawLine || rawLine.length > MAX_LINE_LENGTH) continue;
+      if (!rawLine) continue;
+      // A line over the length cap is not matched, so a credential on it is
+      // not redacted. It is listed rather than passed over (#466).
+      if (rawLine.length > MAX_LINE_LENGTH) {
+        addTooLongLine(linesNotRead, file, i + 1);
+        continue;
+      }
 
       const line = stripZshTimestamp(rawLine);
       const match = matchLine(line);
@@ -319,5 +364,7 @@ export async function cleanHistory(dryRun = false): Promise<HistoryCleanResult> 
     filesModified,
     linesRedacted,
     backupPaths,
+    filesNotRead,
+    linesNotRead,
   };
 }

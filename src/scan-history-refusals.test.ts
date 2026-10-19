@@ -186,6 +186,59 @@ describe('scan --history refuses a path and the directory-scan flags (#463)', ()
     expect(supportedLines(res.stderr)).toEqual([HISTORY_SUPPORTED]);
   });
 
+  describe('the refusals made before the --history branch name what --history takes (#466)', () => {
+    // Each of these is refused before the history check, and each printed the
+    // `Supported:` line of a directory scan, offering the nine flags above.
+    const BEFORE_BRANCH: ReadonlyArray<readonly [string[], string]> = [
+      [['--nosuch'], 'Unknown option: --nosuch'],
+      [['--min-confidence'], '--min-confidence needs a value, but none was given.'],
+      [['--format', 'xml'], '--format needs json with --history, e.g. --format json, but was given "xml".'],
+      [['--json', '--format', 'sarif'], '--json and --format sarif ask for two formats on one output; give one of them.'],
+      [['--format', 'json', '--format', 'json'], '--format was given more than once ("json" and "json"); only one value can apply, so give it once.'],
+      [['--history=yes'], '--history does not take a value, but was given "yes".'],
+    ];
+
+    for (const [args, detail] of BEFORE_BRANCH) {
+      itIfBuilt(`scan --history ${args.join(' ')} is refused with the --history supported line`, () => {
+        const res = cli(['scan', '--history', ...args]);
+        expect(res.status).toBe(2);
+        expect(res.stdout).toBe('');
+        expect(res.stderr).toContain(detail);
+        expect(res.stderr).toContain(NOT_RUN);
+        expect(supportedLines(res.stderr)).toEqual([HISTORY_SUPPORTED]);
+      });
+    }
+
+    itIfBuilt('a flag refused before --history is typed is refused as one typed after it', () => {
+      const res = cli(['scan', '--nosuch', '--history']);
+      expect(res.status).toBe(2);
+      expect(res.stderr).toContain('Unknown option: --nosuch');
+      expect(supportedLines(res.stderr)).toEqual([HISTORY_SUPPORTED]);
+    });
+
+    itIfBuilt('the --format value refusal suggests --format json and names no SARIF', () => {
+      const res = cli(['scan', '--history', '--format', 'xml']);
+      expect(res.stderr).toContain('e.g. --format json');
+      expect(res.stderr).not.toMatch(/sarif/i);
+    });
+
+    itIfBuilt('CONTROL: without --history the same refusals list every scan flag, and --format suggests sarif', () => {
+      for (const [args, detail] of BEFORE_BRANCH.slice(0, 4)) {
+        const res = cli(['scan', ...args]);
+        expect(res.status).toBe(2);
+        expect(res.stdout).toBe('');
+        if (args[0] !== '--format') expect(res.stderr).toContain(detail);
+        const lines = supportedLines(res.stderr);
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/^ {2}Supported: /);
+        expect(lines[0]).toContain('--min-confidence <value>');
+      }
+      expect(cli(['scan', '--format', 'xml']).stderr).toContain(
+        '--format needs json or sarif, e.g. --format sarif, but was given "xml".',
+      );
+    });
+  });
+
   itIfBuilt('CONTROL: --history alone, with --json and with --format json still scans, at exit 1 on a finding', () => {
     const text = cli(['scan', '--history']);
     expect(text.status).toBe(1);
