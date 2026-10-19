@@ -108,12 +108,13 @@ describe('scan --history --json (#458)', () => {
     expect(res.stderr).toContain('`scan` was not run. Nothing was changed.');
   });
 
-  itIfBuilt('a format the tool does not write, or two formats, is refused as it is without --history', () => {
+  itIfBuilt('a format the tool does not write is refused naming json, and two formats are refused as without --history', () => {
     const dir = home([SECRET_SET_LINE]);
     const yaml = cli(dir, ['scan', '--history', '--format', 'yaml']);
     expect(yaml.status).toBe(2);
     expect(yaml.stdout).toBe('');
-    expect(yaml.stderr).toContain('--format needs json or sarif, e.g. --format sarif, but was given "yaml".');
+    // `--history` refuses `--format sarif`, so the refusal offers json (#466).
+    expect(yaml.stderr).toContain('--format needs json with --history, e.g. --format json, but was given "yaml".');
     const both = cli(dir, ['scan', '--history', '--json', '--format', 'sarif']);
     expect(both.status).toBe(2);
     expect(both.stdout).toBe('');

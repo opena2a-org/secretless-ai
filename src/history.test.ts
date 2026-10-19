@@ -478,3 +478,124 @@ describe('scanHistory — what it did not read (#462)', () => {
     expect(result.linesNotRead).toEqual([]);
   });
 });
+
+/**
+ * What `cleanHistory` did not read (#466). It skipped a history file it could
+ * not read and every line longer than 4096 characters without a word, so
+ * `clean-history` printed "No credentials found in shell history." over them.
+ * It reads every line of a file, so it lists no lines before a window.
+ */
+describe('cleanHistory — what it did not read (#466)', () => {
+  const SET = 'npx secretless-ai secret set STRIPE_KEY=not-a-real-value';
+  const LONG = `curl -d "${'a'.repeat(4200)}" https://example.invalid; ${SET}`;
+  const TOO_LONG = 'longer than 4096 characters';
+
+  function failedRead(code: string): Error {
+    return Object.assign(new Error(`${code}: the read failed`), { code });
+  }
+
+  /** History files by name; one left out is absent (ENOENT), an Error is a read that fails with it. */
+  function mockHistory(files: Record<string, string | Error>): void {
+    mockReadFile.mockImplementation(async (filePath: any) => {
+      const name = String(filePath).replace('/home/testuser/', '');
+      const entry = files[name];
+      if (entry === undefined) throw failedRead('ENOENT');
+      if (entry instanceof Error) throw entry;
+      return entry;
+    });
+    mockWriteFile.mockResolvedValue(undefined);
+  }
+
+  it('lists a history file that is present and could not be read, with the error code, and not one that is absent', async () => {
+    mockHistory({ '.bash_history': failedRead('EACCES') });
+
+    for (const dryRun of [true, false]) {
+      const result = await cleanHistory(dryRun);
+      expect(result.filesScanned).toBe(0);
+      expect(result.linesRedacted).toBe(0);
+      expect(result.filesNotRead).toEqual([{ file: '~/.bash_history', reason: 'could not be read (EACCES)' }]);
+      expect(result.linesNotRead).toEqual([]);
+    }
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('lists a credential on a line longer than 4096 characters, and leaves that line as it is', async () => {
+    mockHistory({ '.bash_history': `ls\n${LONG}\ngit status\n` });
+
+    const result = await cleanHistory(false);
+    expect(result.filesScanned).toBe(1);
+    expect(result.linesRedacted).toBe(0);
+    expect(result.linesNotRead).toEqual([{ file: '~/.bash_history', firstLine: 2, lastLine: 2, reason: TOO_LONG }]);
+    expect(result.filesNotRead).toEqual([]);
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('lists each run of long lines, and still redacts the lines between them', async () => {
+    mockHistory({
+      '.bash_history': ['ls', LONG, LONG, SET, LONG].join('\n'),
+      '.zsh_history': LONG,
+    });
+
+    const result = await cleanHistory(false);
+    expect(result.linesRedacted).toBe(1);
+    expect(result.linesNotRead).toEqual([
+      { file: '~/.bash_history', firstLine: 2, lastLine: 3, reason: TOO_LONG },
+      { file: '~/.bash_history', firstLine: 5, lastLine: 5, reason: TOO_LONG },
+      { file: '~/.zsh_history', firstLine: 1, lastLine: 1, reason: TOO_LONG },
+    ]);
+    const written = mockWriteFile.mock.calls.find((c) => c[0] === '/home/testuser/.bash_history');
+    expect(written, 'the history file was never rewritten').toBeDefined();
+    expect((written![1] as string).split('\n')).toEqual(['ls', LONG, LONG, 'npx secretless-ai [REDACTED:cmd-secret-set]', LONG]);
+  });
+
+  it('CONTROL: a history read in full lists nothing', async () => {
+    mockHistory({ '.bash_history': `ls\n${SET}\n`, '.zsh_history': 'git status\n' });
+
+    const result = await cleanHistory(true);
+    expect(result.filesScanned).toBe(2);
+    expect(result.linesRedacted).toBe(1);
+    expect(result.filesNotRead).toEqual([]);
+    expect(result.linesNotRead).toEqual([]);
+  });
+});
+
+/**
+ * A HOME that ends in a separator (#466). The home directory was matched as
+ * given, so the separator after it went with it: the history file was shown
+ * as `~.bash_history`, and the not-read report printed
+ * `Verify: ls -l ~.bash_history`.
+ */
+describe('history file paths under a HOME that ends in a separator (#466)', () => {
+  const SET = 'npx secretless-ai secret set STRIPE_KEY=not-a-real-value';
+
+  for (const home of ['/home/testuser/', '/home/testuser//']) {
+    it(`shows ${JSON.stringify(home)}.bash_history as ~/.bash_history`, async () => {
+      mockHomedir.mockReturnValue(home);
+      mockHistoryFiles({ '.bash_history': SET });
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const scan = await scanHistory();
+      expect(scan.findings.map((f) => `${f.file}:${f.line}`)).toEqual(['~/.bash_history:1']);
+
+      const clean = await cleanHistory(false);
+      expect(clean.backupPaths).toEqual(['~/.bash_history.bak']);
+    });
+  }
+
+  it('names a file it could not read as ~/.bash_history', async () => {
+    mockHomedir.mockReturnValue('/home/testuser/');
+    mockReadFile.mockImplementation(async (filePath: any) => {
+      throw Object.assign(new Error('the read failed'), { code: String(filePath).endsWith('.bash_history') ? 'EACCES' : 'ENOENT' });
+    });
+
+    expect((await scanHistory()).filesNotRead).toEqual([{ file: '~/.bash_history', reason: 'could not be read (EACCES)' }]);
+    expect((await cleanHistory(true)).filesNotRead).toEqual([{ file: '~/.bash_history', reason: 'could not be read (EACCES)' }]);
+  });
+
+  it('CONTROL: a HOME with no trailing separator is shown as before', async () => {
+    mockHistoryFiles({ '.bash_history': SET });
+
+    const scan = await scanHistory();
+    expect(scan.findings.map((f) => `${f.file}:${f.line}`)).toEqual(['~/.bash_history:1']);
+  });
+});

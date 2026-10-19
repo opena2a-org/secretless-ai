@@ -371,9 +371,10 @@ function runLength(run: { firstLine: number; lastLine: number }): number {
  * present and could not be read, and the lines before the last 10000 or
  * longer than 4096 characters. The scan skipped each without a word, so
  * "No credentials found in shell history." at exit 0 also covered history it
- * never read.
+ * never read. `clean-history` prints the same lists for what it did not read
+ * and so did not clean (#466).
  */
-function reportHistoryNotRead(result: HistoryScanResult): void {
+function reportHistoryNotRead(result: Pick<HistoryScanResult, 'filesNotRead' | 'linesNotRead'>): void {
   const files = result.filesNotRead ?? [];
   if (files.length > 0) {
     const n = files.length;
@@ -508,13 +509,27 @@ export async function runCleanHistory(dryRun: boolean): Promise<number> {
       }
     }
 
+    // A history file not read and a line not matched were passed over without
+    // a word, so this said "No credentials found in shell history." over
+    // history it never read (#466). The claim is now made of what was read,
+    // and what was not is listed below it, as `scan --history` lists it.
+    const notRead = (result.filesNotRead?.length ?? 0) > 0 || (result.linesNotRead?.length ?? 0) > 0;
     if (result.linesRedacted === 0) {
-      console.log('\n  No credentials found in shell history.\n');
+      if (!notRead) {
+        console.log('\n  No credentials found in shell history.\n');
+      } else if (result.filesScanned === 0) {
+        console.log('\n  No history file was read.\n');
+      } else {
+        console.log('\n  No credentials found in the lines that were read.\n');
+      }
     } else if (dryRun) {
       console.log('\n  Dry run complete. Run without --dry-run to apply changes.\n');
+    } else if (notRead) {
+      console.log('\n  History cleaned in the lines that were read. Backups saved with .bak extension.\n');
     } else {
       console.log('\n  History cleaned. Backups saved with .bak extension.\n');
     }
+    reportHistoryNotRead(result);
     return 0;
   } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);

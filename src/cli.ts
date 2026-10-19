@@ -188,7 +188,7 @@ async function main(): Promise<number> {
   // the defect — by then the only signal is a missing "Mode: dry-run" line,
   // printed after the file has already been rewritten.
   if (prepared.errors.length > 0 && command) {
-    for (const line of formatArgvErrors(command, prepared.errors)) console.error(line);
+    for (const line of formatArgvErrors(command, prepared.errors, supportedFor(command, args))) console.error(line);
     return EXIT_USAGE;
   }
   // Escaped for the same reason as the errors above: a warning quotes the flag.
@@ -284,9 +284,9 @@ function rejectUnknownFlagAsDirArg(command: string, dirArg: string | undefined):
  * 0.22.0: exit 0, one warning naming the VALUE, and nothing anywhere saying a
  * different directory was scanned.
  */
-function refuseFlagValue(verb: string, flag: string, raw: string, expected: string): number {
+function refuseFlagValue(verb: string, flag: string, raw: string, expected: string, supported?: string): number {
   const detail = `${flag} needs ${expected}, but was given "${raw}".`;
-  for (const line of formatArgvErrors(verb, [detail])) console.error(line);
+  for (const line of formatArgvErrors(verb, [detail], supported)) console.error(line);
   return EXIT_USAGE;
 }
 
@@ -297,6 +297,21 @@ function refuseFlagValue(verb: string, flag: string, raw: string, expected: stri
 const HISTORY_SCAN_FLAGS: ReadonlySet<string> = new Set(['--history', '--json', '--format']);
 /** The supported line of a refusal under `--history`: HISTORY_SCAN_FLAGS but `--history` itself, and `--help`. */
 const HISTORY_SUPPORTED = 'Supported with --history: --format json, --help, --json';
+
+/**
+ * The supported line of a refusal of `command` as typed: HISTORY_SUPPORTED
+ * when it is `scan --history`, and undefined, for the verb's own list,
+ * otherwise. `--history` is looked for as the `scan` branch looks for it.
+ *
+ * The refusals made before that branch is reached (those of the argv layer,
+ * such as an unknown flag or a flag given no value, a `--format` value other
+ * than json or sarif, and `--json` with `--format sarif`) printed every `scan`
+ * flag under `--history` as well, so they offered the directory-scan flags it
+ * refuses (#466).
+ */
+function supportedFor(command: string, args: string[]): string | undefined {
+  return command === 'scan' && args.includes('--history') ? HISTORY_SUPPORTED : undefined;
+}
 
 /**
  * Why `scan --history` cannot run as given, one line for each reason, or none
@@ -339,6 +354,32 @@ function historyScanRefusals(args: string[], positionals: string[], format: stri
   return refusals;
 }
 
+/**
+ * Why `scan-history` or `clean-history` cannot run with these positionals, or
+ * null when none was given.
+ *
+ * Both read the shell history files in the home directory and take no path.
+ * Neither read its positionals, so a path given to either was accepted and
+ * not used (#466): `scan-history ./some-dir` printed the shell history report
+ * and `clean-history ./some-dir` redacted the shell history files, neither
+ * naming ./some-dir. Each is refused before anything runs, as
+ * `scan --history ./some-dir` is, and the paths are named as that refusal
+ * names them.
+ */
+function historyVerbPathRefusal(verb: 'scan-history' | 'clean-history', positionals: string[]): string | null {
+  if (positionals.length === 0) return null;
+  const paths = positionals.map((p) => listedPath(p)).join(', ');
+  const many = positionals.length > 1;
+  if (verb === 'scan-history') {
+    return many
+      ? `\`scan-history\` scans shell history and takes no path; to scan the paths, give each to \`scan\` on its own: ${paths}`
+      : `\`scan-history\` scans shell history and takes no path; to scan the path, give it to \`scan\`: ${paths}`;
+  }
+  return many
+    ? `\`clean-history\` redacts credentials in shell history and takes no path; leave the paths out: ${paths}`
+    : `\`clean-history\` redacts credentials in shell history and takes no path; leave the path out: ${paths}`;
+}
+
 async function dispatch(args: string[], command: string | undefined, prepared: PreparedArgv): Promise<number> {
   switch (command) {
     case 'init': {
@@ -361,10 +402,14 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       // exit as though it had answered.
       let format: 'json' | 'sarif' | undefined;
       const fmtIdx = args.indexOf('--format');
+      const history = args.includes('--history');
       if (fmtIdx !== -1) {
         const raw = args[fmtIdx + 1];
         if (raw === 'json' || raw === 'sarif') {
           format = raw;
+        } else if (history) {
+          // `--history` refuses `--format sarif`, so the value it takes is json.
+          return refuseFlagValue('scan', '--format', raw, 'json with --history, e.g. --format json', HISTORY_SUPPORTED);
         } else {
           return refuseFlagValue('scan', '--format', raw, 'json or sarif, e.g. --format sarif');
         }
@@ -374,7 +419,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       // command line the tool cannot bind.
       if (jsonFlag && format === 'sarif') {
         const detail = '--json and --format sarif ask for two formats on one output; give one of them.';
-        for (const line of formatArgvErrors('scan', [detail])) console.error(line);
+        for (const line of formatArgvErrors('scan', [detail], supportedFor('scan', args))) console.error(line);
         return EXIT_USAGE;
       }
       const json = jsonFlag || format === 'json';
@@ -385,7 +430,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       // refused rather than answered with text. It takes no path and none of
       // the directory-scan flags read below, so each of those is refused too,
       // rather than accepted and ignored (#463).
-      if (args.includes('--history')) {
+      if (history) {
         const refusals = historyScanRefusals(args, prepared.positionals, format);
         if (refusals.length > 0) {
           for (const line of formatArgvErrors('scan', refusals, HISTORY_SUPPORTED)) console.error(line);
@@ -540,10 +585,22 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       return runVault(args.slice(1));
     case 'scope':
       return runScope(args.slice(1));
-    case 'scan-history':
+    case 'scan-history': {
+      const refusal = historyVerbPathRefusal('scan-history', prepared.positionals);
+      if (refusal) {
+        for (const line of formatArgvErrors('scan-history', [refusal])) console.error(line);
+        return EXIT_USAGE;
+      }
       return runScanHistory();
-    case 'clean-history':
+    }
+    case 'clean-history': {
+      const refusal = historyVerbPathRefusal('clean-history', prepared.positionals);
+      if (refusal) {
+        for (const line of formatArgvErrors('clean-history', [refusal])) console.error(line);
+        return EXIT_USAGE;
+      }
       return runCleanHistory(args.includes('--dry-run'));
+    }
     case 'warm':
       return runWarm(args.slice(1));
     case 'install':

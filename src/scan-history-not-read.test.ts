@@ -143,6 +143,35 @@ describe('scan --history names what it did not read (#462)', () => {
     expect(none.doc.notRead).toEqual({ files: [], lines: [] });
   });
 
+  it.skipIf(!modesBind || !fs.existsSync(CLI_PATH))('under a HOME that ends in a slash, the file is ~/.bash_history and its Verify command lists it (#466)', () => {
+    const dir = home([SET]);
+    fs.chmodSync(path.join(dir, '.bash_history'), 0o000);
+    const slashed = `${dir}/`;
+
+    const text = cli(slashed, ['scan', '--history']);
+    expect(text.status).toBe(0);
+    expect(text.stdout).not.toContain('~.bash_history');
+    expect(text.stdout).toContain('~/.bash_history: could not be read (EACCES)');
+    const verify = text.stdout.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('Verify: '));
+    expect(verify).toEqual(['Verify: ls -l ~/.bash_history']);
+    // The command as printed, run by a shell with the same HOME, lists the file.
+    const ls = spawnSync('sh', ['-c', 'ls -l ~/.bash_history'], {
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH, HOME: slashed },
+    });
+    expect(ls.status).toBe(0);
+    expect(ls.stdout).toContain('.bash_history');
+
+    const unreadable = cli(slashed, ['scan', '--history', '--json']);
+    expect(JSON.parse(unreadable.stdout).notRead.files).toEqual([{ file: '~/.bash_history', reason: 'could not be read (EACCES)' }]);
+
+    fs.chmodSync(path.join(dir, '.bash_history'), 0o600);
+    const found = cli(slashed, ['scan', '--history']);
+    expect(found.status).toBe(1);
+    expect(found.stdout).toContain('~/.bash_history:1');
+    expect(found.stdout).not.toContain('~.bash_history');
+  });
+
   itIfBuilt('a finding and lines not read: both are reported, at exit 1 as for a finding alone', () => {
     const dir = home([SET, ...Array(9999).fill('ls'), SET]);
 

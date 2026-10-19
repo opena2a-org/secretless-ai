@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+**Under `scan --history`, the refusals made before the history check name
+what `--history` takes (#466).** An unknown flag (`--nosuch`), a flag given
+no value (`--min-confidence`) or given twice (`--format json --format json`),
+a `--format` value other than `json` or `sarif` (`--format xml`), and
+`--json` together with `--format sarif` are refused before `scan` reaches the
+history check. Under `--history` each of these refusals printed the
+`Supported:` line of a directory scan, which offers `--check-validity`,
+`--explain`, `--include-config`, `--include-tests`, `--max-file-size`,
+`--max-files`, `--min-confidence`, `--no-ignore` and `--show-placeholders`,
+and `--history` refuses each of them. These refusals now print
+`Supported with --history: --format json, --help, --json`, as the other
+`--history` refusals do, and the `--format` refusal reads
+`--format needs json with --history, e.g. --format json, but was given "xml".`
+where it suggested `--format sarif`, which `--history` refuses. Without
+`--history` they are unchanged. Each still exits 2.
+`src/scan-history-refusals.test.ts` runs each case through the built CLI.
+
+**`scan --history` and `clean-history` show the history file as
+`~/.bash_history` when HOME ends in a slash (#466).** With
+`HOME=/path/to/home/`, the file was shown as `~.bash_history`: a
+`.bash_history` of mode 000 was reported as
+`~.bash_history: could not be read (EACCES)` followed by
+`Verify: ls -l ~.bash_history`, a finding as `~.bash_history:1`, and the
+`clean-history` backup as `~.bash_history.bak`. A shell does not read
+`~.bash_history` as a file in the home directory: `ls -l ~.bash_history`
+prints `No such file or directory` in bash, and zsh stops with
+`no such user or named directory: .bash_history`. The file is now shown as
+`~/.bash_history` in the text report and in `scan --history --json`, the
+backup as `~/.bash_history.bak`, and the Verify line reads
+`Verify: ls -l ~/.bash_history`, which lists the file.
+`src/scan-history-not-read.test.ts` runs such a home through the built CLI
+with the file at mode 000 and then readable, and `src/history.test.ts` covers
+a HOME ending in one and in two slashes.
+
+**`clean-history` names the history file it did not read and the lines it did
+not match (#466).** `clean-history` passed over a history file that is
+present and could not be read, and every line longer than 4096 characters,
+and then printed `No credentials found in shell history.` at exit 0. With a
+`.bash_history` of mode 000 holding
+`npx secretless-ai secret set STRIPE_KEY=not-a-real-value`,
+`clean-history --dry-run` printed `Files scanned: 0` and
+`Lines that would be redacted: 0`. With that command on a line of more than
+4096 characters, it printed `Files scanned: 1` and
+`Lines that would be redacted: 0`, and the run without `--dry-run` left the
+line as it was. On the first home it now prints `No history file was read.`
+and lists the file (`~/.bash_history: could not be read (EACCES)`, followed
+by `Verify: ls -l ~/.bash_history`); on the second it prints
+`No credentials found in the lines that were read.` and lists the line
+(`~/.bash_history:1: longer than 4096 characters`), as `scan --history` lists
+them, on a dry run and on a real run. A run that redacts a line while
+something was not read ends with
+`History cleaned in the lines that were read. Backups saved with .bak extension.`
+in place of `History cleaned. Backups saved with .bak extension.` The exit
+code is unchanged, 0, and a line longer than 4096 characters is still left as
+it is. `cleanHistory()` returns the two lists as `filesNotRead` and
+`linesNotRead`, as `scanHistory()` does.
+`src/clean-history-not-read.test.ts` runs these homes through the built CLI,
+and `src/history.test.ts` covers the lists `cleanHistory` returns.
+
+**`scan-history` and `clean-history` refuse a path (#466).** Neither takes a
+path, and a path given to either was accepted and not used: with a
+`.bash_history` holding
+`npx secretless-ai secret set STRIPE_KEY=not-a-real-value`,
+`scan-history ./some-dir` printed the shell history report at exit 1,
+`clean-history --dry-run ./some-dir` ran on the shell history at exit 0, and
+`clean-history ./some-dir` redacted it and wrote `~/.bash_history.bak`, none
+of them naming `./some-dir`. Each is now refused with exit 2 before anything
+runs, as `scan --history ./some-dir` is:
+`` `scan-history` scans shell history and takes no path; to scan the path, give it to `scan`: ./some-dir ``
+and
+`` `clean-history` redacts credentials in shell history and takes no path; leave the path out: ./some-dir ``.
+Several paths are named in one line. `src/history-verb-refusals.test.ts` runs
+each case through the built CLI.
+
 **`scan --history` names the lines and the history files it did not read
 (#462).** `scan --history` matches the last 10000 lines of `~/.bash_history`
 and `~/.zsh_history`, does not match a line longer than 4096 characters, and
