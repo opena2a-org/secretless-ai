@@ -12,12 +12,13 @@ import { VERSION, CLI_BARE, formatCommandError } from './commands/utils';
 // so they're loaded via dynamic import() inside the async main().
 import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize, pathOperand } from './commands/core';
 import { escapeForDisplay, escapePathForDisplay } from './display-safe';
-import { runClean, runWatch, runScanHistory, runCleanHistory } from './commands/transcript';
+import { runClean, runWatch, runScanHistory, runCleanHistory, offerTranscriptWatcher } from './commands/transcript';
 import { runSecret } from './commands/secrets';
 import { runRun, runEnv, runImport, runSetupCommand } from './commands/env-run';
 import { runExport } from './commands/bundle';
 import { runRules } from './commands/rules';
 import { runHook, runScanStaged } from './commands/git';
+import { runPromptCheck, CHECK_PROMPT_FLAG } from './prompt-check';
 import { runProtectMcp, runMcpStatus, runMcpUnprotect } from './commands/mcp';
 import { runBackend, runMigrate, runCache } from './commands/backend';
 import { runBroker } from './commands/broker';
@@ -85,11 +86,15 @@ const NON_TRACKED = new Set<string>(['telemetry', '--version', '-v', '-V', '--he
  * `git-credential get|store|erase` is run by git each time it authenticates,
  * not by the user, so it is not tracked: it would dominate the dataset and add
  * a network call to every authenticated git operation. `install` and
- * `uninstall` are tracked like any other command.
+ * `uninstall` are tracked like any other command. The Claude Code hook checks
+ * (`hook --check-only` on each tool call, `hook --check-prompt` on each prompt,
+ * #237) are left out for the same reason: a prompt check that sends a usage
+ * event is not a check with no network call.
  */
 function isUntrackedCall(command: string, prepared: PreparedArgv): boolean {
   return NON_TRACKED.has(command)
-    || (command === 'git-credential' && GIT_PROTOCOL_ACTIONS.includes(prepared.positionals[0] ?? ''));
+    || (command === 'git-credential' && GIT_PROTOCOL_ACTIONS.includes(prepared.positionals[0] ?? ''))
+    || (command === 'hook' && (prepared.args.includes('--check-prompt') || prepared.args.includes('--check-only')));
 }
 
 
@@ -284,10 +289,15 @@ function refuseFlagValue(verb: string, flag: string, raw: string, expected: stri
 async function dispatch(args: string[], command: string | undefined, prepared: PreparedArgv): Promise<number> {
   switch (command) {
     case 'init': {
-      const dirArg = args[1];
+      // The first positional: `--no-watch` is a flag, not the directory.
+      const dirArg = prepared.positionals[0];
       if (!rejectUnknownFlagAsDirArg('init', dirArg)) return 2;
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
-      return runInit(projectDir);
+      const code = runInit(projectDir);
+      // The watcher offer (#237) follows a set-up that succeeded. A run that
+      // exits 1 ends on the problem and its fix, as before.
+      if (code === 0) await offerTranscriptWatcher({ noWatch: args.includes('--no-watch') });
+      return code;
     }
     case 'scan': {
       if (args.includes('--history')) {
@@ -449,6 +459,11 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
     case 'setup':
       return runSetupCommand(args.slice(1));
     case 'hook':
+      // The prompt check for the Claude Code UserPromptSubmit hook (#237):
+      // the prompt on stdin, exit 2 with the reason when it holds a
+      // credential. It reads stdin and the secret store, so it answers
+      // through a promise; runHook answers its subcommands at once.
+      if (args[1] === CHECK_PROMPT_FLAG) return runPromptCheck();
       return runHook(args.slice(1));
     case 'scan-staged':
       return runScanStaged(args.slice(1));

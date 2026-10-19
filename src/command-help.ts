@@ -281,7 +281,15 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
   },
   init: {
     summary: 'Set up protections for your AI tools.',
-    usage: ['[dir]'],
+    usage: ['[dir] [--no-watch]'],
+    flags: { '--no-watch': 'Leave the transcript watcher as it is, without asking to install it' },
+    notes: [
+      'For Claude Code, init also registers `hook --check-prompt` as a UserPromptSubmit',
+      'hook, which refuses a prompt that holds a credential before it is sent. On a',
+      'terminal, init then asks whether to install the transcript watcher (default',
+      'yes); with no terminal to ask on, or with --no-watch, it leaves the watcher as',
+      'it is and names `watch install`.',
+    ],
   },
   doctor: {
     summary: 'Diagnose shell profile issues and plaintext git credential files.',
@@ -389,19 +397,35 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
   },
   watch: {
     summary: 'Monitor transcripts in real time.',
-    usage: ['<start|stop|status|install|uninstall>'],
+    usage: ['<start|stop|status|install|uninstall> [--dir <path>]...'],
+    flags: { '--dir': 'start, install: a directory to watch besides the default; repeatable' },
     notes: [
       'start       Start watching (foreground)',
       'stop        Stop the watcher',
-      'status      Check if watcher is running',
-      'install     Install as macOS LaunchAgent (auto-start on login)',
-      'uninstall   Remove LaunchAgent',
+      'status      Check if watcher is running, and which directories it covers',
+      'install     Start the watcher in the background; on macOS also at each login (LaunchAgent)',
+      'uninstall   Remove LaunchAgent and stop the watcher',
+      '',
+      'The default directory is projects/ under the Claude Code configuration',
+      'directory: ~/.claude, or CLAUDE_CONFIG_DIR where that is set. Each file redacted',
+      'is logged to ~/.secretless-ai/watch.log and shown as a desktop notification',
+      '(osascript on macOS, notify-send on Linux), naming the pattern and never the value.',
     ],
   },
   hook: {
     summary: 'Manage the pre-commit secret scanner.',
-    usage: ['<install|uninstall|status>', '--check-only'],
-    flags: { '--check-only': 'Session check (for PreToolUse hooks)' },
+    usage: ['<install|uninstall|status>', '--check-only', '--check-prompt'],
+    flags: {
+      '--check-only': 'Session check (for PreToolUse hooks)',
+      '--check-prompt': 'Prompt check (for UserPromptSubmit hooks): reads the prompt on stdin and exits 2 when it holds a credential',
+    },
+    notes: [
+      '--check-prompt compares the prompt with the credential catalog and with the values',
+      'of the stored secrets, in this process and with no network call. A refusal names',
+      'the pattern or the stored secret, never the value. A variable reference such as',
+      '$API_KEY, or a documented example key, is not refused. init registers it for',
+      'Claude Code.',
+    ],
   },
   'git-credential': {
     summary: 'Serve a stored token to git over HTTPS, instead of a plaintext credential file.',

@@ -119,6 +119,12 @@ interface InitResult {
    */
   hookPrefixFromNpxCache?: string;
   /**
+   * True when this run wrote the UserPromptSubmit prompt-check hook into
+   * `.claude/settings.json` (#237): a fresh install, or an install made before
+   * the check existed. False when it was already there.
+   */
+  promptCheckAdded: boolean;
+  /**
    * Set when `.claude/settings.json` exists but could not be merged into, so
    * `init` deliberately left it untouched. Its presence means the deny rules
    * and the guard-hook wiring were NOT installed: the guard script on disk is
@@ -200,6 +206,7 @@ export function init(projectDir: string): InitResult {
     denyRulesRemoved: 0,
     hookRefreshed: false,
     hooksReplaced: [],
+    promptCheckAdded: false,
     pathsRefused: [],
   };
 
@@ -518,6 +525,34 @@ function configureClaudeCode(
     });
   }
 
+  // The prompt check (#237): a UserPromptSubmit hook that refuses a prompt
+  // holding a credential before Claude Code sends it. Written under the same
+  // pinned prefix as the Stop hook, and brought to the current prefix on a
+  // re-run the same way. The file is listed as modified when it is added, so
+  // an install made before the check existed reports the change.
+  if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
+  const promptCommand = promptCheckCommand();
+  for (const h of settings.hooks.UserPromptSubmit) {
+    if (!Array.isArray(h?.hooks)) continue;
+    for (const hh of h.hooks) {
+      if (hh && isOwnPromptCheckCommand(hh.command) && hh.command !== promptCommand) {
+        hh.command = promptCommand;
+        listSettings();
+      }
+    }
+  }
+  if (!hasPromptCheckHook(settings.hooks.UserPromptSubmit)) {
+    settings.hooks.UserPromptSubmit.push({
+      matcher: '',
+      hooks: [{
+        type: 'command',
+        command: promptCommand,
+      }],
+    });
+    result.promptCheckAdded = true;
+    listSettings();
+  }
+
   // Add deny rules for secret files
   if (!settings.permissions) settings.permissions = {};
   if (!settings.permissions.deny) settings.permissions.deny = [];
@@ -718,6 +753,23 @@ export function stopHookTargetMissing(command: string): string | null {
 /** True when a Stop hook entry runs a `secretless-ai` command. */
 function hasTranscriptStopHook(stop: any[]): boolean {
   return stop.some((h: any) => h.hooks?.some((hh: any) => hh.command?.includes('secretless-ai')));
+}
+
+/** What the UserPromptSubmit hook runs after the prefix: the prompt check (#237). */
+const PROMPT_CHECK_TAIL = ' hook --check-prompt';
+
+function promptCheckCommand(): string {
+  return `${commandPrefixForHooks()}${PROMPT_CHECK_TAIL}`;
+}
+
+/** True for a prompt-check command `init` wrote, under any prefix. */
+function isOwnPromptCheckCommand(command: unknown): boolean {
+  return typeof command === 'string' && command.endsWith(PROMPT_CHECK_TAIL);
+}
+
+/** True when a UserPromptSubmit entry runs the prompt check. */
+function hasPromptCheckHook(entries: any[]): boolean {
+  return entries.some((h: any) => h?.hooks?.some((hh: any) => isOwnPromptCheckCommand(hh?.command)));
 }
 
 // ============================================================================

@@ -33,9 +33,14 @@ Expected output in a project that Claude Code and Cursor both use, after the ver
     Verify: secretless-ai verify
     Scan:   secretless-ai scan
     Status: secretless-ai status
+
+  Transcript watcher not installed: no transcript directory yet. Claude Code creates ~/.claude/projects at its first session.
+    Install it then: secretless-ai watch install
 ```
 
-For Claude Code, `init` adds deny rules to `.claude/settings.json`, writes instructions to `CLAUDE.md` and wires in two hooks: `.claude/hooks/secretless-guard.sh` denies tool calls that would read credential files before they run, and `.claude/hooks/secretless-output-check.cjs` warns after a Bash command prints a credential-shaped value (detection, not prevention). For Cursor it writes `.cursor/rules/secretless.mdc`, an instruction file: nothing enforces it, and it has no effect unless Cursor loads that file. The [Supported tools](../how-it-works.md#supported-tools) table names the file `init` writes for each tool.
+For Claude Code, `init` adds deny rules to `.claude/settings.json`, writes instructions to `CLAUDE.md` and wires in three hooks: `.claude/hooks/secretless-guard.sh` denies tool calls that would read credential files before they run, `.claude/hooks/secretless-output-check.cjs` warns after a Bash command prints a credential-shaped value (detection, not prevention), and `secretless-ai hook --check-prompt` runs on each prompt you submit and refuses one that holds a credential-shaped value or the value of a stored secret, naming the pattern or the secret and never the value. For Cursor it writes `.cursor/rules/secretless.mdc`, an instruction file: nothing enforces it, and it has no effect unless Cursor loads that file. The [Supported tools](../how-it-works.md#supported-tools) table names the file `init` writes for each tool.
+
+On a terminal, `init` then asks whether to install the transcript watcher, which redacts a credential that reaches a saved transcript and shows a desktop notification; the default is yes, and `init --no-watch` skips the question. In the sample above there is no transcript directory yet, so nothing is asked and the install command is named instead.
 
 ## Step 2: Verify protection
 
@@ -80,11 +85,12 @@ Expected output in the project from Step 1:
   ✓ Claude Code hook installed (.claude/settings.json — 147 deny patterns)
   ✓ Output check hook installed (PostToolUse)
   ✓ Stop hook installed (transcript redaction)
+  ✓ Prompt check installed (a credential in a prompt is refused before it is sent)
   ✓ Tool instructions: Claude Code, Cursor (advisory, not enforced)
   ✓ No credentials detected in scanned files
-  ⚠ Biometric session not initialized                                       → secretless-ai warm
-  ⚠ Transcript watcher not running                                          → secretless-ai watch
-  ⚠ Broker daemon not installed                                             → secretless-ai install
+  ⚠ Biometric session not initialized                                               → secretless-ai warm
+  ⚠ Transcript watcher not running                                                  → secretless-ai watch install
+  ⚠ Broker daemon not installed                                                     → secretless-ai install
 
   ── Verdict ─────────────────────────────────────────────────
   Protected (3 observations need attention)

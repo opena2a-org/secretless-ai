@@ -139,6 +139,12 @@ export function runInit(projectDir: string): number {
       if (result.denyRulesRemoved > 0) {
         changes.push(`removed ${result.denyRulesRemoved} deprecated pattern${result.denyRulesRemoved === 1 ? '' : 's'}`);
       }
+      // An install made before the prompt check existed gains it on re-run
+      // (#237). Named when it is the only change: with deny patterns added the
+      // row already says why the file changed, and keeps its wording.
+      if (result.promptCheckAdded && changes.length === 0) {
+        changes.push('added the prompt check hook');
+      }
       if (changes.length > 0) {
         console.log(`    ~ .claude/settings.json (${changes.join(', ')})`);
       } else {
@@ -1709,6 +1715,15 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     addRow({ glyph: '⚠', label: 'Stop hook not installed (transcripts unredacted)', action: claudeCodeInit });
   }
 
+  // Prompt check (#237): the one control that acts before a value is sent.
+  if (tp.promptCheckInstalled && tp.promptCheckScope === 'user') {
+    addRow({ glyph: '✓', label: `Prompt check installed at user level (${USER_SETTINGS_PATH}, a credential in a prompt is refused before it is sent)` });
+  } else if (tp.promptCheckInstalled) {
+    addRow({ glyph: '✓', label: 'Prompt check installed (a credential in a prompt is refused before it is sent)' });
+  } else {
+    addRow({ glyph: '⚠', label: 'Prompt check not installed (a credential in a prompt is sent, then redacted)', action: claudeCodeInit });
+  }
+
   // Configured tools. An ignore file is a list the tool reads and an
   // instruction file is advice; neither is enforced, and each row says so.
   const instructionTools = s.configuredTools.filter(t => !s.ignoreFileTools.includes(t));
@@ -1761,11 +1776,13 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     }
   }
 
-  // Watcher running (transcript file monitoring).
+  // Watcher running (transcript file monitoring), and what it covers (#237).
   if (tp.watcherRunning) {
-    addRow({ glyph: '✓', label: 'Transcript watcher running' });
+    const home = os.homedir();
+    const dirs = tp.watcherDirs.map(d => (d === home || d.startsWith(home + path.sep) ? '~' + d.slice(home.length) : d));
+    addRow({ glyph: '✓', label: `Transcript watcher running${dirs.length > 0 ? ` (watching ${dirs.join(', ')})` : ''}` });
   } else {
-    addRow({ glyph: '⚠', label: 'Transcript watcher not running', action: 'secretless-ai watch' });
+    addRow({ glyph: '⚠', label: 'Transcript watcher not running', action: 'secretless-ai watch install' });
   }
 
   // Transcript files + secrets within them.

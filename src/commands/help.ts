@@ -141,6 +141,7 @@ ${banner}${description}
 
   Claude Code Integration:
     ${CLI} hook --check-only   Session check (for PreToolUse hooks)
+    ${CLI} hook --check-prompt Refuse a prompt that holds a credential (UserPromptSubmit hook)
 
   Cache (reduces OS auth prompts for keychain/1password):
     ${CLI} cache               Show cache status
@@ -155,9 +156,10 @@ ${banner}${description}
   Watch actions:
     start         Start watching (foreground)
     stop          Stop the watcher
-    status        Check if watcher is running
-    install       Install as macOS LaunchAgent (auto-start on login)
-    uninstall     Remove LaunchAgent
+    status        Check if watcher is running, and which directories it covers
+    install       Start the watcher in the background; on macOS also at each login
+    uninstall     Remove LaunchAgent and stop the watcher
+    --dir <path>  start, install: a directory to watch besides the default (repeatable)
 
   Other:
     ${CLI} feedback        Star, file an issue, or join the discussion

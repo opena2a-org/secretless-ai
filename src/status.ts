@@ -9,6 +9,7 @@ import { detectAITools, type AITool, type Enforcement } from './detect';
 import { scan, newScanStats, coverageIncomplete } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
 import { isWatchRunning } from './watch';
+import { watchStatus } from './watch-state';
 import { defaultAnnotationsPath, readAnnotations } from './secret-annotations';
 import { needsRotation } from './secret-exposure';
 import { stopHookTargetMissing, compareManagedHook, type ManagedHookKind, type ManagedHookState } from './init';
@@ -31,7 +32,7 @@ export const USER_SETTINGS_PATH = '~/.claude/settings.json';
  */
 export interface UserSettingsStatus {
   path: string;
-  /** The file wires a Secretless hook: the PreToolUse guard or the Stop hook. */
+  /** The file wires a Secretless hook: the PreToolUse guard, the Stop hook or the prompt check. */
   secretlessInstalled: boolean;
   /** PreToolUse runs a `secretless-guard` command. */
   guardWired: boolean;
@@ -53,6 +54,8 @@ export interface UserSettingsStatus {
   stopHookInstalled: boolean;
   /** See `StatusResult.transcriptProtection.stopHookTargetMissing`; this file's Stop hook. */
   stopHookTargetMissing: string | null;
+  /** UserPromptSubmit runs `hook --check-prompt` (#237). */
+  promptCheckInstalled: boolean;
   unreadable?: { path: string; reason: string };
   ambiguous?: { path: string; reason: string };
   /**
@@ -188,7 +191,16 @@ export interface StatusResult {
      * (the npx form) and when both files exist.
      */
     stopHookTargetMissing: string | null;
+    /**
+     * A UserPromptSubmit hook runs `hook --check-prompt`, which refuses a
+     * prompt holding a credential before it is sent (#237).
+     */
+    promptCheckInstalled: boolean;
+    /** Which settings file the prompt check was found in, project first. */
+    promptCheckScope: 'project' | 'user' | null;
     watcherRunning: boolean;
+    /** The directories the running watcher covers; empty when it is not running. */
+    watcherDirs: string[];
     transcriptFiles: number;
     /**
      * How many of `transcriptFiles` were actually read. `status` samples the
@@ -307,6 +319,11 @@ async function readClaudeSettings(settingsPath: string, displayPath: string): Pr
     ? null
     : settings?.permissions?.deny?.length || 0;
   return read;
+}
+
+/** True when a UserPromptSubmit hook runs the prompt check `init` registers (#237). */
+function hasPromptCheck(settings: any): boolean {
+  return hookCommands(settings, 'UserPromptSubmit').some(c => c.includes('hook --check-prompt'));
 }
 
 /** The command strings a settings object registers for one hook event. */
@@ -444,6 +461,10 @@ export async function status(projectDir: string, options?: { homeDir?: string })
     const jsonlFiles = transcripts.filter(f => f.endsWith('.jsonl'));
     result.transcriptProtection.transcriptFiles = jsonlFiles.length;
     result.transcriptProtection.watcherRunning = isWatchRunning();
+    // The directories come from the PID file the running watcher wrote (#237).
+    if (result.transcriptProtection.watcherRunning) {
+      result.transcriptProtection.watcherDirs = watchStatus().dirs;
+    }
 
     // Sample the most recent transcripts so `status` stays sub-second — a full
     // pass over every transcript takes tens of seconds and belongs in `clean`.
@@ -515,7 +536,10 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       stopHookInstalled: false,
       stopHookScope: null,
       stopHookTargetMissing: null,
+      promptCheckInstalled: false,
+      promptCheckScope: null,
       watcherRunning: false,
+      watcherDirs: [],
       transcriptFiles: 0,
       transcriptFilesScanned: 0,
       transcriptSecretsFound: 0,
@@ -553,6 +577,11 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       result.transcriptProtection.stopHookScope = 'project';
       result.transcriptProtection.stopHookTargetMissing = stopTargetMissing(read.settings);
     }
+    // The prompt check (#237), wired as a UserPromptSubmit hook.
+    if (hasPromptCheck(read.settings)) {
+      result.transcriptProtection.promptCheckInstalled = true;
+      result.transcriptProtection.promptCheckScope = 'project';
+    }
   }
 
   // User-level settings apply in every project, so a project with no install
@@ -567,7 +596,8 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     const guard = guardWiring(read.settings, projectDir, homeDir);
     const guardReachable = guard.reachable;
     const stopHookInstalled = hookCommands(read.settings, 'Stop').some(c => c.includes('secretless-ai'));
-    const secretlessInstalled = guard.wired || stopHookInstalled;
+    const promptCheckInstalled = hasPromptCheck(read.settings);
+    const secretlessInstalled = guard.wired || stopHookInstalled || promptCheckInstalled;
     // The guard this file runs from here: the project's own script for the
     // "$CLAUDE_PROJECT_DIR" form `init` writes, the one in the home directory
     // for a `$HOME` or `~` form.
@@ -585,6 +615,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       denyRuleCount: read.denyRuleCount,
       stopHookInstalled,
       stopHookTargetMissing: stopHookInstalled ? stopTargetMissing(read.settings) : null,
+      promptCheckInstalled,
       coversProject: secretlessInstalled
         && !read.unreadable
         && !read.ambiguous
@@ -598,6 +629,10 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       result.transcriptProtection.stopHookInstalled = true;
       result.transcriptProtection.stopHookScope = 'user';
       result.transcriptProtection.stopHookTargetMissing = user.stopHookTargetMissing;
+    }
+    if (promptCheckInstalled && !result.transcriptProtection.promptCheckInstalled) {
+      result.transcriptProtection.promptCheckInstalled = true;
+      result.transcriptProtection.promptCheckScope = 'user';
     }
   }
 

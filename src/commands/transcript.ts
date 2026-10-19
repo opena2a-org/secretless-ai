@@ -1,6 +1,10 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { cleanTranscripts, transcriptTarget, MAX_LINE_SIZE, type CleanResult } from '../transcript';
-import { startWatch, stopWatch, isWatchRunning, installLaunchAgent, uninstallLaunchAgent } from '../watch';
+import { startWatch, stopWatch, isWatchRunning, watchStatus, installWatcher, uninstallLaunchAgent, resolveWatchDirs } from '../watch';
+import type { InstallWatcherResult, WatchStatus } from '../watch';
+import { askOnTerminal } from './secrets';
 import { scanHistory, cleanHistory } from '../history';
 import { pathOperand, shellQuote } from './core';
 import { CLI, CLI_BARE } from './utils';
@@ -168,26 +172,52 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
   return 0;
 }
 
+/** A directory as the user reads it: the home directory shown as `~`. */
+function displayDir(dir: string): string {
+  const home = os.homedir();
+  return dir === home || dir.startsWith(home + path.sep) ? '~' + dir.slice(home.length) : dir;
+}
+
+/** `(watching A, B)`, for a status line. */
+function watchingClause(dirs: readonly string[]): string {
+  return dirs.length > 0 ? ` (watching ${dirs.map(displayDir).join(', ')})` : '';
+}
+
+/**
+ * The values of every `--dir` in `args`, in order (#237). `prepareArgv` has
+ * already split `--dir=X` into two tokens and refused a `--dir` with no value.
+ */
+function dirFlags(args: string[]): string[] {
+  const dirs: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--dir' && i + 1 < args.length) dirs.push(args[++i]);
+  }
+  return dirs;
+}
+
 export async function runWatch(args: string[]): Promise<number> {
   const action = args[0];
+  const dirs = dirFlags(args);
 
   switch (action) {
-    case 'start':
-      if (isWatchRunning()) {
-        console.log('\n  Watcher is already running.\n');
+    case 'start': {
+      const current = watchStatus();
+      if (current.running) {
+        console.log(`\n  Watcher is already running${watchingClause(current.dirs)}.\n`);
         return 0;
       }
       console.log('\n  Starting Secretless transcript watcher...');
-      if (!startWatch()) {
+      if (!startWatch({ dirs })) {
         console.error('\n  Watcher did not start; the log lines above say why.\n');
         return 1;
       }
-      console.log('  Watcher is running. Press Ctrl+C to stop.\n');
+      console.log(`  Watcher is running${watchingClause(watchStatus().dirs)}. Press Ctrl+C to stop.\n`);
       // The watcher runs in this process, in the foreground. Returning here
       // would hand an exit code to the dispatcher, whose process.exit() ends
       // the watcher that was just reported running. The process ends in the
       // SIGTERM/SIGINT handler startWatch installs, which removes the PID file.
       return await new Promise<number>(() => {});
+    }
 
     case 'stop':
       if (stopWatch()) {
@@ -197,33 +227,36 @@ export async function runWatch(args: string[]): Promise<number> {
       }
       return 0;
 
-    case 'status':
-      if (isWatchRunning()) {
-        console.log('\n  Watcher: running\n');
+    case 'status': {
+      const current = watchStatus();
+      if (current.running) {
+        console.log(`\n  Watcher: running${watchingClause(current.dirs)}\n`);
       } else {
         console.log('\n  Watcher: not running');
-        console.log('  Start: npx secretless-ai watch start\n');
+        console.log(`  Would watch: ${resolveWatchDirs(dirs).map(displayDir).join(', ')}`);
+        console.log(`  Start: ${CLI} watch install\n`);
       }
       return 0;
+    }
 
-    case 'install':
-      if (installLaunchAgent()) {
-        console.log('\n  LaunchAgent installed.');
-        console.log('  Watcher will auto-start on login.');
-        console.log('  Run `launchctl load ~/Library/LaunchAgents/ai.secretless.watch.plist` to start now.\n');
-      } else {
-        console.log('\n  LaunchAgent installation is only supported on macOS.\n');
-      }
-      return 0;
+    case 'install': {
+      const result = await installWatcher({ dirs });
+      console.log();
+      for (const line of installWatcherLines(result)) console.log(`  ${line}`);
+      console.log();
+      return result.running ? 0 : 1;
+    }
 
-    case 'uninstall':
-      if (uninstallLaunchAgent()) {
-        stopWatch();
-        console.log('\n  LaunchAgent removed. Watcher will no longer auto-start.\n');
+    case 'uninstall': {
+      const removed = uninstallLaunchAgent();
+      const stopped = stopWatch();
+      if (removed || stopped) {
+        console.log(`\n  ${removed ? 'LaunchAgent removed. ' : ''}${stopped ? 'Watcher stopped.' : 'No watcher was running.'}\n`);
       } else {
-        console.log('\n  No LaunchAgent found to remove.\n');
+        console.log('\n  No LaunchAgent found to remove, and no watcher is running.\n');
       }
       return 0;
+    }
 
     case '--help':
     case '-h':
@@ -232,16 +265,95 @@ export async function runWatch(args: string[]): Promise<number> {
       if (isUnknown) {
         console.error(`\n  Unknown watch action: ${escapeForDisplay(action)}`);
       }
-      console.log('\n  Usage: secretless-ai watch <start|stop|status|install|uninstall>\n');
+      console.log('\n  Usage: secretless-ai watch <start|stop|status|install|uninstall> [--dir <path>]...\n');
       console.log('  Commands:');
-      console.log('    start      Start watching transcripts for credentials');
+      console.log('    start      Start watching transcripts for credentials (foreground)');
       console.log('    stop       Stop the watcher');
-      console.log('    status     Show watcher status');
-      console.log('    install    Install as macOS LaunchAgent');
-      console.log('    uninstall  Remove LaunchAgent\n');
+      console.log('    status     Show watcher status and the directories it covers');
+      console.log('    install    Start the watcher in the background; on macOS also at each login');
+      console.log('    uninstall  Remove the LaunchAgent and stop the watcher');
+      console.log('    --dir <p>  start, install: a directory to watch besides the default (repeatable)\n');
       return isUnknown ? EXIT_USAGE : 0;
     }
   }
+}
+
+/** What `watch install` and `init` print about an install attempt (#237). */
+function installWatcherLines(result: InstallWatcherResult): string[] {
+  if (!result.running) {
+    return [
+      `Transcript watcher not installed: ${result.reason ?? 'it did not start'}.`,
+      `Verify: ${CLI_BARE} watch status`,
+    ];
+  }
+  const lines = [
+    result.alreadyRunning
+      ? `Transcript watcher already running${watchingClause(result.dirs)}.`
+      : `Transcript watcher running${watchingClause(result.dirs)}: a credential that reaches a saved transcript is redacted, logged to ~/.secretless-ai/watch.log and shown as a desktop notification.`,
+  ];
+  if (result.launchAgent) {
+    lines.push('It also starts at each login: ~/Library/LaunchAgents/ai.secretless.watch.plist.');
+  } else if (!result.alreadyRunning && process.platform !== 'darwin') {
+    lines.push(`It ends with this login session; to start it again: ${CLI_BARE} watch install`);
+  }
+  return lines;
+}
+
+export interface WatcherOfferOptions {
+  /** `init --no-watch`: leave the watcher as it is, and do not ask. */
+  noWatch?: boolean;
+  /** Asks the yes/no question; null when there is no terminal to ask on. For tests. */
+  ask?: (question: string) => Promise<boolean | null>;
+  install?: (options?: { dirs?: string[] }) => Promise<InstallWatcherResult>;
+  status?: () => WatchStatus;
+  /** Whether a directory exists; `fs.existsSync` unless given. */
+  exists?: (dir: string) => boolean;
+}
+
+/**
+ * After `init`: offer the transcript watcher, and install it on a yes (#237).
+ * On a terminal the question defaults to yes. With no terminal to ask on, or
+ * with `--no-watch`, the watcher is left as it is and the install command is
+ * named instead; so is it when no transcript directory exists yet, because
+ * a watcher with nothing to watch does not start.
+ */
+export async function offerTranscriptWatcher(options: WatcherOfferOptions = {}): Promise<void> {
+  if (options.noWatch) {
+    console.log('  Transcript watcher left as it is (--no-watch).');
+    console.log();
+    return;
+  }
+  const current = (options.status ?? watchStatus)();
+  if (current.running) {
+    console.log(`  Transcript watcher running${watchingClause(current.dirs)}.`);
+    console.log();
+    return;
+  }
+  const dirs = resolveWatchDirs();
+  const exists = options.exists ?? fs.existsSync;
+  if (!dirs.some(exists)) {
+    console.log(`  Transcript watcher not installed: no transcript directory yet. Claude Code creates ${displayDir(dirs[0])} at its first session.`);
+    console.log(`    Install it then: ${CLI_BARE} watch install`);
+    console.log();
+    return;
+  }
+  const question = `  Install the transcript watcher? It redacts a credential that reaches a saved transcript under ${dirs.map(displayDir).join(', ')} and shows a desktop notification, now and at each login. [Y/n] `;
+  const answer = options.ask
+    ? await options.ask(question)
+    : await askOnTerminal(question, undefined, undefined, true);
+  if (answer === null) {
+    console.log(`  Transcript watcher not installed: no terminal to ask on. Install: ${CLI_BARE} watch install`);
+    console.log();
+    return;
+  }
+  if (!answer) {
+    console.log(`  Transcript watcher not installed. Install later: ${CLI_BARE} watch install`);
+    console.log();
+    return;
+  }
+  const result = await (options.install ?? installWatcher)();
+  for (const line of installWatcherLines(result)) console.log(`  ${line}`);
+  console.log();
 }
 
 export async function runScanHistory(): Promise<number> {

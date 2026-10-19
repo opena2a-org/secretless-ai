@@ -14,3 +14,6 @@
     Verify: secretless-ai verify
     Scan:   secretless-ai scan
     Status: secretless-ai status
+
+  Transcript watcher not installed: no transcript directory yet. Claude Code creates ~/.claude/projects at its first session.
+    Install it then: secretless-ai watch install

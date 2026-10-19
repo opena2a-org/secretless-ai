@@ -40,14 +40,16 @@ export interface EnsureShellHookOptions extends InstallShellHookOptions {
 
 /**
  * Ask `question` on `output` and read one line from `input`. `y` or `yes` is
- * a yes; anything else, an empty line included, is a no. Resolves null
- * without asking when either stream is not a terminal, so piped input is
- * never taken for an answer.
+ * a yes and `n` or `no` is a no; any other line, an empty one included, is
+ * `defaultAnswer`, which is no unless the caller says otherwise (a `[Y/n]`
+ * question passes true). Resolves null without asking when either stream is
+ * not a terminal, so piped input is never taken for an answer.
  */
 export function askOnTerminal(
   question: string,
   input: TtyInput = process.stdin,
   output: PromptOutput & { isTTY?: boolean } = process.stderr,
+  defaultAnswer = false,
 ): Promise<boolean | null> {
   if (input.isTTY !== true || output.isTTY !== true) return Promise.resolve(null);
   output.write(question);
@@ -56,7 +58,15 @@ export function askOnTerminal(
       input.removeListener('data', onData);
       input.removeListener('end', onEnd);
       input.pause();
-      resolve(line !== null && /^\s*y(es)?\s*$/i.test(line));
+      if (line === null) {
+        resolve(false);
+      } else if (/^\s*y(es)?\s*$/i.test(line)) {
+        resolve(true);
+      } else if (/^\s*n(o)?\s*$/i.test(line)) {
+        resolve(false);
+      } else {
+        resolve(defaultAnswer);
+      }
     };
     const onData = (chunk: string | Buffer): void => done(String(chunk));
     const onEnd = (): void => {

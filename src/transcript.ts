@@ -145,11 +145,23 @@ export function discoverTranscripts(targetPath?: string): string[] {
     return files.sort((a, b) => b.mtime - a.mtime).map(f => f.path);
   }
 
-  const transcriptDir = path.join(os.homedir(), '.claude', 'projects');
+  const transcriptDir = defaultTranscriptDir();
   if (!fs.existsSync(transcriptDir)) return [];
 
   walkDir(transcriptDir, files);
   return files.sort((a, b) => b.mtime - a.mtime).map(f => f.path);
+}
+
+/**
+ * Where Claude Code writes its transcripts: `projects/` under its
+ * configuration directory, which is `~/.claude` unless `CLAUDE_CONFIG_DIR`
+ * moves it (#237). `clean`, `status`, `verify` and the watcher read the same
+ * directory, so a relocated configuration is covered by each of them.
+ */
+export function defaultTranscriptDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.CLAUDE_CONFIG_DIR?.trim();
+  const configDir = configured ? path.resolve(configured) : path.join(os.homedir(), '.claude');
+  return path.join(configDir, 'projects');
 }
 
 function walkDir(dir: string, files: Array<{ path: string; mtime: number }>): void {
