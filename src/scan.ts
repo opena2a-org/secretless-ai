@@ -1930,3 +1930,17 @@ function walkSourceFiles(
   });
   return { ...walk, unscannedConfig, ignoreFileExcluded };
 }
+
+/**
+ * @internal What a plain `scan` of `projectDir` would count in
+ * `ignoreFileExcluded` were `lines` its `.secretlessignore`: the paths the
+ * source walk leaves unread for those lines and would read under the
+ * default-ignore list alone. The walk and matchers `scan` builds, so the count
+ * is the one `scan` reports for those lines; it reads directory listings, not
+ * file contents. `ignore` asks it whether the line it wrote makes `scan` exit 1.
+ */
+export function countIgnoreFileExcluded(projectDir: string, lines: readonly string[]): number {
+  const defaults = defaultIgnoreLines();
+  return walkSourceFiles(projectDir, 5000, false, buildMatcher([...defaults, ...lines]), false, buildMatcher(defaults))
+    .ignoreFileExcluded;
+}

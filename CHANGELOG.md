@@ -62,6 +62,33 @@ on it, is no longer written into a hook: `init`, `hook install` and
 `hook install` or `git-credential install` to rewrite a hook an earlier
 version wrote.
 
+**`ignore` says that `scan` keeps exiting 1 for the path it skips.** `scan`
+reports a path the scanned directory's own `.secretlessignore` kept it from
+reading as excluded, a gap that exits 1 (#414), so ignoring the path a finding
+is on never made a scan pass, and `ignore` printed only that it wrote the line
+and `Verify: secretless-ai scan`. When the line it wrote keeps `scan` from
+reading a path, measured with the walk `scan` runs, it now prints
+`Skipped from now on, and listed as excluded: scan keeps exiting 1 for it,
+because an excluded path is not known to be clean.` and
+`Read it anyway: secretless-ai scan --no-ignore`. A line that keeps `scan`
+from reading nothing, such as one matching only `.txt` files, which `scan`
+does not open, prints `No path counts as excluded by this line, so scan does
+not exit 1 for it.` instead, and a line starting with `!`, which re-includes,
+prints neither. The usage text and `ignore --help` say the
+scanner skips the path and reports it as excluded (exit 1). When
+`.secretlessignore` starts with the header `ignore` writes, the exclusion
+block of `scan` reads `Its rules come from the tree being scanned (written by
+secretless-ai ignore), not from this scanner.`; the exit code is unchanged.
+The Triage helpers section of `docs/commands.md` describes `ignore` as
+narrowing what `scan` reads, with examples `scan` reads (its two examples, a
+`.md` file and a `*.golden.txt` glob, matched only files `scan` does not
+open), and says a false positive is handled in the value: remove or rewrite
+it, use `--min-confidence`, or give a sample value a placeholder word such as
+`example`; there is no allow-list for a single finding.
+`src/commands/ignore.test.ts` checks each message against the `--json` summary
+of a scan run after it, and `src/scan-ignore-file-gap.test.ts` the header,
+including the one written before #178 and a file with CRLF line endings.
+
 **`scan --check-validity` asks the provider that issued a found credential whether it still accepts it.**
 Off by default: without the flag the scanner keeps no matched value, sends no
 credential anywhere, and prints what it printed before. With it, each finding

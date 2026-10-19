@@ -4,11 +4,13 @@
  * append behaviour, glob normalisation, and symlink rejection.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ignorePattern } from './ignore';
+import { ignorePattern, runIgnore } from './ignore';
+import { runScan } from './core';
+import { printCommandHelp } from '../command-help';
 
 let tmpDir: string;
 
@@ -195,5 +197,132 @@ describe('ignorePattern (refuses non-file)', () => {
     fs.mkdirSync(dirPath);
     const r = ignorePattern('safe.md', { rootDir: tmpDir });
     expect(r.exitCode).toBe(2);
+  });
+});
+
+describe('runIgnore says what scan does with the line it wrote', () => {
+  // `scan` reports a path the scanned tree's own `.secretlessignore` kept it
+  // from reading as excluded, a gap that exits 1 (#414), so ignoring the path
+  // a finding is on cannot make a scan pass. `ignore` printed only
+  // `Verify: secretless-ai scan`, and the scan after it exited 1 with nothing
+  // having said it would.
+  let cwd: string;
+  let out: string[];
+  let err: string[];
+
+  beforeEach(() => {
+    cwd = process.cwd();
+    process.chdir(tmpDir);
+    out = [];
+    err = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
+    vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { err.push(a.map(String).join(' ')); });
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    vi.restoreAllMocks();
+  });
+
+  /** The exit code and `summary.ignoreFileExcluded` of `scan --json` over the temporary tree. */
+  async function scanned(): Promise<{ code: number; ignoreFileExcluded: number }> {
+    out.length = 0;
+    const code = await runScan(tmpDir, { json: true });
+    return { code, ignoreFileExcluded: JSON.parse(out.join('\n')).summary.ignoreFileExcluded };
+  }
+
+  it('a path scan reads: says scan keeps exiting 1 for it, names the command that reads it, and scan does exit 1', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'src'));
+    fs.writeFileSync(path.join(tmpDir, 'src', 'data.js'), 'module.exports = 1;\n');
+
+    expect(runIgnore(['src/data.js'])).toBe(0);
+
+    expect(out).toEqual([
+      '  Created .secretlessignore with "src/data.js".',
+      '  Skipped from now on, and listed as excluded: scan keeps exiting 1 for it,',
+      '  because an excluded path is not known to be clean.',
+      '  Read it anyway: secretless-ai scan --no-ignore',
+      '  Verify: secretless-ai scan',
+    ]);
+    expect(await scanned()).toEqual({ code: 1, ignoreFileExcluded: 1 });
+  });
+
+  it('appending to an existing file says the same', () => {
+    fs.writeFileSync(path.join(tmpDir, '.secretlessignore'), 'other.js\n');
+    fs.writeFileSync(path.join(tmpDir, 'app.js'), 'module.exports = 1;\n');
+
+    expect(runIgnore(['app.js'])).toBe(0);
+
+    expect(out[0]).toBe('  Added "app.js" to .secretlessignore.');
+    expect(out).toContain('  Skipped from now on, and listed as excluded: scan keeps exiting 1 for it,');
+    expect(out).toContain('  Read it anyway: secretless-ai scan --no-ignore');
+  });
+
+  // The two lines docs/commands.md showed: scan opens no `.txt` file and no
+  // `.md` file outside its config names, so neither line changes what it reads.
+  it.each([
+    { args: ['--pattern', '*.golden.txt'], file: 'expected.golden.txt' },
+    { args: ['docs/migration.md'], file: 'docs/migration.md' },
+  ])('a line that matches no path scan reads ($args) claims no exit 1, and scan exits 1 for none', async ({ args, file }) => {
+    fs.mkdirSync(path.dirname(path.join(tmpDir, file)), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, file), 'notes\n');
+    fs.writeFileSync(path.join(tmpDir, 'app.js'), 'module.exports = 1;\n');
+
+    expect(runIgnore(args)).toBe(0);
+
+    expect(out).toEqual([
+      `  Created .secretlessignore with "${args[args.length - 1]}".`,
+      '  No path counts as excluded by this line, so scan does not exit 1 for it.',
+      '  Verify: secretless-ai scan',
+    ]);
+    expect((await scanned()).ignoreFileExcluded).toBe(0);
+  });
+
+  it('a line the default-ignore list already covers claims no exit 1', () => {
+    fs.mkdirSync(path.join(tmpDir, 'examples'));
+    fs.writeFileSync(path.join(tmpDir, 'examples', 'demo.js'), 'module.exports = 1;\n');
+
+    expect(runIgnore(['examples/demo.js'])).toBe(0);
+
+    expect(out).toContain('  No path counts as excluded by this line, so scan does not exit 1 for it.');
+    expect(out.join('\n')).not.toContain('exiting 1');
+  });
+
+  it('a ! line re-includes what it matches, so it makes neither claim', () => {
+    expect(runIgnore(['--pattern', '!docs/vhs/'])).toBe(0);
+
+    expect(out).toEqual([
+      '  Created .secretlessignore with "!docs/vhs/".',
+      '  Verify: secretless-ai scan',
+    ]);
+  });
+
+  it('a line already present writes nothing and makes no claim', () => {
+    fs.writeFileSync(path.join(tmpDir, '.secretlessignore'), 'app.js\n');
+    fs.writeFileSync(path.join(tmpDir, 'app.js'), 'module.exports = 1;\n');
+
+    expect(runIgnore(['app.js'])).toBe(0);
+
+    expect(out).toEqual(['  Pattern "app.js" already in .secretlessignore. No change.']);
+  });
+
+  it('the usage text says the scanner reports the path as excluded (exit 1)', () => {
+    expect(runIgnore([])).toBe(1);
+
+    expect(err).toEqual([
+      '  Usage: secretless-ai ignore <path>',
+      '         secretless-ai ignore --pattern <glob>',
+      '',
+      '  Appends a gitignore-style glob to .secretlessignore so the',
+      '  scanner skips that path and reports it as excluded (exit 1).',
+    ]);
+  });
+
+  it('`ignore --help` says the same in its summary', () => {
+    printCommandHelp('ignore');
+
+    expect(out.join('\n').split('\n')).toContain(
+      '  Append a path or glob to .secretlessignore, so the scanner skips that path and reports it as excluded (exit 1).',
+    );
   });
 });

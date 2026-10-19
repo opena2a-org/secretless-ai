@@ -4,6 +4,7 @@ import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
 import { scan, emptySkips, unreadReason, matchedValueOf, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
+import { startsWithIgnoreHeader } from './ignore';
 import { scanToSarif } from '../sarif';
 import { checkFindings, summarizeValidity, stateLabel, type ProbeDeps, type ValidityResult, type ValidityState } from '../validity';
 import { status, protection, USER_SETTINGS_PATH, type HookScript } from '../status';
@@ -1082,7 +1083,10 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
     if (stats.ignoreFileExcluded > 0) {
       const n = stats.ignoreFileExcluded;
       console.log(`  ${c.boldYellow(`${n} path${n > 1 ? 's' : ''} excluded by ${shown(IGNORE_FILENAME)}`)}, so not known to be clean.`);
-      console.log(`  ${c.dim('Its rules come from the tree being scanned, not from this scanner.')}`);
+      // Named when the file starts with the header `ignore` writes, so a user
+      // who ran it to silence a finding reads why the scan still exits 1.
+      const writer = startsWithIgnoreHeader(projectDir) ? ' (written by secretless-ai ignore)' : '';
+      console.log(`  ${c.dim(`Its rules come from the tree being scanned${writer}, not from this scanner.`)}`);
       console.log(`  ${c.cyan('Verify:')} cat -v ${operand([IGNORE_FILENAME])}`);
       console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --no-ignore\n`);
     }

@@ -445,7 +445,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     usage: [''],
   },
   ignore: {
-    summary: 'Append a path or glob to .secretlessignore.',
+    summary: 'Append a path or glob to .secretlessignore, so the scanner skips that path and reports it as excluded (exit 1).',
     usage: ['<path>', '--pattern <glob>'],
     flags: { '--pattern': ['<glob>', 'Append a glob pattern rather than a path'] },
   },
