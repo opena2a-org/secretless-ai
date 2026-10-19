@@ -118,31 +118,44 @@ jobs:
           FILE_COUNT=$(wc -l < /tmp/changed_files.txt | tr -d ' ')
           echo "$FILE_COUNT" > /tmp/file_count.txt
 
-          # Full source file context (line-numbered) for mitigation verification
+          # Full source file context (line-numbered) for mitigation verification.
+          #
+          # Each file is read from the HEAD commit with `git cat-file`, never
+          # through the working tree. Read through its path, a changed file
+          # committed as a symlink put the contents of the file it points to,
+          # which can lie outside the repository, in the request. A symlink's
+          # blob is the name of its target. A path with no blob in HEAD, such as
+          # a deleted file, is skipped.
+          #
+          # A file that does not fit in what is left of the budget is named
+          # with a notice and skipped, and the loop goes on to the next file.
+          # The loop used to stop at the first such file, so a file larger than
+          # the whole budget dropped every file listed after it: on #275,
+          # CHANGELOG.md came first and this section held only its "truncated
+          # at 0 bytes" notice. CHANGELOG.md is also skipped as lockfiles are:
+          # its full text verifies no mitigation and its change is in the diff.
           echo "" > /tmp/full_files.txt
           TOTAL_SIZE=0
           MAX_FULL_SIZE=200000
-          # The loop reads the file list on fd 3 and nl reads through a stdin
-          # redirect: a changed file literally named '-' must not let any
-          # command in the body consume the list itself, because nl treats the
-          # operand '-' as stdin. With the previous form the '-' entry rendered
-          # the REMAINING file list as its own contents and the loop then ended
-          # at exit 0 — every later file dropped, with no truncation notice and
-          # nothing in the log to say so.
+          # The loop reads the file list on fd 3 so that no command in its body
+          # can consume the list itself. When nl was handed a changed file by
+          # path, a file literally named '-' was read as stdin: it rendered the
+          # REMAINING file list as its own contents and the loop then ended at
+          # exit 0, every later file dropped with no notice in the log.
           while IFS= read -r file <&3; do
             case "$file" in
-              *.test.* | *.spec.* | package-lock.json | *.lock) continue ;;
+              *.test.* | *.spec.* | package-lock.json | *.lock | CHANGELOG.md) continue ;;
             esac
-            [ -f "$file" ] || continue
-            FILE_SIZE=$(wc -c < "$file" | tr -d ' ')
-            NEW_TOTAL=$((TOTAL_SIZE + FILE_SIZE))
-            if [ "$NEW_TOTAL" -gt "$MAX_FULL_SIZE" ]; then
-              printf '\n[FULL FILE CONTEXT TRUNCATED at %s bytes — remaining files omitted]\n' "$TOTAL_SIZE" >> /tmp/full_files.txt
-              break
+            [ "$(git cat-file -t "HEAD:$file" 2>/dev/null)" = blob ] || continue
+            FILE_SIZE=$(git cat-file -s "HEAD:$file")
+            if [ $((TOTAL_SIZE + FILE_SIZE)) -gt "$MAX_FULL_SIZE" ]; then
+              printf '\n=== %s ===\n[FULL FILE CONTEXT OMITTED — %s bytes, over the %s bytes left of the budget]\n' \
+                "$file" "$FILE_SIZE" "$((MAX_FULL_SIZE - TOTAL_SIZE))" >> /tmp/full_files.txt
+              continue
             fi
-            TOTAL_SIZE=$NEW_TOTAL
+            TOTAL_SIZE=$((TOTAL_SIZE + FILE_SIZE))
             printf '\n=== %s ===\n' "$file" >> /tmp/full_files.txt
-            nl -ba < "$file" >> /tmp/full_files.txt
+            git cat-file blob "HEAD:$file" | nl -ba >> /tmp/full_files.txt
           done 3< /tmp/changed_files.txt
 
           # NO previous-review replay. Removed 2026-08-29. The fetch
@@ -165,29 +178,44 @@ jobs:
 
       - name: Collect definitions the changed files import
         # A changed file that calls a function defined in an UNCHANGED file
-        # shows the call in the diff and the import in its full source, but
-        # never the definition: the file that holds it is in neither section.
-        # On #275 the review read that absence as "called but not defined or
-        # imported" and raised a CRITICAL on two functions exported from
-        # src/display-safe.ts, which did not change. This step follows every
-        # relative import of a changed file to the module it resolves to and
-        # lists that module's export declarations, line-numbered, so a symbol
-        # that resolves in the checkout is seen to resolve.
+        # shows the call in the diff, and the import in its full source when
+        # that file is in FULL SOURCE FILES, but never the definition, since
+        # the file that holds it is in neither section. On #275 the request
+        # held neither the definitions nor the import: src/display-safe.ts did
+        # not change, and the full source section held only its "truncated at
+        # 0 bytes" notice. The review read those absences as "called but not
+        # defined or imported" and raised a CRITICAL on two functions exported
+        # from src/display-safe.ts. This step follows each relative import of
+        # a changed file whose keyword and quoted specifier stand on one line
+        # (`from '...'`, `import '...'`, `require('...')`, `import('...')`) to
+        # the module it resolves to and lists that module's export
+        # declarations, line-numbered, so a symbol that resolves in the
+        # checkout is seen to resolve. It does not follow a template-literal
+        # specifier, or a specifier on the line after its `from` or `require(`.
+        #
+        # The section is bounded twice, and past either bound the step writes
+        # a notice and stops: at MAX_DEFS_SIZE bytes, each module's header
+        # line counted with its declarations, and at MAX_SPECS import
+        # specifiers followed, since following one takes time whether or not
+        # it resolves.
         #
         # Every file is read from the HEAD commit with `git cat-file`, never
         # through the filesystem. The import paths are authored by the pull
         # request: a path is normalised without touching the disk and dropped
         # if it climbs above the repository root, and a tracked symlink's blob
         # is the NAME of its target, not the target's contents, so nothing on
-        # the runner outside the commit can reach the prompt. The step has no
-        # token in its environment and no workflow expressions, so it can be
-        # executed verbatim outside Actions when verifying this logic.
+        # the runner outside the commit reaches the prompt through this step.
+        # The step has no token in its environment and no workflow
+        # expressions, so it can be executed verbatim outside Actions when
+        # verifying this logic.
         run: |
           : > /tmp/imported_defs.txt
           : > /tmp/imported_paths.txt
           : > /tmp/imported_bases.txt
           DEFS_SIZE=0
           MAX_DEFS_SIZE=60000
+          SPECS=0
+          MAX_SPECS=1000
 
           # A repository-relative path with '.' and empty segments dropped and
           # each '..' removing one segment. Fails when the path climbs above
@@ -209,18 +237,24 @@ jobs:
             printf '%s\n' "$joined"
           }
 
-          # The first module file a specifier names that is a blob in HEAD,
-          # in TypeScript's order: the path as written (a `.js` specifier also
-          # as its `.ts` source), then with an extension, then as a directory
-          # index. One `git cat-file --batch-check` answers every candidate.
+          # The first module file a specifier names that is a blob in HEAD. A
+          # specifier with a JavaScript extension is tried first as its
+          # TypeScript source or declaration file, then as written: `./x.js` as
+          # x.ts, x.tsx and x.d.ts before x.js, `.jsx` as .tsx, .ts and .d.ts,
+          # `.mjs` as .mts and .d.mts, `.cjs` as .cts and .d.cts. Where one of
+          # those and the JavaScript file are both committed, that is the file
+          # TypeScript resolves the import to under this repository's tsconfig.
+          # Then the path with an extension added, then as a directory index.
+          # One `git cat-file --batch-check` answers every candidate.
           resolve_module() {
             local base="$1" type i=0
             local -a cands
             case "$base" in
-              *.js) cands=("$base" "${base%.js}.ts" "${base%.js}.tsx") ;;
-              *.mjs) cands=("$base" "${base%.mjs}.mts") ;;
-              *.cjs) cands=("$base" "${base%.cjs}.cts") ;;
-              *.ts | *.tsx | *.mts | *.cts | *.jsx) cands=("$base") ;;
+              *.js) cands=("${base%.js}.ts" "${base%.js}.tsx" "${base%.js}.d.ts" "$base") ;;
+              *.jsx) cands=("${base%.jsx}.tsx" "${base%.jsx}.ts" "${base%.jsx}.d.ts" "$base") ;;
+              *.mjs) cands=("${base%.mjs}.mts" "${base%.mjs}.d.mts" "$base") ;;
+              *.cjs) cands=("${base%.cjs}.cts" "${base%.cjs}.d.cts" "$base") ;;
+              *.ts | *.tsx | *.mts | *.cts) cands=("$base") ;;
               *) cands=() ;;
             esac
             cands+=("$base.ts" "$base.tsx" "$base.d.ts" "$base.js" "$base.jsx" "$base.mjs" "$base.cjs" "$base/index.ts" "$base/index.tsx" "$base/index.js")
@@ -231,12 +265,15 @@ jobs:
             return 1
           }
 
-          # The relative module specifiers on standard input, one per line:
-          # `from '...'`, `import '...'`, `require('...')` and `import('...')`.
-          # Package imports are not repository files and are not followed.
+          # The relative module specifiers on standard input, one per line and
+          # each once, where the keyword and the quoted specifier stand on one
+          # line: `from '...'`, `import '...'`, `require('...')` and
+          # `import('...')`. Package imports are not repository files and are
+          # not followed.
           import_specs() {
             { grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"]\.{1,2}/[^'\"]+['\"]" || true; } \
-              | sed -E "s/^[^'\"]*['\"]//; s/['\"]\$//"
+              | sed -E "s/^[^'\"]*['\"]//; s/['\"]\$//" \
+              | awk '!seen[$0]++'
           }
 
           # The export declarations on standard input, numbered as `nl -ba`
@@ -267,27 +304,33 @@ jobs:
             dir=$(dirname -- "$file")
             git cat-file blob "HEAD:$file" | import_specs > /tmp/import_specs.txt
             while IFS= read -r spec <&4; do
+              if [ "$SPECS" -ge "$MAX_SPECS" ]; then
+                printf '\n[IMPORTED DEFINITIONS STOPPED after %s import specifiers — remaining imports not followed]\n' "$SPECS" >> /tmp/imported_defs.txt
+                break 2
+              fi
+              SPECS=$((SPECS + 1))
               base=$(normalize_path "$dir/$spec") || continue
               if grep -Fxq -- "$base" /tmp/imported_bases.txt; then continue; fi
               printf '%s\n' "$base" >> /tmp/imported_bases.txt
               target=$(resolve_module "$base") || continue
-              # A changed module's full source is already in FULL SOURCE FILES.
+              # A changed module is in the diff, and in FULL SOURCE FILES unless
+              # that section leaves it out.
               if grep -Fxq -- "$target" /tmp/changed_files.txt; then continue; fi
               if grep -Fxq -- "$target" /tmp/imported_paths.txt; then continue; fi
               printf '%s\n' "$target" >> /tmp/imported_paths.txt
               git cat-file blob "HEAD:$target" | export_lines > /tmp/module_defs.txt
               [ -s /tmp/module_defs.txt ] || continue
-              SIZE=$(wc -c < /tmp/module_defs.txt | tr -d ' ')
+              { printf '\n=== %s (unchanged; imported by %s) ===\n' "$target" "$file"; cat /tmp/module_defs.txt; } > /tmp/module_entry.txt
+              SIZE=$(wc -c < /tmp/module_entry.txt | tr -d ' ')
               if [ $((DEFS_SIZE + SIZE)) -gt "$MAX_DEFS_SIZE" ]; then
                 printf '\n[IMPORTED DEFINITIONS TRUNCATED at %s bytes — remaining modules omitted]\n' "$DEFS_SIZE" >> /tmp/imported_defs.txt
                 break 2
               fi
               DEFS_SIZE=$((DEFS_SIZE + SIZE))
-              printf '\n=== %s (unchanged; imported by %s) ===\n' "$target" "$file" >> /tmp/imported_defs.txt
-              cat /tmp/module_defs.txt >> /tmp/imported_defs.txt
+              cat /tmp/module_entry.txt >> /tmp/imported_defs.txt
             done 4< /tmp/import_specs.txt
           done 3< /tmp/changed_files.txt
-          echo "Resolved $(wc -l < /tmp/imported_paths.txt | tr -d ' ') unchanged imported modules; listed $DEFS_SIZE bytes of export declarations."
+          echo "Followed $SPECS import specifiers to $(wc -l < /tmp/imported_paths.txt | tr -d ' ') unchanged modules; listed $DEFS_SIZE bytes of export declarations and their headers."
 
       - name: Build review prompt
         # Kept local on purpose: Secretless's tech stack and review focus are its
@@ -394,8 +437,8 @@ jobs:
         # — an anthropic-version the API rejected, an extraction that read only
         # the first content block, and a byte cap standing in for a token budget
         # — and copy-paste is how one defect became nine. Pinned to a SHA, never
-        # @main: @main would move every consuming repo, and this check is
-        # REQUIRED on this repo's main, the instant that file changed.
+        # @main: @main would change this check the instant that file changed,
+        # with nothing in this repo to review.
         uses: opena2a-org/.github/actions/claude-review@025b1897886f261c12ccc79da3f75d345842c897
         with:
           # A composite action cannot read `secrets`, so the caller passes it in.

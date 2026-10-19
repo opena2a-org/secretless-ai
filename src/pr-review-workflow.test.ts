@@ -29,13 +29,18 @@ import * as path from 'path';
  * prompt rule that a finding resting on code the review was not shown is
  * MEDIUM at most, which does not block. The step does not follow a
  * template-literal specifier, or a specifier on the line after its `from` or
- * `require(`. It supplies the definitions only: it does not restore an empty
- * full source section.
+ * `require(`.
+ *
+ * Also under test (#318): the full source section the gather step writes. It
+ * reads each changed file from the HEAD commit, skips CHANGELOG.md as it skips
+ * lockfiles, and goes on past a file that does not fit in what is left of its
+ * budget instead of stopping there.
  *
  * The same indent-walk reading as src/release-workflow.test.ts: no YAML
  * dependency, comments stripped before any substring assertion. The step
  * scripts are executed as written, with each /tmp/ path redirected into a
- * scratch directory.
+ * scratch directory, `gh` answered by a stand-in, and in one test the
+ * specifier cap lowered.
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -143,6 +148,13 @@ function inScratch(script: string, tmp: string): string {
   return script.split('/tmp/').join(`${tmp}/`);
 }
 
+/** The number a step script assigns to `name`, on the one line that does. */
+function scriptNumber(script: string, name: string): number {
+  const lines = script.match(new RegExp(`^${name}=\\d+$`, 'gm'));
+  expect(lines, `script assigns ${name} once`).toHaveLength(1);
+  return Number(lines![0].slice(name.length + 1));
+}
+
 // ---------------------------------------------------------------------------
 // Scratch repositories
 // ---------------------------------------------------------------------------
@@ -173,12 +185,43 @@ function commitAll(repo: string): void {
     'commit', '--quiet', '--no-verify', '-m', 'fixture'], repo);
 }
 
-function collect(s: Scratch, changed: string[], flags?: string[], extra: NodeJS.ProcessEnv = {}) {
+function collect(s: Scratch, changed: string[], flags?: string[], extra: NodeJS.ProcessEnv = {}, script = runScript(COLLECT_STEP)) {
   fs.writeFileSync(path.join(s.tmp, 'changed_files.txt'), changed.map((f) => `${f}\n`).join(''));
-  const run = bash(inScratch(runScript(COLLECT_STEP), s.tmp), s.repo, extra, flags);
+  const run = bash(inScratch(script, s.tmp), s.repo, extra, flags);
   const defsFile = path.join(s.tmp, 'imported_defs.txt');
   const defs = fs.existsSync(defsFile) ? fs.readFileSync(defsFile, 'utf-8') : '';
   return { run, defs };
+}
+
+/**
+ * The gather step, with a `gh` stand-in that answers its four calls: the diff,
+ * the changed file list, the title and the body. Returns the full source
+ * section it writes.
+ */
+function gather(s: Scratch, changed: string[]) {
+  const bin = path.join(s.root, 'gh-bin');
+  const list = path.join(s.root, 'gh-changed-files.txt');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(list, changed.map((f) => `${f}\n`).join(''));
+  fs.writeFileSync(path.join(bin, 'gh'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  *--name-only*) cat "$GH_STAND_IN_CHANGED_FILES" ;;',
+    '  "pr diff "*) printf \'diff --git a/x b/x\\n\' ;;',
+    '  *title*) printf \'A title\\n\' ;;',
+    '  *) printf \'A body\\n\' ;;',
+    'esac',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const run = bash(inScratch(runScript(GATHER_STEP), s.tmp), s.repo, {
+    PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+    GH_STAND_IN_CHANGED_FILES: list,
+    PR_NUMBER: '275',
+    BASE_REF: 'main',
+  });
+  const fullFile = path.join(s.tmp, 'full_files.txt');
+  const full = fs.existsSync(fullFile) ? fs.readFileSync(fullFile, 'utf-8') : '';
+  return { run, full };
 }
 
 /**
@@ -484,6 +527,111 @@ describe('the review is shown the definitions a changed file imports from unchan
     }
   });
 
+  it('lists the TypeScript file a JavaScript specifier names before the JavaScript file beside it, as TypeScript resolves it (#318)', () => {
+    const s = scratchRepo({
+      'src/a.ts': [
+        "import { fromTs } from './x.js';",
+        "import { fromTsx } from './w.jsx';",
+        "import { fromMts } from './y.mjs';",
+        "import { fromCts } from './z.cjs';",
+        "import { fromDts } from './d.js';",
+        '',
+      ].join('\n'),
+      'src/x.ts': 'export const fromTs = 1;\n',
+      'src/x.js': 'exports.fromJs = 1;\n',
+      'src/w.tsx': 'export const fromTsx = 1;\n',
+      'src/w.jsx': 'export const fromJsx = 1;\n',
+      'src/y.mts': 'export const fromMts = 1;\n',
+      'src/y.mjs': 'export const fromMjs = 1;\n',
+      'src/z.cts': 'export const fromCts = 1;\n',
+      'src/z.cjs': 'exports.fromCjs = 1;\n',
+      'src/d.d.ts': 'export declare const fromDts: number;\n',
+      'src/d.js': 'exports.fromDjs = 1;\n',
+    });
+    try {
+      commitAll(s.repo);
+      const { run, defs } = collect(s, ['src/a.ts']);
+      expect(run.status, run.stderr).toBe(0);
+      for (const source of ['x.ts', 'w.tsx', 'y.mts', 'z.cts', 'd.d.ts']) {
+        expect(defs).toContain(`=== src/${source} (unchanged; imported by src/a.ts) ===`);
+      }
+      for (const javascript of ['fromJs', 'fromJsx', 'fromMjs', 'fromCjs', 'fromDjs']) {
+        expect(defs).not.toContain(javascript);
+      }
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
+  it('counts each module header in its size budget: what precedes the notice stays within it, and the notice gives its byte count (#318)', () => {
+    const budget = scriptNumber(runScript(COLLECT_STEP), 'MAX_DEFS_SIZE');
+    // A declaration is listed as a six-column number, a tab, the line and a
+    // newline: 8 bytes more than the line. src/pad.ts's one declaration fills
+    // the budget left after src/small.ts's, so the two fit only while the
+    // headers go uncounted.
+    const small = 'export const small = 1;';
+    const padFixed = "export const pad = '';";
+    const pad = `export const pad = '${'p'.repeat(budget - (small.length + 8) - 8 - padFixed.length)}';`;
+    expect((small.length + 8) + (pad.length + 8)).toBe(budget);
+    const s = scratchRepo({
+      'src/a.ts': "import { small } from './small';\nimport { pad } from './pad';\n",
+      'src/small.ts': `${small}\n`,
+      'src/pad.ts': `${pad}\n`,
+    });
+    try {
+      commitAll(s.repo);
+      const { run, defs } = collect(s, ['src/a.ts']);
+      expect(run.status, run.stderr).toBe(0);
+      const notice = defs.match(/\n\[IMPORTED DEFINITIONS TRUNCATED at (\d+) bytes — remaining modules omitted\]\n$/);
+      expect(notice, `no truncation notice at the end of ${Buffer.byteLength(defs)} bytes`).not.toBeNull();
+      const before = defs.slice(0, notice!.index);
+      expect(Number(notice![1])).toBe(Buffer.byteLength(before));
+      expect(Buffer.byteLength(before)).toBeLessThanOrEqual(budget);
+      expect(before).toMatch(/=== src\/small\.ts \(unchanged; imported by src\/a\.ts\) ===\n +1\texport const small = 1;\n$/);
+      expect(defs).not.toContain('src/pad.ts');
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops following imports at its specifier cap with one notice, counting a specifier a changed file repeats once (#318)', () => {
+    const script = runScript(COLLECT_STEP);
+    scriptNumber(script, 'MAX_SPECS');
+    const capped = script.replace(/^MAX_SPECS=\d+$/m, 'MAX_SPECS=3');
+    const s = scratchRepo({
+      'src/a.ts': [
+        "import { one } from './m1';",
+        "import type { One } from './m1';",
+        "import { two } from './m2';",
+        "import { three } from './m3';",
+        "import { four } from './m4';",
+        '',
+      ].join('\n'),
+      'src/b.ts': "import { five } from './m5';\n",
+      'src/m1.ts': 'export const one = 1;\nexport type One = number;\n',
+      'src/m2.ts': 'export const two = 2;\n',
+      'src/m3.ts': 'export const three = 3;\n',
+      'src/m4.ts': 'export const four = 4;\n',
+      'src/m5.ts': 'export const five = 5;\n',
+    });
+    try {
+      commitAll(s.repo);
+      const recorded = recordingGit(s);
+      const { run, defs } = collect(s, ['src/a.ts', 'src/b.ts'], undefined, recorded.env, capped);
+      expect(run.status, run.stderr).toBe(0);
+      for (const name of ['m1', 'm2', 'm3']) expect(defs).toContain(`=== src/${name}.ts `);
+      expect(defs).not.toContain('src/m4.ts');
+      expect(defs).not.toContain('src/m5.ts');
+      expect(recorded.lookups()).toBe(3);
+      // One notice, last: reaching the cap ends the step, not only the
+      // changed file that reached it.
+      expect(defs.match(/\[IMPORTED DEFINITIONS STOPPED after 3 import specifiers — remaining imports not followed\]/g)).toHaveLength(1);
+      expect(defs).toMatch(/\n\[IMPORTED DEFINITIONS STOPPED after 3 import specifiers — remaining imports not followed\]\n$/);
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
   it('the prompt places the definitions between the full source files and the diff, and says so when there are none', () => {
     const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-review-prompt-')));
     try {
@@ -540,6 +688,89 @@ describe('the review is shown the definitions a changed file imports from unchan
       expect(system.split('\n')).toContain('VERDICT-__NONCE__: APPROVE');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #318
+// ---------------------------------------------------------------------------
+
+describe('the full source section holds the changed files that fit, read from the HEAD commit (#318)', () => {
+  it('skips CHANGELOG.md as it skips lockfiles, so a changelog larger than the whole budget leaves the files after it in the section (#275)', () => {
+    const budget = scriptNumber(runScript(GATHER_STEP), 'MAX_FULL_SIZE');
+    const entry = '- An entry.\n';
+    const s = scratchRepo({
+      'CHANGELOG.md': `# Changelog\n\n${entry.repeat(Math.ceil(budget / entry.length) + 1)}`,
+      'src/commands/core.ts': CORE,
+      'src/display-safe.ts': DISPLAY_SAFE,
+    });
+    try {
+      commitAll(s.repo);
+      expect(fs.statSync(path.join(s.repo, 'CHANGELOG.md')).size).toBeGreaterThan(budget);
+      const { run, full } = gather(s, ['CHANGELOG.md', 'src/commands/core.ts']);
+      expect(run.status, run.stderr).toBe(0);
+      expect(full).toMatch(/=== src\/commands\/core\.ts ===\n +1\timport \{ escapePathForDisplay, hasDisplayHazard \} from '\.\.\/display-safe';\n/);
+      expect(full).not.toContain('CHANGELOG.md');
+      expect(full).not.toContain('An entry.');
+      expect(full).not.toContain('TRUNCATED');
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
+  it('names a file that does not fit in what is left of the budget and goes on to the files after it', () => {
+    const budget = scriptNumber(runScript(GATHER_STEP), 'MAX_FULL_SIZE');
+    const line = `// ${'x'.repeat(96)}\n`;
+    const first = line.repeat(Math.floor((budget * 0.6) / line.length));
+    const second = line.repeat(Math.floor((budget * 0.5) / line.length));
+    const s = scratchRepo({
+      'src/a.ts': first,
+      'src/b.ts': second,
+      '-': 'export const DASH_MARKER = 1;\n',
+      'src/c.ts': 'export const LAST_MARKER = 1;\n',
+    });
+    try {
+      commitAll(s.repo);
+      const { run, full } = gather(s, ['src/a.ts', 'src/gone.ts', 'src/b.ts', '-', 'src/c.ts']);
+      expect(run.status, run.stderr).toBe(0);
+      expect(full).toContain('=== src/a.ts ===\n');
+      expect(full).toContain(
+        `=== src/b.ts ===\n[FULL FILE CONTEXT OMITTED — ${second.length} bytes, over the ${budget - first.length} bytes left of the budget]\n`,
+      );
+      expect(full).not.toContain('src/gone.ts');
+      // A file named '-' is read as itself, and the list after it survives.
+      expect(full).toMatch(/=== - ===\n +1\texport const DASH_MARKER = 1;\n/);
+      expect(full).toMatch(/=== src\/c\.ts ===\n +1\texport const LAST_MARKER = 1;\n/);
+      expect(full).not.toContain('TRUNCATED');
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads nothing outside the HEAD commit: not the file a committed symlink points to, a path outside the repository, an untracked file or a working-tree edit', () => {
+    const s = scratchRepo({ 'src/edited.ts': 'export const COMMITTED_MARKER = 1;\n' });
+    try {
+      const outside = path.join(s.root, 'outside');
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, 'secret.ts'), 'export const OUTSIDE_MARKER = 1;\n');
+      fs.symlinkSync(path.join(outside, 'secret.ts'), path.join(s.repo, 'src', 'leak.ts'));
+      commitAll(s.repo);
+      // Neither of these is in the commit the review is about.
+      fs.writeFileSync(path.join(s.repo, 'src', 'untracked.ts'), 'export const UNTRACKED_MARKER = 1;\n');
+      fs.writeFileSync(path.join(s.repo, 'src', 'edited.ts'), 'export const WORKTREE_MARKER = 1;\n');
+
+      const { run, full } = gather(s, ['src/leak.ts', '../outside/secret.ts', 'src/untracked.ts', 'src/edited.ts']);
+      expect(run.status, run.stderr).toBe(0);
+
+      expect(full).toMatch(/=== src\/edited\.ts ===\n +1\texport const COMMITTED_MARKER = 1;\n/);
+      expect(full).not.toContain('OUTSIDE_MARKER');
+      expect(full).not.toContain('UNTRACKED_MARKER');
+      expect(full).not.toContain('WORKTREE_MARKER');
+      // The symlink's blob is the name of its target, not its contents.
+      expect(full).toMatch(/=== src\/leak\.ts ===\n +1\t[^\n]*\/outside\/secret\.ts/);
+    } finally {
+      fs.rmSync(s.root, { recursive: true, force: true });
     }
   });
 });
