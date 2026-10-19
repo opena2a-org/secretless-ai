@@ -1716,7 +1716,18 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   }
 
   // Prompt check (#237): the one control that acts before a value is sent.
-  if (tp.promptCheckInstalled && tp.promptCheckScope === 'user') {
+  // As for the Stop hook, a check whose node or CLI file is gone refuses
+  // nothing, so it is a warning row, never a ✓.
+  if (tp.promptCheckInstalled && tp.promptCheckTargetMissing !== null) {
+    const missing = escapePathForDisplay(tp.promptCheckTargetMissing);
+    addRow(tp.promptCheckScope === 'user'
+      ? {
+        glyph: '⚠',
+        label: `Prompt check installed at user level (${USER_SETTINGS_PATH}), target missing: ${missing} (a credential in a prompt is sent, then redacted)`,
+        action: `${CLI} init ~`,
+      }
+      : { glyph: '⚠', label: `Prompt check installed, target missing: ${missing} (a credential in a prompt is sent, then redacted)`, action: `${CLI} init` });
+  } else if (tp.promptCheckInstalled && tp.promptCheckScope === 'user') {
     addRow({ glyph: '✓', label: `Prompt check installed at user level (${USER_SETTINGS_PATH}, a credential in a prompt is refused before it is sent)` });
   } else if (tp.promptCheckInstalled) {
     addRow({ glyph: '✓', label: 'Prompt check installed (a credential in a prompt is refused before it is sent)' });
@@ -1885,6 +1896,8 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
         : null,
       // `stopHookTargetMissing`: the node or CLI file the installed Stop hook
       // names and that is gone, so the hook cleans nothing; null otherwise.
+      // `promptCheckTargetMissing`: the same for the prompt check, which then
+      // refuses nothing.
       transcriptProtection: tp,
       // Null when the metadata file could not be read, never 0 (#236).
       exposuresOpen: s.exposuresOpen,

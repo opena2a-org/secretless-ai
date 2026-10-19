@@ -1,7 +1,7 @@
 /**
  * The command prefix written into a hook or helper that a later process runs:
- * the git pre-commit hook, the Claude Code Stop hook and the git credential
- * helper.
+ * the git pre-commit hook, the Claude Code Stop and UserPromptSubmit hooks
+ * and the git credential helper.
  *
  * The prefix names the copy that wrote it, so the hook runs that code from
  * whatever directory git or Claude Code starts it in: the node binary and this

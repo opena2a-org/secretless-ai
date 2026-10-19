@@ -14,7 +14,7 @@ import * as path from 'path';
 import { commandPrefixForHooks, resolveHookPrefix } from './hook-prefix';
 import { shellHookCommand } from './env';
 import { installPreCommitHook, hookScript, isHookInstalled, preCommitTargetMissing } from './git-hook';
-import { init, stopHookCommand, stopHookTargetMissing } from './init';
+import { init, stopHookCommand, stopHookTargetMissing, promptCheckCommand, promptCheckTargetMissing } from './init';
 import { helperCommand, helperKey, installHelper, uninstallHelper, readGlobalValues, isOurHelper, type GitRunner } from './git-credential';
 import { runGitCredential } from './commands/git-credential';
 import { VERSION } from './commands/utils';
@@ -404,6 +404,23 @@ describe('a hook that names its copy by path checks the CLI file is there first'
     expect(res.stderr).toBe(`secretless-ai: transcript cleaner not found at ${script}. Reinstall: npx secretless-ai init\n`);
   });
 
+  it('the prompt check runs the copy, and once it is gone exits 1 with one line', () => {
+    const { root, script, prefix } = copy();
+    const command = promptCheckCommand(prefix);
+    expect(command.startsWith(`[ -f ${quote(script)} ] || `)).toBe(true);
+    expect(command.endsWith(`${prefix} hook --check-prompt`)).toBe(true);
+
+    let res = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf-8' });
+    expect(res.status, res.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(root, 'real-ran'), 'utf-8')).toBe('hook --check-prompt');
+
+    fs.rmSync(root, { recursive: true });
+    res = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf-8' });
+    expect(res.status).toBe(1);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toBe(`secretless-ai: prompt check not found at ${script}. Reinstall: npx secretless-ai init\n`);
+  });
+
   it('the credential helper runs the copy, and once it is gone exits 1 with one line', () => {
     const { root, script, prefix } = copy();
     const entry = helperCommand(prefix, { host: 'github.com', name: 'GITHUB_TOKEN', username: 'octo' });
@@ -429,6 +446,10 @@ describe('a hook that names its copy by path checks the CLI file is there first'
       .toBe(`${PINNED_NPX} clean --last || echo "secretless-ai clean --last failed (exit $?)" >&2 || true`);
     expect(helperCommand(PINNED_NPX, { host: 'github.com', name: 'GITHUB_TOKEN' }))
       .toBe(`!${PINNED_NPX} git-credential --host github.com --name GITHUB_TOKEN`);
+  });
+
+  it('the prompt check in the npx form carries no file test', () => {
+    expect(promptCheckCommand(PINNED_NPX)).toBe(`${PINNED_NPX} hook --check-prompt`);
   });
 
   it('hook install, init and git-credential still recognise the checked bodies as their own', () => {
@@ -461,6 +482,24 @@ describe('a hook that names its copy by path checks the CLI file is there first'
     const settings = JSON.parse(fs.readFileSync(path.join(project, '.claude', 'settings.json'), 'utf-8'));
     const commands = (settings.hooks.Stop as any[]).flatMap((h) => h.hooks.map((hh: any) => hh.command));
     expect(commands).toEqual([stopHookCommand(), 'echo done']);
+  });
+
+  it("init replaces the checked prompt check an earlier run wrote, and keeps the user's own", () => {
+    const { prefix } = copy();
+    const project = path.join(tmp, 'project-prompt');
+    fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [
+          { matcher: '', hooks: [{ type: 'command', command: promptCheckCommand(prefix) }] },
+          { matcher: '', hooks: [{ type: 'command', command: '/usr/local/bin/my-own-prompt-hook' }] },
+        ],
+      },
+    }));
+    init(project);
+    const settings = JSON.parse(fs.readFileSync(path.join(project, '.claude', 'settings.json'), 'utf-8'));
+    const commands = (settings.hooks.UserPromptSubmit as any[]).flatMap((h) => h.hooks.map((hh: any) => hh.command));
+    expect(commands).toEqual([promptCheckCommand(), '/usr/local/bin/my-own-prompt-hook']);
   });
 });
 
@@ -518,5 +557,23 @@ describe('the file a hook body names and is missing', () => {
     expect(preCommitTargetMissing(repoWithHook(`#!/bin/sh\n${gone} scan-staged\n`))).toBeNull();
     expect(stopHookTargetMissing(`${gone} clean --last`)).toBeNull();
     expect(preCommitTargetMissing(path.join(tmp, 'no-repo'))).toBeNull();
+  });
+
+  it('reads the prompt check the same way: null while the copy is there, its file once it is gone', () => {
+    const root = path.join(tmp, 'prompt', "it's here");
+    const script = fakeInstall(root);
+    const prefix = commandPrefixForHooks({ script, execPath: process.execPath, pathEnv: '' });
+    // The checked body, and one made of the prefix and the subcommand alone.
+    const bodies = [promptCheckCommand(prefix), `${prefix} hook --check-prompt`];
+    for (const command of bodies) expect(promptCheckTargetMissing(command)).toBeNull();
+
+    fs.rmSync(root, { recursive: true });
+    for (const command of bodies) expect(promptCheckTargetMissing(command)).toBe(script);
+
+    const node = path.join(tmp, 'old-node', 'bin', 'node');
+    const pkg = fakeInstall(path.join(tmp, 'prompt-pkg'));
+    expect(promptCheckTargetMissing(promptCheckCommand(`${quote(node)} ${quote(pkg)}`))).toBe(node);
+    expect(promptCheckTargetMissing(promptCheckCommand(PINNED_NPX))).toBeNull();
+    expect(promptCheckTargetMissing(stopHookCommand(prefix))).toBeNull();
   });
 });

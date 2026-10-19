@@ -12,7 +12,7 @@ import { isWatchRunning } from './watch';
 import { watchStatus } from './watch-state';
 import { defaultAnnotationsPath, readAnnotations } from './secret-annotations';
 import { needsRotation } from './secret-exposure';
-import { stopHookTargetMissing, compareManagedHook, type ManagedHookKind, type ManagedHookState } from './init';
+import { stopHookTargetMissing, promptCheckTargetMissing, compareManagedHook, type ManagedHookKind, type ManagedHookState } from './init';
 
 /**
  * How many of the most recent transcripts `status` reads. A full pass is a
@@ -56,6 +56,8 @@ export interface UserSettingsStatus {
   stopHookTargetMissing: string | null;
   /** UserPromptSubmit runs `hook --check-prompt` (#237). */
   promptCheckInstalled: boolean;
+  /** See `StatusResult.transcriptProtection.promptCheckTargetMissing`; this file's prompt check. */
+  promptCheckTargetMissing: string | null;
   unreadable?: { path: string; reason: string };
   ambiguous?: { path: string; reason: string };
   /**
@@ -198,6 +200,13 @@ export interface StatusResult {
     promptCheckInstalled: boolean;
     /** Which settings file the prompt check was found in, project first. */
     promptCheckScope: 'project' | 'user' | null;
+    /**
+     * The file the prompt check in that settings file runs and that is
+     * missing: the CLI script, or else the node binary, of the copy that ran
+     * `init`. The hook then refuses no prompt. Null when the hook names no
+     * file (the npx form) and when both files exist.
+     */
+    promptCheckTargetMissing: string | null;
     watcherRunning: boolean;
     /** The directories the running watcher covers; empty when it is not running. */
     watcherDirs: string[];
@@ -421,6 +430,15 @@ function stopTargetMissing(settings: any): string | null {
   return null;
 }
 
+/** The same for the prompt check `init` wrote into a settings object (#237). */
+function promptTargetMissing(settings: any): string | null {
+  for (const command of hookCommands(settings, 'UserPromptSubmit')) {
+    const missing = promptCheckTargetMissing(command);
+    if (missing !== null) return missing;
+  }
+  return null;
+}
+
 /** True when `filePath` is a regular file whose text holds one of `markers`. */
 function fileCarries(filePath: string, markers: string[]): boolean {
   try {
@@ -538,6 +556,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       stopHookTargetMissing: null,
       promptCheckInstalled: false,
       promptCheckScope: null,
+      promptCheckTargetMissing: null,
       watcherRunning: false,
       watcherDirs: [],
       transcriptFiles: 0,
@@ -581,6 +600,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     if (hasPromptCheck(read.settings)) {
       result.transcriptProtection.promptCheckInstalled = true;
       result.transcriptProtection.promptCheckScope = 'project';
+      result.transcriptProtection.promptCheckTargetMissing = promptTargetMissing(read.settings);
     }
   }
 
@@ -616,6 +636,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
       stopHookInstalled,
       stopHookTargetMissing: stopHookInstalled ? stopTargetMissing(read.settings) : null,
       promptCheckInstalled,
+      promptCheckTargetMissing: promptCheckInstalled ? promptTargetMissing(read.settings) : null,
       coversProject: secretlessInstalled
         && !read.unreadable
         && !read.ambiguous
@@ -633,6 +654,7 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     if (promptCheckInstalled && !result.transcriptProtection.promptCheckInstalled) {
       result.transcriptProtection.promptCheckInstalled = true;
       result.transcriptProtection.promptCheckScope = 'user';
+      result.transcriptProtection.promptCheckTargetMissing = user.promptCheckTargetMissing;
     }
   }
 
