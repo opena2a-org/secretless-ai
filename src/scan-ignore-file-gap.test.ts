@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runScan } from './commands/core';
+import { ignorePattern } from './commands/ignore';
 import { SOURCE_SKIP_REASONS } from './scan';
 
 /**
@@ -161,5 +162,63 @@ describe('a path the scanned tree\'s own .secretlessignore excluded is a coverag
     expect(without.doc.summary.ignoreFileExcluded).toBe(0);
     expect(without.doc.notEnteredDirs).toEqual([{ path: 'test', reason: SOURCE_SKIP_REASONS.testDir }]);
     expect(without.code).toBe(0);
+  });
+});
+
+describe('the gap names `secretless-ai ignore` when the ignore file starts with the header it writes', () => {
+  const WRITER_LINE = '  Its rules come from the tree being scanned (written by secretless-ai ignore), not from this scanner.';
+  const PLAIN_LINE = '  Its rules come from the tree being scanned, not from this scanner.';
+  // The header `ignore` wrote before it cited https://opena2a.org/secretless.
+  const PRIOR_HEADER = [
+    '# .secretlessignore',
+    '# gitignore-style globs for paths the secret scanner should skip.',
+    '# Lines starting with `!` re-include a previously ignored path.',
+    '# See https://opena2a.org/secretless-ai for syntax.',
+    '',
+  ].join('\n');
+  const FILES = { 'app.js': 'const a = 1;\n', 'skip-me.js': 'const b = 2;\n' };
+
+  it('a file `ignore` created', async () => {
+    const dir = tree(FILES);
+    expect(ignorePattern('skip-me.js', { rootDir: dir }).exitCode).toBe(0);
+
+    const { text, code } = await report(dir);
+
+    expect(text).toContain(`  1 path excluded by ${path.basename(dir)}/.secretlessignore, so not known to be clean.`);
+    expect(text).toContain(WRITER_LINE);
+    expect(text).not.toContain(PLAIN_LINE);
+    expect(code).toBe(1);
+  });
+
+  it('a file an earlier `ignore` created, under the header it wrote then', async () => {
+    const { text, code } = await report(tree({ ...FILES, '.secretlessignore': `${PRIOR_HEADER}skip-me.js\n` }));
+
+    expect(text).toContain(WRITER_LINE);
+    expect(code).toBe(1);
+  });
+
+  it('a file checked out with CRLF line endings', async () => {
+    const dir = tree(FILES);
+    expect(ignorePattern('skip-me.js', { rootDir: dir }).exitCode).toBe(0);
+    const file = path.join(dir, '.secretlessignore');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace(/\n/g, '\r\n'));
+
+    expect((await report(dir)).text).toContain(WRITER_LINE);
+  });
+
+  it('CONTROL: a file without the header names no writer', async () => {
+    const { text, code } = await report(tree(IGNORE_ALL));
+
+    expect(text).toContain(PLAIN_LINE);
+    expect(text).not.toContain('written by');
+    expect(code).toBe(1);
+  });
+
+  it('CONTROL: the header below a rule is not the header `ignore` writes', async () => {
+    const { text, code } = await report(tree({ ...FILES, '.secretlessignore': `skip-me.js\n${PRIOR_HEADER}` }));
+
+    expect(text).toContain(PLAIN_LINE);
+    expect(text).not.toContain('written by');
+    expect(code).toBe(1);
   });
 });

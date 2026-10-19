@@ -50,14 +50,16 @@ npx secretless-ai mcp-unprotect                     # restore original configs f
 ```bash
 npx secretless-ai scan --min-confidence 0.85   # high-confidence findings only
 npx secretless-ai scan --max-files 20000       # raise the per-walk file cap (default 5000)
-npx secretless-ai ignore docs/migration.md     # append a path to .secretlessignore
-npx secretless-ai ignore --pattern '*.golden.txt'
+npx secretless-ai ignore scripts/seed.js       # stop scan reading a path; it is reported as excluded (exit 1)
+npx secretless-ai ignore --pattern 'seed/**/*.ts'
 npx secretless-ai diff main                    # audit secretless-managed file changes vs a git ref
 npx secretless-ai scan --json                  # machine-readable findings for CI
 npx secretless-ai scan --format sarif > secretless.sarif   # the same findings as SARIF 2.1.0, for GitHub code scanning
 npx secretless-ai scan --check-validity        # ask each credential's issuer whether it still accepts it (opt-in)
 npx secretless-ai status --json                # protection state for CI (gate on summary.verdict)
 ```
+
+`ignore` narrows what `scan` reads: it appends a gitignore-style line to `.secretlessignore` in the current directory, and `scan` stops reading the paths that line matches. It reports each one it would have read as excluded by `.secretlessignore` and exits 1, because an excluded path is not known to be clean; `npx secretless-ai scan --no-ignore` reads them. `ignore` says after writing a line whether `scan` will exit 1 for it: a line that matches only files `scan` does not open, such as `.txt` files, changes nothing in `scan`. A false positive is handled in the value, not with `ignore`: remove or rewrite it (the finding's own `Fix:`), use `--min-confidence` when its confidence is low, or give a sample value a placeholder word such as `example`, `placeholder` or `fake`, which `scan` hides (the full list is `PLACEHOLDER_INDICATORS` in [`src/patterns.ts`](https://github.com/opena2a-org/secretless-ai/blob/main/src/patterns.ts)); there is no allow-list for a single finding.
 
 `scan` renders a `Confidence: high (0.92)` line under every finding. The score combines pattern specificity, value entropy, value length, and path tier. With `--no-ignore`, findings whose path matches the default-ignore list are tagged `(looks like a test fixture)` so they stay visible without being re-suppressed.
 
