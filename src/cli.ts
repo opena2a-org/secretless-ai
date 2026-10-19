@@ -300,15 +300,7 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       return code;
     }
     case 'scan': {
-      if (args.includes('--history')) {
-        return runScanHistory();
-      }
-      const includeTests = args.includes('--include-tests');
-      const includeConfig = args.includes('--include-config');
-      const explain = args.includes('--explain');
-      const noIgnore = args.includes('--no-ignore');
       const jsonFlag = args.includes('--json');
-      const showPlaceholders = args.includes('--show-placeholders');
       // --format <json|sarif>  One machine-readable document on stdout. `json`
       // is `--json`; `sarif` is SARIF 2.1.0 for GitHub code scanning and the
       // editors that read it. Any other value is refused: a format the tool
@@ -333,6 +325,24 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
         return EXIT_USAGE;
       }
       const json = jsonFlag || format === 'json';
+      // --history  Shell history in place of a directory. The output flags are
+      // read above it so that it honors them as well: it returned before they
+      // were read, and `scan --history --json` printed the text report (#458).
+      // It writes text or JSON. It has no SARIF form, so `--format sarif` is
+      // refused rather than answered with text.
+      if (args.includes('--history')) {
+        if (format === 'sarif') {
+          const detail = '--history has no SARIF output; give --json or --format json for JSON, or neither for text.';
+          for (const line of formatArgvErrors('scan', [detail])) console.error(line);
+          return EXIT_USAGE;
+        }
+        return runScanHistory({ json });
+      }
+      const includeTests = args.includes('--include-tests');
+      const includeConfig = args.includes('--include-config');
+      const explain = args.includes('--explain');
+      const noIgnore = args.includes('--no-ignore');
+      const showPlaceholders = args.includes('--show-placeholders');
       // --check-validity  Ask the provider that issued each found credential
       // whether it still accepts it. Opt-in: without it no credential is sent
       // anywhere. `scan --help` lists the host contacted per credential type.

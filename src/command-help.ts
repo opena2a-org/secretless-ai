@@ -180,7 +180,7 @@ function scanCoverageNotes(): string[] {
 const DOCS: Readonly<Record<string, VerbDoc>> = {
   scan: {
     summary: 'Scan config and source files for hardcoded secrets.',
-    usage: ['[dir] [options]', '--history'],
+    usage: ['[dir] [options]', '--history [--json]'],
     flags: {
       '--history': 'Scan shell history for credentials instead of files',
       '--include-tests': 'Include test files in the source scan',

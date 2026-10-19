@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+**`scan --history --json` writes one JSON document (#458).** `scan --history`
+returned before `--json` and `--format` were read, so `scan --history --json`
+printed the text report and a caller parsing stdout failed on
+`Shell History Scanner`. It now writes a document with `tool`, `version`,
+`findings` and `summary`. Each finding holds the `file`, `line`, `patternId`,
+`patternName` and `preview` the text report prints, and `summary` holds
+`total` and `filesScanned`: a `.bash_history` whose one line is
+`npx secretless-ai secret set STRIPE_KEY=not-a-real-value` is reported with
+`"file": "~/.bash_history"`, `"line": 1`, `"patternId": "cmd-secret-set"`, the
+preview
+`npx secretless-ai secret set STRIPE_KEY=[Secret in secret set NAME=VALUE REDACTED]`
+and the summary `{"total": 1, "filesScanned": 1}`. The exit code is the text
+report's, 1 with a credential found and 0 with none, and `--format json`
+writes the same document. Under `--history`, `--format sarif` is refused with
+exit 2, as `scan --history` has no SARIF form, and a `--format` value the tool
+does not write and `--json` beside `--format sarif` are refused with exit 2
+and the message they get without `--history`; each of the three printed the
+text report before. `scan --help` shows the form as
+`scan --history [--json]`. `src/scan-history-json.test.ts` runs each case
+through the built CLI.
+
 **Every preview replaces every credential on the line with its labelled
 marker, and `clean-history` redacts every pattern on a line.** The preview
 under a `scan` finding, in text and in `--json`, masked the matches of the
