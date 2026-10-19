@@ -1495,11 +1495,16 @@ describe('scan() — a truncated walk counts the files a cap would need (#127)',
   });
 
   it('flags a walk stopped by its directory budget, which no file cap can clear', () => {
-    // Twelve levels of two links each reach the deepest directory by far more
-    // than MAX_PATHS_PER_DIR routes.
+    // Five levels of a directory plus two links to it: three routes per level,
+    // so level 4 is reachable by 81 and the deepest by 243, past the 32 of
+    // MAX_PATHS_PER_DIR at two levels. Twelve levels used to stand here. The
+    // cap trips at the same level either way; what the extra depth bought was
+    // a realpath over a longer link chain on every route: the walk measured
+    // ~300 ms idle at twelve levels against ~70 ms at five, and 1,357 ms under
+    // a load of 50, where it was seen crossing vitest's 5,000 ms cap.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-budget-'));
     let prev = dir;
-    for (let level = 0; level < 12; level++) {
+    for (let level = 0; level < 5; level++) {
       const next = path.join(prev, 'd');
       fs.mkdirSync(next, { recursive: true });
       fs.symlinkSync(next, path.join(prev, 'l1'), 'dir');
