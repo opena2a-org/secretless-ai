@@ -439,7 +439,10 @@ export class AzureKeyVaultTarget implements PushTarget {
       return new PushError(
         `Key Vault ${this.vaultName} was not found: ${new URL(this.origin).host} does not resolve.`,
         [`az keyvault show --name ${this.vaultName} --query properties.vaultUri -o tsv`],
-        ['az keyvault list --query "[].name" -o tsv   (find the vault name)'],
+        // The remark is a line of its own under the command: pasted, a remark
+        // in parentheses after the command is part of it, and bash refuses
+        // the `(`.
+        ['az keyvault list --query "[].name" -o tsv', 'find the vault name in its output, then push again with it in --vault'],
       );
     }
     return new PushError(
@@ -488,9 +491,13 @@ export class AzureKeyVaultTarget implements PushTarget {
       return new PushError(
         `Key Vault ${this.vaultName} holds a deleted ${remote} that is kept for recovery (${status}).`,
         [`az keyvault secret show-deleted --vault-name ${this.vaultName} --name ${remote} --query recoveryId -o tsv`],
+        // Each remark is a line of its own next to its command, as in
+        // networkFailure(); what the purge does is said before it.
         [
-          `az keyvault secret recover --vault-name ${this.vaultName} --name ${remote}   (then push again)`,
-          `or: az keyvault secret purge --vault-name ${this.vaultName} --name ${remote}   (removes the deleted versions for good)`,
+          `az keyvault secret recover --vault-name ${this.vaultName} --name ${remote}`,
+          'then push again',
+          'or remove the deleted versions for good:',
+          `az keyvault secret purge --vault-name ${this.vaultName} --name ${remote}`,
         ],
       );
     }
