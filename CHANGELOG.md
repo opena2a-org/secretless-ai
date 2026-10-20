@@ -82,8 +82,9 @@ with secrets was left this way, `protect-mcp` prints
 `protectMcp()` returns these servers in `sharedName`.
 
 **Hints name the secret, bundle and backends they are about, and the `Fix:`
-and `Verify:` lines that ended in a `# remark`, and the bundle `import` Fix,
-end at their command (#471).** Refused without a terminal,
+and `Verify:` lines of `clean --path`, `scan --history` and the two broker
+installation faults, and the bundle `import` Fix, end at their
+command (#471).** Refused without a terminal,
 `secret get STRIPE_SECRET_KEY` offered `secret get <NAME> --force` and
 `secret show <NAME>`; it now offers `secret get STRIPE_SECRET_KEY --force` and
 `secret show STRIPE_SECRET_KEY`, and `'<name>'` for a name the store cannot
