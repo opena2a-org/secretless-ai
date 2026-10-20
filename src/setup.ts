@@ -234,10 +234,11 @@ interface Asker {
 /**
  * A terminal, read with echo off as `secret set` reads one (#234), so a typed
  * or pasted value is not shown and does not stay in scrollback. With echo on,
- * `setup` printed each value after its prompt. Ctrl-C, and input that ends,
- * answer the open prompt and every later one with nothing, as they did when
- * the terminal was read through readline, which closes on Ctrl-C; so neither
- * changes how setup exits.
+ * `setup` printed each value after its prompt. Ctrl-C, and Ctrl-D on an empty
+ * line, answer the open prompt and every later one with nothing, as they did
+ * when the terminal was read through readline, which closes on each (#474).
+ * Input that ends answers the open prompt with what was typed and every later
+ * one with nothing. So none of them changes how setup exits.
  */
 function hiddenAsker(input: TtyInput): Asker {
   let done = false;
@@ -248,7 +249,7 @@ function hiddenAsker(input: TtyInput): Asker {
     async ask(prompt) {
       if (done) return '';
       const result = await readHiddenLine(input, process.stderr, prompt);
-      if (result.kind === 'cancelled') {
+      if (result.kind !== 'line') {
         done = true;
         return '';
       }

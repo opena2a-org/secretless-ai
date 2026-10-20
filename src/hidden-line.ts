@@ -25,6 +25,8 @@ export interface PromptOutput {
 
 export type HiddenLineResult =
   | { kind: 'line'; value: string }
+  /** Ctrl-D on an empty line: the input ends, as readline closes on it. */
+  | { kind: 'ended' }
   | { kind: 'cancelled' };
 
 /** True when this stream can read with echo off. */
@@ -35,9 +37,11 @@ export function canReadHidden(input: TtyInput): boolean {
 /**
  * Print `prompt`, then read keystrokes with echo off until Enter.
  *
- * Enter or Ctrl-D ends the line, Ctrl-C cancels it, Backspace removes the
- * last character and Ctrl-U clears the line. Nothing typed or pasted is
- * written to `output`; only the prompt and the closing newline are.
+ * Enter ends the line, and so does Ctrl-D on a line that holds something.
+ * Ctrl-D on an empty line ends the input, as it ends a prompt read through
+ * readline (#474). Ctrl-C cancels the line, Backspace removes the last
+ * character and Ctrl-U clears the line. Nothing typed or pasted is written to
+ * `output`; only the prompt and the closing newline are.
  */
 export function readHiddenLine(input: TtyInput, output: PromptOutput, prompt: string): Promise<HiddenLineResult> {
   return new Promise((resolve) => {
@@ -69,8 +73,10 @@ export function readHiddenLine(input: TtyInput, output: PromptOutput, prompt: st
         if (PASTE_START.startsWith(pending) || PASTE_END.startsWith(pending)) return;
         const ch = pending[0];
         pending = pending.slice(1);
-        if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+        if (ch === '\r' || ch === '\n') {
           finish({ kind: 'line', value });
+        } else if (ch === '\u0004') {
+          finish(value === '' ? { kind: 'ended' } : { kind: 'line', value });
         } else if (ch === '\u0003') {
           finish({ kind: 'cancelled' });
         } else if (ch === '\u007f' || ch === '\b') {
