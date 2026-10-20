@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { protectMcp } from '../mcp/protect';
+import type { SharedNameMcpServer } from '../mcp/protect';
 import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
 import type { UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
@@ -17,10 +18,13 @@ function getWrapperPath(): string {
 /**
  * A config as output names it: a home config by its client and full path, a
  * project-level config by its client and its path from the project, and a
- * bare mcp.json, whose client is not established, by that path alone.
+ * bare mcp.json, whose client is not established, by that path alone. The
+ * server map of one project in ~/.claude.json also names that project, as
+ * `claude-code (/home/you/.claude.json, project /home/you/app)`.
  */
-function configLabel(config: { client: string; filePath: string; projectPath?: string }): string {
+function configLabel(config: { client: string; filePath: string; projectPath?: string; projectKey?: string }): string {
   const where = config.projectPath ?? config.filePath;
+  if (config.projectKey !== undefined) return `${config.client} (${where}, project ${listedName(config.projectKey)})`;
   return config.client === 'unknown' ? where : `${config.client} (${where})`;
 }
 
@@ -74,6 +78,29 @@ function printUncheckedFix(count: number, command: string): void {
   console.log(`  Fix the entries above, then run \`npx secretless-ai ${command}\` again.\n`);
 }
 
+/**
+ * Each server protect-mcp left because a protected server reads its secrets
+ * by the same name, under its config and naming the config of that server,
+ * then why and what to do.
+ */
+function printSharedNameServers(servers: SharedNameMcpServer[]): void {
+  let label: string | undefined;
+  for (const server of servers) {
+    const next = configLabel(server);
+    if (next !== label) {
+      if (label !== undefined) console.log();
+      console.log(`  ${next}`);
+      label = next;
+    }
+    const holder = configLabel({ client: server.client, ...server.protectedIn });
+    console.log(`    ? ${listedName(server.server)}: not protected: its name is taken by a protected server in ${holder}`);
+  }
+  console.log();
+  console.log(`  ${servers.length} server(s) were not protected, so their secrets are still in plaintext.`);
+  console.log('  Secrets are stored under the client and server name, and a protected server reads its secrets by that name.');
+  console.log('  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.\n');
+}
+
 export async function runProtectMcp(args: string[]): Promise<number> {
   console.log('\n  Secretless MCP Protection\n');
 
@@ -94,8 +121,11 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 
   try {
     const result = await protectMcp({ wrapperPath, backendType });
-    const { unparsed, unchecked, projectLevel } = result;
+    const { unparsed, unchecked, sharedName, projectLevel } = result;
     const notChecked = () => {
+      if (sharedName.length > 0) {
+        printSharedNameServers(sharedName);
+      }
       if (unchecked.length > 0) {
         let servers = 0;
         for (const config of unchecked) {
@@ -135,6 +165,13 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     console.log(`  Scanned ${result.clientsScanned} client(s)\n`);
 
     if (result.secretsFound === 0) {
+      // A server left in plaintext because its name is taken was found with
+      // secrets in it, so none of the lines below is true of it.
+      if (sharedName.length > 0) {
+        console.log('  No plaintext secrets were encrypted.\n');
+        notChecked();
+        return 0;
+      }
       // "Already clean." covers every server in every config, so it is not
       // printed over a config, or a part of a server entry, that was not read.
       if (unchecked.length > 0) {
@@ -280,12 +317,18 @@ export function runMcpUnprotect(): number {
   // so there is no backup of one to restore.
   const discovered = discoverMcpConfigsDetailed();
   const configs = discovered.configs.filter(rewrittenByProtectMcp);
-  const unparsed = discovered.unparsed.filter(rewrittenByProtectMcp);
+  // A backup is of a whole file, so a file with several server maps (the top
+  // level and each project of ~/.claude.json) is restored once, and a part of
+  // it that could not be parsed is restored with the rest of it.
+  const files = [...new Set(configs.map((config) => config.filePath))];
+  const unparsed = discovered.unparsed.filter(
+    (config) => rewrittenByProtectMcp(config) && !files.includes(config.filePath),
+  );
   let restored = 0;
 
-  for (const config of configs) {
-    if (restoreConfig(config.filePath, backupDir)) {
-      console.log(`  + Restored: ${config.filePath}`);
+  for (const filePath of files) {
+    if (restoreConfig(filePath, backupDir)) {
+      console.log(`  + Restored: ${filePath}`);
       restored++;
     }
   }
@@ -296,7 +339,7 @@ export function runMcpUnprotect(): number {
     console.log(`\n  Restored ${restored} config(s) to original state.\n`);
   } else if (unparsed.length === 0) {
     console.log('  No backups found to restore.\n');
-  } else if (configs.length > 0) {
+  } else if (files.length > 0) {
     console.log('  No backups found to restore for the configs that were read.\n');
   }
   if (unparsed.length > 0) {

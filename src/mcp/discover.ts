@@ -49,6 +49,12 @@ export interface McpConfigFile {
   filePath: string;
   /** The path from the project directory, for a config found there. Absent for a config in the home directory. */
   projectPath?: string;
+  /**
+   * For a server map kept for one project under `projects` in ~/.claude.json:
+   * the key it is under, the project's path. Absent for the server map at the
+   * top level of a file, the one rewriteConfig rewrites.
+   */
+  projectKey?: string;
   servers: McpServerEntry[];
   /** Server entries with a part that could not be read. A caller never reports one of these as clean. */
   unchecked: UncheckedMcpServer[];
@@ -62,6 +68,8 @@ export interface UnparsedMcpConfig {
   filePath: string;
   /** The path from the project directory, for a config found there. Absent for a config in the home directory. */
   projectPath?: string;
+  /** For the entry of one project under `projects` in ~/.claude.json: the key it is under (see McpConfigFile). */
+  projectKey?: string;
   /** What stopped the parse, e.g. "not valid JSON (line 4, column 1)". Never quotes the file's content. */
   reason: string;
 }
@@ -81,6 +89,12 @@ export interface McpConfigLocation {
   scope: McpConfigScope;
   /** From the home directory for scope 'home', from the project directory for scope 'project'. */
   relativePath: string;
+  /**
+   * The file also keeps a server map for each project, under `projects` and
+   * keyed by the project's path, as ~/.claude.json does. Each one that holds a
+   * server is read as a config of its own, with that key as its projectKey.
+   */
+  projectMaps?: boolean;
 }
 
 /** The Claude Code project-scope config: the one project-level config protect-mcp rewrites. */
@@ -102,7 +116,10 @@ const MCP_CONFIG_LOCATIONS: readonly McpConfigLocation[] = [
   },
   { client: 'claude-desktop', scope: 'home', relativePath: path.join('.config', 'Claude', 'claude_desktop_config.json') },
   { client: 'cursor', scope: 'home', relativePath: path.join('.cursor', 'mcp.json') },
-  // Claude Code: two possible settings files
+  // Claude Code keeps its user-scope MCP servers at the top level of
+  // ~/.claude.json and its local-scope servers under `projects`, keyed by the
+  // project's path. Its two settings files are read as well.
+  { client: 'claude-code', scope: 'home', relativePath: '.claude.json', projectMaps: true },
   { client: 'claude-code', scope: 'home', relativePath: path.join('.claude', 'settings.json') },
   { client: 'claude-code', scope: 'home', relativePath: path.join('.claude', 'settings.local.json') },
   { client: 'vscode', scope: 'home', relativePath: path.join('.vscode', 'mcp.json') },
@@ -263,7 +280,9 @@ function describeJsonError(err: unknown, content: string): string {
  * Searches every location in mcpConfigLocations(): the home directory configs
  * of 5 clients (Claude Desktop, Cursor, Claude Code, VS Code, Windsurf), and
  * the project-level configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json,
- * .windsurf/mcp.json and mcp.json in the project directory).
+ * .windsurf/mcp.json and mcp.json in the project directory). In
+ * ~/.claude.json it reads the server map at the top level and the one kept
+ * for each project under `projects`, each as a config of its own.
  *
  * @param homeOverride - Override home directory (for testing). Defaults to os.homedir().
  * @param projectDirOverride - Override project directory (for testing). Defaults to process.cwd().
@@ -288,7 +307,7 @@ export function discoverMcpConfigsDetailed(homeOverride?: string, projectDirOver
   // Each is read once, as the home config it is listed first as.
   const filesRead = new Set<string>();
 
-  for (const { client, scope, relativePath } of MCP_CONFIG_LOCATIONS) {
+  for (const { client, scope, relativePath, projectMaps } of MCP_CONFIG_LOCATIONS) {
     const fullPath = path.join(scope === 'home' ? home : projectDir, relativePath);
     if (!fs.existsSync(fullPath)) continue;
     const file = realPathOf(fullPath);
@@ -319,25 +338,70 @@ export function discoverMcpConfigsDetailed(homeOverride?: string, projectDirOver
     }
     const raw = parsed as Record<string, unknown>;
 
-    const key = serverMapKey(raw);
-    const serversValue = key === undefined ? undefined : raw[key];
-    if (serversValue !== undefined && typeof serversValue !== 'object') {
-      unparsed.push({ ...where, reason: 'its MCP server list is not a JSON object' });
-      continue;
+    const top = readServerMap(raw);
+    if (top !== undefined && 'reason' in top) {
+      unparsed.push({ ...where, reason: top.reason });
+    } else if (top !== undefined) {
+      results.push({ ...where, servers: top.servers, unchecked: top.unchecked, raw });
     }
-
-    const parsedServers = parseServers(raw);
-    if (!parsedServers) continue; // No server map
-
-    results.push({
-      ...where,
-      servers: parsedServers.servers,
-      unchecked: parsedServers.unchecked,
-      raw,
-    });
+    if (projectMaps) readProjectMaps(raw, where, results, unparsed);
   }
 
   return { configs: results, unparsed };
+}
+
+/**
+ * The server map of one part of a config: the top level of a file, or the
+ * entry of one project in ~/.claude.json. Undefined when that part holds no
+ * server map, and a reason when its server map is not a JSON object.
+ */
+function readServerMap(
+  container: Record<string, unknown>,
+): { servers: McpServerEntry[]; unchecked: UncheckedMcpServer[] } | { reason: string } | undefined {
+  const key = serverMapKey(container);
+  const serversValue = key === undefined ? undefined : container[key];
+  if (serversValue !== undefined && typeof serversValue !== 'object') {
+    return { reason: 'its MCP server list is not a JSON object' };
+  }
+  return parseServers(container) ?? undefined;
+}
+
+/**
+ * Read the server map in the entry of each project under `projects`, as a
+ * config of its own with the project's key as its projectKey. A project whose
+ * server map holds no entry is passed over, so a file listing many projects
+ * with empty maps does not list each one. A `projects` value or a project
+ * entry that is not a JSON object is returned as unparsed: a server in it was
+ * not read.
+ */
+function readProjectMaps(
+  raw: Record<string, unknown>,
+  where: { client: McpClient; filePath: string; projectPath?: string },
+  results: McpConfigFile[],
+  unparsed: UnparsedMcpConfig[],
+): void {
+  const projects = raw['projects'];
+  if (isNotJsonObject(projects)) {
+    unparsed.push({ ...where, reason: 'its projects value is not a JSON object' });
+    return;
+  }
+  if (!projects) return;
+
+  for (const [projectKey, entry] of Object.entries(projects as Record<string, unknown>)) {
+    const at = { ...where, projectKey };
+    if (isNotJsonObject(entry)) {
+      unparsed.push({ ...at, reason: 'not a JSON object' });
+      continue;
+    }
+    if (!entry) continue;
+    const map = readServerMap(entry as Record<string, unknown>);
+    if (map === undefined) continue;
+    if ('reason' in map) {
+      unparsed.push({ ...at, reason: map.reason });
+    } else if (map.servers.length > 0 || map.unchecked.length > 0) {
+      results.push({ ...at, servers: map.servers, unchecked: map.unchecked, raw });
+    }
+  }
 }
 
 /** The file a path reaches, so a file reached by two paths is read once. */

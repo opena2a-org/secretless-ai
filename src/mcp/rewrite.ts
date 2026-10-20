@@ -20,6 +20,18 @@ export interface RewriteResult {
   backupPath: string | null;
 }
 
+/** The secrets to move out of one server map of a config, by server name. */
+export interface ServerMapSecrets {
+  /**
+   * The key under `projects` whose entry holds this server map, as in
+   * ~/.claude.json (see McpConfigFile.projectKey). Absent for the server map
+   * at the top level of the file.
+   */
+  projectKey?: string;
+  /** Map of serverName → {envKey: value} for secrets to protect */
+  serverSecrets: Record<string, Record<string, string>>;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -159,14 +171,89 @@ export function rewriteConfig(
   backupDir: string,
   backendType?: string,
 ): RewriteResult {
+  return rewriteServerMaps(configPath, client, [{ serverSecrets }], wrapperPath, backupDir, backendType);
+}
+
+/**
+ * Rewrite one or more server maps of an MCP config file, each as rewriteConfig
+ * rewrites the map at the top level of a file: that map for a ServerMapSecrets
+ * without a projectKey, and the map in the entry of that project under
+ * `projects` for one with it. The file is read, backed up and written once,
+ * so the backup is the file as it was before any of its maps was rewritten.
+ */
+export function rewriteServerMaps(
+  configPath: string,
+  client: string,
+  maps: readonly ServerMapSecrets[],
+  wrapperPath: string,
+  backupDir: string,
+  backendType?: string,
+): RewriteResult {
   // Read and parse the config file
   const content = fs.readFileSync(configPath, 'utf-8');
   const config = JSON.parse(content) as Record<string, unknown>;
 
-  const key = serverMapKey(config);
-  const mcpServers = (key === undefined ? undefined : config[key]) as Record<string, Record<string, unknown>> | undefined;
-  if (!mcpServers || typeof mcpServers !== 'object') {
+  let serversRewritten = 0;
+  for (const { projectKey, serverSecrets } of maps) {
+    const container = projectKey === undefined ? config : projectEntry(config, projectKey);
+    if (container === undefined) continue;
+    serversRewritten += wrapServers(container, client, serverSecrets, wrapperPath, backendType);
+  }
+
+  // If nothing was rewritten, don't create backup or modify file
+  if (serversRewritten === 0) {
     return { serversRewritten: 0, backupPath: null };
+  }
+
+  // Create backup directory with restricted permissions
+  fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+
+  // Save encrypted backup of original content (prevents plaintext secret leakage)
+  const bkFilename = backupFilename(configPath);
+  const bkPath = path.join(backupDir, bkFilename);
+  const backupKey = deriveBackupKey(backupDir);
+  const encryptedBackup = encryptBackup(content, backupKey);
+  fs.writeFileSync(bkPath, encryptedBackup, { mode: 0o600 });
+  fs.chmodSync(bkPath, 0o600);
+
+  // Update manifest
+  const manifest = readManifest(backupDir);
+  manifest[configPath] = bkPath;
+  writeManifest(backupDir, manifest);
+
+  // Write modified config back
+  const newContent = JSON.stringify(config, null, 2) + '\n';
+  fs.writeFileSync(configPath, newContent, { mode: 0o600 });
+  fs.chmodSync(configPath, 0o600);
+
+  return { serversRewritten, backupPath: bkPath };
+}
+
+/** The entry of one project under `projects`, when it is a JSON object. */
+function projectEntry(config: Record<string, unknown>, projectKey: string): Record<string, unknown> | undefined {
+  const projects = config['projects'];
+  if (!projects || typeof projects !== 'object' || Array.isArray(projects)) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(projects, projectKey)) return undefined;
+  const entry = (projects as Record<string, unknown>)[projectKey];
+  return entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Wrap the servers of one server map, the one in `container` under the key
+ * serverMapKey names, as rewriteConfig describes. Returns how many were
+ * rewritten; the caller writes the file.
+ */
+function wrapServers(
+  container: Record<string, unknown>,
+  client: string,
+  serverSecrets: Record<string, Record<string, string>>,
+  wrapperPath: string,
+  backendType?: string,
+): number {
+  const key = serverMapKey(container);
+  const mcpServers = (key === undefined ? undefined : container[key]) as Record<string, Record<string, unknown>> | undefined;
+  if (!mcpServers || typeof mcpServers !== 'object') {
+    return 0;
   }
 
   // Determine which servers need rewriting
@@ -215,33 +302,7 @@ export function rewriteConfig(
     serversRewritten++;
   }
 
-  // If nothing was rewritten, don't create backup or modify file
-  if (serversRewritten === 0) {
-    return { serversRewritten: 0, backupPath: null };
-  }
-
-  // Create backup directory with restricted permissions
-  fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-
-  // Save encrypted backup of original content (prevents plaintext secret leakage)
-  const bkFilename = backupFilename(configPath);
-  const bkPath = path.join(backupDir, bkFilename);
-  const backupKey = deriveBackupKey(backupDir);
-  const encryptedBackup = encryptBackup(content, backupKey);
-  fs.writeFileSync(bkPath, encryptedBackup, { mode: 0o600 });
-  fs.chmodSync(bkPath, 0o600);
-
-  // Update manifest
-  const manifest = readManifest(backupDir);
-  manifest[configPath] = bkPath;
-  writeManifest(backupDir, manifest);
-
-  // Write modified config back
-  const newContent = JSON.stringify(config, null, 2) + '\n';
-  fs.writeFileSync(configPath, newContent, { mode: 0o600 });
-  fs.chmodSync(configPath, 0o600);
-
-  return { serversRewritten, backupPath: bkPath };
+  return serversRewritten;
 }
 
 /**

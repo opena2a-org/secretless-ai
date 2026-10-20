@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { protectMcp, type ProtectResult } from './protect';
+import { McpVault } from './vault';
+import { restoreConfig } from './rewrite';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-protect-'));
@@ -369,5 +371,141 @@ describe('protectMcp — project-level client configs', () => {
     expect(config['mcp-servers'].slack.command).toBe('/usr/local/bin/secretless-mcp');
     expect(config['mcp-servers'].slack.env).toEqual({});
     expect(fs.readFileSync(configPath, 'utf-8')).not.toContain(slackToken);
+  });
+});
+
+describe('protectMcp — ~/.claude.json (#470)', () => {
+  let homeDir: string;
+  let dataDir: string;
+  let projectDir: string;
+  let configPath: string;
+  const wrapperPath = '/usr/local/bin/secretless-mcp';
+
+  beforeEach(() => {
+    homeDir = tmpDir();
+    dataDir = tmpDir();
+    projectDir = tmpDir();
+    configPath = path.join(homeDir, '.claude.json');
+  });
+  afterEach(() => {
+    cleanup(homeDir);
+    cleanup(dataDir);
+    cleanup(projectDir);
+  });
+
+  const protect = () => protectMcp({ homeDir, dataDir, projectDir, wrapperPath, backendType: 'local' });
+  const vault = () => new McpVault({
+    storeDir: path.join(dataDir, 'mcp-vault'),
+    key: `${homeDir}-secretless-mcp-${process.env.USER ?? 'default'}`,
+    backendType: 'local',
+  });
+  const server = (env: Record<string, string>) => ({ type: 'stdio', command: 'npx', args: ['some-mcp'], env });
+  const wrapped = (name: string) => ({
+    type: 'stdio',
+    command: wrapperPath,
+    args: ['--server', name, '--client', 'claude-code', '--', 'npx', 'some-mcp'],
+    env: {},
+  });
+
+  it('protects the user-scope server at the top level and the local-scope server of a project, and backs the file up as it was', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({
+      numStartups: 3,
+      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
+      projects: {
+        '/work/app': { allowedTools: [], mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } },
+        '/work/empty': { allowedTools: [], mcpServers: {} },
+      },
+    }, null, 2));
+    const original = fs.readFileSync(configPath, 'utf-8');
+
+    const result = await protect();
+
+    expect(result.clientsScanned).toBe(2);
+    expect(result.secretsFound).toBe(2);
+    expect(result.serversProtected).toBe(2);
+    expect(result.servers).toEqual([
+      { client: 'claude-code', server: 'github', secretKeys: ['GITHUB_TOKEN'] },
+      { client: 'claude-code', server: 'slack', secretKeys: ['SLACK_BOT_TOKEN'] },
+    ]);
+    expect(result.sharedName).toEqual([]);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(config.numStartups).toBe(3);
+    expect(config.mcpServers.github).toEqual(wrapped('github'));
+    expect(config.projects['/work/app']).toEqual({ allowedTools: [], mcpServers: { slack: wrapped('slack') } });
+    expect(config.projects['/work/empty']).toEqual({ allowedTools: [], mcpServers: {} });
+    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
+    expect(await vault().getServerSecrets('claude-code', 'slack')).toEqual({ SLACK_BOT_TOKEN: 'not-a-real-token-2' });
+
+    // One backup, of the file as it was before either map was rewritten.
+    expect(restoreConfig(configPath, path.join(dataDir, 'mcp-backups'))).toBe(true);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  it('leaves a project server named like the protected server at the top level as it is, and returns it', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({
+      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
+      projects: { '/work/app': { mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } } },
+    }));
+
+    const result = await protect();
+
+    expect(result.servers).toEqual([{ client: 'claude-code', server: 'github', secretKeys: ['GITHUB_TOKEN'] }]);
+    expect(result.secretsFound).toBe(1);
+    expect(result.sharedName).toEqual([
+      { client: 'claude-code', filePath: configPath, projectKey: '/work/app', server: 'github', protectedIn: { filePath: configPath } },
+    ]);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(config.mcpServers.github).toEqual(wrapped('github'));
+    expect(config.projects['/work/app'].mcpServers.github).toEqual(server({ GITHUB_TOKEN: 'not-a-real-token-2' }));
+    // The stored value is the protected server's, not overwritten by the other's.
+    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
+  });
+
+  it('leaves a server whose name a server protected before reads by, under a map key that differs from it', async () => {
+    const before = JSON.stringify({
+      mcpServers: {
+        'github-personal': { command: wrapperPath, args: ['--server=github', '--client', 'claude-code', '--', 'npx', 'some-mcp'], env: {} },
+      },
+      projects: { '/work/app': { mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } } },
+    });
+    fs.writeFileSync(configPath, before);
+
+    const result = await protect();
+
+    expect(result.alreadyProtected).toBe(1);
+    expect(result.secretsFound).toBe(0);
+    expect(result.sharedName).toEqual([
+      { client: 'claude-code', filePath: configPath, projectKey: '/work/app', server: 'github', protectedIn: { filePath: configPath } },
+    ]);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
+  it('leaves the server of the same name in the project .mcp.json, read after ~/.claude.json, as it is', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) } }));
+    const mcpJsonPath = path.join(projectDir, '.mcp.json');
+    const mcpJson = JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } });
+    fs.writeFileSync(mcpJsonPath, mcpJson);
+
+    const result = await protect();
+
+    expect(result.servers).toEqual([{ client: 'claude-code', server: 'github', secretKeys: ['GITHUB_TOKEN'] }]);
+    expect(result.sharedName).toEqual([
+      { client: 'claude-code', filePath: mcpJsonPath, projectPath: '.mcp.json', server: 'github', protectedIn: { filePath: configPath } },
+    ]);
+    expect(fs.readFileSync(mcpJsonPath, 'utf-8')).toBe(mcpJson);
+  });
+
+  it('CONTROL: protects servers of the same name in the configs of two clients', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) } }));
+    fs.mkdirSync(path.join(homeDir, '.cursor'));
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } }));
+
+    const result = await protect();
+
+    expect(result.servers.map((s) => `${s.client}/${s.server}`)).toEqual(['cursor/github', 'claude-code/github']);
+    expect(result.sharedName).toEqual([]);
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-2' });
+    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
   });
 });
