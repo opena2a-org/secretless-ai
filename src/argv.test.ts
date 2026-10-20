@@ -479,3 +479,62 @@ describe('a value flag given more than once is refused (#120)', () => {
     expect(p.errors).toHaveLength(0);
   });
 });
+
+// #468. Under `scan --history` the did-you-mean for an unknown flag was chosen
+// from every `scan` flag, so `--explian` was answered with `--explain`, which
+// `--history` refuses. The caller names the flags of the form typed, and the
+// suggestion is chosen from those and named as the caller names them.
+describe('a did-you-mean is chosen from the flags of the form typed (#468)', () => {
+  const HISTORY = { '--format': '--format json', '--help': '--help', '--json': '--json' };
+  const history = (args: readonly string[]) => (args.includes('--history') ? HISTORY : undefined);
+
+  it('a near miss of a flag the form does not take gets no suggestion', () => {
+    expect(prepareArgv('scan', ['scan', '--history', '--explian'], history).errors)
+      .toEqual(['Unknown option: --explian']);
+    expect(prepareArgv('scan', ['scan', '--history', '--include-test'], history).errors)
+      .toEqual(['Unknown option: --include-test']);
+  });
+
+  it('CONTROL: without the form, the same near misses are suggested from every scan flag', () => {
+    expect(prepareArgv('scan', ['scan', '--explian'], history).errors)
+      .toEqual(['Unknown option: --explian (did you mean --explain?)']);
+    expect(prepareArgv('scan', ['scan', '--include-test'], history).errors)
+      .toEqual(['Unknown option: --include-test (did you mean --include-tests?)']);
+  });
+
+  it('a near miss of a flag the form takes is suggested as the form names it', () => {
+    expect(prepareArgv('scan', ['scan', '--history', '--fromat'], history).errors)
+      .toEqual(['Unknown option: --fromat (did you mean --format json?)']);
+    expect(prepareArgv('scan', ['scan', '--history', '--jsno'], history).errors)
+      .toEqual(['Unknown option: --jsno (did you mean --json?)']);
+    // CONTROL: without the form, --format is named as a flag that takes a value.
+    expect(prepareArgv('scan', ['scan', '--fromat'], history).errors)
+      .toEqual(['Unknown option: --fromat (did you mean --format <value>?)']);
+  });
+
+  it('the form is read from the normalised argv, including a token typed after the unknown flag', () => {
+    const seen: string[][] = [];
+    const record = (args: readonly string[]) => {
+      seen.push([...args]);
+      return history(args);
+    };
+    const p = prepareArgv('scan', ['scan', '--explian', '--history=yes'], record);
+    // `--history=yes` reaches the caller as `--history`, the spelling the CLI looks for.
+    expect(seen).toEqual([['scan', '--explian', '--history']]);
+    expect(p.args).toEqual(['scan', '--explian', '--history']);
+    expect(p.errors).toEqual([
+      '--history does not take a value, but was given "yes".',
+      'Unknown option: --explian',
+    ]);
+  });
+
+  it('is not called when no flag is unknown', () => {
+    let calls = 0;
+    const p = prepareArgv('scan', ['scan', '--history', '--json'], () => {
+      calls++;
+      return HISTORY;
+    });
+    expect(calls).toBe(0);
+    expect(p.errors).toEqual([]);
+  });
+});
