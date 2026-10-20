@@ -196,7 +196,7 @@ describe('scan --check-validity names why a request got no answer (#471)', () =>
   }, 30_000);
 });
 
-describe('printed Fix and Verify lines carry no `#` remark after the command (#471)', () => {
+describe('Fix and Verify lines in the source have no space-separated `#` remark after the command (#471)', () => {
   function sourceFiles(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);
@@ -205,7 +205,7 @@ describe('printed Fix and Verify lines carry no `#` remark after the command (#4
     });
   }
 
-  it('no Fix or Verify line in the source carries a `#` remark after its command', () => {
+  it('no Fix or Verify line in the source has a space-separated `#` remark after its command', () => {
     // An interactive zsh does not take `#` as a comment unless
     // INTERACTIVE_COMMENTS is set, so pasted, the remark's words become
     // arguments of the command: `npm install   # and check node -v is
