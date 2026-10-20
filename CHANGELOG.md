@@ -54,6 +54,21 @@ still exits 2. `src/scan-history-refusals.test.ts` runs each case through the
 built CLI, and `src/argv.test.ts` covers the suggestion `prepareArgv` makes
 when its caller names the flags of a form of the verb.
 
+**The `mkdir -p` line `init` prints under its `Fix:` for a missing directory
+ends at its command, and the check of the source reads the lines under a
+`Fix:` or `Verify:` label (#476).** `init` printed
+`mkdir -p <path> && npx secretless-ai init <path>   # or create this directory first`
+on that line. Pasted into `zsh -f -i`, it passed `#` and five more words to
+`init` after the path. `or create this directory first:` is now a line of its
+own above the `mkdir -p` line, and `run from inside your project` is one under
+`npx secretless-ai init`. The check of the source in
+`src/followups-471.test.ts` reads only a line that prints a `Fix:` or
+`Verify:` label, so it did not find this remark. `src/followups-476.test.ts`
+holds each string in the source that starts ten or more spaces in, as a line
+under a label does, to the same rule: no `#` remark after the command, written
+plainly or in a style call such as `c.dim('# ...')`.
+`src/followups-272.test.ts` covers the lines `init` prints.
+
 **A `scan` value flag given another value flag as its value is refused for
 that value, where the refusal said a flag was given "undefined" (#469).** In
 `scan --min-confidence --format`, `--format` is taken as the value of
