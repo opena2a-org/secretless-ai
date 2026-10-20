@@ -813,8 +813,9 @@ export async function vaultMigrate(options: {
  * value or `--env` is given: stdin to its end when it is not a terminal, else
  * one line typed at a prompt on stderr. A terminal is read with echo off, as
  * `secret set` reads one (#234): read through readline, the typed value was
- * shown after the prompt and stayed in scrollback. Ctrl-C at that prompt
- * answers nothing, which the caller refuses as it refuses an empty value.
+ * shown after the prompt and stayed in scrollback. Ctrl-C at that prompt, or
+ * Ctrl-D while its line is empty, answers nothing, which the caller refuses as
+ * it refuses an empty value.
  */
 export async function readCredentialFromStdin(
   namespace: string,
@@ -834,7 +835,7 @@ export async function readCredentialFromStdin(
 
   if (canReadHidden(stdin)) {
     const result = await readHiddenLine(stdin, output, `  Enter credential for "${namespace}" (input hidden): `);
-    return result.kind === 'cancelled' ? '' : result.value.trim();
+    return result.kind === 'line' ? result.value.trim() : '';
   }
 
   // A terminal that cannot turn echo off is read as before.

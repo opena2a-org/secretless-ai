@@ -138,9 +138,10 @@ keeps the manifest format.
 off (#471).** On a terminal each value was shown after its prompt and stayed
 in scrollback; it is now read as `secret set` reads one, and `setup` prints
 `Input is hidden: a value you type or paste is not shown.` above its prompts.
-Ctrl-C at a `setup` prompt answers it and every later one with nothing, as it
-did when readline closed on it. The sample in `docs/use-cases/team-setup.md`
-no longer shows the typed values.
+Ctrl-C at a `setup` prompt, and Ctrl-D at an empty one, answer it and every
+later one with nothing, as they did when readline closed on them (#474);
+Ctrl-D after a typed value answers the prompt with that value, as Enter does.
+The sample in `docs/use-cases/team-setup.md` no longer shows the typed values.
 
 **docs/scanning.md says a SARIF rule carries the highest severity of its
 findings (#471),** so a `high` finding of a pattern also found at `critical`

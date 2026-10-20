@@ -1545,6 +1545,8 @@ async function readSecretFromStdin(name: string, stdin: TtyInput): Promise<strin
   if (canReadHidden(stdin)) {
     const result = await readHiddenLine(stdin, process.stderr, `  Enter value for ${name} (input hidden): `);
     if (result.kind === 'cancelled') return CANCELLED;
+    // Ctrl-D on an empty line gives no value, as Enter on one does.
+    if (result.kind === 'ended') return null;
     const trimmed = result.value.trim();
     return trimmed === '' ? null : trimmed;
   }
