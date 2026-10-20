@@ -196,7 +196,7 @@ describe('scan --check-validity names why a request got no answer (#471)', () =>
   }, 30_000);
 });
 
-describe('printed Fix and Verify lines end at the command (#471)', () => {
+describe('printed Fix and Verify lines carry no `#` remark after the command (#471)', () => {
   function sourceFiles(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);
