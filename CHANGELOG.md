@@ -42,6 +42,45 @@ and `scan --max-files --min-confidence` reads
 Each still exits 2. `src/scan-flag-values.test.ts` runs each ordered pair of
 these four flags through the built CLI, with and without `--history`.
 
+**`mcp-status`, `protect-mcp` and `mcp-unprotect` read the MCP servers in
+`~/.claude.json` (#470).** Claude Code keeps its user-scope MCP servers at the
+top level of `~/.claude.json` and its local-scope servers under `projects`,
+keyed by the project's path. MCP discovery did not look in that file, which
+`scan` reads: for a home directory whose servers were only there, `mcp-status`
+printed `No MCP configurations found.` and `protect-mcp` left the values in
+the file. The three commands now read the server map at the top level of
+`~/.claude.json` and the server map in the entry of each project, each as a
+config of its own, and `~/.claude.json` is in the `Looked in:` list.
+`mcp-status` lists the servers of a project under a heading that names it,
+such as `claude-code (/Users/you/.claude.json, project /Users/you/app)`, and
+passes over a project whose server map is empty. `protect-mcp` rewrites the
+servers at the top level and in the projects in one write of the file, so its
+backup is the file as it was before, and `mcp-unprotect` restores the file
+once and prints one `Restored:` line for it. A project's server map that is
+not a JSON object is listed as `? not checked`, as a file that could not be
+parsed is. `discoverMcpConfigs()` gives the config of a project's server map
+the project's path as `projectKey`. `src/mcp-claude-json.test.ts` runs
+`mcp-status` and `mcp-unprotect` through the built CLI.
+
+**`protect-mcp` leaves a server as it is when a protected server reads its
+secrets by the same client and server name (#470).** Secrets are stored under
+the client and server name, and the wrapper of a protected server reads them
+back by that name. With `GITHUB_TOKEN` set for a `github` server in
+`~/.claude/settings.json` and for another in `.mcp.json`, `protect-mcp`
+rewrote both to the wrapper with `--server github --client claude-code`, and
+the value stored under that name was the one from `.mcp.json`. A user-scope
+and a local-scope server in `~/.claude.json` can have the same name. `protect-mcp` now protects the one it reads first and leaves the other
+in its file as it was, listed under its config as
+`? github: not protected: its name is taken by a protected server in claude-code (/Users/you/.claude.json)`
+and followed by `1 server(s) were not protected, so their secrets are still in plaintext.`
+and the step to take. It reads the top level of `~/.claude.json` before its
+projects, and the home directory before the project. A server is left the
+same way when a server protected in an earlier run reads its secrets by that
+name, as its `--client` and `--server` arguments give it. When every server
+with secrets was left this way, `protect-mcp` prints
+`No plaintext secrets were encrypted.` and does not print `Already clean.`.
+`protectMcp()` returns these servers in `sharedName`.
+
 **Under `scan --history`, the refusals made before the history check name
 what `--history` takes (#466).** An unknown flag (`--nosuch`), a flag given
 no value (`--min-confidence`) or given twice (`--format json --format json`),

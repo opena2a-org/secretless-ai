@@ -548,3 +548,108 @@ describe('discoverMcpConfigsDetailed — project-level client configs', () => {
     expect(locations).toContainEqual(['project', 'unknown', 'mcp.json']);
   });
 });
+
+describe('discoverMcpConfigsDetailed — ~/.claude.json (#470)', () => {
+  let home: string;
+  let project: string;
+
+  beforeEach(() => { home = tmpDir(); project = tmpDir(); });
+  afterEach(() => { cleanup(home); cleanup(project); });
+
+  const githubServer = () => ({ type: 'stdio', command: 'npx', args: ['-y', 'gh-mcp'], env: { GITHUB_TOKEN: 'not-a-real-token' } });
+  const slackServer = () => ({ type: 'stdio', command: 'npx', args: ['-y', 'slack-mcp'], env: { SLACK_BOT_TOKEN: 'not-a-real-token' } });
+  const claudeJson = () => path.join(home, '.claude.json');
+
+  it('looks in ~/.claude.json as a home claude-code config with a server map for each project', () => {
+    const location = mcpConfigLocations().find((l) => l.relativePath === '.claude.json');
+
+    expect(location).toEqual({ client: 'claude-code', scope: 'home', relativePath: '.claude.json', projectMaps: true });
+  });
+
+  it('reads the server map at the top level and the one of each project, each as a claude-code config of its own', () => {
+    writeConfig(home, '.claude.json', {
+      numStartups: 3,
+      mcpServers: { github: githubServer() },
+      projects: {
+        '/work/app': { allowedTools: [], mcpServers: { slack: slackServer() } },
+        '/work/api': { mcpServers: { github: githubServer(), fs: { command: 'npx', env: {} } } },
+      },
+    });
+
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+
+    expect(unparsed).toEqual([]);
+    expect(configs.map((c) => [c.client, c.filePath, c.projectPath, c.projectKey, c.servers.map((s) => s.name)])).toEqual([
+      ['claude-code', claudeJson(), undefined, undefined, ['github']],
+      ['claude-code', claudeJson(), undefined, '/work/app', ['slack']],
+      ['claude-code', claudeJson(), undefined, '/work/api', ['github', 'fs']],
+    ]);
+    expect(configs[1].servers[0].env).toEqual({ SLACK_BOT_TOKEN: 'not-a-real-token' });
+  });
+
+  it('reads the server map of a project when the file has none at its top level', () => {
+    writeConfig(home, '.claude.json', { projects: { '/work/app': { mcpServers: { slack: slackServer() } } } });
+
+    const configs = discoverMcpConfigs(home, project);
+
+    expect(configs.map((c) => [c.projectKey, c.servers.map((s) => s.name)])).toEqual([['/work/app', ['slack']]]);
+  });
+
+  it('passes over a project whose server map is empty or absent, and a file that holds no server', () => {
+    writeConfig(home, '.claude.json', {
+      numStartups: 3,
+      projects: { '/work/empty': { allowedTools: [], mcpServers: {} }, '/work/none': { allowedTools: [] }, '/work/null': null },
+    });
+
+    expect(discoverMcpConfigsDetailed(home, project)).toEqual({ configs: [], unparsed: [] });
+  });
+
+  it('returns a project server map, a project entry and a projects value that are not JSON objects as unparsed, and reads the rest', () => {
+    writeConfig(home, '.claude.json', {
+      mcpServers: { github: githubServer() },
+      projects: { '/work/str': { mcpServers: 'not-a-map' }, '/work/num': 5, '/work/app': { mcpServers: { slack: slackServer() } } },
+    });
+
+    const { configs, unparsed } = discoverMcpConfigsDetailed(home, project);
+
+    expect(configs.map((c) => [c.projectKey, c.servers.map((s) => s.name)])).toEqual([
+      [undefined, ['github']],
+      ['/work/app', ['slack']],
+    ]);
+    expect(unparsed).toEqual([
+      { client: 'claude-code', filePath: claudeJson(), projectKey: '/work/str', reason: 'its MCP server list is not a JSON object' },
+      { client: 'claude-code', filePath: claudeJson(), projectKey: '/work/num', reason: 'not a JSON object' },
+    ]);
+
+    writeConfig(home, '.claude.json', { mcpServers: { github: githubServer() }, projects: ['/work/app'] });
+
+    const second = discoverMcpConfigsDetailed(home, project);
+    expect(second.configs.map((c) => [c.projectKey, c.servers.map((s) => s.name)])).toEqual([[undefined, ['github']]]);
+    expect(second.unparsed).toEqual([
+      { client: 'claude-code', filePath: claudeJson(), reason: 'its projects value is not a JSON object' },
+    ]);
+  });
+
+  it('returns a project server entry it could not read as unchecked under that project', () => {
+    writeConfig(home, '.claude.json', { projects: { '/work/app': { mcpServers: { slack: 'not-an-object' } } } });
+
+    const { configs } = discoverMcpConfigsDetailed(home, project);
+
+    expect(configs.map((c) => [c.projectKey, c.servers, c.unchecked])).toEqual([
+      ['/work/app', [], [{ name: 'slack', part: 'entry', reason: 'not a JSON object' }]],
+    ]);
+  });
+
+  it('CONTROL: reads no project server maps from another home config that has a projects key', () => {
+    writeConfig(home, '.cursor/mcp.json', {
+      mcpServers: { github: githubServer() },
+      projects: { '/work/app': { mcpServers: { slack: slackServer() } } },
+    });
+
+    const { configs } = discoverMcpConfigsDetailed(home, project);
+
+    expect(configs.map((c) => [c.client, c.projectKey, c.servers.map((s) => s.name)])).toEqual([
+      ['cursor', undefined, ['github']],
+    ]);
+  });
+});

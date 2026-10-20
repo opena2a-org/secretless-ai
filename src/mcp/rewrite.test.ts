@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { rewriteConfig, restoreConfig, RewriteResult } from './rewrite';
+import { rewriteConfig, rewriteServerMaps, restoreConfig, RewriteResult } from './rewrite';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-rewrite-test-'));
@@ -342,5 +342,95 @@ describe('restoreConfig', () => {
     const nonExistentBackupDir = path.join(dir, 'no-such-dir');
     const restored = restoreConfig(configPath, nonExistentBackupDir);
     expect(restored).toBe(false);
+  });
+});
+
+describe('rewriteServerMaps — the server maps of ~/.claude.json (#470)', () => {
+  let dir: string;
+  let backupDir: string;
+  let configPath: string;
+  const wrapperPath = '/usr/local/bin/secretless-mcp';
+
+  /** A user-scope server at the top level and a local-scope one of the same name under a project. */
+  function claudeJson(): Record<string, unknown> {
+    return {
+      numStartups: 3,
+      mcpServers: { github: { type: 'stdio', command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'not-a-real-token-1' } } },
+      projects: {
+        '/work/app': {
+          allowedTools: [],
+          mcpServers: {
+            github: { type: 'stdio', command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'not-a-real-token-2', GITHUB_ORG: 'acme' } },
+          },
+        },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    dir = tmpDir();
+    backupDir = path.join(dir, 'backups');
+    configPath = path.join(dir, '.claude.json');
+    writeConfig(configPath, claudeJson());
+  });
+  afterEach(() => { cleanup(dir); });
+
+  it('rewrites the server map at the top level and the one of a project in one write, keeping every other key', () => {
+    const result = rewriteServerMaps(configPath, 'claude-code', [
+      { serverSecrets: { github: { GITHUB_TOKEN: 'not-a-real-token-1' } } },
+      { projectKey: '/work/app', serverSecrets: { github: { GITHUB_TOKEN: 'not-a-real-token-2' } } },
+    ], wrapperPath, backupDir);
+
+    expect(result.serversRewritten).toBe(2);
+    const rewritten = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(rewritten.numStartups).toBe(3);
+    expect(rewritten.projects['/work/app'].allowedTools).toEqual([]);
+    expect(rewritten.mcpServers.github).toEqual({
+      type: 'stdio',
+      command: wrapperPath,
+      args: ['--server', 'github', '--client', 'claude-code', '--', 'npx', 'gh-mcp'],
+      env: {},
+    });
+    expect(rewritten.projects['/work/app'].mcpServers.github).toEqual({
+      type: 'stdio',
+      command: wrapperPath,
+      args: ['--server', 'github', '--client', 'claude-code', '--', 'npx', 'gh-mcp'],
+      env: { GITHUB_ORG: 'acme' },
+    });
+  });
+
+  it('backs the file up once, as it was before either map was rewritten', () => {
+    const original = fs.readFileSync(configPath, 'utf-8');
+
+    rewriteServerMaps(configPath, 'claude-code', [
+      { serverSecrets: { github: { GITHUB_TOKEN: 'not-a-real-token-1' } } },
+      { projectKey: '/work/app', serverSecrets: { github: { GITHUB_TOKEN: 'not-a-real-token-2' } } },
+    ], wrapperPath, backupDir);
+
+    expect(fs.readdirSync(backupDir).filter((f) => f !== 'manifest.json' && f !== '.salt')).toHaveLength(1);
+    expect(restoreConfig(configPath, backupDir)).toBe(true);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  it('rewrites only the map it is given, beside a server of the same name in another map', () => {
+    rewriteServerMaps(configPath, 'claude-code', [
+      { projectKey: '/work/app', serverSecrets: { github: { GITHUB_TOKEN: 'not-a-real-token-2' } } },
+    ], wrapperPath, backupDir);
+
+    const rewritten = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(rewritten.projects['/work/app'].mcpServers.github.command).toBe(wrapperPath);
+    expect(rewritten.mcpServers).toEqual(claudeJson().mcpServers);
+  });
+
+  it('rewrites nothing, and writes no backup, for a project the file does not hold', () => {
+    const original = fs.readFileSync(configPath, 'utf-8');
+
+    const result = rewriteServerMaps(configPath, 'claude-code', [
+      { projectKey: '/work/other', serverSecrets: { github: { GITHUB_TOKEN: 'not-a-real-token-2' } } },
+    ], wrapperPath, backupDir);
+
+    expect(result).toEqual({ serversRewritten: 0, backupPath: null });
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+    expect(fs.existsSync(backupDir)).toBe(false);
   });
 });

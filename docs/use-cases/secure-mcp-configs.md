@@ -12,12 +12,16 @@ Each AI tool stores MCP server configs in a different location. `protect-mcp` an
 | Client | Home directory | Project |
 |--------|----------------|---------|
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `~/.config/Claude/claude_desktop_config.json` (Linux) | |
-| Claude Code | `~/.claude/settings.json`, `~/.claude/settings.local.json` | `.mcp.json` |
+| Claude Code | `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/settings.local.json` | `.mcp.json` |
 | Cursor | `~/.cursor/mcp.json` | `.cursor/mcp.json` |
 | VS Code | `~/.vscode/mcp.json` | `.vscode/mcp.json` |
 | Windsurf | `~/.windsurf/mcp.json` | `.windsurf/mcp.json` |
 
 They read `mcp.json` in the project too. Which client writes a bare `mcp.json` is not established, so it is shown by its path alone, as `scan` shows it. When neither command finds a config, it lists every path it looked in.
+
+Claude Code keeps its user-scope servers at the top level of `~/.claude.json` and its local-scope servers under `projects`, one entry for each project path. Both commands read the servers at the top level and those of each project, and `mcp-status` lists a project's servers under a heading that names the project, such as `claude-code (/Users/you/.claude.json, project /Users/you/app)`.
+
+`protect-mcp` stores the secrets of each server under its client and server name, and a protected server reads them back by that name. When two servers of one client have the same name, as a user-scope and a local-scope server can, `protect-mcp` protects the one it reads first and leaves the other as it is, listed as `not protected` with the config of the server whose name it shares. It reads the top level of `~/.claude.json` before its projects, and your home directory before the project. A server is left the same way when a server protected in an earlier run reads its secrets by that name.
 
 A project-level config is usually committed with the repository. `protect-mcp` rewrites `.mcp.json` and leaves the other project-level configs as they are, because the wrapper path it writes belongs to one machine. It lists them as not checked, and `mcp-status` shows their servers.
 
@@ -133,7 +137,7 @@ If you need to revert to the original plaintext configs (for example, before uni
 npx secretless-ai mcp-unprotect
 ```
 
-Secretless keeps a backup of the original config file and restores it exactly as it was.
+Secretless keeps a backup of the original config file and restores it exactly as it was. It writes back the whole file, so a change made to the file after `protect-mcp` rewrote it, such as a server added to `~/.claude.json` since, is undone as well.
 
 ## What happened
 
