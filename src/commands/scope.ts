@@ -113,8 +113,13 @@ export async function runScope(args: string[]): Promise<number> {
         // disagree and no way to reconcile them.
         console.error(`\n  Credential "${credentialName}" not found in secret store.`);
         console.error(`  A scope baseline for it is still stored (from ${baseline.checkedAt}), so the baseline is stale.`);
-        console.error(`  Fix:    ${CLI_BARE} scope reset ${credentialName}   (the credential is gone: remove the baseline)`);
-        console.error(`          ${CLI_BARE} secret set ${credentialName}    (the credential moved: store it again)`);
+        // When each Fix applies is a line of its own above it: pasted, a
+        // remark in parentheses after the command is part of it, and bash
+        // refuses the `(`.
+        console.error('  If the credential is gone, remove the baseline:');
+        console.error(`  Fix:    ${CLI_BARE} scope reset ${credentialName}`);
+        console.error('  If the credential moved, store it again:');
+        console.error(`  Fix:    ${CLI_BARE} secret set ${credentialName}`);
         console.error(`  Verify: ${CLI_BARE} scope list\n`);
         return 1;
       }

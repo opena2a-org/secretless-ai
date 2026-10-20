@@ -219,7 +219,7 @@ describe('`secret sync` offers `secret set` only for a missing name `secret set`
       expect(lines).toContain(`  ${cannotSet(name)}; add it to 1password and sync again.`);
     }
     expect(said).not.toContain(cannotSet('ABSENT'));
-    expect(fixLines(lines)).toEqual([`  Fix:     ${CLI} secret set ABSENT   (or add it to 1password and sync again)`]);
+    expect(fixLines(lines)).toEqual([`  Fix:     ${CLI} secret set ABSENT`]);
     expect(offered(said)).toEqual(['ABSENT']);
 
     out.length = 0;
@@ -230,7 +230,7 @@ describe('`secret sync` offers `secret set` only for a missing name `secret set`
   it('a name `secret set` takes is offered as before, with no line about the names it cannot take', async () => {
     expect(await sync('ABSENT')).toBe(1);
     expect(printed()).not.toContain('cannot be stored by `secret set`');
-    expect(fixLines(printed().split('\n'))).toEqual([`  Fix:     ${CLI} secret set ABSENT   (or add it to 1password and sync again)`]);
+    expect(fixLines(printed().split('\n'))).toEqual([`  Fix:     ${CLI} secret set ABSENT`]);
   });
 });
 

@@ -63,13 +63,20 @@ export function runInit(projectDir: string): number {
       console.error(`  Directory not found: ${named}`);
       console.error(`  Nothing was written. ${escapePathForDisplay(notDir.link)} is a symbolic link to a path that does not exist.`);
       console.error(`  Verify: ls -ld ${pathOperand(notDir.link)}`);
-      console.error(`  Fix:    ${CLI} init   ${c.dim('# run from inside your project')}\n`);
+      // The remark is a line of its own: pasted into a zsh that does not take
+      // `#` as a comment, a remark after the command becomes arguments to it.
+      console.error(`  Fix:    ${CLI} init`);
+      console.error(`          ${c.dim('run from inside your project')}\n`);
     } else if (notDir.kind === 'missing') {
       console.error(`  Directory not found: ${named}`);
       console.error('  Nothing was written. init sets up a project directory that already exists.');
       console.error(`  Verify: ls -ld ${quoted}`);
-      console.error(`  Fix:    ${CLI} init   ${c.dim('# run from inside your project')}`);
-      console.error(`          mkdir -p ${quoted} && ${CLI} init ${quoted}   ${c.dim('# or create this directory first')}\n`);
+      // Each remark is a line of its own next to its command, as in the
+      // branch above.
+      console.error(`  Fix:    ${CLI} init`);
+      console.error(`          ${c.dim('run from inside your project')}`);
+      console.error(`          ${c.dim('or create this directory first:')}`);
+      console.error(`          mkdir -p ${quoted} && ${CLI} init ${quoted}\n`);
     } else {
       console.error(`  Not a directory: ${named}`);
       console.error('  Nothing was written. init sets up a project directory, and this path is a file.');

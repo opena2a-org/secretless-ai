@@ -19,6 +19,7 @@ vi.mock('../scope', () => ({
 }));
 
 import { runScope } from './scope';
+import { CLI_BARE } from './utils';
 
 const BASELINE = {
   credentialName: 'GCP_SA_KEY',
@@ -62,6 +63,27 @@ describe('scope check — a stored baseline with no stored credential (#127)', (
     expect(text).toContain('secret set GCP_SA_KEY');
     expect(text).toContain('Verify:');
     expect(discoverScope).not.toHaveBeenCalled();
+  });
+
+  // #475. Each Fix line ended in a remark in parentheses, which bash refuses
+  // when the line is pasted: ``syntax error near unexpected token `('``.
+  it('says when each Fix applies on the line above it, and each Fix line ends at its command (#475)', async () => {
+    loadBaseline.mockReturnValue(BASELINE);
+    getSecret.mockResolvedValue(undefined);
+
+    expect(await runScope(['check', 'GCP_SA_KEY'])).toBe(1);
+
+    expect(err.join('\n').split('\n')).toEqual([
+      '',
+      '  Credential "GCP_SA_KEY" not found in secret store.',
+      '  A scope baseline for it is still stored (from 2026-03-01T10:00:00Z), so the baseline is stale.',
+      '  If the credential is gone, remove the baseline:',
+      `  Fix:    ${CLI_BARE} scope reset GCP_SA_KEY`,
+      '  If the credential moved, store it again:',
+      `  Fix:    ${CLI_BARE} secret set GCP_SA_KEY`,
+      `  Verify: ${CLI_BARE} scope list`,
+      '',
+    ]);
   });
 
   it('CONTROL: with no baseline, the first step is still discover', async () => {

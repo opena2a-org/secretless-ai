@@ -210,8 +210,10 @@ describe('`init` escapes the path in its "Directory not found" and "Not a direct
       `  Directory not found: ${parent}/nodir\\n${FORGED}`,
       '  Nothing was written. init sets up a project directory that already exists.',
       '  Verify: ls -ld <path>',
-      '  Fix:    npx secretless-ai init   # run from inside your project',
-      '          mkdir -p <path> && npx secretless-ai init <path>   # or create this directory first',
+      '  Fix:    npx secretless-ai init',
+      '          run from inside your project',
+      '          or create this directory first:',
+      '          mkdir -p <path> && npx secretless-ai init <path>',
     ]);
   });
 
@@ -296,7 +298,8 @@ describe('`init` under a symbolic link to a missing path', () => {
         `  Directory not found: ${target}`,
         `  Nothing was written. ${link} is a symbolic link to a path that does not exist.`,
         `  Verify: ls -ld ${shellQuote(link)}`,
-        '  Fix:    npx secretless-ai init   # run from inside your project',
+        '  Fix:    npx secretless-ai init',
+        '          run from inside your project',
       ]);
       expect(fs.readdirSync(dir)).toEqual(['dang']);
     });
@@ -307,9 +310,12 @@ describe('`init` under a symbolic link to a missing path', () => {
 
     const res = cli(['init', missing]);
 
-    expect(errorLines(res.stderr)[4]).toBe(
-      `          mkdir -p ${shellQuote(missing)} && npx secretless-ai init ${shellQuote(missing)}   # or create this directory first`,
-    );
+    expect(errorLines(res.stderr).slice(3)).toEqual([
+      '  Fix:    npx secretless-ai init',
+      '          run from inside your project',
+      '          or create this directory first:',
+      `          mkdir -p ${shellQuote(missing)} && npx secretless-ai init ${shellQuote(missing)}`,
+    ]);
   });
 });
 

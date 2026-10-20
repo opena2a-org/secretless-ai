@@ -196,7 +196,7 @@ describe('scan --check-validity names why a request got no answer (#471)', () =>
   }, 30_000);
 });
 
-describe('Fix and Verify lines in the source have no space-separated `#` remark after the command (#471)', () => {
+describe('Fix and Verify lines in the source have no `#` or parenthesized remark after the command (#471, #475)', () => {
   function sourceFiles(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);
@@ -205,14 +205,39 @@ describe('Fix and Verify lines in the source have no space-separated `#` remark 
     });
   }
 
-  it('no Fix or Verify line in the source has a space-separated `#` remark after its command', () => {
-    // An interactive zsh does not take `#` as a comment unless
-    // INTERACTIVE_COMMENTS is set, so pasted, the remark's words become
-    // arguments of the command: `npm install   # and check node -v is
-    // >= 20.19.0` also wrote its output to a file named `=`.
+  // An interactive zsh does not take `#` as a comment unless
+  // INTERACTIVE_COMMENTS is set, so pasted, the remark's words become
+  // arguments of the command: `npm install   # and check node -v is
+  // >= 20.19.0` also wrote its output to a file named `=`. Bash refuses a
+  // remark in parentheses: ``syntax error near unexpected token `('``. A `(` one
+  // space after a word is prose (`for export (prompted, ...)`), so a
+  // parenthesized remark is one set off from the command by two or more
+  // spaces. Either kind is also caught inside a style call,
+  // `${c.dim('# ...')}`, which printed the same remark (#475).
+  const REMARK_AFTER_COMMAND = /(Fix|Verify):.*(\s#\s|\S\s{2,}(\$\{c\.\w+\(['"`])?[#(])/;
+
+  it('the check finds a remark of either form, written plainly or in a style call, and passes prose', () => {
+    for (const line of [
+      '    `  Fix:    npm install   # and check node -v is >= 20.19.0\\n` +',
+      "        console.error(`  Fix:    ${CLI_BARE} scope reset ${credentialName}   (the credential is gone: remove the baseline)`);",
+      "      '  Verify:  secretless-ai mcp-status   (shows the config file for each client)',",
+      "      console.error(`  Fix:    ${CLI} init   ${c.dim('# run from inside your project')}\\n`);",
+    ]) {
+      expect(REMARK_AFTER_COMMAND.test(line), line).toBe(true);
+    }
+    for (const line of [
+      "      `  Fix:     run the import again with the passphrase used for export (prompted, or ${PASSPHRASE_ENV})`,",
+      "    `  Verify: node -e \"import('@opena2a/atx-verify').then(() => console.log('ok'))\"\\n` +",
+      "      console.error(`  Fix:    ${CLI} init`);",
+    ]) {
+      expect(REMARK_AFTER_COMMAND.test(line), line).toBe(false);
+    }
+  });
+
+  it('no Fix or Verify line in the source has a `#` or parenthesized remark after its command', () => {
     const hits = sourceFiles(path.join(REPO_ROOT, 'src')).flatMap((file) => fs.readFileSync(file, 'utf-8')
       .split('\n')
-      .flatMap((line, i) => (/(Fix|Verify):.*\s#\s/.test(line) ? [`${path.relative(REPO_ROOT, file)}:${i + 1}`] : [])));
+      .flatMap((line, i) => (REMARK_AFTER_COMMAND.test(line) ? [`${path.relative(REPO_ROOT, file)}:${i + 1}`] : [])));
     expect(hits).toEqual([]);
   });
 });
