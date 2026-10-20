@@ -208,6 +208,11 @@ export async function runBackend(args: string[]): Promise<number> {
       }
     }
 
+    // The store secrets were kept in until now, as `migrate --from` names it:
+    // the configured backend or, with none configured, the platform keychain
+    // the default upgrades to (#34) or the local file. Read before the write.
+    const configured = readBackendConfig();
+    const previous: SelectableBackendType = configured ?? (effectiveBackendName('local') === 'local' ? 'local' : 'keychain');
     writeBackendConfig(type);
     // The value cache is one file keyed by entry name alone, holding what was
     // read from the backend configured until now. Left in place, a read
@@ -217,7 +222,13 @@ export async function runBackend(args: string[]): Promise<number> {
     clearCacheFile();
     console.log(`\n  Backend set to: ${type}\n`);
     console.log('  Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.');
-    console.log('  Or use `npx secretless-ai migrate` to migrate existing secrets.\n');
+    // Both names given: bare `migrate` prints only its usage line. Not offered
+    // when the store is the one used until now, which `migrate` refuses.
+    if (previous !== type) {
+      console.log(`  Or use \`npx secretless-ai migrate --from ${previous} --to ${type}\` to migrate existing secrets.\n`);
+    } else {
+      console.log();
+    }
     return 0;
   }
 

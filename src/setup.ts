@@ -6,6 +6,8 @@
  */
 
 import * as readline from 'readline';
+import { canReadHidden, readHiddenLine } from './hidden-line';
+import type { TtyInput } from './hidden-line';
 import { readManifestDetailed, checkManifest, MANIFEST_FORMAT_HINT } from './manifest';
 import type { ManifestEntry, ManifestError } from './manifest';
 import { SecretStore } from './secret-store';
@@ -158,50 +160,21 @@ export async function runSetup(
     };
   }
 
+  const input = options?.input ?? process.stdin;
+  const asker = canReadHidden(input as TtyInput) ? hiddenAsker(input as TtyInput) : lineAsker(input);
+
   // Named before the first prompt, so the user knows where each value they
   // type will be written before writing it (#177, #365). Prompts go to stderr too.
   process.stderr.write(`  Store: ${store.backendName}\n`);
   const projectNote = repositoryProjectNote(store.backendName);
   if (projectNote) process.stderr.write(`  ${projectNote}\n`);
+  if (asker.hidden) process.stderr.write(`  ${HIDDEN_INPUT_NOTE}\n`);
   process.stderr.write('\n');
-
-  const input = options?.input ?? process.stdin;
-  const rl = readline.createInterface({
-    input,
-    output: process.stderr,
-    terminal: input === process.stdin && process.stdin.isTTY === true,
-  });
-
-  // Input that ends (Ctrl-D) answers the open prompt and every later one with
-  // nothing. Without this the pending question never resolves, nothing keeps
-  // the process alive, and it exits 0 with the summary unprinted.
-  let inputClosed = false;
-  let pending: ((answer: string) => void) | null = null;
-  rl.on('close', () => {
-    inputClosed = true;
-    const resolve = pending;
-    pending = null;
-    resolve?.('');
-  });
-
-  const askQuestion = (prompt: string): Promise<string> => {
-    return new Promise((resolve) => {
-      if (inputClosed) {
-        resolve('');
-        return;
-      }
-      pending = resolve;
-      rl.question(prompt, (answer) => {
-        pending = null;
-        resolve(answer.trim());
-      });
-    });
-  };
 
   const promptFor = (entry: ManifestEntry, hint: string): Promise<string> => {
     const desc = entry.description ? ` (${entry.description})` : '';
     const note = inEnvironment(entry.name) ? ' [set in the environment, press Enter to use it]' : hint;
-    return askQuestion(`  ${entry.name}${desc}${note}: `);
+    return asker.ask(`  ${entry.name}${desc}${note}: `);
   };
 
   try {
@@ -231,7 +204,7 @@ export async function runSetup(
       }
     }
   } finally {
-    rl.close();
+    asker.close();
   }
 
   return {
@@ -244,5 +217,90 @@ export async function runSetup(
     skipped: skippedCount,
     complete: missingNames.length === 0,
     store: store.backendName,
+  };
+}
+
+/** Printed above the prompts when they are read with echo off. */
+export const HIDDEN_INPUT_NOTE = 'Input is hidden: a value you type or paste is not shown.';
+
+/** Asks one prompt at a time and resolves the answer, trimmed. */
+interface Asker {
+  /** Whether what is typed at a prompt is kept off the screen. */
+  hidden: boolean;
+  ask(prompt: string): Promise<string>;
+  close(): void;
+}
+
+/**
+ * A terminal, read with echo off as `secret set` reads one (#234), so a typed
+ * or pasted value is not shown and does not stay in scrollback. With echo on,
+ * `setup` printed each value after its prompt. Ctrl-C, and input that ends,
+ * answer the open prompt and every later one with nothing, as they did when
+ * the terminal was read through readline, which closes on Ctrl-C; so neither
+ * changes how setup exits.
+ */
+function hiddenAsker(input: TtyInput): Asker {
+  let done = false;
+  const onEnd = (): void => { done = true; };
+  input.on('end', onEnd);
+  return {
+    hidden: true,
+    async ask(prompt) {
+      if (done) return '';
+      const result = await readHiddenLine(input, process.stderr, prompt);
+      if (result.kind === 'cancelled') {
+        done = true;
+        return '';
+      }
+      return result.value.trim();
+    },
+    close() {
+      input.removeListener('end', onEnd);
+    },
+  };
+}
+
+/**
+ * Any other stream, such as one a test hands in, read a line at a time. The
+ * CLI reaches this only where standard input is a terminal that cannot turn
+ * echo off; on every other terminal `hiddenAsker` reads.
+ */
+function lineAsker(input: NodeJS.ReadableStream): Asker {
+  const rl = readline.createInterface({
+    input,
+    output: process.stderr,
+    terminal: input === process.stdin && process.stdin.isTTY === true,
+  });
+
+  // Input that ends (Ctrl-D) answers the open prompt and every later one with
+  // nothing. Without this the pending question never resolves, nothing keeps
+  // the process alive, and it exits 0 with the summary unprinted.
+  let inputClosed = false;
+  let pending: ((answer: string) => void) | null = null;
+  rl.on('close', () => {
+    inputClosed = true;
+    const resolve = pending;
+    pending = null;
+    resolve?.('');
+  });
+
+  return {
+    hidden: false,
+    ask(prompt) {
+      return new Promise((resolve) => {
+        if (inputClosed) {
+          resolve('');
+          return;
+        }
+        pending = resolve;
+        rl.question(prompt, (answer) => {
+          pending = null;
+          resolve(answer.trim());
+        });
+      });
+    },
+    close() {
+      rl.close();
+    },
   };
 }

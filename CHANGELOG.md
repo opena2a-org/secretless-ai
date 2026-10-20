@@ -81,6 +81,71 @@ with secrets was left this way, `protect-mcp` prints
 `No plaintext secrets were encrypted.` and does not print `Already clean.`.
 `protectMcp()` returns these servers in `sharedName`.
 
+**Hints name the secret, bundle and backends they are about, and a `Fix:` or
+`Verify:` line ends at its command (#471).** Refused without a terminal,
+`secret get STRIPE_SECRET_KEY` offered `secret get <NAME> --force` and
+`secret show <NAME>`; it now offers `secret get STRIPE_SECRET_KEY --force` and
+`secret show STRIPE_SECRET_KEY`, and `'<name>'` for a name the store cannot
+hold. A second `import` of a bundle printed
+`Fix:     secretless-ai import <bundle> --force   (replaces those names)`; it
+now prints the bundle as given, relative to the working directory or absolute
+and quoted, as `Fix:     npx secretless-ai import team.secretless-bundle --force`,
+with the remark on the line above it. `backend set` printed a bare
+``npx secretless-ai migrate``, which prints only its usage line; it now prints
+``npx secretless-ai migrate --from local --to vault`` with the backend used
+until now and the new one, and no `migrate` line when the two are the same.
+The `Fix:` line of `clean --path` on a missing file, the `Verify:` line of
+`scan --history` for lines before the window, and the `Fix:` line of the two
+broker installation faults carried a `# remark` after the command; pasted
+into `zsh -f -i`, the remark's words were passed to the command, and the
+broker line, run with `echo` in place of `npm`, wrote a file named `=`. Each remark is now a line of its own
+under the command. `src/followups-471.test.ts` covers each case.
+
+**`verify` gives the `import` step for a key in `.env` (#471).** For a key in
+`.env` or `.env.local` the Next Steps block printed
+`Protect context:    npx secretless-ai init`, and `init` leaves the line
+where it is. It now prints `npx secretless-ai import <file>` for each such
+file, the step `scan` gives, then
+`then delete those lines, and start the app with npx secretless-ai run -- <command>`.
+A key in another file keeps the `init` line. `src/verify-next-steps.test.ts`
+runs `verify` on a stand-in result.
+
+**`scan --check-validity` names a proxy's refusal (#471).** Through a local
+proxy that answers CONNECT with 403, Node's fetch throws `TypeError` with the
+proxy's answer two causes down, and the reason given was the class name:
+`no answer from api.sendgrid.com (TypeError)`. It is now
+`(the proxy answered 403)`; a network error code anywhere in the chain of
+causes is named, and with none the reason is `error`, not the class name.
+
+**`status` puts a missing hook target's path on a line of its own (#471).**
+The path in the Stop hook and prompt check rows padded every row with a
+command to the width of those rows, in a project whose CLI copy was removed. The path is now printed under its row, the `→` column is set by rows
+up to 100 characters, and a wider row prints its command on the line under
+it. The prompt check row said `(a credential in a prompt is sent, then
+redacted)` while the Stop hook's target was missing and the watcher was not
+running; with neither a Stop hook that reaches its target nor the watcher
+running it now says `(a credential in a prompt is sent and is not redacted)`.
+
+**`env --help` and `setup --help` use the layout of the other commands'
+help (#471).** Each now prints the usage through the CLI prefix, an
+`-h, --help` line and ``Run `npx secretless-ai --help` for every command.``;
+`env --help` says `env` is refused in an AI agent runtime, and `setup --help`
+keeps the manifest format.
+
+**`setup`, `vault register` and `vault rotate` read a typed value with echo
+off (#471).** On a terminal each value was shown after its prompt and stayed
+in scrollback; it is now read as `secret set` reads one, and `setup` prints
+`Input is hidden: a value you type or paste is not shown.` above its prompts.
+Ctrl-C at a `setup` prompt answers it and every later one with nothing, as it
+did when readline closed on it. The sample in `docs/use-cases/team-setup.md`
+no longer shows the typed values.
+
+**docs/scanning.md says a SARIF rule carries the highest severity of its
+findings (#471),** so a `high` finding of a pattern also found at `critical`
+is shown as Critical, and the finding's own severity is
+`properties.severity`. The README names the fixture of its quick-start
+sample: a project holding an empty `.claude/` directory.
+
 **Under `scan --history`, the refusals made before the history check name
 what `--history` takes (#466).** An unknown flag (`--nosuch`), a flag given
 no value (`--min-confidence`) or given twice (`--format json --format json`),

@@ -64,7 +64,8 @@ describe('scan --history names what it did not read (#462)', () => {
     expect(text.stdout).toContain('No credentials found in the lines that were read.');
     expect(text.stdout).toContain('1 line not read, so not known to be clean:');
     expect(text.stdout).toContain('~/.bash_history:1: before the last 10000 lines');
-    expect(text.stdout).toContain('Verify: npx secretless-ai clean-history --dry-run   # clean-history has no 10000-line limit');
+    // The remark under the command, not after it (#471).
+    expect(text.stdout).toContain('  Verify: npx secretless-ai clean-history --dry-run\n          clean-history has no 10000-line limit\n');
 
     const { status, doc } = json(dir);
     expect(status).toBe(0);

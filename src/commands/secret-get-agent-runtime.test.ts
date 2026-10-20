@@ -131,6 +131,6 @@ describe('secret get --force inside an AI agent runtime (#445)', () => {
     const res = await get(['API_KEY'], {}, false);
     expect(res.code).toBe(1);
     expect(res.out).toBe('');
-    expect(res.err).toContain('secret get <NAME> --force');
+    expect(res.err).toContain('secret get API_KEY --force');
   });
 });

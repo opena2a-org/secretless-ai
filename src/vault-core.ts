@@ -14,6 +14,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { escapePathForDisplay } from './display-safe';
+import { canReadHidden, readHiddenLine } from './hidden-line';
+import type { PromptOutput, TtyInput } from './hidden-line';
 
 // ── Types for the dynamically loaded aim-core vault module ──────────
 
@@ -806,21 +808,38 @@ export async function vaultMigrate(options: {
 
 // ── Private helpers ────────────────────────────────────────────────
 
-async function readCredentialFromStdin(namespace: string): Promise<string> {
+/**
+ * @internal The credential `vault register` and `vault rotate` read when no
+ * value or `--env` is given: stdin to its end when it is not a terminal, else
+ * one line typed at a prompt on stderr. A terminal is read with echo off, as
+ * `secret set` reads one (#234): read through readline, the typed value was
+ * shown after the prompt and stayed in scrollback. Ctrl-C at that prompt
+ * answers nothing, which the caller refuses as it refuses an empty value.
+ */
+export async function readCredentialFromStdin(
+  namespace: string,
+  stdin: TtyInput = process.stdin,
+  output: PromptOutput = process.stderr,
+): Promise<string> {
   // If stdin is a pipe, read from it
-  if (!process.stdin.isTTY) {
+  if (!stdin.isTTY) {
     return new Promise<string>((resolve, reject) => {
       let data = '';
-      process.stdin.setEncoding('utf-8');
-      process.stdin.on('data', (chunk) => { data += chunk; });
-      process.stdin.on('end', () => resolve(data.trim()));
-      process.stdin.on('error', reject);
+      stdin.setEncoding('utf-8');
+      stdin.on('data', (chunk) => { data += chunk; });
+      stdin.on('end', () => resolve(data.trim()));
+      stdin.on('error', reject);
     });
   }
 
-  // Interactive prompt
+  if (canReadHidden(stdin)) {
+    const result = await readHiddenLine(stdin, output, `  Enter credential for "${namespace}" (input hidden): `);
+    return result.kind === 'cancelled' ? '' : result.value.trim();
+  }
+
+  // A terminal that cannot turn echo off is read as before.
   const rl = readline.createInterface({
-    input: process.stdin,
+    input: stdin,
     output: process.stderr, // Prompt on stderr so stdout stays clean
   });
 

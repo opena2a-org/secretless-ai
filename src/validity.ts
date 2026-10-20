@@ -695,6 +695,39 @@ function errorCode(err: unknown): string {
   return 'error';
 }
 
+/** The form undici gives a proxy's refusal of a tunnel, which holds only the proxy's status. */
+const PROXY_REFUSED = /^Proxy response \((\d{3})\) !== 200 when HTTP Tunneling$/;
+
+/**
+ * Why a request got no answer, for `no answer from <host> (...)`: the status
+ * a proxy refused the tunnel with, else the first error code in the chain of
+ * causes (fetch throws `TypeError: fetch failed` and puts the network error
+ * under it, at times two levels down), else a name that says more than the
+ * class `TypeError` or `Error` does. A proxy that answered 403 was reported
+ * as `TypeError`. Never a message: only the proxy's status is read out of
+ * one, from the fixed form above.
+ */
+function networkError(err: unknown): string {
+  const chain: object[] = [];
+  let at: unknown = err;
+  while (chain.length < 6 && at !== null && typeof at === 'object' && !chain.includes(at)) {
+    chain.push(at);
+    const e = at as { cause?: unknown; errors?: unknown };
+    at = e.cause ?? (Array.isArray(e.errors) ? e.errors[0] : undefined);
+  }
+  for (const e of chain) {
+    const message = (e as { message?: unknown }).message;
+    const proxy = typeof message === 'string' ? PROXY_REFUSED.exec(message) : null;
+    if (proxy) return `the proxy answered ${proxy[1]}`;
+  }
+  for (const e of chain) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && /^[A-Za-z0-9_]+$/.test(code)) return code;
+  }
+  const name = (chain[0] as { name?: unknown } | undefined)?.name;
+  return typeof name === 'string' && /^[A-Za-z0-9_]+$/.test(name) && name !== 'TypeError' && name !== 'Error' ? name : 'error';
+}
+
 function formatDeadline(timeoutMs: number): string {
   return timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`;
 }
@@ -803,7 +836,7 @@ async function exchange(probe: ValidityProbe, build: () => ProbeRequest, hidden:
   } catch (err) {
     const detail = controller.signal.aborted
       ? `no answer from ${probe.host} within ${formatDeadline(timeoutMs)}`
-      : `no answer from ${probe.host} (${errorCode(err)})`;
+      : `no answer from ${probe.host} (${networkError(err)})`;
     return withoutValues(hidden, { state: 'unknown', host: probe.host, detail });
   } finally {
     clearTimeout(timer);

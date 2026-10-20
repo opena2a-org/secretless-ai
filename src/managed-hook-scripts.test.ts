@@ -26,7 +26,7 @@ vi.mock('./watch', () => ({ isWatchRunning: () => false }));
 
 import { init, managedHookState } from './init';
 import { status } from './status';
-import { runInit, runStatus } from './commands/core';
+import { runInit, runStatus, STATUS_ALIGN_MAX } from './commands/core';
 import { VERSION } from './commands/utils';
 
 const GUARD = '.claude/hooks/secretless-guard.sh';
@@ -35,9 +35,15 @@ const OUTPUT_CHECK = '.claude/hooks/secretless-output-check.cjs';
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const sha256 = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
 
-/** A ⚠ row and its action, as `status` lays them out. */
+/**
+ * A ⚠ row and its action, as `status` lays them out: the action in the column
+ * after the label, or on the line under it for a row wider than that column
+ * is kept (#471).
+ */
 const warningRow = (label: string, action: string): RegExp =>
-  new RegExp(`^  ⚠ ${escapeRe(label)} +→ ${escapeRe(action)}$`, 'm');
+  `⚠ ${label}`.length <= STATUS_ALIGN_MAX
+    ? new RegExp(`^  ⚠ ${escapeRe(label)} +→ ${escapeRe(action)}$`, 'm')
+    : new RegExp(`^  ⚠ ${escapeRe(label)}\\n {4}→ ${escapeRe(action)}$`, 'm');
 
 /** One line, `exit 0`, inserted after the shebang: the guard then allows every call. */
 function weakenGuard(file: string): void {
@@ -165,7 +171,8 @@ describe('status compares the guard script with the one this version writes', ()
 
     const text = await statusText(project);
     expect(text).not.toMatch(/✓ Claude Code hook installed/);
-    expect(text).toMatch(/^ {2}⚠ Claude Code guard script could not be compared: Invalid patterns in \.secretless-rules\.yaml .* +→ secretless-ai init$/m);
+    // Wider than the column, so the action is on the line under it (#471).
+    expect(text).toMatch(/^ {2}⚠ Claude Code guard script could not be compared: Invalid patterns in \.secretless-rules\.yaml .*\n {4}→ secretless-ai init$/m);
   });
 
   it('rules added after init make the guard differ until init runs again', async () => {

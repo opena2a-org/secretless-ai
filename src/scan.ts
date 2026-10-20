@@ -177,16 +177,17 @@ export function fixFor(
 }
 
 /**
- * The operand of the `import` command in the fix for a finding in a real
- * `.env` file, or undefined for any other file.
+ * @internal The operand of the `import` command in the fix for a finding in a
+ * real `.env` file, or undefined for any other file.
  *
  * The scan root is not always the shell's cwd (`scan services/api`), so the
  * path is taken from cwd, absolute when it lies outside it or would read as a
  * flag. The name comes from the scanned repository and the fix is meant to be
  * pasted, so it is quoted for the shell, and replaced by `<file>` when it
- * holds a character that would reach the terminal as a control.
+ * holds a character that would reach the terminal as a control. `verify`
+ * gives the same operand in its next step for a `.env` finding.
  */
-function envFileOperand(filePath: string): string | undefined {
+export function envFileOperand(filePath: string): string | undefined {
   if (!isEnvFile(path.basename(filePath))) return undefined;
   let shown = path.resolve(filePath);
   try {

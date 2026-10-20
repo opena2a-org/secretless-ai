@@ -39,8 +39,10 @@ Expected output:
   Backend set to: vault
 
   Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.
-  Or use `npx secretless-ai migrate` to migrate existing secrets.
+  Or use `npx secretless-ai migrate --from keychain --to vault` to migrate existing secrets.
 ```
+
+`--from` names the store your secrets were kept in until now. With no backend set before, that is `keychain` on macOS, as here.
 
 Confirm the CLI sees it:
 

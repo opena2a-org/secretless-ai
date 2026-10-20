@@ -126,7 +126,8 @@ describe('status reports a Stop hook whose CLI file is gone', () => {
     const out = lines.join('\n');
 
     expect(out).not.toContain('✓ Stop hook installed');
-    expect(out).toMatch(new RegExp(`⚠ Stop hook installed, target missing: ${escapeRe(script)} \\(transcripts unredacted\\) +→ npx secretless-ai init`));
+    // The path on a line of its own under the row (#471).
+    expect(out).toMatch(new RegExp(`⚠ Stop hook installed, target missing \\(transcripts unredacted\\) +→ npx secretless-ai init\\n {4}${escapeRe(script)}\\n`));
   });
 
   it('prints the user-level row with the fix that reaches the user-level file', async () => {
@@ -138,7 +139,8 @@ describe('status reports a Stop hook whose CLI file is gone', () => {
     const out = lines.join('\n');
 
     expect(out).not.toContain('✓ Stop hook installed');
-    expect(out).toMatch(new RegExp(`⚠ Stop hook installed at user level \\(${escapeRe(USER_SETTINGS_PATH)}\\), target missing: ${escapeRe(script)} \\(transcripts unredacted\\) +→ npx secretless-ai init ~`));
+    // Wider than the column, so its command goes under it, after the path (#471).
+    expect(out).toMatch(new RegExp(`⚠ Stop hook installed at user level \\(${escapeRe(USER_SETTINGS_PATH)}\\), target missing \\(transcripts unredacted\\)\\n {4}${escapeRe(script)}\\n {4}→ npx secretless-ai init ~\\n`));
   });
 
   it('carries the file in --json and counts the row as one more warning', async () => {
@@ -251,7 +253,8 @@ describe('status reports a prompt check whose CLI file is gone (#237)', () => {
     const out = lines.join('\n');
 
     expect(out).not.toContain('✓ Prompt check installed');
-    expect(out).toMatch(new RegExp(`⚠ Prompt check installed, target missing: ${escapeRe(script)} \\(a credential in a prompt is sent, then redacted\\) +→ npx secretless-ai init`));
+    // No Stop hook and no watcher here, so nothing redacts the transcript (#471).
+    expect(out).toMatch(new RegExp(`⚠ Prompt check installed, target missing \\(a credential in a prompt is sent and is not redacted\\) +→ npx secretless-ai init\\n {4}${escapeRe(script)}\\n`));
   });
 
   it('prints the user-level row with the fix that reaches the user-level file', async () => {
@@ -263,7 +266,7 @@ describe('status reports a prompt check whose CLI file is gone (#237)', () => {
     const out = lines.join('\n');
 
     expect(out).not.toContain('✓ Prompt check installed');
-    expect(out).toMatch(new RegExp(`⚠ Prompt check installed at user level \\(${escapeRe(USER_SETTINGS_PATH)}\\), target missing: ${escapeRe(script)} \\(a credential in a prompt is sent, then redacted\\) +→ npx secretless-ai init ~`));
+    expect(out).toMatch(new RegExp(`⚠ Prompt check installed at user level \\(${escapeRe(USER_SETTINGS_PATH)}\\), target missing \\(a credential in a prompt is sent and is not redacted\\)\\n {4}${escapeRe(script)}\\n {4}→ npx secretless-ai init ~\\n`));
   });
 
   it('carries the file in --json and counts the row as one more warning', async () => {

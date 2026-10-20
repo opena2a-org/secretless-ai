@@ -239,6 +239,14 @@ function settable(name: string): FixNames {
   return { names: [name], accepts: isSettableSecretName };
 }
 
+/**
+ * A name a hint gives `secret get` or `secret show`, printed as `<name>` when
+ * the store cannot hold it or it would be read as a flag.
+ */
+function storable(name: string): FixNames {
+  return { names: [name], accepts: (n) => isValidSecretName(n) && !n.startsWith('-') };
+}
+
 /** `key=value` lines for display, in key order. */
 function metaLines(meta: Record<string, string>): string[] {
   return Object.keys(meta).sort().map((k) => printable(`${k}=${meta[k]}`));
@@ -720,14 +728,15 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         console.error('  To inject secrets into a command:');
         console.error(`    ${CLI} run -- <command>`);
         console.error('');
-        // Not offered where it is refused (above).
+        // Not offered where it is refused (above). Each line names the secret
+        // asked for: pasted, a `<NAME>` placeholder is a shell redirection.
         if (!agentRuntime) {
           console.error('  To force output (e.g. piping to clipboard):');
-          console.error(`    ${CLI} secret get <NAME> --force`);
+          console.error(`    ${fixCommand(['secret', 'get', storable(name), '--force'])}`);
           console.error('');
         }
         console.error('  To see what a secret is for without its value:');
-        console.error(`    ${CLI} secret show <NAME>`);
+        console.error(`    ${fixCommand(['secret', 'show', storable(name)])}`);
         return 1;
       }
 

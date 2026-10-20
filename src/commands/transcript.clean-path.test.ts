@@ -46,7 +46,8 @@ describe('runClean --path targets it does not read', () => {
     expect(code).toBe(1);
     expect(err.join('\n')).toContain(`Error: ${missing} was not found. Nothing was read.`);
     expect(err.join('\n')).toContain(`Verify: ls -ld ${missing}`);
-    expect(err.join('\n')).toMatch(/Fix: {4}.* clean --dry-run /);
+    // The Fix line ends at the command; its remark is the line under it (#471).
+    expect(err.join('\n')).toMatch(/Fix: {4}.* clean --dry-run$/m);
     expect(all()).not.toContain('Transcripts are clean');
     expect(all()).not.toContain('Scanned');
     expect(all()).not.toContain('Scanning transcripts at');

@@ -206,7 +206,8 @@ function installationFault(file: string, detail: string): InstallationFault {
     `started. This is an installation fault, not a fault in your grant file. Do not edit or ` +
     `delete the file to clear it.\n` +
     `  Verify: node -e "import('@opena2a/atx-verify').then(() => console.log('ok'))"\n` +
-    `  Fix:    npm install   # and check node -v is >= 20.19.0\n` +
+    `  Fix:    npm install\n` +
+    `          and check that node -v prints 20.19.0 or later\n` +
     `  Cause:  ${detail}`,
   );
 }
