@@ -1043,7 +1043,10 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
   if (conflicts.length > 0) {
     console.log(`  The local value of ${conflicts.join(', ')} differs from ${fromName}'s and was left as is.`);
     const conflicting: FixNames = { names: conflicts, accepts: isValidSecretName };
-    console.log(`  Fix:     ${fixCommand(['secret', 'sync', '--from', fromType, '--only', conflicting, '--force', ...(dryRun ? ['--dry-run'] : [])])}   (replace it with ${fromName}'s)\n`);
+    // What the Fix does is said on the line above it: pasted, a remark in
+    // parentheses after the command is part of it, and bash refuses the `(`.
+    console.log(`  To replace it with ${fromName}'s:`);
+    console.log(`  Fix:     ${fixCommand(['secret', 'sync', '--from', fromType, '--only', conflicting, '--force', ...(dryRun ? ['--dry-run'] : [])])}\n`);
   }
   if (missing.length > 0) {
     console.log(`  Not in ${fromName} and not stored on this machine: ${missing.join(', ')}`);
@@ -1058,7 +1061,14 @@ export async function runSecretSync(args: string[], deps: SecretSyncDeps = {}): 
     const verify = SOURCE_VERIFY[fromType];
     if (verify) console.log(`  Verify:  ${verify}`);
     const first = missing.find((name) => isSettableSecretName(name));
-    console.log(first === undefined ? '' : `  Fix:     ${fixCommand(['secret', 'set', settable(first)])}   (or add it to ${fromName} and sync again)\n`);
+    if (first === undefined) {
+      console.log('');
+    } else {
+      // The other way is a line of its own under the command, for the reason
+      // given above the conflict's Fix.
+      console.log(`  Fix:     ${fixCommand(['secret', 'set', settable(first)])}`);
+      console.log(`           or add it to ${fromName} and sync again\n`);
+    }
   }
   if (result.dryRun && writes > 0) {
     console.log(`  Apply:   ${CLI} secret sync ${[...rerun, ...(force ? ['--force'] : [])].join(' ')}\n`);

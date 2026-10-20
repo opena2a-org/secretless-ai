@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+**The remarks that `secret sync`, `scope check`, `init`, the refusal of a
+value that cannot be stored and the error for a local store that cannot be
+decrypted printed after the command of a `Fix:` or `Verify:` line are lines of
+their own (#475).** Each was on the line of its command: in parentheses, as in
+`Verify:  secretless-ai mcp-status   (shows the config file for each client)`,
+or, for `init` on a missing directory or a symbolic link to a missing path,
+as `# run from inside your project` after `npx secretless-ai init`. Pasted,
+bash refuses a line with a remark in parentheses with
+``syntax error near unexpected token `('``, and an interactive zsh passes the
+words of a `#` remark to the command: with `echo` in place of `npx`,
+`zsh -f -i` printed `secretless-ai init # run from inside your project`.
+Each remark is now a line of its own, above or under its command. With
+`--from 1password`, `secret sync` prints `To replace it with 1password's:`
+above its `--force` Fix, and `or add it to 1password and sync again` under its
+`secret set` Fix. `scope check GCP_SA_KEY`, for a baseline whose credential is
+not stored, prints `If the credential is gone, remove the baseline:` above
+`Fix:    secretless-ai scope reset GCP_SA_KEY`, and
+`If the credential moved, store it again:` above
+`Fix:    secretless-ai secret set GCP_SA_KEY`. A value that cannot be stored
+gets `Give the value as an argument, not a paste:` above its Fix, and an MCP
+server value gets `shows the config file for each client` under
+`Verify:  secretless-ai mcp-status`. A local store that cannot be decrypted
+gets `the key derives from these` under its `printf` Verify, and
+`then re-add your secrets` under `secretless-ai backend set keychain`. `init`
+prints `run from inside your project` under `npx secretless-ai init` and, for
+a missing directory, `or create this directory first:` above its `mkdir -p`
+line. The check of the source in `src/followups-471.test.ts` looked only for
+a `#` with whitespace on each side; it now also finds a remark in parentheses
+set off from the command by two or more spaces, and either kind inside a style
+call such as `c.dim('# ...')`, which is how the `init` remark was written.
+`src/followups-475.test.ts`, `src/commands/scope.test.ts` and
+`src/followups-272.test.ts` cover each message.
+
 **Under `scan --history`, the did-you-mean for a mistyped flag is chosen from
 the flags `--history` takes (#468).** It was chosen from every `scan` flag, so
 it could name a flag `--history` refuses: `scan --history --explian` printed

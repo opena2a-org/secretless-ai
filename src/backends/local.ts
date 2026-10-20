@@ -49,10 +49,14 @@ function unreadableStoreError(storePath: string, detail: string): Error {
       // Not `doctor`: it reports on shell profiles and env vars and would say
       // nothing at all about this. The two inputs to the key are what a user
       // can actually check, and a changed HOME is the common cause (sudo, a
-      // container, a renamed account).
-      '  Verify:  printf \'%s %s\\n\' "$HOME" "$USER"   (the key derives from these)',
+      // container, a renamed account). Each remark is a line of its own under
+      // its command: pasted, a remark in parentheses after the command is part
+      // of it, and bash refuses the `(`.
+      '  Verify:  printf \'%s %s\\n\' "$HOME" "$USER"',
+      '           the key derives from these',
       '  Fix:     run under the account that wrote the store — or start a new one:',
-      '           secretless-ai backend set keychain   (then re-add your secrets)',
+      '           secretless-ai backend set keychain',
+      '           then re-add your secrets',
     ].join('\n'),
   );
 }

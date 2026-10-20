@@ -79,7 +79,10 @@ export function unstorableSecretError(name: string, problem: SecretValueProblem)
       ...problemCause(problem),
       '',
       '  Verify:  secretless-ai secret list',
-      `  Fix:     secretless-ai secret set ${name}=<value>   (as an argument, not a paste)`,
+      // The remark is a line of its own, above the Fix: pasted, a remark in
+      // parentheses after the command is part of it, and bash refuses the `(`.
+      '  Give the value as an argument, not a paste:',
+      `  Fix:     secretless-ai secret set ${name}=<value>`,
       '           or pipe it:  cat token.txt | secretless-ai secret set ' + name,
     ].join('\n'),
   );
@@ -105,7 +108,10 @@ export function unstorableMcpSecretError(
       '',
       '  Nothing was stored for this server.',
       '',
-      '  Verify:  secretless-ai mcp-status   (shows the config file for each client)',
+      // The remark is a line of its own under the command, for the reason
+      // given in unstorableSecretError.
+      '  Verify:  secretless-ai mcp-status',
+      '           shows the config file for each client',
       `  Fix:     correct ${listedName(envKey)} in the "${server}" env block of that file,`,
       '           then run: secretless-ai protect-mcp',
     ].join('\n'),
