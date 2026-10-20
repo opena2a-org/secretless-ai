@@ -375,6 +375,17 @@ export interface PreparedArgv {
    * never mistaken for a value and a value is never mistaken for a path.
    */
   positionals: string[];
+  /**
+   * The value each value-taking flag was bound to: the token after it, or the
+   * text after its `=`. The first one where the flag was given more than once.
+   *
+   * A token taken as a flag's value is in here as that value and not as a
+   * flag of its own. Looking a flag up in `args` by spelling finds such a
+   * token as well: in `scan --min-confidence --format`, `--format` is the value
+   * of `--min-confidence`, and the token after it, read as `--format`'s value,
+   * does not exist (#469).
+   */
+  values: ReadonlyMap<string, string>;
   /** Print to stderr; the command still runs. */
   warnings: string[];
   /** Print to stderr and exit EXIT_USAGE; the command must NOT run. */
@@ -436,7 +447,7 @@ export function prepareArgv(
   const spec = verb ? VERBS[verb] : undefined;
   // An unrecognised verb is the dispatcher's error to report, with its own help
   // output. Rewriting argv for a command that will not run helps nobody.
-  if (!verb || !spec) return { args, positionals: [], warnings: [], errors: [] };
+  if (!verb || !spec) return { args, positionals: [], values: new Map(), warnings: [], errors: [] };
   // args[0] is the verb; flags start at 1.
   return prepareWithSpec(spec, args, 1, true, formFlags);
 }
@@ -479,7 +490,9 @@ function prepareWithSpec(
   // one value per flag, so a second one was dropped without a word:
   // `scan --max-files 10 --max-files 20000` scanned ten files (#120).
   const given = new Map<string, string>();
+  const values = new Map<string, string>();
   const takeValue = (name: string, value: string): void => {
+    if (!values.has(name)) values.set(name, value);
     if (spec.repeatable?.includes(name)) return;
     const previous = given.get(name);
     if (previous !== undefined) {
@@ -587,6 +600,6 @@ function prepareWithSpec(
     }
   }
 
-  return { args: prepared, positionals, warnings, errors };
+  return { args: prepared, positionals, values, warnings, errors };
 }
 

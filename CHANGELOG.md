@@ -21,6 +21,27 @@ still exits 2. `src/scan-history-refusals.test.ts` runs each case through the
 built CLI, and `src/argv.test.ts` covers the suggestion `prepareArgv` makes
 when its caller names the flags of a form of the verb.
 
+**A `scan` value flag given another value flag as its value is refused for
+that value, where the refusal said a flag was given "undefined" (#469).** In
+`scan --min-confidence --format`, `--format` is taken as the value of
+`--min-confidence`, but `scan` looked `--format` up by its spelling and read
+the token after it, which does not exist, so the refusal read
+`--format needs json or sarif, e.g. --format sarif, but was given "undefined".`
+and, under `--history`,
+`--format needs json with --history, e.g. --format json, but was given "undefined".`
+`scan --max-files --min-confidence` and `scan --max-file-size --max-files`
+printed "undefined" the same way for `--min-confidence` and `--max-files`.
+`scan` now reads `--format`, `--min-confidence`, `--max-files` and
+`--max-file-size` from the values the command line bound them to:
+`scan --min-confidence --format` reads
+`--min-confidence needs a number in [0, 1], e.g. --min-confidence 0.8, but was given "--format".`,
+`scan --history --min-confidence --format` reads
+`--history does not use --min-confidence, which applies to a directory scan; give it without --history, or leave it out.`,
+and `scan --max-files --min-confidence` reads
+`--max-files needs a positive whole number, e.g. --max-files 20000, but was given "--min-confidence".`
+Each still exits 2. `src/scan-flag-values.test.ts` runs each ordered pair of
+these four flags through the built CLI, with and without `--history`.
+
 **Under `scan --history`, the refusals made before the history check name
 what `--history` takes (#466).** An unknown flag (`--nosuch`), a flag given
 no value (`--min-confidence`) or given twice (`--format json --format json`),
