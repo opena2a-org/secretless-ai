@@ -538,3 +538,40 @@ describe('a did-you-mean is chosen from the flags of the form typed (#468)', () 
     expect(p.errors).toEqual([]);
   });
 });
+
+// A verb that looked a value flag up by its spelling in `args` found a token
+// the layer had bound as another flag's value: `scan --min-confidence
+// --format` read the token after `--format`, which does not exist, as its
+// value, and refused it as "undefined" (#469). `values` is the binding itself.
+describe('values holds what each value flag was bound to (#469)', () => {
+  it('a value flag taken as another flag\'s value is that value, not a flag', () => {
+    const p = prepareArgv('scan', ['scan', '--min-confidence', '--format']);
+    expect(p.errors).toEqual([]);
+    expect([...p.values]).toEqual([['--min-confidence', '--format']]);
+    expect(p.values.has('--format')).toBe(false);
+  });
+
+  it('holds the spaced and the = spellings alike, and no flag that takes no value', () => {
+    const p = prepareArgv('scan', ['scan', 'dir', '--format=json', '--json', '--max-files', '10']);
+    expect([...p.values]).toEqual([['--format', 'json'], ['--max-files', '10']]);
+  });
+
+  it('keeps an empty value, which is a value and not the flag absent', () => {
+    const p = prepareArgv('scan', ['scan', '--format=']);
+    expect(p.values.get('--format')).toBe('');
+  });
+
+  it('holds the first value of a flag given more than once', () => {
+    expect(prepareArgv('watch', ['watch', 'start', '--dir', 'a', '--dir', 'b']).values.get('--dir')).toBe('a');
+    const repeated = prepareArgv('scan', ['scan', '--max-files', '10', '--max-files', '20000']);
+    expect(repeated.errors).toHaveLength(1);
+    expect(repeated.values.get('--max-files')).toBe('10');
+  });
+
+  it('is empty for a verb that is not registered, and for a value flag given no value', () => {
+    expect(prepareArgv('nosuchverb', ['nosuchverb', '--format', 'json']).values.size).toBe(0);
+    const missing = prepareArgv('scan', ['scan', '--min-confidence']);
+    expect(missing.errors).toEqual(['--min-confidence needs a value, but none was given.']);
+    expect(missing.values.size).toBe(0);
+  });
+});

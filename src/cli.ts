@@ -427,18 +427,24 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       // editors that read it. Any other value is refused: a format the tool
       // does not write would otherwise fall through to the human report and
       // exit as though it had answered.
+      //
+      // This flag and the value flags below are read from the values the argv
+      // layer bound, not as the token after the flag's spelling in `args`. In
+      // `scan --min-confidence --format`, `--format` is the value of
+      // `--min-confidence`. Looked up by spelling, `--format` was found and the
+      // token after it, which does not exist, was read as its value, so the
+      // refusal said `--format` was given "undefined" (#469).
       let format: 'json' | 'sarif' | undefined;
-      const fmtIdx = args.indexOf('--format');
       const history = args.includes('--history');
-      if (fmtIdx !== -1) {
-        const raw = args[fmtIdx + 1];
-        if (raw === 'json' || raw === 'sarif') {
-          format = raw;
+      const rawFormat = prepared.values.get('--format');
+      if (rawFormat !== undefined) {
+        if (rawFormat === 'json' || rawFormat === 'sarif') {
+          format = rawFormat;
         } else if (history) {
           // `--history` refuses `--format sarif`, so the value it takes is json.
-          return refuseFlagValue('scan', '--format', raw, 'json with --history, e.g. --format json', HISTORY_SUPPORTED);
+          return refuseFlagValue('scan', '--format', rawFormat, 'json with --history, e.g. --format json', HISTORY_SUPPORTED);
         } else {
-          return refuseFlagValue('scan', '--format', raw, 'json or sarif, e.g. --format sarif');
+          return refuseFlagValue('scan', '--format', rawFormat, 'json or sarif, e.g. --format sarif');
         }
       }
       // Two formats cannot share one stdout: a reader expecting one document
@@ -478,46 +484,43 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       // confidence score is below the threshold. Useful on noisy repos to
       // surface only high-confidence credentials.
       let minConfidence = 0;
-      const mcIdx = args.indexOf('--min-confidence');
-      if (mcIdx !== -1) {
-        const raw = args[mcIdx + 1];
-        const parsed = Number.parseFloat(raw);
+      const rawMinConfidence = prepared.values.get('--min-confidence');
+      if (rawMinConfidence !== undefined) {
+        const parsed = Number.parseFloat(rawMinConfidence);
         if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
           minConfidence = parsed;
         } else {
-          return refuseFlagValue('scan', '--min-confidence', raw, 'a number in [0, 1], e.g. --min-confidence 0.8');
+          return refuseFlagValue('scan', '--min-confidence', rawMinConfidence, 'a number in [0, 1], e.g. --min-confidence 0.8');
         }
       }
       // --max-files <n>  Raise the per-walk file cap (default 5000). Without
       // this, hitting the cap is a dead end: the scan reports it stopped early
       // but the user has no way to finish it short of scanning subtrees by hand.
       let maxFiles: number | undefined;
-      const mfIdx = args.indexOf('--max-files');
-      if (mfIdx !== -1) {
-        const raw = args[mfIdx + 1];
+      const rawMaxFiles = prepared.values.get('--max-files');
+      if (rawMaxFiles !== undefined) {
         // Must be ALL digits. `parseInt` stops at the first non-digit and
         // returns what it got, so `--max-files 20abc` silently became a cap of
         // 20 and `--max-files 1e6` a cap of 1 — the user believes the cap was
         // raised while the scan quietly covers a fraction of the tree.
-        const parsed = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : NaN;
+        const parsed = /^\d+$/.test(rawMaxFiles) ? Number.parseInt(rawMaxFiles, 10) : NaN;
         if (Number.isSafeInteger(parsed) && parsed > 0) {
           maxFiles = parsed;
         } else {
-          return refuseFlagValue('scan', '--max-files', raw, 'a positive whole number, e.g. --max-files 20000');
+          return refuseFlagValue('scan', '--max-files', rawMaxFiles,'a positive whole number, e.g. --max-files 20000');
         }
       }
       // --max-file-size <size>  Raise the per-file size cap (10MB config, 1MB
       // source). Without it, "skipped for size" is a dead end in exactly the
       // way hitting the file cap was before --max-files existed.
       let maxFileSizeBytes: number | undefined;
-      const fsIdx = args.indexOf('--max-file-size');
-      if (fsIdx !== -1) {
-        const raw = args[fsIdx + 1];
-        const parsed = parseFileSize(raw);
+      const rawMaxFileSize = prepared.values.get('--max-file-size');
+      if (rawMaxFileSize !== undefined) {
+        const parsed = parseFileSize(rawMaxFileSize);
         if (parsed !== null) {
           maxFileSizeBytes = parsed;
         } else {
-          return refuseFlagValue('scan', '--max-file-size', raw, 'a size, e.g. --max-file-size 20mb, 500kb, or a byte count');
+          return refuseFlagValue('scan', '--max-file-size', rawMaxFileSize,'a size, e.g. --max-file-size 20mb, 500kb, or a byte count');
         }
       }
       // Positionals come from the shared argv layer, which knows which tokens
