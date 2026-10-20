@@ -25,14 +25,21 @@ under its `Verify:` and `Fix:` labels, so the checks of the source in
 source line that prints a label or a string that starts ten or more spaces in,
 did not match them. `src/followups-479.test.ts` finds the calls of the
 `PushError` constructor, `new PushError(...)` and a subclass's `super(...)`,
-through the type checker and reads the lines each passes as `verify` and
-`fix`. It follows a name to the value it is declared with, to the values
-`push` or `unshift` add to it and an assignment gives it, and a parameter to
-the argument each call passes or to its default. It fails on a `#` or
-parenthesized remark after the command, and on a line it cannot follow to a
-literal; on the source before this change it reported the three lines and no
-other. The same file covers both messages and runs each `az` command line they
-print through `bash -n`.
+through the type checker and reads the arguments each passes after the
+message, `verify` and `fix`, as arrays of lines. In those it reads a string or
+template literal, an array, a spread into one and both branches of a
+conditional, and it follows a name to the value it is declared with, to the
+values `push` or `unshift` add to it and an `=` assignment gives it, and a
+parameter to the argument passed by each call the type checker resolves to
+its function, or to its default. It fails on a `#` or parenthesized remark
+after the command in a line it reads, and on an expression in one of those
+places that is none of these, such as a call. It does not read a line given
+to a `PushError` another way, and does not fail on one: for example by an
+element assignment (`fix[0] = ...`), through another name for the array, by
+`splice`, through a function passed by reference, as to `map`, or in a spread
+of all the arguments (`new PushError(...args)`). On the source before this
+change it reported the three lines and no other. The same file covers both
+messages and runs each `az` command line they print through `bash -n`.
 
 **The remarks that `secret sync`, `scope check`, `init`, the refusal of a
 value that cannot be stored and the error for a local store that cannot be

@@ -153,21 +153,26 @@ interface PushErrorLines {
   calls: string[];
   /** Each line a call passes as `verify` or `fix`, with the file and line of the literal it was read from. */
   lines: Array<{ where: string; text: string }>;
-  /** Each expression the reader could not follow to a literal; its line is not checked, so the check fails on it. */
+  /** Each expression the reader met and could not read in the ways `readPushErrorLines` names; its line is not checked, so the check fails on it. */
   unread: string[];
 }
 
 /**
- * Reads the `verify` and `fix` lines of each `PushError` the program builds.
- * Each call of the constructor in `classFile`, `new PushError(...)` and a
- * subclass's `super(...)` alike, is found through the type checker, and its
- * second and third arguments are read as arrays of lines: the elements of an
- * array, a spread into one, and both branches of a conditional. A name is
- * followed to the value it is declared with, to each value `push` or
- * `unshift` adds to it and to each value an assignment gives it; a parameter
- * is followed to the argument each call of its function passes, or to its
- * default where a call passes none. A template is read as it is written, with
- * each `${...}` in place.
+ * Reads the `verify` and `fix` lines that the calls of the `PushError`
+ * constructor pass in the ways named here. Each call of the constructor in
+ * `classFile`, `new PushError(...)` and a subclass's `super(...)` alike, is
+ * found through the type checker, and its second and third arguments are read
+ * as arrays of lines: the elements of an array, a spread into one, and both
+ * branches of a conditional. A name is followed to the value it is declared
+ * with, to each value `push` or `unshift` adds to it and to each value an `=`
+ * assignment gives it; a parameter is followed to the argument passed by each
+ * call the type checker resolves to its function, or to its default where a
+ * call passes none. A template is read as it is written, with each `${...}`
+ * in place. An expression in one of those places that is none of these, such
+ * as a call, goes to `unread`. A line given to a `PushError` another way is
+ * neither read nor listed in `unread`: for example by an element assignment,
+ * through another name for the array, by `splice`, through a function passed
+ * by reference, or in a spread of all the arguments.
  */
 function readPushErrorLines(program: ts.Program, root: string, classFile: string): PushErrorLines {
   const checker = program.getTypeChecker();
@@ -287,7 +292,7 @@ function remarks(read: PushErrorLines): string[] {
 }
 
 describe('the Verify and Fix lines of each PushError in the source have no `#` or parenthesized remark after the command (#479)', () => {
-  it('the reader follows each way a line reaches a PushError, and the check finds a remark on each', () => {
+  it('the reader follows a line to a PushError in each way it reads, and the check finds a remark on each', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sls-479-src-'));
     try {
       fs.writeFileSync(path.join(dir, 'push-error.ts'), [
@@ -365,7 +370,7 @@ describe('the Verify and Fix lines of each PushError in the source have no `#` o
         'set AZURE_TENANT_ID to the directory (tenant) ID',
         'see https://github.com/opena2a-org/secretless-ai#readme',
       ]));
-      // A line the reader cannot follow is reported, not passed unseen.
+      // An expression the reader meets that is none of the forms it reads is reported, not passed unseen.
       expect(read.unread).toEqual(['target.ts:30: names.map((n) => `secret set ${n}`)']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
