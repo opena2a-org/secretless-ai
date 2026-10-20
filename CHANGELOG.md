@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+**The remarks after the `Fix:` commands that `secret push --to azure-kv`
+prints for a vault name that does not resolve and for an HTTP 409 are lines of
+their own, and a check of the source reads the `verify` and `fix` lines of each
+`PushError` (#479).** For a vault name that does not resolve, the `Fix:` line
+was `az keyvault list --query "[].name" -o tsv   (find the vault name)`. For an
+HTTP 409, which `secret push` reports as a deleted secret that Key Vault keeps
+for recovery, the `recover` command ended in `(then push again)`, and the
+`purge` command on the line under it, which began with `or:`, ended in
+`(removes the deleted versions for good)`. bash 5.3 refuses each of the three
+lines with ``syntax error near unexpected token `('`` (`bash -n -c`). The
+`Fix:` for a vault name that does not resolve is now
+`az keyvault list --query "[].name" -o tsv`, with
+`find the vault name in its output, then push again with it in --vault` on the
+line under it. With `--vault kv-demo --as API-KEY`, the `Fix:` for an HTTP 409
+is now four lines: `az keyvault secret recover --vault-name kv-demo --name API-KEY`,
+`then push again`, `or remove the deleted versions for good:` and
+`az keyvault secret purge --vault-name kv-demo --name API-KEY`. These lines
+are the `verify` and `fix` arrays of a `PushError`, which `secret push` prints
+under its `Verify:` and `Fix:` labels, so the checks of the source in
+`src/followups-471.test.ts` and `src/followups-476.test.ts`, which read a
+source line that prints a label or a string that starts ten or more spaces in,
+did not match them. `src/followups-479.test.ts` finds the calls of the
+`PushError` constructor, `new PushError(...)` and a subclass's `super(...)`,
+through the type checker and reads the lines each passes as `verify` and
+`fix`. It follows a name to the value it is declared with, to the values
+`push` or `unshift` add to it and an assignment gives it, and a parameter to
+the argument each call passes or to its default. It fails on a `#` or
+parenthesized remark after the command, and on a line it cannot follow to a
+literal; on the source before this change it reported the three lines and no
+other. The same file covers both messages and runs each `az` command line they
+print through `bash -n`.
+
 **The remarks that `secret sync`, `scope check`, `init`, the refusal of a
 value that cannot be stored and the error for a local store that cannot be
 decrypted printed after the command of a `Fix:` or `Verify:` line are lines of
