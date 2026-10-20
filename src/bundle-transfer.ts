@@ -6,7 +6,10 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { SecretStore, isValidSecretName } from './secret-store';
+import { fixCommand } from './fix-command';
+import { hasDisplayHazard, withSlashSeparators } from './display-safe';
 import type { SecretStoreOptions } from './secret-store';
 import { findSecretValueProblem } from './secret-value';
 import { readManifest } from './manifest';
@@ -138,6 +141,18 @@ export interface ImportBundleResult {
 }
 
 /**
+ * The bundle as the operand of the `import` a hint prints: relative to the
+ * working directory when it lies inside it, else absolute, and `<bundle>` when
+ * its name holds a character that would reach the terminal as a control.
+ * `fixCommand` quotes it for the shell.
+ */
+function bundleOperand(bundlePath: string): string {
+  const rel = path.relative(process.cwd(), bundlePath);
+  const shown = rel && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.startsWith('-') ? rel : bundlePath;
+  return hasDisplayHazard(shown) ? '<bundle>' : withSlashSeparators(shown);
+}
+
+/**
  * Decrypt a bundle and store its entries in this machine's backend.
  *
  * Every refusal — a wrong passphrase, a damaged file, a name or value the store
@@ -170,10 +185,14 @@ export async function importBundle(
   const existing = new Set(await store.listSecrets());
   const replaced = entries.map((e) => e.name).filter((n) => existing.has(n));
   if (replaced.length > 0 && !options.force) {
+    // The Fix names the bundle that was given, and what it does is said on
+    // the line above it: pasted, a `<bundle>` placeholder is a shell
+    // redirection, and a remark after the command is part of it.
     throw new Error(
       `Already in this machine's store: ${replaced.join(', ')}.\n\n` +
       '  Nothing was written.\n\n' +
-      '  Fix:     secretless-ai import <bundle> --force   (replaces those names)',
+      '  To replace those names with the values in the bundle:\n' +
+      `  Fix:     ${fixCommand(['import', bundleOperand(bundlePath), '--force'])}`,
     );
   }
 

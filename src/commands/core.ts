@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips, unreadReason, matchedValueOf, lineValuesOf, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
+import { scan, emptySkips, unreadReason, matchedValueOf, lineValuesOf, envFileOperand, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
 import { startsWithIgnoreHeader } from './ignore';
 import { scanToSarif } from '../sarif';
@@ -1523,6 +1523,12 @@ async function initIsNextStep(scanTarget: string): Promise<boolean> {
   }
 }
 
+/**
+ * @internal The widest `status` row, glyph and label, whose `→ command` is
+ * printed on the same line, in a column padded to the widest such row.
+ */
+export const STATUS_ALIGN_MAX = 100;
+
 // `status` and `verify` refuse a target directory that does not exist, with the
 // same message and exit code as `scan` (`refuseMissingTarget`). They used to
 // answer anyway: a typo in a CI path produced a clean verdict and exit 0 over a
@@ -1549,8 +1555,9 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
 
   // Build observation rows. Each row: glyph + label + optional → command.
   // Satisfied observations use ✓; needs-action use ⚠. Every ⚠ ends in a
-  // runnable verb so the user has no dead end (CISO Rule 11).
-  type Row = { glyph: '✓' | '⚠'; label: string; action?: string };
+  // runnable verb so the user has no dead end (CISO Rule 11). `detail` is a
+  // path the row names, printed on a line of its own under it.
+  type Row = { glyph: '✓' | '⚠'; label: string; action?: string; detail?: string };
   const rows: Row[] = [];
   const addRow = (row: Row): void => { rows[rows.length] = row; };
 
@@ -1703,10 +1710,11 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     addRow(tp.stopHookScope === 'user'
       ? {
         glyph: '⚠',
-        label: `Stop hook installed at user level (${USER_SETTINGS_PATH}), target missing: ${missing} (transcripts unredacted)`,
+        label: `Stop hook installed at user level (${USER_SETTINGS_PATH}), target missing (transcripts unredacted)`,
+        detail: missing,
         action: `${CLI} init ~`,
       }
-      : { glyph: '⚠', label: `Stop hook installed, target missing: ${missing} (transcripts unredacted)`, action: `${CLI} init` });
+      : { glyph: '⚠', label: 'Stop hook installed, target missing (transcripts unredacted)', detail: missing, action: `${CLI} init` });
   } else if (tp.stopHookInstalled && tp.stopHookScope === 'user') {
     addRow({ glyph: '✓', label: `Stop hook installed at user level (${USER_SETTINGS_PATH}, transcript redaction)` });
   } else if (tp.stopHookInstalled) {
@@ -1718,21 +1726,32 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   // Prompt check (#237): the one control that acts before a value is sent.
   // As for the Stop hook, a check whose node or CLI file is gone refuses
   // nothing, so it is a warning row, never a ✓.
+  //
+  // What then becomes of a credential in a prompt is said from what runs
+  // here: a Stop hook that reaches its target, or the watcher, redacts the
+  // transcript it is written to, and with neither nothing does. The row said
+  // `then redacted` beside a Stop hook whose target was missing and a
+  // watcher that was not running.
+  const transcriptRedacted = (tp.stopHookInstalled && tp.stopHookTargetMissing === null) || tp.watcherRunning;
+  const unrefused = transcriptRedacted
+    ? 'a credential in a prompt is sent, then redacted'
+    : 'a credential in a prompt is sent and is not redacted';
   if (tp.promptCheckInstalled && tp.promptCheckTargetMissing !== null) {
     const missing = escapePathForDisplay(tp.promptCheckTargetMissing);
     addRow(tp.promptCheckScope === 'user'
       ? {
         glyph: '⚠',
-        label: `Prompt check installed at user level (${USER_SETTINGS_PATH}), target missing: ${missing} (a credential in a prompt is sent, then redacted)`,
+        label: `Prompt check installed at user level (${USER_SETTINGS_PATH}), target missing (${unrefused})`,
+        detail: missing,
         action: `${CLI} init ~`,
       }
-      : { glyph: '⚠', label: `Prompt check installed, target missing: ${missing} (a credential in a prompt is sent, then redacted)`, action: `${CLI} init` });
+      : { glyph: '⚠', label: `Prompt check installed, target missing (${unrefused})`, detail: missing, action: `${CLI} init` });
   } else if (tp.promptCheckInstalled && tp.promptCheckScope === 'user') {
     addRow({ glyph: '✓', label: `Prompt check installed at user level (${USER_SETTINGS_PATH}, a credential in a prompt is refused before it is sent)` });
   } else if (tp.promptCheckInstalled) {
     addRow({ glyph: '✓', label: 'Prompt check installed (a credential in a prompt is refused before it is sent)' });
   } else {
-    addRow({ glyph: '⚠', label: 'Prompt check not installed (a credential in a prompt is sent, then redacted)', action: claudeCodeInit });
+    addRow({ glyph: '⚠', label: `Prompt check not installed (${unrefused})`, action: claudeCodeInit });
   }
 
   // Configured tools. An ignore file is a list the tool reads and an
@@ -1926,22 +1945,29 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   console.log('\n  Secretless Status\n');
 
   // Render the Observations block. We measure the visible width (glyph +
-  // label) so the `→ command` column lines up tidily across rows.
+  // label) so the `→ command` column lines up tidily across rows, up to
+  // STATUS_ALIGN_MAX. A wider row neither sets the column nor is padded to
+  // it: its command goes on a line of its own under it. A missing hook
+  // target's path in a label padded every row to over 200 columns; the path
+  // is now a `detail` line under its row.
   const headerLine = '──────────────────────────────────────────────────────────';
   console.log(`  ── Observations ${headerLine.slice(0, Math.max(0, 44))}`);
   let leftWidth = 0;
   for (const row of rows) {
     const visible = row.glyph + ' ' + row.label;
-    if (visible.length > leftWidth) leftWidth = visible.length;
+    if (visible.length > leftWidth && visible.length <= STATUS_ALIGN_MAX) leftWidth = visible.length;
   }
   for (const row of rows) {
     const left = `${row.glyph} ${row.label}`;
-    if (row.action) {
+    const inline = !!row.action && left.length <= STATUS_ALIGN_MAX;
+    if (inline) {
       const padded = left.padEnd(leftWidth, ' ');
       console.log(`  ${padded}  → ${row.action}`);
     } else {
       console.log(`  ${left}`);
     }
+    if (row.detail) console.log(`    ${row.detail}`);
+    if (row.action && !inline) console.log(`    → ${row.action}`);
   }
 
   // Verdict — reflects warnings (count of ⚠ rows). "Protected" requires a
@@ -2068,7 +2094,24 @@ export function runVerify(projectDir: string, showAll = false): number {
   } else if (result.exposedInContext.length > 0 || result.exposedInTranscripts.length > 0) {
     console.log(`  ${c.boldRed('FAIL')} ${c.red('Credentials found in AI context or transcripts.')}`);
     console.log(divider('Next Steps'));
-    if (result.exposedInContext.length > 0) {
+    // A key in a `.env` file stays there when `init` runs again, so `init`
+    // as the step for it sent the user round the same loop. The step is the
+    // one `scan` gives for the line: store it with `import`, delete it, and
+    // start the app through `run`.
+    const envOperands = new Set<string>();
+    let otherContext = false;
+    for (const exp of result.exposedInContext) {
+      const operand = exp.file.startsWith('~') ? undefined : envFileOperand(path.join(projectDir, exp.file));
+      if (operand === undefined) otherContext = true;
+      else envOperands.add(operand);
+    }
+    [...envOperands].forEach((operand, i) => {
+      console.log(`  ${i === 0 ? c.cyan('Store the keys:') : '               '}     npx secretless-ai import ${operand}`);
+    });
+    if (envOperands.size > 0) {
+      console.log('                      then delete those lines, and start the app with npx secretless-ai run -- <command>');
+    }
+    if (otherContext) {
       console.log(`  ${c.cyan('Protect context:')}    npx secretless-ai init`);
     }
     if (result.exposedInTranscripts.length > 0) {

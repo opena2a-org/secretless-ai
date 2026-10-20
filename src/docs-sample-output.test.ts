@@ -83,21 +83,33 @@ vi.mock('./mcp/protect', async (importOriginal) => {
   };
 });
 
-// A terminal echoes what is typed after the prompt; `setup` reads from one.
-vi.mock('readline', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('readline')>();
-  const createInterface = (opts: { output: NodeJS.WritableStream }) => ({
-    question(prompt: string, answer: (typed: string) => void) {
-      const typed = fixture.answers.shift() ?? '';
-      opts.output.write(`${prompt}${typed}\n`);
-      answer(typed);
+/**
+ * Standard input as the terminal `setup` reads with echo off: raw mode turns
+ * on at each prompt, the next answer is typed after it and Enter pressed, and
+ * nothing typed is written back (src/hidden-line.ts). The stream itself never
+ * flows. Returns the function that puts stdin back.
+ */
+function typeAtHiddenPrompts(): () => void {
+  const stdin = process.stdin as NodeJS.ReadStream;
+  const saved = (['isTTY', 'setRawMode'] as const).map((key) => [key, Object.getOwnPropertyDescriptor(stdin, key)] as const);
+  Object.defineProperty(stdin, 'isTTY', { value: true, configurable: true });
+  Object.defineProperty(stdin, 'setRawMode', {
+    configurable: true,
+    value: (raw: boolean) => {
+      if (raw) setImmediate(() => stdin.emit('data', `${fixture.answers.shift() ?? ''}\r`));
+      return stdin;
     },
-    // `setup` listens for the input closing (Ctrl-D); typed answers never close it.
-    on() { return this; },
-    close() {},
   });
-  return { ...actual, default: { ...actual, createInterface }, createInterface };
-});
+  vi.spyOn(stdin, 'resume').mockImplementation(() => stdin);
+  vi.spyOn(stdin, 'pause').mockImplementation(() => stdin);
+  vi.spyOn(stdin, 'setEncoding').mockImplementation(() => stdin);
+  return () => {
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(stdin, key, descriptor);
+      else delete (stdin as unknown as Record<string, unknown>)[key];
+    }
+  };
+}
 
 import { runProtectMcp } from './commands/mcp';
 import { runImport, runSetupCommand } from './commands/env-run';
@@ -478,6 +490,10 @@ describe('team-setup.md', () => {
     const bin = tempDir();
     // Stands in for `op --version` and `op account get` succeeding.
     fs.writeFileSync(path.join(bin, 'op'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    // The guide's reader has set no backend, so `migrate --from` names the
+    // platform keychain the default upgrades to: on macOS always, on Linux
+    // when `secret-tool` is on PATH. Found there, it is not run.
+    fs.writeFileSync(path.join(bin, 'secret-tool'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 
     const res = cli(['backend', 'set', '1password'], { home, extraPath: bin });
     expect(res.status).toBe(0);
@@ -500,15 +516,16 @@ describe('team-setup.md', () => {
     const names = manifest.split('\n').map((line) => line.trim().split(/\s/)[0]).filter(Boolean);
     const savedEnv = names.map((name) => [name, process.env[name]] as const);
     for (const name of names) delete process.env[name];
-    const savedIsTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    const restoreStdin = typeAtHiddenPrompts();
     try {
       const res = await inProcess(() => runSetupCommand([]));
       expect(res.code).toBe(0);
       expect(normalize(res.output)).toBe(sampleAfter(TEAM_GUIDE, 'setup'));
+      // Each typed value is stored, and none is on the screen.
+      expect(res.output).not.toContain('sk_live_...');
+      expect(res.output).not.toContain('postgres://...');
     } finally {
-      if (savedIsTTY) Object.defineProperty(process.stdin, 'isTTY', savedIsTTY);
-      else delete (process.stdin as { isTTY?: boolean }).isTTY;
+      restoreStdin();
       for (const [name, value] of savedEnv) {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;

@@ -2,7 +2,7 @@ import * as path from 'path';
 import { runWithSecrets } from '../run';
 import { importEnvFile, detectEnvFiles } from '../env-import';
 import { runSetup } from '../setup';
-import { MANIFEST_FORMAT_HINT } from '../manifest';
+import { printCommandHelp } from '../command-help';
 import { generateEnvExports, detectAgentRuntime } from '../env';
 import { formatCommandError } from './utils';
 import { isBundleFile } from '../bundle';
@@ -52,12 +52,10 @@ export async function runRun(args: string[]): Promise<number> {
 }
 
 export async function runEnv(args: string[]): Promise<number> {
+  // The layout every other command's help has (command-help.ts). Still
+  // answered here, before anything is read, as OWN_HELP says.
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('\n  Usage: eval $(secretless-ai env [--only KEY1,KEY2])');
-    console.log('\n  Export secrets as shell environment variables.');
-    console.log('  Designed for use with eval in shell profiles.\n');
-    console.log('  Options:');
-    console.log('    --only KEY1,KEY2   Export only the specified secrets\n');
+    printCommandHelp('env');
     return 0;
   }
 
@@ -213,14 +211,9 @@ function printSetupNames(heading: string, names: string[]): void {
 }
 
 export async function runSetupCommand(args: string[]): Promise<number> {
+  // As for `env`: the shared layout, answered before the manifest is read.
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('\n  Usage: secretless-ai setup [--check] [--backend <type>]');
-    console.log('\n  Read .secretless and prompt for any declared secret not yet stored.');
-    console.log('  A name set in the environment counts as present, as CI provides it.');
-    console.log('  --check verifies without prompting, for CI. Without a terminal, setup');
-    console.log('  does not prompt either, and exits 1 if a required secret is missing.');
-    console.log(`  --backend <type> checks or stores in that backend instead of the configured one (${SETUP_BACKENDS.join(', ')}).\n`);
-    console.log('  ' + MANIFEST_FORMAT_HINT.split('\n').join('\n  ') + '\n');
+    printCommandHelp('setup');
     return 0;
   }
 

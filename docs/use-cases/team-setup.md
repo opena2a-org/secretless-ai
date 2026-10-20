@@ -41,8 +41,10 @@ Expected output:
   Backend set to: 1password
 
   Run `npx secretless-ai protect-mcp` to re-protect MCP servers with the new backend.
-  Or use `npx secretless-ai migrate` to migrate existing secrets.
+  Or use `npx secretless-ai migrate --from keychain --to 1password` to migrate existing secrets.
 ```
+
+`--from` names the store your secrets were kept in until now. With no backend set before, that is `keychain` on macOS, as here.
 
 ### HashiCorp Vault
 
@@ -149,9 +151,10 @@ Expected output:
   Secretless Setup
 
   Store: 1password
+  Input is hidden: a value you type or paste is not shown.
 
-  STRIPE_KEY (Stripe API key for payments): sk_live_...
-  DATABASE_URL (PostgreSQL connection string): postgres://...
+  STRIPE_KEY (Stripe API key for payments):
+  DATABASE_URL (PostgreSQL connection string):
   SENTRY_DSN (Error tracking DSN) [optional, press Enter to skip]:
 
   Set:      2 secret(s)
@@ -159,7 +162,7 @@ Expected output:
   Skipped:  1 (optional)
 ```
 
-`setup` names the backend it writes to before the first prompt, then prompts only for names not yet stored, with the description from the manifest. The prompt does not mask input: a value is shown as you type or paste it.
+`setup` names the backend it writes to before the first prompt, then prompts only for names not yet stored, with the description from the manifest. It reads each value with echo off, as `secret set` does, so a value you type or paste does not stay on the screen.
 
 ## Step 5: Set up CI/CD
 

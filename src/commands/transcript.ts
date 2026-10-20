@@ -78,7 +78,10 @@ function refuseCleanTarget(targetPath: string): boolean {
       : `could not be read (${target.code})`;
   console.error(`\n  Error: ${named} ${what}. Nothing was read.`);
   console.error(`  Verify: ls -ld ${pathOperand(targetPath)}`);
-  console.error(`  Fix:    ${CLI} clean --dry-run   # reads the transcripts under ~/.claude/projects\n`);
+  // The remark is a line of its own: pasted into a zsh that does not take `#`
+  // as a comment, a remark after the command becomes arguments to it.
+  console.error(`  Fix:    ${CLI} clean --dry-run`);
+  console.error('          reads the transcripts under ~/.claude/projects\n');
   return true;
 }
 
@@ -392,9 +395,11 @@ function reportHistoryNotRead(result: Pick<HistoryScanResult, 'filesNotRead' | '
     }
     if (runs.length > 10) console.log(`    … and ${runs.length - 10} more`);
     // `clean-history` has no line window, so its dry run counts a credential
-    // on a line before the window.
+    // on a line before the window. The remark is a line of its own, as under
+    // `refuseCleanTarget`.
     if (runs.some((run) => run.reason === HISTORY_LINES_NOT_READ.beforeWindow)) {
-      console.log(`  Verify: ${CLI} clean-history --dry-run   # clean-history has no ${HISTORY_MAX_LINES}-line limit`);
+      console.log(`  Verify: ${CLI} clean-history --dry-run`);
+      console.log(`          clean-history has no ${HISTORY_MAX_LINES}-line limit`);
     }
     console.log();
   }

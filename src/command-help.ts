@@ -19,9 +19,10 @@
  * (SECRETLESS_CLI_PREFIX) renders natively. No line here may spell the
  * standalone bin name literally.
  */
-import { VERSION, CLI, IS_EMBEDDED, wrapList } from './commands/utils';
+import { VERSION, CLI, CLI_BARE, IS_EMBEDDED, wrapList } from './commands/utils';
 import { printHelp } from './commands/help';
 import { VERBS } from './argv';
+import { MANIFEST_FORMAT_HINT } from './manifest';
 import {
   CONFIG_FILES,
   CONFIG_SHAPED_BASENAMES,
@@ -278,6 +279,13 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     summary: 'Output export statements for the shell.',
     usage: ['[--only KEY1,KEY2]'],
     flags: { '--only': ['KEY1,KEY2', 'Export only the named secrets'] },
+    notes: [
+      'Prints an export line for each stored secret, for a shell profile to read',
+      `with eval: eval "$(${CLI_BARE} env)".`,
+      'Refused in an AI agent runtime, where the output would enter the agent\'s',
+      'context. To give one command a secret instead:',
+      `  ${CLI_BARE} run --only NAME -- <command>`,
+    ],
   },
   init: {
     summary: 'Set up protections for your AI tools.',
@@ -332,6 +340,14 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--check': 'Check for missing required secrets without prompting (CI); a name set in the environment counts',
       '--backend': ['<type>', `Check or store in this backend instead of the configured one (${BACKENDS})`],
     },
+    notes: [
+      'Reads .secretless and prompts for each declared secret not yet stored.',
+      'A name set in the environment counts as present, as CI provides it.',
+      'Without a terminal, setup does not prompt, and exits 1 if a required',
+      'secret is missing.',
+      '',
+      ...MANIFEST_FORMAT_HINT.split('\n'),
+    ],
   },
   secret: {
     summary: 'Store, list, describe, retrieve, remove, sync or push secrets, and track exposed ones until rotated.',

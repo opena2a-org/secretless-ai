@@ -35,7 +35,7 @@ What `npx secretless-ai init` prints, trimmed ([full output](docs/captures/quick
     Status: secretless-ai status
 ```
 
-Run it in a project root. It needs Node.js 20.19 or later and exits 1 when it leaves a tool not configured.
+Captured in a project holding an empty `.claude/` directory. Run it in a project root. It needs Node.js 20.19 or later and exits 1 when it leaves a tool not configured.
 
 `npx secretless-ai status` prints `Protected` only where the Claude Code hook or deny patterns apply. A project set up through instruction files alone reads `Advisory only`.
 
