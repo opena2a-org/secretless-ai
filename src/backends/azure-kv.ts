@@ -491,13 +491,15 @@ export class AzureKeyVaultTarget implements PushTarget {
       return new PushError(
         `Key Vault ${this.vaultName} holds a deleted ${remote} that is kept for recovery (${status}).`,
         [`az keyvault secret show-deleted --vault-name ${this.vaultName} --name ${remote} --query recoveryId -o tsv`],
-        // Each remark is a line of its own next to its command, as in
-        // networkFailure(); what the purge does is said before it.
+        // No remark follows a command on its line, as in networkFailure().
+        // The purge follows `or,` on its line, as the access-policy
+        // alternative above does: given the whole block, an interactive bash
+        // finds no command `or,` and does not run the purge, which removes
+        // the deleted versions for good (src/followups-481.test.ts).
         [
           `az keyvault secret recover --vault-name ${this.vaultName} --name ${remote}`,
           'then push again',
-          'or remove the deleted versions for good:',
-          `az keyvault secret purge --vault-name ${this.vaultName} --name ${remote}`,
+          `or, to remove the deleted versions for good: az keyvault secret purge --vault-name ${this.vaultName} --name ${remote}`,
         ],
       );
     }

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+**The `purge` command in the `Fix:` block that `secret push --to azure-kv`
+prints for an HTTP 409 follows `or,` on its line, so an interactive bash or
+zsh given the whole block on standard input does not run it (#481).** The #479
+entry below gives that block as four lines, with `--vault kv-demo --as API-KEY`:
+`az keyvault secret recover --vault-name kv-demo --name API-KEY`,
+`then push again`, `or remove the deleted versions for good:` and
+`az keyvault secret purge --vault-name kv-demo --name API-KEY`. The `recover`
+command shares its line with the `Fix:` label and the purge had a line of its
+own, so given the `Verify:` and `Fix:` lines on standard input,
+`bash --norc --noprofile -i` (3.2.57 and 5.3.9) and `zsh -f -i` (5.9) ran the
+purge and no other `az` command. The last two lines are now one, as the
+access-policy alternative in the `Fix:` for an HTTP 403 is:
+`or, to remove the deleted versions for good: az keyvault secret purge --vault-name kv-demo --name API-KEY`.
+Given the block, each of the three shells reports `or,` as a command not found
+and runs no `az` command. `src/followups-481.test.ts` gives the block printed
+before and the block printed now to `bash --norc --noprofile -i`, with `az` a
+shell function that prints its words and `PATH` an empty directory, and gives
+it each `az` command of the block, from the `az` on its line to the end, which
+it runs as printed.
+
 **The remarks after the `Fix:` commands that `secret push --to azure-kv`
 prints for a vault name that does not resolve and for an HTTP 409 are lines of
 their own, and a check of the source reads the `verify` and `fix` lines of each

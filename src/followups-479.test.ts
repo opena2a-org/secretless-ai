@@ -104,9 +104,9 @@ describe('secret push --to azure-kv: each Fix line ends at its command (#479)', 
     return lines.slice(start, end === -1 ? undefined : end);
   }
 
-  /** The `az` commands of a block, without the label or the indent before each. */
+  /** The `az` commands of a block, from the `az` on each line to its end, without the label, the indent or the words before it. */
   function commands(block: string[]): string[] {
-    return block.map((l) => l.replace(/^ {2}(Verify:|Fix:)? +/, '')).filter((l) => l.startsWith('az '));
+    return block.flatMap((l) => /(?:^|\s)(az .*)$/.exec(l)?.[1] ?? []);
   }
 
   it('CONTROL: bash refuses the Fix line printed before, so a line it reads is a measurement', () => {
@@ -128,18 +128,19 @@ describe('secret push --to azure-kv: each Fix line ends at its command (#479)', 
     for (const command of commands(block)) expect(bashSyntaxError(command), command).toBe('');
   });
 
-  it('a deleted secret kept for recovery (HTTP 409): each remark is a line of its own next to its command', async () => {
+  it('a deleted secret kept for recovery (HTTP 409): no remark follows a command on its line', async () => {
     const block = verifyAndFix(await pushTo('kv-demo', () => new Response(
       JSON.stringify({ error: { code: 'Conflict', message: 'FAKE detail', innererror: { code: 'ObjectIsDeletedButRecoverable' } } }),
       { status: 409, headers: { 'Content-Type': 'application/json' } },
     )));
 
+    // The purge follows `or,` on its line (#481), so an interactive bash given
+    // the whole block does not run it: src/followups-481.test.ts.
     expect(block).toEqual([
       '  Verify:  az keyvault secret show-deleted --vault-name kv-demo --name API-KEY --query recoveryId -o tsv',
       '  Fix:     az keyvault secret recover --vault-name kv-demo --name API-KEY',
       '           then push again',
-      '           or remove the deleted versions for good:',
-      '           az keyvault secret purge --vault-name kv-demo --name API-KEY',
+      '           or, to remove the deleted versions for good: az keyvault secret purge --vault-name kv-demo --name API-KEY',
     ]);
     expect(commands(block)).toHaveLength(3);
     for (const command of commands(block)) expect(bashSyntaxError(command), command).toBe('');
