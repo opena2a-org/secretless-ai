@@ -381,6 +381,13 @@ export interface PreparedArgv {
   errors: string[];
 }
 
+/**
+ * The flags a form of a verb takes, where that form takes fewer than the verb,
+ * each keyed by the flag and mapped to the way a refusal of that form names it
+ * (`--format json` where the form takes that one value).
+ */
+export type FormFlags = Readonly<Record<string, string>>;
+
 /** `--path <value>` for a value-taking flag, `--dry-run` otherwise. */
 function usageOf(flag: string, takesValue: boolean): string {
   return takesValue ? `${flag} <value>` : flag;
@@ -413,14 +420,25 @@ export function jsonVerbs(): string[] {
  *
  * `args` is the FULL argv after the node binary and script — `args[0]` is the
  * verb — so the caller can keep passing the same array it always did.
+ *
+ * `formFlags`, where given, is called with the normalised argv (the `args`
+ * returned) when a flag is unknown. When it returns the flags of a form of the
+ * verb, the did-you-mean for that flag is chosen from those flags and named as
+ * the returned table names it, in place of the verb's own flags. Under
+ * `scan --history` it was chosen from every `scan` flag, so `--explian` was
+ * answered with `did you mean --explain?`, a flag `--history` refuses (#468).
  */
-export function prepareArgv(verb: string | undefined, args: string[]): PreparedArgv {
+export function prepareArgv(
+  verb: string | undefined,
+  args: string[],
+  formFlags?: (args: readonly string[]) => FormFlags | undefined,
+): PreparedArgv {
   const spec = verb ? VERBS[verb] : undefined;
   // An unrecognised verb is the dispatcher's error to report, with its own help
   // output. Rewriting argv for a command that will not run helps nobody.
   if (!verb || !spec) return { args, positionals: [], warnings: [], errors: [] };
   // args[0] is the verb; flags start at 1.
-  return prepareWithSpec(spec, args, 1, true);
+  return prepareWithSpec(spec, args, 1, true, formFlags);
 }
 
 /**
@@ -441,6 +459,7 @@ function prepareWithSpec(
   args: string[],
   firstFlagIndex: number,
   isVerb: boolean,
+  formFlags?: (args: readonly string[]) => FormFlags | undefined,
 ): PreparedArgv {
   // Split at the first bare `--` BEFORE touching anything, so the child's argv
   // is preserved byte for byte.
@@ -550,10 +569,15 @@ function prepareWithSpec(
     out.push(token);
   }
 
+  const prepared = out.concat(tail);
   if (unknown.length > 0) {
+    // Read from the whole normalised argv, so the form is the same whether its
+    // flag was typed before or after the unknown one.
+    const form = formFlags?.(prepared);
     const lines = unknown.map((u) => {
-      const near = nearestMatch(u, knownNames);
-      return near ? `${u} (did you mean ${usageOf(near, known[near])}?)` : u;
+      const near = nearestMatch(u, form ? Object.keys(form) : knownNames);
+      if (!near) return u;
+      return `${u} (did you mean ${form ? form[near] : usageOf(near, known[near])}?)`;
     });
     const plural = unknown.length > 1 ? 's' : '';
     if (spec.unknownFlags === 'reject') {
@@ -563,6 +587,6 @@ function prepareWithSpec(
     }
   }
 
-  return { args: out.concat(tail), positionals, warnings, errors };
+  return { args: prepared, positionals, warnings, errors };
 }
 

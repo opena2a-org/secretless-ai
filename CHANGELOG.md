@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+**Under `scan --history`, the did-you-mean for a mistyped flag is chosen from
+the flags `--history` takes (#468).** It was chosen from every `scan` flag, so
+it could name a flag `--history` refuses: `scan --history --explian` printed
+`Unknown option: --explian (did you mean --explain?)`, and
+`scan --history --explain` is refused with
+`--history does not use --explain, which applies to a directory scan; give it without --history, or leave it out.`
+`scan --history --include-test` suggested `--include-tests` in the same way.
+The suggestion is now chosen from `--format`, `--help` and `--json`, the
+flags the `Supported with --history:` line of the same refusal names, and
+names `--format` as that line does: `scan --history --explian` prints
+`Unknown option: --explian`, and `scan --history --fromat json` prints
+`Unknown option: --fromat (did you mean --format json?)`, where it suggested
+`--format <value>`. `scan --explian --history` and
+`scan --history=yes --explian` print the same `Unknown option: --explian`
+line. Without `--history`, `scan --explian` still suggests `--explain`. Each
+still exits 2. `src/scan-history-refusals.test.ts` runs each case through the
+built CLI, and `src/argv.test.ts` covers the suggestion `prepareArgv` makes
+when its caller names the flags of a form of the verb.
+
 **Under `scan --history`, the refusals made before the history check name
 what `--history` takes (#466).** An unknown flag (`--nosuch`), a flag given
 no value (`--min-confidence`) or given twice (`--format json --format json`),

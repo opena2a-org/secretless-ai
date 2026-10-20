@@ -239,6 +239,85 @@ describe('scan --history refuses a path and the directory-scan flags (#463)', ()
     });
   });
 
+  describe('the did-you-mean for an unknown flag is chosen from the flags --history takes (#468)', () => {
+    // Chosen from every `scan` flag, it could name a directory-scan flag, and
+    // that flag was refused in turn: `--explian` suggested `--explain`.
+
+    /** The lines of a refusal that name the unknown flags. */
+    function unknownLines(stderr: string): string[] {
+      return stderr.split('\n').filter((line) => line.startsWith('  Unknown option'));
+    }
+
+    /** The flags the supported line of a refusal under --history names. */
+    function supportedNames(stderr: string): string[] {
+      const [line] = supportedLines(stderr);
+      return line.replace(/^ {2}Supported with --history: /, '').split(', ');
+    }
+
+    itIfBuilt('--explian and --include-test are refused with no suggestion', () => {
+      for (const typo of ['--explian', '--include-test']) {
+        const res = cli(['scan', '--history', typo]);
+        expect(res.status).toBe(2);
+        expect(res.stdout).toBe('');
+        expect(unknownLines(res.stderr)).toEqual([`  Unknown option: ${typo}`]);
+        expect(res.stderr).toContain(NOT_RUN);
+        expect(supportedLines(res.stderr)).toEqual([HISTORY_SUPPORTED]);
+      }
+    });
+
+    itIfBuilt('CONTROL: without --history, --explian and --include-test are suggested the scan flags they are near', () => {
+      expect(unknownLines(cli(['scan', '--explian']).stderr))
+        .toEqual(['  Unknown option: --explian (did you mean --explain?)']);
+      expect(unknownLines(cli(['scan', '--include-test']).stderr))
+        .toEqual(['  Unknown option: --include-test (did you mean --include-tests?)']);
+    });
+
+    for (const [flag, value] of DIRECTORY_SCAN_FLAGS) {
+      const typo = flag.slice(0, -1);
+      itIfBuilt(`${typo} is given no suggestion under --history, and ${flag} without it`, () => {
+        const history = cli(['scan', '--history', typo]);
+        expect(history.status).toBe(2);
+        expect(history.stdout).toBe('');
+        expect(unknownLines(history.stderr)).toEqual([`  Unknown option: ${typo}`]);
+        // CONTROL: the typo is a near miss of the flag, which a directory scan suggests.
+        const directory = cli(['scan', typo]);
+        expect(directory.status).toBe(2);
+        const usage = value.length > 0 ? `${flag} <value>` : flag;
+        expect(unknownLines(directory.stderr)).toEqual([`  Unknown option: ${typo} (did you mean ${usage}?)`]);
+      });
+    }
+
+    itIfBuilt('a near miss of each flag --history takes is suggested as the supported line names it, and following it is not refused', () => {
+      const cases: ReadonlyArray<readonly [string, string]> = [
+        ['--fromat', '--format json'],
+        ['--jsno', '--json'],
+        ['--hlep', '--help'],
+      ];
+      for (const [typo, suggested] of cases) {
+        const res = cli(['scan', '--history', typo]);
+        expect(res.status).toBe(2);
+        expect(res.stdout).toBe('');
+        expect(unknownLines(res.stderr)).toEqual([`  Unknown option: ${typo} (did you mean ${suggested}?)`]);
+        expect(supportedNames(res.stderr)).toContain(suggested);
+        const followed = cli(['scan', '--history', ...suggested.split(' ')]);
+        expect(followed.status, suggested).not.toBe(2);
+      }
+      // The three cases cover every flag the supported line names.
+      expect(supportedNames(cli(['scan', '--history', '--jsno']).stderr).sort())
+        .toEqual(cases.map(([, suggested]) => suggested).sort());
+    });
+
+    itIfBuilt('the suggestion is chosen the same way with --history typed after the flag, and with --history=yes', () => {
+      for (const args of [['--explian', '--history'], ['--history=yes', '--explian']]) {
+        const res = cli(['scan', ...args]);
+        expect(res.status).toBe(2);
+        expect(res.stdout).toBe('');
+        expect(unknownLines(res.stderr)).toEqual(['  Unknown option: --explian']);
+        expect(supportedLines(res.stderr)).toEqual([HISTORY_SUPPORTED]);
+      }
+    });
+  });
+
   itIfBuilt('CONTROL: --history alone, with --json and with --format json still scans, at exit 1 on a finding', () => {
     const text = cli(['scan', '--history']);
     expect(text.status).toBe(1);

@@ -32,7 +32,7 @@ import { runGitCredential } from './commands/git-credential';
 import { GIT_PROTOCOL_ACTIONS } from './git-credential';
 import { printHelp, OWN_HELP } from './commands/help';
 import { printCommandHelp } from './command-help';
-import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type PreparedArgv } from './argv';
+import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type FormFlags, type PreparedArgv } from './argv';
 import { nearestMatch } from './near-miss';
 import {
   automatedRunVariable, optedOutByVariable, OPT_OUT_VARIABLE, telemetrySettingFile, readTelemetrySetting, storeTelemetrySetting,
@@ -111,7 +111,8 @@ async function main(): Promise<number> {
   // and none of them had to change, because by this point they are looking at
   // the split form: `--path=DIR` has already become `--path` `DIR`. See
   // src/argv.ts for why this is not an `=` branch inside each parser.
-  const prepared = prepareArgv(command, rawArgs);
+  // Under `scan --history` a did-you-mean is chosen from the flags it takes (#468).
+  const prepared = prepareArgv(command, rawArgs, (normalised) => formFlagsFor(command, normalised));
   const args = prepared.args;
 
   // Tier-1 anonymous usage telemetry — default ON; opt-out via OPENA2A_TELEMETRY=off
@@ -295,13 +296,27 @@ function refuseFlagValue(verb: string, flag: string, raw: string, expected: stri
  * `--format sarif` is refused under `--history` on a line of its own.
  */
 const HISTORY_SCAN_FLAGS: ReadonlySet<string> = new Set(['--history', '--json', '--format']);
-/** The supported line of a refusal under `--history`: HISTORY_SCAN_FLAGS but `--history` itself, and `--help`. */
-const HISTORY_SUPPORTED = 'Supported with --history: --format json, --help, --json';
+/**
+ * The flags `scan --history` takes, each as a refusal under `--history` names
+ * it: HISTORY_SCAN_FLAGS but `--history` itself, and `--help`. `--format` is
+ * named with json, the one value it takes there.
+ */
+const HISTORY_TAKES: FormFlags = { '--format': '--format json', '--help': '--help', '--json': '--json' };
+/** The supported line of a refusal under `--history`, naming HISTORY_TAKES. */
+const HISTORY_SUPPORTED = `Supported with --history: ${Object.values(HISTORY_TAKES).join(', ')}`;
+
+/**
+ * Whether `command` as typed is `scan --history`. `--history` is looked for
+ * as the `scan` branch looks for it.
+ */
+function isHistoryScan(command: string | undefined, args: readonly string[]): boolean {
+  return command === 'scan' && args.includes('--history');
+}
 
 /**
  * The supported line of a refusal of `command` as typed: HISTORY_SUPPORTED
  * when it is `scan --history`, and undefined, for the verb's own list,
- * otherwise. `--history` is looked for as the `scan` branch looks for it.
+ * otherwise.
  *
  * The refusals made before that branch is reached (those of the argv layer,
  * such as an unknown flag or a flag given no value, a `--format` value other
@@ -310,7 +325,19 @@ const HISTORY_SUPPORTED = 'Supported with --history: --format json, --help, --js
  * refuses (#466).
  */
 function supportedFor(command: string, args: string[]): string | undefined {
-  return command === 'scan' && args.includes('--history') ? HISTORY_SUPPORTED : undefined;
+  return isHistoryScan(command, args) ? HISTORY_SUPPORTED : undefined;
+}
+
+/**
+ * The flags the did-you-mean for an unknown flag of `command` as typed is
+ * chosen from: HISTORY_TAKES when it is `scan --history`, the flags the
+ * supported line of the same refusal names, and undefined, for the verb's own
+ * flags, otherwise. Chosen from every `scan` flag, it could name a flag
+ * `--history` refuses: `scan --history --explian` was answered with
+ * `did you mean --explain?` (#468).
+ */
+function formFlagsFor(command: string | undefined, args: readonly string[]): FormFlags | undefined {
+  return isHistoryScan(command, args) ? HISTORY_TAKES : undefined;
 }
 
 /**
