@@ -77,7 +77,7 @@ npx secretless-ai git-credential uninstall --host github.com                    
 
 ### Ask your AI assistant to use a secret
 
-After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursor/rules/secretless.mdc`, ...) lists which keys are available as environment variables and tells the tool to reference them as `$VAR_NAME` without reading values. So this works in Claude Code:
+After `init`, the assistant's instruction file (`CLAUDE.md`, `.cursor/rules/secretless.mdc`, ...) tells the tool to reference credentials as `$VAR_NAME` without reading values. It does not name the variables set on your machine, because the file is usually committed. It points the assistant to `npx secretless-ai verify`, which names the credential variables it knows that the shell sets, without their values. So this works in Claude Code:
 
 > Call the Stripe API and list the last 5 charges.
 
@@ -87,7 +87,7 @@ Claude writes the command with a variable reference. The shell substitutes the v
 curl -s "https://api.stripe.com/v1/charges?limit=5" -H "Authorization: Bearer $STRIPE_SECRET_KEY"
 ```
 
-For a key stored after `init`, or one `init` doesn't recognize, name the variable in your prompt ("use `$GAMMA_API_KEY` for auth") or add a row to the key table in `CLAUDE.md`. To keep the assistant away from raw values entirely, ask it to run commands under the injector:
+For a variable `verify` does not know, name it in your prompt ("use `$GAMMA_API_KEY` for auth"). To keep the assistant away from raw values entirely, ask it to run commands under the injector:
 
 > Run the deploy script with `secretless-ai run --only DEPLOY_TOKEN -- ./deploy.sh`.
 

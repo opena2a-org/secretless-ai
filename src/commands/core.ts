@@ -896,6 +896,7 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
     if (refuseMissingTarget(projectDir, 'scan', true)) return 1;
     const stats = {
       placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
+      outOfRootFiles: [] as Array<{ path: string; realPath: string }>,
       oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
       confidenceSuppressed: 0,
       unscannedConfig: { count: 0, files: [] as string[] },
@@ -932,6 +933,9 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
         walkBudgetExceeded: stats.walkBudgetExceeded,
         unreadable: stats.unreadable.length,
         outOfRoot: stats.outOfRoot.length,
+        // Symlinked files read whose real path is outside the scanned
+        // directory (#127). Read, so like outOfRoot they do not set the exit code.
+        outOfRootFiles: stats.outOfRootFiles.length,
         // Files skipped for size were never opened, so they are coverage lost,
         // not content judged clean.
         oversize: stats.oversize.length,
@@ -958,6 +962,8 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
       // text the human report prints beside the path.
       unreadableReasons: stats.unreadable.map((p) => ({ path: p, reason: unreadReason(projectDir, p) })),
       outOfRootLinks: stats.outOfRoot,
+      // Each link and the absolute real path of the file it was read from.
+      outOfRootFileLinks: stats.outOfRootFiles,
       oversizeFiles: stats.oversize,
       // Samples, capped. The counts above carry the magnitude; these carry the
       // REASON, because `notEntered: 171` on a repo with dependencies installed
@@ -990,6 +996,7 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
 
   const stats = {
     placeholdersSuppressed: 0, truncated: false, unreadable: [] as string[], outOfRoot: [] as string[],
+    outOfRootFiles: [] as Array<{ path: string; realPath: string }>,
     oversize: [] as Array<{ path: string; bytes: number; capBytes: number }>, skips: emptySkips(),
     confidenceSuppressed: 0,
     unscannedConfig: { count: 0, files: [] as string[] },
@@ -1112,6 +1119,16 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
       // scanned repo), and a command substitution around it hands a
       // copy-pasting user an execution primitive.
       console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(stats.outOfRoot.slice(0, 10), (f) => nodeFs.realpathSync(nodePath.resolve(projectDir, f)))}\n`);
+    }
+    if (stats.outOfRootFiles.length > 0) {
+      // A file link is followed out of the root, so these were read. Nothing
+      // said so, and a finding in one named only the link (#127).
+      const n = stats.outOfRootFiles.length;
+      console.log(`  ${c.boldYellow(`${n} file${n > 1 ? 's' : ''} read through a link out of the scan root`)}:`);
+      for (const f of stats.outOfRootFiles.slice(0, 10)) listLine(f.path, ` -> ${listedPath(f.realPath)}`);
+      if (n > 10) console.log(`  ${c.dim(`  … and ${n - 10} more`)}`);
+      console.log(`  ${c.dim('A finding in one is reported under the link, with the real path on a Links to: line.')}`);
+      console.log(`  ${c.cyan('Verify:')} ls -l ${operand(stats.outOfRootFiles.slice(0, 10).map((f) => f.path))}\n`);
     }
     if (stats.oversize.length > 0) {
       const n = stats.oversize.length;
@@ -1378,6 +1395,9 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, val
     if (finding.aliases?.length) {
       console.log(`  ${sevColor('\u2502')} ${c.dim(`Also linked as: ${aliasesText(finding.aliases)}`)}`);
     }
+    if (finding.realPath) {
+      console.log(`  ${sevColor('\u2502')} ${c.dim(`Links to: ${escapePathForDisplay(finding.realPath)} (outside the scan root)`)}`);
+    }
     console.log(`  ${sevColor('\u2502')} ${escapeForDisplay(finding.preview)}`);
     console.log(`  ${sevColor('\u2502')} ${c.cyan('Confidence:')} ${tierColor(`${finding.confidenceTier} (${finding.confidence.toFixed(2)})`)}`);
     // What the issuing host answered, under --check-validity only. The detail
@@ -1493,6 +1513,7 @@ async function runScanWithExplanations(
     console.log(`  [${severity}] ${finding.patternName}`);
     console.log(`         ${escapePathForDisplay(finding.file)}:${finding.line}${fixtureSuffix}`);
     if (finding.aliases?.length) console.log(`         Also linked as: ${aliasesText(finding.aliases)}`);
+    if (finding.realPath) console.log(`         Links to: ${escapePathForDisplay(finding.realPath)} (outside the scan root)`);
     console.log(`         ${escapeForDisplay(finding.preview)}`);
     console.log(`         Pattern: ${explainPattern(finding)}`);
     console.log(`         Confidence: ${explainConfidence(finding)}`);

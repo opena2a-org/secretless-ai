@@ -3,9 +3,10 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { capThatClears } from './commands/core';
+import { capThatClears, runScan } from './commands/core';
 import { runClean } from './commands/transcript';
-import { MAX_FILES_LIMIT } from './scan';
+import { init, managedHookState } from './init';
+import { MAX_FILES_LIMIT, newScanStats, scan } from './scan';
 import {
   AUTOMATED_RUN_VARIABLES, telemetrySettingFile, storeTelemetrySetting, telemetryToggleLine, withToggleLine,
 } from './telemetry-gate';
@@ -15,7 +16,9 @@ import {
  * walkthrough-followups.test.ts does not cover: the exit code of a command
  * given none of the arguments it needs, `--max-files` above its range, the
  * message for a `scan` target that is not there, the `telemetry status`
- * toggle line, and the progress line and run time of `clean`.
+ * toggle line, the progress line and run time of `clean`, the version line in
+ * the files `init` writes, the credential variables its instruction block
+ * leaves out, and a file `scan` reads through a link out of the scan root.
  */
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
@@ -30,6 +33,7 @@ function tmp(prefix: string): string {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   while (made.length) fs.rmSync(made.pop()!, { recursive: true, force: true });
 });
 
@@ -205,5 +209,164 @@ describe('`clean` shows its progress on a terminal and prints its run time (#127
     const { out, writes } = await run(false);
     expect(writes).toEqual([]);
     expect(out).toMatch(/ {2}Scanned: 2 files in \d+\.\ds\n/);
+  });
+});
+
+describe('the files `init` writes name the version that wrote them (#127)', () => {
+  // None of them did, so nothing told which release wrote the guard a project runs.
+  const VERSION: string = require('../package.json').version;
+  const GUARD = path.join('.claude', 'hooks', 'secretless-guard.sh');
+  const CHECK = path.join('.claude', 'hooks', 'secretless-output-check.cjs');
+
+  it('the guard hook, the output check and the CLAUDE.md block each carry a line naming it', () => {
+    const dir = tmp('followups-127-init-');
+    init(dir);
+    expect(fs.readFileSync(path.join(dir, GUARD), 'utf-8'))
+      .toContain(`# Managed by secretless-ai. Do not edit manually.\n# Written by secretless-ai ${VERSION}\n`);
+    expect(fs.readFileSync(path.join(dir, CHECK), 'utf-8'))
+      .toContain(`// Managed by secretless-ai. Do not edit manually.\n// Written by secretless-ai ${VERSION}\n`);
+    expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8'))
+      .toContain(`<!-- secretless:managed -->\n## Secretless Mode\n<!-- Written by secretless-ai ${VERSION} -->\n`);
+  });
+
+  it('a hook whose line names another version differs from the one this version writes', () => {
+    const dir = tmp('followups-127-init-');
+    init(dir);
+    for (const rel of [GUARD, CHECK]) {
+      const file = path.join(dir, rel);
+      expect(managedHookState(file)).toBe('current');
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace(`Written by secretless-ai ${VERSION}\n`, 'Written by secretless-ai 0.0.0\n'));
+      expect(managedHookState(file)).toBe('differs');
+    }
+  });
+});
+
+describe('the instruction block `init` writes names no credential variable (#127)', () => {
+  // It listed each known credential variable set where `init` ran, in a file
+  // that is usually committed. The values are placeholders.
+  const POINTER = '`npx secretless-ai verify` names the ones it knows that this shell sets, without their values.';
+
+  function initWithVariablesSet(prepare: (dir: string) => void = () => {}): string {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'not-a-real-token');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'not-a-real-token');
+    const dir = tmp('followups-127-init-');
+    prepare(dir);
+    init(dir);
+    return dir;
+  }
+
+  it('CLAUDE.md names neither variable and says which command names them', () => {
+    const block = fs.readFileSync(path.join(initWithVariablesSet(), 'CLAUDE.md'), 'utf-8');
+    expect(block).not.toContain('ANTHROPIC_API_KEY');
+    expect(block).not.toContain('STRIPE_SECRET_KEY');
+    expect(block).not.toContain('Available API keys');
+    expect(block).toContain(POINTER);
+  });
+
+  it("Cursor's rule file names neither variable", () => {
+    const dir = initWithVariablesSet((d) => fs.mkdirSync(path.join(d, '.cursor')));
+    const rule = fs.readFileSync(path.join(dir, '.cursor', 'rules', 'secretless.mdc'), 'utf-8');
+    expect(rule).toContain('<!-- secretless:managed -->');
+    expect(rule).not.toContain('ANTHROPIC_API_KEY');
+    expect(rule).not.toContain('STRIPE_SECRET_KEY');
+    expect(rule).toContain(POINTER);
+  });
+});
+
+describe('a file `scan` reads through a link out of the scan root is listed, with its real path (#127)', () => {
+  // A line the gcp-service-account pattern matches. It holds no credential
+  // value, so the fixture is not credential-shaped.
+  const LINE = 'export const account = { "type": "service_account" };\n';
+
+  /** `<base>/proj/<name>`, a relative link to `<base>/shared/<name>`, which holds `content`. */
+  function linkedOut(name: string, content: string): { proj: string; real: string } {
+    const base = tmp('followups-127-link-');
+    fs.mkdirSync(path.join(base, 'proj'));
+    fs.mkdirSync(path.join(base, 'shared'));
+    const real = path.join(base, 'shared', name);
+    fs.writeFileSync(real, content);
+    fs.symlinkSync(path.join('..', 'shared', name), path.join(base, 'proj', name));
+    return { proj: path.join(base, 'proj'), real };
+  }
+
+  function captureLog(): string[] {
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')); });
+    return lines;
+  }
+
+  /** The printed lines without colour. */
+  function plain(lines: string[]): string[] {
+    // eslint-disable-next-line no-control-regex
+    return lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+  }
+
+  it('the finding carries the real path, and the stats list the link with it', () => {
+    const { proj, real } = linkedOut('app.ts', LINE);
+    const stats = newScanStats();
+    const findings = scan(proj, { scanGlobal: false }, stats);
+    expect(findings.map(f => ({ file: f.file, realPath: f.realPath }))).toEqual([{ file: 'app.ts', realPath: real }]);
+    expect(stats.outOfRootFiles).toEqual([{ path: 'app.ts', realPath: real }]);
+    // The directory links not followed are a list of their own.
+    expect(stats.outOfRoot).toEqual([]);
+  });
+
+  it('a linked file skipped for size is listed as skipped, not as read', () => {
+    const { proj } = linkedOut('app.ts', LINE);
+    const stats = newScanStats();
+    expect(scan(proj, { scanGlobal: false, maxFileSizeBytes: 10 }, stats)).toEqual([]);
+    expect(stats.oversize.map(o => o.path)).toEqual(['app.ts']);
+    expect(stats.outOfRootFiles).toEqual([]);
+  });
+
+  it('CONTROL: a file reached by its own path has no realPath and lists nothing', () => {
+    const dir = tmp('followups-127-link-');
+    fs.writeFileSync(path.join(dir, 'app.ts'), LINE);
+    const stats = newScanStats();
+    const findings = scan(dir, { scanGlobal: false }, stats);
+    expect(findings.map(f => f.file)).toEqual(['app.ts']);
+    expect('realPath' in findings[0]).toBe(false);
+    expect(stats.outOfRootFiles).toEqual([]);
+  });
+
+  it('--json counts and lists the link, and a clean file read through it leaves exit 0', async () => {
+    const { proj, real } = linkedOut('notes.ts', 'export const n = 1;\n');
+    const lines = captureLog();
+    const code = await runScan(proj, { json: true });
+    const doc = JSON.parse(lines.join('\n'));
+    expect(code).toBe(0);
+    expect(doc.summary.total).toBe(0);
+    expect(doc.summary.outOfRootFiles).toBe(1);
+    expect(doc.outOfRootFileLinks).toEqual([{ path: 'notes.ts', realPath: real }]);
+    expect(doc.summary.outOfRoot).toBe(0);
+  });
+
+  it('the text report gives the real path under the finding and lists the link', async () => {
+    const { proj, real } = linkedOut('app.ts', LINE);
+    const lines = captureLog();
+    const code = await runScan(proj, {});
+    const out = plain(lines);
+    expect(code).toBe(1);
+    const at = out.findIndex(l => l.endsWith(' app.ts:1'));
+    expect(at).toBeGreaterThan(-1);
+    expect(out[at + 1]).toMatch(/^ {2}\S Links to: /);
+    expect(out[at + 1].slice(out[at + 1].indexOf('Links to: '))).toBe(`Links to: ${real} (outside the scan root)`);
+    const heading = out.indexOf('  1 file read through a link out of the scan root:');
+    expect(heading).toBeGreaterThan(-1);
+    expect(out[heading + 1]).toBe(`    ${path.join(proj, 'app.ts')} -> ${real}`);
+  });
+
+  it('--explain gives the real path under the finding', async () => {
+    const { proj, real } = linkedOut('app.ts', LINE);
+    const lines = captureLog();
+    await runScan(proj, { explain: true });
+    expect(plain(lines)).toContain(`         Links to: ${real} (outside the scan root)`);
+  });
+
+  it('the Fix of a finding in a .env read through the link imports the real file', () => {
+    const { proj, real } = linkedOut('.env', LINE);
+    const findings = scan(proj, { scanGlobal: false });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].fix).toContain(`npx secretless-ai import ${real}, delete the line`);
   });
 });

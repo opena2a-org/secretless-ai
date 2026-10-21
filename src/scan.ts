@@ -50,6 +50,12 @@ export interface ScanFinding {
    * order. Absent when the scan found it by one path only.
    */
   aliases?: string[];
+  /**
+   * The absolute real path of the file, when `file` is a symbolic link that a
+   * directory scan followed to a file outside the scanned directory: the file
+   * to change is this one, not the link (#127). Absent otherwise.
+   */
+  realPath?: string;
 }
 
 /**
@@ -207,7 +213,9 @@ export function fixFor(
  *
  * The scan root is not always the shell's cwd (`scan services/api`), so the
  * path is taken from cwd, absolute when it lies outside it or would read as a
- * flag. The name comes from the scanned repository and the fix is meant to be
+ * flag. A symbolic link gives the path of the file it leads to, which holds
+ * the line to delete: the absolute path of the link named the link (#127).
+ * The name comes from the scanned repository and the fix is meant to be
  * pasted, so it is quoted for the shell, and replaced by `<file>` when it
  * holds a character that would reach the terminal as a control. `verify`
  * gives the same operand in its next step for a `.env` finding.
@@ -216,7 +224,9 @@ export function envFileOperand(filePath: string): string | undefined {
   if (!isEnvFile(path.basename(filePath))) return undefined;
   let shown = path.resolve(filePath);
   try {
-    const rel = path.relative(fs.realpathSync(process.cwd()), fs.realpathSync(filePath));
+    const real = fs.realpathSync(filePath);
+    if (fs.lstatSync(filePath).isSymbolicLink()) shown = real;
+    const rel = path.relative(fs.realpathSync(process.cwd()), real);
     if (rel && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.startsWith('-')) shown = rel;
   } catch {
     // keep the absolute path
@@ -364,6 +374,17 @@ export interface ScanStats {
    */
   outOfRoot?: string[];
   /**
+   * Symlinked files the scan read whose real path is outside the scan root,
+   * each with that absolute real path, once per link. A file link IS followed
+   * out of the root (see `walkTree`), so these were read; they were listed
+   * nowhere, and a finding in one named only the link (#127). One skipped for
+   * size or that could not be read is in `oversize` or `unreadable` instead.
+   *
+   * DISCLOSURE, NOT A FAILURE, like `outOfRoot`: nothing went unread, so they
+   * do not set the exit code.
+   */
+  outOfRootFiles?: Array<{ path: string; realPath: string }>;
+  /**
    * Files skipped for exceeding the per-file size cap (10 MB for config files,
    * 1 MB for source files).
    *
@@ -435,7 +456,7 @@ export interface ScanStats {
  */
 export function newScanStats(): Required<ScanStats> {
   return {
-    placeholdersSuppressed: 0, truncated: false, unreadable: [], outOfRoot: [],
+    placeholdersSuppressed: 0, truncated: false, unreadable: [], outOfRoot: [], outOfRootFiles: [],
     oversize: [], skips: emptySkips(), confidenceSuppressed: 0,
     unscannedConfig: { count: 0, files: [] }, eligibleFiles: 0, walkBudgetExceeded: false,
     ignoreFileExcluded: 0,
@@ -927,8 +948,18 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   // cause.
   const seenUnreadable = new Set<string>();
   const seenOutOfRoot = new Set<string>();
+  // The real path of each file read through a link out of the root, by the
+  // path it was read under: a finding in one names it (#127). Kept whether or
+  // not the caller passed stats, and each link listed once however many walks
+  // read it.
+  const outOfRootFileReal = new Map<string, string>();
   const dedupeKey = (p: string) => realpathOrNull(path.resolve(projectDir, p)) ?? p;
   const absorbWalk = (walk: WalkResult) => {
+    for (const f of walk.outOfRootFiles) {
+      if (outOfRootFileReal.has(f.path)) continue;
+      outOfRootFileReal.set(f.path, f.realPath);
+      stats?.outOfRootFiles?.push(f);
+    }
     if (!stats) return;
     if (walk.truncated) stats.truncated = true;
     if (walk.budgetExceeded) stats.walkBudgetExceeded = true;
@@ -1173,6 +1204,19 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   // sort, so the finding kept is the highest-confidence one.
   const { kept, hiddenByFloor } = dedupeByRealFile(findings, projectDir, belowFloor);
   if (stats && hiddenByFloor > 0) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + hiddenByFloor;
+  for (const f of kept) {
+    const realPath = outOfRootFileReal.get(withSlashSeparators(f.file));
+    if (realPath !== undefined) f.realPath = realPath;
+  }
+  // A linked file skipped for size, or one that could not be read, was not
+  // read: it is listed with those, and not among the files read.
+  if (stats?.outOfRootFiles?.length) {
+    const notRead = new Set([...(stats.unreadable ?? []), ...(stats.oversize ?? []).map(o => o.path)]);
+    const list = stats.outOfRootFiles;
+    let n = 0;
+    for (const f of list) if (!notRead.has(f.path)) list[n++] = f;
+    list.length = n;
+  }
   return kept;
 }
 
@@ -1385,6 +1429,11 @@ interface WalkResult {
    * same fail-open in a new place.
    */
   outOfRoot: string[];
+  /**
+   * Symlinked files among `files` whose real path is outside the scan root,
+   * each with that real path. These ARE followed.
+   */
+  outOfRootFiles: Array<{ path: string; realPath: string }>;
   /**
    * What this walk chose not to look at, with the reason it chose that.
    *
@@ -1878,6 +1927,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
   const unreadable: string[] = [];
   const skips = emptySkips();
   const outOfRoot: string[] = [];
+  const outOfRootFiles: Array<{ path: string; realPath: string }> = [];
   let truncated = false;
   let eligible = 0;
   let budgetExceeded = false;
@@ -1999,11 +2049,16 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
         eligible += 1;
         if (files.length >= maxFiles) { truncated = true; continue; }
         files.push(spec.collect(entryPath, relFromRoot));
+        // Read, but listed, with the path of the file it reads (#127).
+        if (entry.isSymbolicLink()) {
+          const realPath = realpathOrNull(entryPath);
+          if (realPath !== null && !isWithinRoot(realPath, rootReal)) outOfRootFiles.push({ path: relFromRoot, realPath });
+        }
       }
     }
   }
 
-  return { files, truncated, eligible, budgetExceeded, unreadable, outOfRoot, skips };
+  return { files, truncated, eligible, budgetExceeded, unreadable, outOfRoot, outOfRootFiles, skips };
 }
 
 /**
