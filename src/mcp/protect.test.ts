@@ -420,7 +420,7 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
 
     const result = await protect();
 
-    expect(result.clientsScanned).toBe(2);
+    expect(result.clientsScanned).toBe(1);
     expect(result.secretsFound).toBe(2);
     expect(result.serversProtected).toBe(2);
     expect(result.servers).toEqual([
@@ -507,5 +507,68 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
     expect(result.sharedName).toEqual([]);
     expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-2' });
     expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
+  });
+});
+
+describe('protectMcp — clientsScanned counts clients, not configs or server maps (#484)', () => {
+  let homeDir: string;
+  let dataDir: string;
+  let projectDir: string;
+
+  beforeEach(() => {
+    homeDir = tmpDir();
+    dataDir = tmpDir();
+    projectDir = tmpDir();
+  });
+  afterEach(() => {
+    cleanup(homeDir);
+    cleanup(dataDir);
+    cleanup(projectDir);
+  });
+
+  const protect = () => protectMcp({ homeDir, dataDir, projectDir, wrapperPath: '/usr/local/bin/secretless-mcp', backendType: 'local' });
+  const server = (env: Record<string, string>) => ({ type: 'stdio', command: 'npx', args: ['some-mcp'], env });
+  const write = (dir: string, relativePath: string, content: unknown) => {
+    const fullPath = path.join(dir, relativePath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, JSON.stringify(content));
+  };
+
+  it('counts ~/.claude.json with a user-scope server and the local-scope servers of two projects as one client', async () => {
+    write(homeDir, '.claude.json', {
+      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
+      projects: {
+        '/work/app': { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } },
+        '/work/api': { mcpServers: { db: server({ API_KEY: 'not-a-real-token-3' }) } },
+      },
+    });
+
+    const result = await protect();
+
+    expect(result.serversProtected).toBe(3);
+    expect(result.clientsScanned).toBe(1);
+  });
+
+  it('counts ~/.claude/settings.json and the project .mcp.json as one client', async () => {
+    write(homeDir, path.join('.claude', 'settings.json'), { mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) } });
+    write(projectDir, '.mcp.json', { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } });
+
+    const result = await protect();
+
+    expect(result.serversProtected).toBe(2);
+    expect(result.clientsScanned).toBe(1);
+  });
+
+  it('CONTROL: counts the configs of two clients as two', async () => {
+    write(homeDir, '.claude.json', {
+      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
+      projects: { '/work/app': { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } } },
+    });
+    write(homeDir, path.join('.cursor', 'mcp.json'), { mcpServers: { db: server({ API_KEY: 'not-a-real-token-3' }) } });
+
+    const result = await protect();
+
+    expect(result.serversProtected).toBe(3);
+    expect(result.clientsScanned).toBe(2);
   });
 });
