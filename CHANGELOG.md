@@ -96,6 +96,20 @@ as written. `src/phantom/resolver.vault-path.test.ts` resolves the reference
 above with `fetch` answering every read with a KV v2 body and asserts the
 refusal and no request, and `src/phantom/ref.test.ts` covers the parser.
 
+**The `Scanned N client(s)` line of `protect-mcp` counts clients, where it
+counted configs (#484).** Since #470 the server map of each project in
+`~/.claude.json` is a config of its own, so a `~/.claude.json` holding a
+user-scope server and the local-scope servers of two projects gave
+`Scanned 3 client(s)` for Claude Code alone. It now gives `Scanned 1 client(s)`.
+`clientsScanned` in the result of `protectMcp`, which the line prints, is the
+number of clients with a config checked for secrets, so a client with several
+configs or several server maps counts once. `src/mcp/protect.test.ts` checks
+that count for that `~/.claude.json`, for `~/.claude/settings.json` with the
+project `.mcp.json` (1) and for `~/.claude.json` with `~/.cursor/mcp.json` (2),
+and the test of a `~/.claude.json` with a top-level server and one project
+expects 1 where it expected 2. `src/mcp-claude-json.test.ts` runs the built
+`protect-mcp` on the three-map `~/.claude.json` and reads the line.
+
 **The `purge` command in the `Fix:` block that `secret push --to azure-kv`
 prints for an HTTP 409 follows `or,` on its line, so an interactive bash or
 zsh given the whole block on standard input does not run it (#481).** The #479

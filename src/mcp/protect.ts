@@ -90,6 +90,11 @@ export interface ProjectLevelMcpConfig {
 }
 
 export interface ProtectResult {
+  /**
+   * The number of MCP clients with a config that was checked for secrets (not
+   * one in `unparsed` or `projectLevel`). A client with several configs, or
+   * with several server maps in one file (~/.claude.json), counts once.
+   */
   clientsScanned: number;
   secretsFound: number;
   serversProtected: number;
@@ -166,7 +171,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   }
 
   const result: ProtectResult = {
-    clientsScanned: configs.length,
+    clientsScanned: new Set(configs.map((config) => config.client)).size,
     secretsFound: 0,
     serversProtected: 0,
     servers: [],

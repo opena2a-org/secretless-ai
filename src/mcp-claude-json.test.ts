@@ -154,3 +154,20 @@ describe('protect-mcp, mcp-status and mcp-unprotect over ~/.claude.json', () => 
     expect(JSON.parse(fs.readFileSync(claudeJson, 'utf-8')).projects['/work/app'].mcpServers).not.toHaveProperty('fs');
   });
 });
+
+describe('protect-mcp over ~/.claude.json with several server maps (#484)', () => {
+  it('prints "Scanned 1 client(s)" for a user-scope server and the local-scope servers of two projects', () => {
+    fs.writeFileSync(claudeJson, JSON.stringify({
+      mcpServers: { github: server({ LOG_LEVEL: 'debug' }) },
+      projects: {
+        '/work/app': { mcpServers: { slack: server({ LOG_LEVEL: 'debug' }) } },
+        '/work/api': { mcpServers: { db: server({ LOG_LEVEL: 'debug' }) } },
+      },
+    }));
+
+    const out = runCli(['protect-mcp']);
+
+    expect(out).toContain('  Scanned 1 client(s)\n');
+    expect(out).toContain('No plaintext secrets found in MCP configs. Already clean.');
+  });
+});
