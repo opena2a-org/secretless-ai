@@ -96,13 +96,15 @@ export function runRules(args: string[], projectDir: string = process.cwd()): nu
       const nonFlags = args.slice(1).filter(a => !a.startsWith('--'));
       const flags = args.slice(1).filter(a => a.startsWith('--'));
       const pattern = nonFlags[0];
+      // No pattern prints the usage and tests nothing, so it exits
+      // EXIT_USAGE, as an unknown subcommand does (#127).
       if (!pattern) {
         console.error('\n  Usage: secretless-ai rules test <pattern> [--env|--file|--bash]\n');
         console.error('  Examples:');
         console.error('    secretless-ai rules test "ACME_*"              (auto-detects env)');
         console.error('    secretless-ai rules test "*.corp-secret"       (auto-detects file)');
         console.error('    secretless-ai rules test "curl*corp*" --bash   (force bash type)\n');
-        return 1;
+        return EXIT_USAGE;
       }
 
       if (!validatePattern(pattern)) {

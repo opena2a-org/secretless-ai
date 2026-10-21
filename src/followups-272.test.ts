@@ -148,7 +148,7 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
     const res = cli(['scan', target]);
 
     expect(res.status).toBe(1);
-    expect(res.stderr).not.toContain('Directory not found');
+    expect(res.stderr).not.toContain('File or directory not found');
     expect(res.stderr).not.toContain('Check the path and try again');
     expect(errorLines(res.stderr)).toEqual([
       `  Not a directory: ${file}`,
@@ -170,7 +170,7 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
     expect(res.status).toBe(1);
     expect(res.stdout).toBe('');
     expect(errorLines(res.stderr)[0]).toBe(`Not a directory: ${file}`);
-    expect(res.stderr).not.toContain('Directory not found');
+    expect(res.stderr).not.toContain('File or directory not found');
   });
 
   for (const verb of ['status', 'verify']) {
@@ -186,14 +186,14 @@ describe('`scan`, `status` and `verify` on a path under a file', () => {
     });
   }
 
-  itIfBuiltPosix('CONTROL: a path that is not there is still "Directory not found"', () => {
+  itIfBuiltPosix('CONTROL: a path that is not there is still "File or directory not found"', () => {
     const missing = path.join(tmp('followups-'), 'nope', 'sub');
 
     expect(errorLines(cli(['scan', missing]).stderr)).toEqual([
-      `  Directory not found: ${missing}`,
+      `  File or directory not found: ${missing}`,
       '  Check the path and try again.',
     ]);
-    expect(errorLines(cli(['scan', missing, '--json']).stderr)).toEqual([`Directory not found: ${missing}`]);
+    expect(errorLines(cli(['scan', missing, '--json']).stderr)).toEqual([`File or directory not found: ${missing}`]);
   });
 });
 

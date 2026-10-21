@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips, unreadReason, matchedValueOf, lineValuesOf, envFileOperand, SOURCE_SKIP_REASONS, UNREAD_REASONS, type ScanFinding } from '../scan';
+import { scan, emptySkips, unreadReason, matchedValueOf, lineValuesOf, envFileOperand, SOURCE_SKIP_REASONS, UNREAD_REASONS, MAX_FILES_LIMIT, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
 import { startsWithIgnoreHeader } from './ignore';
 import { scanToSarif } from '../sarif';
@@ -704,6 +704,10 @@ function unreachableTargetLines(projectDir: string, verb: string, stop: { code: 
  * is false for it too, and "Directory not found" denied a directory the reader
  * can see. It names what stopped the lookup instead (`unreachableTargetLines`).
  *
+ * A path with nothing at it is "File or directory not found" for `scan`,
+ * which takes either, and "Directory not found" for `status` and `verify`.
+ * `scan nope.js` was told `Directory not found: .../nope.js` (#127).
+ *
  * `bare` is the `--json` form: no indent and no trailing blank line.
  */
 function refuseMissingTarget(projectDir: string, verb: 'scan' | 'status' | 'verify', bare = false): boolean {
@@ -712,6 +716,7 @@ function refuseMissingTarget(projectDir: string, verb: 'scan' | 'status' | 'veri
   const named = escapePathForDisplay(projectDir);
   const stop = lookupStop(projectDir);
   const reason = stop ? null : notADirectoryReason(projectDir);
+  const notFound = `${verb === 'scan' ? 'File or directory' : 'Directory'} not found: ${named}`;
   const lines = stop
     ? unreachableTargetLines(projectDir, verb, stop)
     : reason?.kind === 'underFile'
@@ -722,8 +727,8 @@ function refuseMissingTarget(projectDir: string, verb: 'scan' | 'status' | 'veri
         `Fix:    ${CLI} ${verb} ${pathOperand(verb === 'scan' ? reason.file : path.dirname(reason.file))}`,
       ]
       : bare
-        ? [`Directory not found: ${named}`]
-        : [`Directory not found: ${named}`, 'Check the path and try again.'];
+        ? [notFound]
+        : [notFound, 'Check the path and try again.'];
   lines.forEach((line, i) => {
     console.error(bare ? line : `  ${line}${i === lines.length - 1 ? '\n' : ''}`);
   });
@@ -781,6 +786,17 @@ export function parseFileSize(input: string): number | null {
       : unit.startsWith('k') ? 1024
         : 1;
   return Math.floor(value * mult);
+}
+
+/**
+ * The `--max-files` value a Fix line offers for a scan stopped at the file
+ * cap: the count of eligible files, or one more than the cap when that count
+ * is lower. Null when that value is above MAX_FILES_LIMIT, which `scan` would
+ * refuse, so no cap it takes clears the stop.
+ */
+export function capThatClears(eligibleFiles: number, capUsed: number): number | null {
+  const needed = Math.max(eligibleFiles, capUsed + 1);
+  return needed <= MAX_FILES_LIMIT ? needed : null;
 }
 
 /**
@@ -1042,11 +1058,19 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
       // --max-file-size suggestion is sized from the file itself. `cap * 4`
       // left 30 eligible files truncated at a suggested 8, so following the
       // Fix ran the same loop again.
-      const needed = Math.max(stats.eligibleFiles, capUsed + 1);
+      const needed = capThatClears(stats.eligibleFiles, capUsed);
       console.log(`  ${c.boldYellow('Scan incomplete')}: stopped at the ${capUsed}-file cap, so files were left unscanned.`);
-      console.log(`  ${c.dim(`This is not a clean result. Raise the cap to cover every eligible file (${needed}), or scan a subtree at a time:`)}`);
-      console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --max-files ${needed}`);
-      console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${operand(['.'])} --max-files ${needed} --json | jq .summary.truncated\n`);
+      if (needed === null) {
+        // A cap that covers this tree is above the largest `--max-files`
+        // takes, so a Fix naming it would be refused.
+        console.log(`  ${c.dim(`This is not a clean result. Covering every eligible file needs a cap above ${MAX_FILES_LIMIT}, the largest --max-files takes; scan one subdirectory at a time:`)}`);
+        console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])}/<subdirectory>`);
+        console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${operand(['.'])}/<subdirectory> --json | jq .summary.truncated\n`);
+      } else {
+        console.log(`  ${c.dim(`This is not a clean result. Raise the cap to cover every eligible file (${needed}), or scan a subtree at a time:`)}`);
+        console.log(`  ${c.cyan('Fix:')}    npx secretless-ai scan ${operand(['.'])} --max-files ${needed}`);
+        console.log(`  ${c.cyan('Verify:')} npx secretless-ai scan ${operand(['.'])} --max-files ${needed} --json | jq .summary.truncated\n`);
+      }
     }
     if (stats.unreadable.length > 0) {
       const n = stats.unreadable.length;

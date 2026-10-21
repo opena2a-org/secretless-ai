@@ -54,7 +54,9 @@ export async function runVault(args: string[]): Promise<number> {
         console.error(`\n  Unknown vault command: ${escapeForDisplay(subcommand)}`);
       }
       printVaultHelp();
-      return isUnknown ? EXIT_USAGE : 0;
+      // No subcommand runs nothing either, so it exits EXIT_USAGE as an
+      // unknown one does; exit 0 told a script that it had succeeded (#127).
+      return EXIT_USAGE;
     }
   }
 }
@@ -82,7 +84,7 @@ async function handleRegister(args: string[]): Promise<number> {
     console.error('    --description <desc>  Namespace description');
     console.error('    --operations <ops>    Comma-separated: read,write,delete,admin');
     console.error('    --url-patterns <pats> Comma-separated URL patterns\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   const value = parseFlag(args, '--value');
@@ -124,7 +126,7 @@ async function handleRotate(args: string[]): Promise<number> {
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Usage: secretless-ai vault rotate <namespace> [--env <VAR>]');
     console.error('  Without --env, the new value is read from a prompt or a pipe.\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   const value = parseFlag(args, '--value');
@@ -145,7 +147,7 @@ async function handleRevoke(args: string[]): Promise<number> {
   const namespace = args[0];
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Usage: secretless-ai vault revoke <namespace>\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   try {
@@ -191,7 +193,7 @@ async function handleExec(args: string[]): Promise<number> {
     console.error('  Example:');
     console.error(`    secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'`);
     console.error('    secretless-ai vault exec aws-prod --env-name AWS_SECRET_ACCESS_KEY -- aws s3 ls\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   const preArgs = args.slice(0, dashDashIdx);
@@ -200,7 +202,7 @@ async function handleExec(args: string[]): Promise<number> {
   const namespace = preArgs[0];
   if (!namespace || namespace.startsWith('-')) {
     console.error('\n  Error: namespace is required before --\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   const envName = parseFlag(preArgs, '--env-name');

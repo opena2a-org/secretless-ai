@@ -45,6 +45,19 @@ export interface CleanOptions {
    * (#236). The span is credential text: compare it in memory, keep it nowhere.
    */
   onRedacted?: OnRedacted;
+  /**
+   * Called once before the first file is read and again after each file, so
+   * a caller can show how far the run has got (#127).
+   */
+  onProgress?: (progress: CleanProgress) => void;
+}
+
+/** How far `cleanTranscripts` has got: files and bytes read, of those found. */
+export interface CleanProgress {
+  filesDone: number;
+  filesTotal: number;
+  bytesDone: number;
+  bytesTotal: number;
 }
 
 /** Receives one redacted span and where it was. */
@@ -417,7 +430,18 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
     files = [...newestPerProject.values()];
   }
 
-  for (const file of files) {
+  // Sizes are read only for a caller that shows progress.
+  const onProgress = options?.onProgress;
+  const sizes = onProgress ? files.map(fileSize) : [];
+  const progress: CleanProgress = {
+    filesDone: 0,
+    filesTotal: files.length,
+    bytesDone: 0,
+    bytesTotal: sizes.reduce((sum, size) => sum + size, 0),
+  };
+  onProgress?.({ ...progress });
+
+  for (const [index, file] of files.entries()) {
     result.filesScanned++;
     const { findings, redactedLines, linesNotRead } = scanTranscriptFile(file, dryRun, options?.onRedacted);
 
@@ -436,7 +460,22 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
         result.totalRedacted += findings.length;
       }
     }
+
+    if (onProgress) {
+      progress.filesDone += 1;
+      progress.bytesDone += sizes[index];
+      onProgress({ ...progress });
+    }
   }
 
   return result;
+}
+
+/** The size of `file` in bytes, or 0 when it cannot be read. */
+function fileSize(file: string): number {
+  try {
+    return fs.statSync(file).size;
+  } catch {
+    return 0;
+  }
 }

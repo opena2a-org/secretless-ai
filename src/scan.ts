@@ -430,6 +430,14 @@ export const CONFIG_FILE_CAP_BYTES = 10 * 1024 * 1024;
 export const SOURCE_FILE_CAP_BYTES = 1 * 1024 * 1024;
 
 /**
+ * The largest `--max-files` value `scan` takes. `--max-files 999999999999` was
+ * taken without a word, as was any whole number up to 2^53 - 1, and a larger
+ * one was refused as not "a positive whole number" (#127). A value above this
+ * is refused, naming the range.
+ */
+export const MAX_FILES_LIMIT = 1_000_000;
+
+/**
  * Demo-tier passwords that combine with localhost-bound DB connection strings
  * to mark a value as a tutorial fixture, not a real credential. Local mirror
  * of the catalog @opena2a/credential-patterns 0.1.1 set — lockstep test gates.

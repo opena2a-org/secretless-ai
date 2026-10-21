@@ -126,6 +126,6 @@ describe('runScan --format sarif', () => {
     const { code, stdout, stderr } = await run(missing, { format: 'sarif' });
     expect(code).toBe(1);
     expect(stdout).toBe('');
-    expect(stderr).toBe(`Directory not found: ${missing}`);
+    expect(stderr).toBe(`File or directory not found: ${missing}`);
   });
 });

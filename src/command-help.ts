@@ -40,6 +40,7 @@ import {
   KEY_FILE_EXTENSIONS,
   ENV_TEMPLATE_SUFFIXES,
   GLOBAL_CONFIG_LABELS,
+  MAX_FILES_LIMIT,
   isEnvFile,
 } from './scan';
 import { validityHelpLines } from './validity';
@@ -191,7 +192,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       '--show-placeholders': 'Show values hidden as placeholders',
       '--check-validity': 'Ask the provider that issued each credential whether it still accepts it (opt-in; hosts below)',
       '--min-confidence': ['<n>', 'Drop findings with composite confidence below n (0-1)'],
-      '--max-files': ['<n>', 'Raise the file-count cap (default 5000)'],
+      '--max-files': ['<n>', `Raise the file-count cap (default 5000, at most ${MAX_FILES_LIMIT})`],
       '--max-file-size': ['<size>', 'Raise the per-file size cap (e.g. 20mb, 500kb)'],
       '--json': JSON_DOC,
       '--format': ['<json|sarif>', 'JSON, or SARIF 2.1.0 for GitHub code scanning'],

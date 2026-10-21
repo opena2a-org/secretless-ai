@@ -112,7 +112,9 @@ export async function runBroker(args: string[]): Promise<number> {
       console.log('    --port <port>          HTTP port (default: 19421)');
       console.log('    --grant-file <path>    Grant file path (turns on POST /grant)');
       console.log('    --policy-file <path>   Policy file path\n');
-      return isUnknown ? EXIT_USAGE : 0;
+      // Asked for, the usage is the answer. With no subcommand nothing ran,
+      // so that exits EXIT_USAGE as an unknown one does (#127).
+      return subcommand === '--help' || subcommand === '-h' ? 0 : EXIT_USAGE;
     }
   }
 }

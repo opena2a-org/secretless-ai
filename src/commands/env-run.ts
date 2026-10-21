@@ -32,10 +32,11 @@ export async function runRun(args: string[]): Promise<number> {
   // Only before the separator: after it, `--allow-argv` is the child's own token.
   const allowArgv = args.slice(0, searchEnd).includes('--allow-argv');
 
-  // Everything after -- is the child command
+  // Everything after -- is the child command. Without one, the usage is
+  // printed and nothing runs: EXIT_USAGE, as for an unknown flag (#127).
   if (separatorIdx === -1 || separatorIdx >= args.length - 1) {
     console.error('\n  Usage: secretless-ai run [--only KEY1,KEY2] [--allow-argv] -- <command> [args...]\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   const childCommand = args[separatorIdx + 1];
@@ -163,7 +164,7 @@ export async function runImport(args: string[], deps?: BundleCommandDeps): Promi
   const filePath = positional[0];
   if (!filePath) {
     console.error('  Usage: secretless-ai import <file> or secretless-ai import --detect\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   const resolvedPath = path.resolve(filePath);

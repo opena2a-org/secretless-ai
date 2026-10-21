@@ -284,3 +284,56 @@ export function dropStoredInstallId(file: string): boolean {
   writeTelemetrySetting(file, { enabled: setting.enabled });
   return true;
 }
+
+/** Why `telemetry status` shows the state it shows, as cli.ts reads it. */
+export interface TelemetryState {
+  /** The state shown: on when no variable turns it off and the setting is on. */
+  on: boolean;
+  /** The CI or test-runner variable that turns it off for this run, if any. */
+  automated: string | undefined;
+  /** True when OPENA2A_TELEMETRY turns it off for this run. */
+  optedOut: boolean;
+  /** The stored setting: on when no `telemetry off` is stored. */
+  storedOn: boolean;
+}
+
+/**
+ * The `toggle:` line `telemetry status` ends with, or null when nothing given
+ * here turns it on.
+ *
+ * The status helper of @opena2a/cli-ui ends with
+ * `toggle: '<tool> telemetry off'  or  OPENA2A_TELEMETRY=off` whatever the
+ * state, so `state: off` was followed by a way to turn it off (#127). The
+ * line names what changes the state shown: `telemetry off` while it is on;
+ * `telemetry on` while a stored `telemetry off` is what turns it off; unsetting
+ * OPENA2A_TELEMETRY, then `telemetry on` if it is stored off as well, while
+ * the variable does. A CI or test-runner run sends nothing whatever is set,
+ * so there is no line, and the "Off for this run" line says why.
+ */
+export function telemetryToggleLine(cli: string, state: TelemetryState): string | null {
+  if (state.on) return `toggle: '${cli} telemetry off'  or  ${OPT_OUT_VARIABLE}=off`;
+  if (state.automated) return null;
+  if (state.optedOut) return `toggle: unset ${OPT_OUT_VARIABLE}${state.storedOn ? '' : `, then '${cli} telemetry on'`}`;
+  return `toggle: '${cli} telemetry on'`;
+}
+
+/**
+ * `status`, the text the status helper printed, with its `toggle:` line
+ * replaced by `toggle`, or removed with the blank line above it when `toggle`
+ * is null. The helper colours the line, and the colour is kept. A status with
+ * no such line is returned as it is.
+ */
+export function withToggleLine(status: string, tool: string, toggle: string | null): string {
+  const helperToggle = `toggle: '${tool} telemetry off'  or  ${OPT_OUT_VARIABLE}=off`;
+  const lines = status.split('\n');
+  const at = lines.findIndex((line) => line.includes(helperToggle));
+  if (at === -1) return status;
+  if (toggle !== null) {
+    lines[at] = lines[at].replace(helperToggle, () => toggle);
+  } else if (at > 0 && lines[at - 1] === '') {
+    lines.splice(at - 1, 2);
+  } else {
+    lines.splice(at, 1);
+  }
+  return lines.join('\n');
+}

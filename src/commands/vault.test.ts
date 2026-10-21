@@ -83,7 +83,8 @@ describe('runVault CLI dispatch', () => {
   });
 
   it('dispatches "register" without namespace shows usage and exits', async () => {
-    expect(await runVault(['register'])).toBe(1);
+    // Usage printed and nothing run: exit 2 (#127).
+    expect(await runVault(['register'])).toBe(2);
     expect(vaultRegister).not.toHaveBeenCalled();
   });
 
@@ -106,7 +107,7 @@ describe('runVault CLI dispatch', () => {
   });
 
   it('dispatches "rotate" without namespace shows usage and exits', async () => {
-    expect(await runVault(['rotate'])).toBe(1);
+    expect(await runVault(['rotate'])).toBe(2);
     expect(vaultRotate).not.toHaveBeenCalled();
   });
 
@@ -116,7 +117,7 @@ describe('runVault CLI dispatch', () => {
   });
 
   it('dispatches "revoke" without namespace shows usage and exits', async () => {
-    expect(await runVault(['revoke'])).toBe(1);
+    expect(await runVault(['revoke'])).toBe(2);
     expect(vaultRevoke).not.toHaveBeenCalled();
   });
 
@@ -153,7 +154,7 @@ describe('runVault CLI dispatch', () => {
   });
 
   it('dispatches "exec" without -- shows usage and exits', async () => {
-    expect(await runVault(['exec', 'github', 'curl'])).toBe(1);
+    expect(await runVault(['exec', 'github', 'curl'])).toBe(2);
     expect(vaultExec).not.toHaveBeenCalled();
   });
 
