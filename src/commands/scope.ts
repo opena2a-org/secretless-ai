@@ -8,13 +8,15 @@ import { CLI_BARE } from './utils';
 export async function runScope(args: string[]): Promise<number> {
   const subcommand = args[0];
 
+  // A subcommand or credential name left out prints the usage and runs
+  // nothing, so it exits EXIT_USAGE, as an unknown subcommand does (#127).
   switch (subcommand) {
     case 'discover': {
       const credentialName = args[1];
       if (!credentialName) {
         console.error(`\n  Usage: ${CLI_BARE} scope discover <credential-name>\n`);
         console.log('  Reads the credential value from the secret store and discovers its scope.\n');
-        return 1;
+        return EXIT_USAGE;
       }
 
       const store = new SecretStore({ backendType: resolveBackendType() });
@@ -89,7 +91,7 @@ export async function runScope(args: string[]): Promise<number> {
       if (!credentialName) {
         console.error(`\n  Usage: ${CLI_BARE} scope check <credential-name>\n`);
         console.log('  Re-checks scope and compares to stored baseline.\n');
-        return 1;
+        return EXIT_USAGE;
       }
 
       const baseline = loadBaseline(credentialName);
@@ -179,7 +181,7 @@ export async function runScope(args: string[]): Promise<number> {
       const credentialName = args[1];
       if (!credentialName) {
         console.error(`\n  Usage: ${CLI_BARE} scope reset <credential-name>\n`);
-        return 1;
+        return EXIT_USAGE;
       }
 
       const cleared = resetBaseline(credentialName);
@@ -193,8 +195,10 @@ export async function runScope(args: string[]): Promise<number> {
     }
 
     default: {
-      // No subcommand is an exploration, not an error — show usage cleanly and succeed
-      // (mirrors the `secret` fix in #80). Reserve the error for a real unrecognized token.
+      // No subcommand shows the usage without an error line (mirrors the
+      // `secret` fix in #80), and still exits EXIT_USAGE: nothing ran, and
+      // exit 0 told a script that a subcommand it left out had succeeded
+      // (#127). The error line is for a real unrecognized token.
       const usage = () => {
         console.log(`  Usage: ${CLI_BARE} scope <discover|check|list|reset>\n`);
         console.log('  Commands:');
@@ -206,7 +210,7 @@ export async function runScope(args: string[]): Promise<number> {
       if (subcommand === undefined) {
         console.log('');
         usage();
-        return 0;
+        return EXIT_USAGE;
       }
       console.error(`\n  Unknown scope command: ${escapeForDisplay(subcommand)}`);
       usage();

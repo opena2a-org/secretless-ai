@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { cleanTranscripts, transcriptTarget, MAX_LINE_SIZE, type CleanResult } from '../transcript';
+import { cleanTranscripts, transcriptTarget, MAX_LINE_SIZE, type CleanProgress, type CleanResult } from '../transcript';
 import { startWatch, stopWatch, isWatchRunning, watchStatus, installWatcher, uninstallLaunchAgent, resolveWatchDirs } from '../watch';
 import type { InstallWatcherResult, WatchStatus } from '../watch';
 import { askOnTerminal } from './secrets';
@@ -88,6 +88,57 @@ function refuseCleanTarget(targetPath: string): boolean {
 export interface RunCleanOptions {
   /** Store factory, read only when something was redacted. For DI/testing. */
   createStore?: () => SecretStore;
+  /** Where the progress line goes; stderr when unset. For DI/testing. */
+  progressOut?: ProgressOut;
+  /** The clock the run time is read from, in milliseconds. For DI/testing. */
+  now?: () => number;
+}
+
+/** A stream the progress line can be written to. */
+export interface ProgressOut {
+  isTTY?: boolean;
+  write(chunk: string): unknown;
+}
+
+/** Least time between two rewrites of the progress line, in milliseconds. */
+const PROGRESS_INTERVAL_MS = 100;
+
+/**
+ * The line `clean` keeps up to date while it reads (#127). Without it, a run
+ * over a large `~/.claude/projects` printed `Scanning Claude Code
+ * transcripts...` and nothing else until it finished. The line is written to
+ * `out` only when `out` is a terminal, so a Stop hook, a pipe or a log gets
+ * none of it, and it is rewritten in place with a carriage return and
+ * spaces, which every terminal reads the same. `clear` blanks it before the
+ * report is printed.
+ */
+function progressLine(out: ProgressOut, now: () => number): { update?: (p: CleanProgress) => void; clear: () => void } {
+  if (!out.isTTY) return { clear: () => {} };
+  let width = 0;
+  let last = -Infinity;
+  const put = (text: string): void => {
+    out.write(`\r${text}${' '.repeat(Math.max(0, width - text.length))}\r`);
+    width = text.length;
+  };
+  return {
+    update: (p) => {
+      const at = now();
+      // The first and the last state are always shown; between them, at most
+      // one rewrite per interval.
+      if (p.filesDone !== 0 && p.filesDone !== p.filesTotal && at - last < PROGRESS_INTERVAL_MS) return;
+      last = at;
+      const share = p.bytesTotal > 0 ? p.bytesDone / p.bytesTotal : p.filesDone / Math.max(p.filesTotal, 1);
+      put(`  Read ${p.filesDone} of ${p.filesTotal} files (${Math.floor(share * 100)}%)`);
+    },
+    clear: () => {
+      if (width > 0) put('');
+    },
+  };
+}
+
+/** A run time as the report prints it: seconds, to a tenth. */
+export function formatRunTime(ms: number): string {
+  return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
 }
 
 export async function runClean(args: string[], options: RunCleanOptions = {}): Promise<number> {
@@ -115,6 +166,9 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
     ? `\n  Scanning transcripts at ${targetPath}...\n`
     : '\n  Scanning Claude Code transcripts...\n');
 
+  const now = options.now ?? Date.now;
+  const startedAt = now();
+  const progress = progressLine(options.progressOut ?? process.stderr, now);
   // Held in memory for the stored-secret comparison below, then dropped.
   const spans: RedactedSpan[] = [];
   const result = cleanTranscripts({
@@ -122,7 +176,11 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
     targetPath,
     lastSession,
     onRedacted: (span, where) => { spans.push({ span, ...where }); },
+    onProgress: progress.update,
   });
+  progress.clear();
+  // The run time is printed with the file count, so a slow run says how slow.
+  const took = formatRunTime(now() - startedAt);
 
   // No file read is no verdict: an empty directory is not a clean transcript.
   if (result.filesScanned === 0) {
@@ -131,7 +189,7 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
   }
 
   if (result.totalFindings === 0) {
-    console.log(`  Scanned: ${result.filesScanned} files`);
+    console.log(`  Scanned: ${result.filesScanned} files in ${took}`);
     if (result.totalLinesNotRead > 0) {
       console.log('  No credentials found in the lines that were read.\n');
       reportLinesNotRead(result);
@@ -157,7 +215,7 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
     console.log();
   }
 
-  console.log(`  Scanned:  ${result.filesScanned} files`);
+  console.log(`  Scanned:  ${result.filesScanned} files in ${took}`);
   console.log(`  Found:    ${result.totalFindings} credential(s) in ${result.filesWithSecrets} file(s)`);
   if (dryRun) {
     console.log('  Mode:     dry-run (no changes made)');
@@ -276,7 +334,9 @@ export async function runWatch(args: string[]): Promise<number> {
       console.log('    install    Start the watcher in the background; on macOS also at each login');
       console.log('    uninstall  Remove the LaunchAgent and stop the watcher');
       console.log('    --dir <p>  start, install: a directory to watch besides the default (repeatable)\n');
-      return isUnknown ? EXIT_USAGE : 0;
+      // Asked for, the usage is the answer. With no action nothing ran, so
+      // that exits EXIT_USAGE as an unknown one does (#127).
+      return action === '--help' || action === '-h' ? 0 : EXIT_USAGE;
     }
   }
 }

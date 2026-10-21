@@ -11,6 +11,7 @@ import { VERSION, CLI_BARE, formatCommandError } from './commands/utils';
 // @opena2a/telemetry and @opena2a/cli-ui are pure ESM; this CLI is CommonJS,
 // so they're loaded via dynamic import() inside the async main().
 import { runInit, runScan, runStatus, runVerify, runDoctor, parseFileSize, pathOperand, listedPath } from './commands/core';
+import { MAX_FILES_LIMIT } from './scan';
 import { escapeForDisplay, escapePathForDisplay } from './display-safe';
 import { runClean, runWatch, runScanHistory, runCleanHistory, offerTranscriptWatcher } from './commands/transcript';
 import { runSecret } from './commands/secrets';
@@ -36,7 +37,7 @@ import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type FormFlags, type Pr
 import { nearestMatch } from './near-miss';
 import {
   automatedRunVariable, optedOutByVariable, OPT_OUT_VARIABLE, telemetrySettingFile, readTelemetrySetting, storeTelemetrySetting,
-  dropStoredInstallId,
+  dropStoredInstallId, telemetryToggleLine, withToggleLine,
 } from './telemetry-gate';
 
 /**
@@ -213,11 +214,20 @@ async function main(): Promise<number> {
       console.log(`  Run \`${CLI_BARE} telemetry\` with no action to see the current setting.\n`);
       return EXIT_USAGE;
     }
-    console.log(runTelemetryCommand(action as TelemetryAction, {
+    const shown = runTelemetryCommand(action as TelemetryAction, {
       tool: TOOL,
       getStatus: telemetryStatus,
       setOptOut,
-    }));
+    });
+    // The helper's `toggle:` line offered `telemetry off` under `state: off`
+    // (#127); it is replaced with one that changes the state shown.
+    const toggle = telemetryToggleLine(CLI_BARE, {
+      on: telemetryOn(),
+      automated,
+      optedOut,
+      storedOn: readTelemetrySetting(settingFile)?.enabled ?? true,
+    });
+    console.log(withToggleLine(shown, TOOL, toggle));
     // `telemetry on` saves the setting and still prints `state: off` here, so
     // the line says why.
     if (automated) {
@@ -504,8 +514,13 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
         // 20 and `--max-files 1e6` a cap of 1 — the user believes the cap was
         // raised while the scan quietly covers a fraction of the tree.
         const parsed = /^\d+$/.test(rawMaxFiles) ? Number.parseInt(rawMaxFiles, 10) : NaN;
-        if (Number.isSafeInteger(parsed) && parsed > 0) {
+        if (Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAX_FILES_LIMIT) {
           maxFiles = parsed;
+        } else if (parsed > MAX_FILES_LIMIT) {
+          // `--max-files 999999999999` was taken without a word (#127): a
+          // mistyped cap, or one meant as no cap at all, which the scan does
+          // not have. The refusal names the range.
+          return refuseFlagValue('scan', '--max-files', rawMaxFiles, `a whole number from 1 to ${MAX_FILES_LIMIT}, e.g. --max-files 20000`);
         } else {
           return refuseFlagValue('scan', '--max-files', rawMaxFiles,'a positive whole number, e.g. --max-files 20000');
         }
@@ -637,8 +652,14 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       return runInstall(args.slice(1));
     case 'feedback':
       return runFeedback();
-    case 'ignore':
-      return runIgnore(args.slice(1));
+    case 'ignore': {
+      const code = runIgnore(args.slice(1));
+      // No path and no --pattern: `ignore` printed its usage and wrote
+      // nothing. That is a refused command line, so it exits EXIT_USAGE, as
+      // `secret`, `scope` and `rules test` with nothing after them do (#127).
+      // runIgnore itself returns 1 for its usage.
+      return prepared.positionals.length === 0 && !prepared.values.has('--pattern') ? EXIT_USAGE : code;
+    }
     case 'diff':
       // Positionals, not `args.slice(1)`: an unknown flag is warned about as
       // ignored, and it is still in `args`, where `diff` read it as the ref.

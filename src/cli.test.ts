@@ -251,7 +251,8 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
         cwd: tmp,
         env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
       });
-      expect(res.status).toBe(0);
+      // Usage printed and nothing run: exit 2 (#127).
+      expect(res.status).toBe(2);
       expect(res.stdout).toMatch(/Usage: opena2a secrets secret <set\|list\|get\|rm>/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
@@ -269,7 +270,7 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
         cwd: tmp,
         env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
       });
-      expect(res.status).toBe(1);
+      expect(res.status).toBe(2);
       expect(`${res.stdout}${res.stderr}`).toMatch(/Usage: opena2a secrets secret set/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
@@ -287,7 +288,7 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
         cwd: tmp,
         env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
       });
-      expect(res.status).toBe(0);
+      expect(res.status).toBe(2);
       expect(res.stdout).toMatch(/Usage: opena2a secrets scope <discover\|check\|list\|reset>/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
@@ -305,7 +306,7 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
         cwd: tmp,
         env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
       });
-      expect(res.status).toBe(1);
+      expect(res.status).toBe(2);
       expect(`${res.stdout}${res.stderr}`).toMatch(/Usage: opena2a secrets scope reset/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/(^|\s)secretless-ai\s/m);
@@ -438,11 +439,12 @@ describe('scan warns on unknown flags / secret usage (regression: #80, #81)', ()
     }
   });
 
-  itIfBuilt('`secret` with no subcommand prints usage cleanly, exit 0 (#80)', () => {
+  // No error line (#80); exit 2, as nothing ran (#127).
+  itIfBuilt('`secret` with no subcommand prints usage cleanly, exit 2 (#80, #127)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-secret-'));
     try {
       const res = runCliSpawn(['secret'], tmp);
-      expect(res.status).toBe(0);
+      expect(res.status).toBe(2);
       expect(res.stdout).toMatch(/Usage: secretless-ai secret/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/Unknown secret command/);
     } finally {
@@ -461,11 +463,11 @@ describe('scan warns on unknown flags / secret usage (regression: #80, #81)', ()
     }
   });
 
-  itIfBuilt('`scope` with no subcommand prints usage cleanly, exit 0', () => {
+  itIfBuilt('`scope` with no subcommand prints usage cleanly, exit 2 (#127)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-scope-'));
     try {
       const res = runCliSpawn(['scope'], tmp);
-      expect(res.status).toBe(0);
+      expect(res.status).toBe(2);
       expect(res.stdout).toMatch(/Usage: secretless-ai scope/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/Unknown scope command/);
     } finally {

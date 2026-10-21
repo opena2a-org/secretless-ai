@@ -309,9 +309,11 @@ export async function runMigrate(args: string[]): Promise<number> {
     }
   }
 
+  // --from or --to left out prints the usage and moves nothing: EXIT_USAGE,
+  // as for an unknown subcommand (#127).
   if (!fromType || !toType) {
     console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password|vault|gcp-sm> --to <local|keychain|1password|vault|gcp-sm>\n');
-    return 1;
+    return EXIT_USAGE;
   }
 
   if (fromType === toType) {

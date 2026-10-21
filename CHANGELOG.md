@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+**Five fresh-user findings fixed: a command given none of the arguments it
+needs exits 2, `scan --max-files` above 1000000 is refused, `scan` of a
+missing path names a file or directory, `telemetry status` offers a toggle
+that changes the state shown, and `clean` shows its progress and run time
+(#127).** A command or subcommand given none of the arguments it needs printed
+its usage and exited 0 (`secret`, `scope`, `vault`, `broker`, `watch`) or 1
+(`ignore`, `rules test`, `secret set`, `secret get`, `secret rm`, `secret show`,
+`scope discover`, `scope check`, `scope reset`, `vault register`,
+`vault rotate`, `vault revoke`, `vault exec`, `run`, `import`, `migrate`).
+Each now prints the same usage and exits 2, the code for a command line that
+was refused and ran nothing, as `hook`, `git-credential` and `export` given
+nothing already did; `broker --help`, `watch --help` and `vault --help` exit 0.
+`scan --max-files 999999999999` ran the scan without a word, and a value above
+2^53 - 1 was refused as not "a positive whole number". A value above 1000000 is
+now refused with
+`--max-files needs a whole number from 1 to 1000000, e.g. --max-files 20000, but was given "999999999999".`,
+and `scan --help` gives the range. A scan stopped at the file cap whose
+eligible files need a cap above 1000000 suggests scanning one subdirectory at a
+time instead of a `--max-files` value it would refuse. `scan nope.js` printed
+`Directory not found: .../nope.js`; `scan` takes a file or a directory, and now
+prints `File or directory not found: <path>`, while `status` and `verify`,
+which take a directory, still print `Directory not found`. `telemetry status`
+printed `state: off` above
+`toggle: 'secretless-ai telemetry off'  or  OPENA2A_TELEMETRY=off`. The toggle
+line now names what changes the state shown: `telemetry off` while it is on,
+`telemetry on` while a stored `telemetry off` turns it off,
+`unset OPENA2A_TELEMETRY` (then `telemetry on` when it is stored off as well)
+while that variable turns it off, and no line under CI or a test runner, where
+the `Off for this run` line says why. `clean` printed
+`Scanning Claude Code transcripts...` and nothing more until it finished. On a
+terminal it now keeps one line up to date on stderr,
+`Read <files read> of <files found> files (<percent read>%)`, and blanks it
+before the report; a Stop hook, a pipe or a log gets no such line. The report
+names the run time, as in `Scanned: 200 files in 4.6s`. The matching is
+unchanged, so a run takes as long as before. Scan findings and their exit codes
+are unchanged.
+
 **The `purge` command in the `Fix:` block that `secret push --to azure-kv`
 prints for an HTTP 409 follows `or,` on its line, so an interactive bash or
 zsh given the whole block on standard input does not run it (#481).** The #479

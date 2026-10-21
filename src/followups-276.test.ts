@@ -86,7 +86,7 @@ function errorLines(stderr: string): string[] {
   return stderr.replace(/\n+$/, '').split('\n');
 }
 
-describe('`scan`, `status` and `verify` print a path escaped in "Directory not found" and "Not a directory"', () => {
+describe('`scan`, `status` and `verify` print a path escaped in "not found" and "Not a directory"', () => {
   for (const verb of VERBS) {
     itIfBuiltPosix(`\`${verb}\`: a line feed in a missing directory name starts no line`, () => {
       const parent = tmp('followups-');
@@ -94,8 +94,9 @@ describe('`scan`, `status` and `verify` print a path escaped in "Directory not f
       const res = cli([verb, path.join(parent, `nodir\n${FORGED}`)]);
 
       expect(res.status).toBe(1);
+      // `scan` takes a file or a directory, `status` and `verify` a directory (#127).
       expect(errorLines(res.stderr)).toEqual([
-        `  Directory not found: ${parent}/nodir\\n${FORGED}`,
+        `  ${verb === 'scan' ? 'File or directory' : 'Directory'} not found: ${parent}/nodir\\n${FORGED}`,
         '  Check the path and try again.',
       ]);
     });
@@ -140,7 +141,7 @@ describe('`scan`, `status` and `verify` print a path escaped in "Directory not f
 
     expect(res.status).toBe(1);
     expect(res.stdout).toBe('');
-    expect(errorLines(res.stderr)).toEqual([`Directory not found: ${parent}/nodir\\n${FORGED}`]);
+    expect(errorLines(res.stderr)).toEqual([`File or directory not found: ${parent}/nodir\\n${FORGED}`]);
   });
 });
 
@@ -312,7 +313,8 @@ describe('`scan`, `status` and `verify` on a directory that is there and cannot 
       const res = locked(dir, () => cli([verb, target]));
 
       expect(res.status).toBe(1);
-      expect(res.stderr).not.toContain('Directory not found');
+      // "Directory not found" for `status` and `verify`, "File or directory not found" for `scan`.
+      expect(res.stderr).not.toMatch(/not found: /);
       expect(res.stderr).not.toContain('Check the path and try again');
       expect(errorLines(res.stderr)).toEqual([
         `  Permission denied: ${target}`,
@@ -502,7 +504,7 @@ describe('`scan`, `status` and `verify` on a directory that is there and cannot 
     const res = cli(['scan', target]);
 
     expect(res.status).toBe(1);
-    expect(res.stderr).not.toContain('Directory not found');
+    expect(res.stderr).not.toContain('File or directory not found');
     expect(errorLines(res.stderr)).toEqual([
       `  Too many levels of symbolic links: ${target}`,
       `  ${link} is a symbolic link in a loop, or in a chain of links too long to follow.`,
@@ -525,11 +527,11 @@ describe('`scan`, `status` and `verify` on a directory that is there and cannot 
     ]);
   });
 
-  itIfBuiltPosix('CONTROL: a path that is not there is still "Directory not found"', () => {
+  itIfBuiltPosix('CONTROL: a path that is not there is still "File or directory not found"', () => {
     const missing = path.join(tmp('followups-'), 'nope', 'sub');
 
     expect(errorLines(cli(['scan', missing]).stderr)).toEqual([
-      `  Directory not found: ${missing}`,
+      `  File or directory not found: ${missing}`,
       '  Check the path and try again.',
     ]);
   });

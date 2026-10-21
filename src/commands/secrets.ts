@@ -393,10 +393,12 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
 
     case 'set': {
       const nameArg = parsed.rest[0];
+      // A name left out prints the usage and runs nothing: exit 2, as for a
+      // subcommand left out below (#127).
       if (!nameArg) {
         console.error(`\n  Usage: ${CLI_BARE} secret set <NAME[=VALUE]> [--description <text>] [--meta <key=value>]...`);
         console.error(`  Or:    ${CLI_BARE} secret set <NAME> --from-clipboard [--keep-clipboard]\n`);
-        return 1;
+        return 2;
       }
 
       const annotation = annotationFromArgs(parsed);
@@ -609,7 +611,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       const [name, ...extra] = parsed.rest;
       if (!name || name.startsWith('--') || extra.length > 0) {
         console.error(`\n  Usage: ${CLI_BARE} secret show <NAME> [--json]\n`);
-        return name ? 2 : 1;
+        return 2;
       }
       const store = createStore();
       try {
@@ -701,7 +703,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       const name = positional[0];
       if (!name) {
         console.error(`\n  Usage: ${CLI_BARE} secret get <NAME>\n`);
-        return 1;
+        return 2;
       }
 
       // `--force` overrides the terminal check below, for a user who pipes a
@@ -765,7 +767,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       const name = parsed.rest[0];
       if (!name) {
         console.error(`\n  Usage: ${CLI_BARE} secret rm <NAME>\n`);
-        return 1;
+        return 2;
       }
       const store = createStore();
       try {
@@ -783,8 +785,10 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
     }
 
     default:
-      // No subcommand is an exploration, not an error — show usage cleanly and succeed
-      // (#80). Reserve the "Unknown secret command" error for a real unrecognized token.
+      // No subcommand shows the usage without an error line (#80). It still
+      // exits 2: nothing ran, and exit 0 told a script that a subcommand it
+      // left out had succeeded (#127). The "Unknown secret command" error is
+      // for a real unrecognized token.
       if (subcommand === undefined) {
         console.log(`\n  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
         console.log(`         ${CLI_BARE} secret show <NAME>   (description and metadata, never the value)`);
@@ -792,7 +796,7 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
         console.log(`         ${CLI_BARE} secret list --needs-rotation [--json]`);
         console.log(`         ${CLI_BARE} secret sync --from <backend> [--only K1,K2 | --manifest <file>]`);
         console.log(`         ${CLI_BARE} secret push NAME[,NAME2] --to <azure-kv|vault|gcp-sm> [--vault <name>] [--as <names>]\n`);
-        return 0;
+        return 2;
       }
       console.error(`\n  Unknown secret command: ${escapeForDisplay(subcommand)}`);
       console.log(`  Usage: ${CLI_BARE} secret <set|list|get|rm> [args]`);
