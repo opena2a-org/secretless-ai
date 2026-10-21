@@ -395,6 +395,8 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       const nameArg = parsed.rest[0];
       // A name left out prints the usage and runs nothing: exit 2, as for a
       // subcommand left out below (#127).
+      // A missing NAME is a usage error: exit 2 here and in `show`, `get` and
+      // `rm`, as in `exposed` and `push`. `secret --help` names the code (#254).
       if (!nameArg) {
         console.error(`\n  Usage: ${CLI_BARE} secret set <NAME[=VALUE]> [--description <text>] [--meta <key=value>]...`);
         console.error(`  Or:    ${CLI_BARE} secret set <NAME> --from-clipboard [--keep-clipboard]\n`);

@@ -410,6 +410,8 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       'redact its value. A value written by `sync`, `import` (a .env file or a',
       'bundle) or `setup` closes or leaves an exposure the same way, but those',
       'commands do not print which; `list --needs-rotation` shows what is open.',
+      'A missing NAME, an unknown subcommand and an unknown option are usage',
+      'errors: each exits 2.',
     ],
   },
   watch: {

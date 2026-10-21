@@ -59,6 +59,18 @@ names the run time, as in `Scanned: 200 files in 4.6s`. The matching is
 unchanged, so a run takes as long as before. Scan findings and their exit codes
 are unchanged.
 
+**`secret set`, `secret show`, `secret get` and `secret rm` given no NAME exit
+2, as `secret exposed` and `secret push` do, and `secret --help` names that
+code (#254).** Each printed its usage line and exited 1. The notes of
+`secret --help` now end with `A missing NAME, an unknown subcommand and an
+unknown option are usage errors: each exits 2.` `src/followups-254.test.ts`
+runs the build with no NAME after each of the six subcommands whose usage line
+in `secret --help` takes one (`set`, `show`, `exposed`, `get`, `rm` and
+`push`), with an unknown subcommand, and with an unknown option after each of
+the eight subcommands those lines list, and expects exit 2 from each. A NAME
+that `secret set` refuses, such as `9z`, and an empty value, as in
+`secret set A=` or `secret set A` given nothing on standard input, still exit 1.
+
 **The `purge` command in the `Fix:` block that `secret push --to azure-kv`
 prints for an HTTP 409 follows `or,` on its line, so an interactive bash or
 zsh given the whole block on standard input does not run it (#481).** The #479
