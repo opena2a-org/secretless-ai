@@ -61,6 +61,18 @@ describe('a command given none of the arguments it needs exits 2 (#127)', () => 
     });
   }
 
+  // `backend set` with no type named the types it takes, set nothing and
+  // exited 1. An empty type counts as none, as an empty pattern does for
+  // `rules test`.
+  for (const [label, args] of [['`backend set`', ['backend', 'set']], ["`backend set ''`", ['backend', 'set', '']]] as const) {
+    itIfBuilt(`${label} names the backend types and exits 2`, () => {
+      const res = cli([...args]);
+      expect(res.status).toBe(2);
+      expect(res.stderr).toContain("Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.");
+      expect(res.stdout).not.toContain('Backend set to');
+    });
+  }
+
   for (const verb of ['broker', 'watch', 'vault']) {
     itIfBuilt(`CONTROL: \`${verb} --help\` asks for the usage and exits 0`, () => {
       const res = cli([verb, '--help']);
