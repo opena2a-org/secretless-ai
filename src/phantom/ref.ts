@@ -41,7 +41,8 @@ const VALID_BACKENDS = new Set<string>(['keychain', 'vault', '1password', 'env',
 
 /**
  * Parse a secret:// URI into a SecretRef.
- * Throws if the URI is malformed or uses an unknown backend.
+ * Throws if the URI is malformed, uses an unknown backend, or has a "." or
+ * ".." path segment.
  */
 export function parseSecretRef(uri: string): SecretRef {
   if (!uri.startsWith('secret://')) {
@@ -75,6 +76,18 @@ export function parseSecretRef(uri: string): SecretRef {
 
   if (!secretPath) {
     throw new Error(`Invalid secret reference: empty path. Got: "${uri}"`);
+  }
+
+  // A "." or ".." segment is resolved away in a request URL, which placed a
+  // Vault read outside its KV mount (#384). The Vault backend refuses such a
+  // key, and resolveRef reported that refusal as `Secret not found` (#387).
+  // The reference is refused here, before a backend is built or asked.
+  const dotSegment = secretPath.split('/').find((segment) => segment === '.' || segment === '..');
+  if (dotSegment !== undefined) {
+    throw new Error(
+      `Invalid secret reference: the path has a "${dotSegment}" segment, which a request URL ` +
+      `resolves away and can point outside the backend's store. Got: "${uri}"`,
+    );
   }
 
   // Parse query parameters

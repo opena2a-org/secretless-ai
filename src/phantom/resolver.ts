@@ -96,9 +96,7 @@ export async function resolveEnvRefs(
         errors.push({
           message: err instanceof Error ? err.message : String(err),
           ref: value,
-          backend: isSecretRef(value)
-            ? parseSecretRef(value).backend
-            : undefined,
+          backend: refBackend(value),
         });
         // Keep the reference as-is on failure (don't silently drop env vars)
         resolved[key] = value;
@@ -109,6 +107,21 @@ export async function resolveEnvRefs(
   }
 
   return { resolved, errors };
+}
+
+/**
+ * The backend a reference names, or undefined when the reference does not
+ * parse. The catch in resolveEnvRefs asked parseSecretRef for the backend a
+ * second time, so a reference the parser refuses threw again from inside the
+ * catch and rejected the whole call instead of being recorded in `errors`
+ * (#387).
+ */
+function refBackend(uri: string): SecretBackend | undefined {
+  try {
+    return parseSecretRef(uri).backend;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Resolve from environment variables. */

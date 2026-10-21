@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { resolveRef } from './resolver';
+import { resolveRef, resolveEnvRefs } from './resolver';
 
 /**
  * #384: the path of a `secret://vault/` reference was placed in the request
@@ -10,6 +10,11 @@ import { resolveRef } from './resolver';
  * `secret://vault/../../../sys/policies/acl` sent `GET /v1/sys/policies/acl`
  * with the Vault token. The real factory and Vault backend, with fetch
  * recorded and every request answered 404.
+ *
+ * #387: the Vault backend's refusal of such a key was reported by resolveRef
+ * as `Secret not found`. parseSecretRef now refuses a "." or ".." segment as
+ * an invalid reference, before a backend is built, and resolveEnvRefs records
+ * that refusal instead of rejecting as a whole.
  */
 describe('resolveRef: a secret://vault/ path stays inside the KV mount (#384)', () => {
   const saved = {
@@ -43,12 +48,54 @@ describe('resolveRef: a secret://vault/ path stays inside the KV mount (#384)', 
   const requested = (): string[] =>
     fetchMock.mock.calls.map(([url, init]) => `${init.method} ${new URL(url).pathname}`);
 
-  it('a path with ".." segments sends no request', async () => {
+  it('a path with ".." segments is refused as an invalid reference and sends no request', async () => {
     const uri = 'secret://vault/../../../sys/policies/acl';
 
-    await expect(resolveRef(uri)).rejects.toThrow(`Secret not found: ${uri}`);
+    // Before #387: `Secret not found: ${uri}`.
+    await expect(resolveRef(uri)).rejects.toThrow(
+      'Invalid secret reference: the path has a ".." segment, which a request URL resolves away ' +
+      `and can point outside the backend's store. Got: "${uri}"`,
+    );
 
-    // Before the fix: ['GET /v1/sys/policies/acl'].
+    // Before #384: ['GET /v1/sys/policies/acl'].
+    expect(requested()).toEqual([]);
+  });
+
+  it('the reference of #387 is refused before any request, with a server that answers every read', async () => {
+    const uri = 'secret://vault/../../../other-mount/data/prod-db';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { data: { value: 'not-a-real-value' } } }),
+    });
+
+    await expect(resolveRef(uri)).rejects.toThrow(
+      /^Invalid secret reference: the path has a "\.\." segment/,
+    );
+    expect(requested()).toEqual([]);
+  });
+
+  it('a path with a "." segment is refused the same way', async () => {
+    const uri = 'secret://vault/./prod-db';
+
+    await expect(resolveRef(uri)).rejects.toThrow(
+      /^Invalid secret reference: the path has a "\." segment/,
+    );
+    expect(requested()).toEqual([]);
+  });
+
+  it('resolveEnvRefs records the refusal and leaves the reference as written', async () => {
+    const uri = 'secret://vault/../../../sys/policies/acl';
+
+    // With the parser refusing the reference and the catch of resolveEnvRefs
+    // parsing it again for its backend, this call rejected as a whole.
+    const { resolved, errors } = await resolveEnvRefs({ DB: uri, PLAIN: 'not-a-reference' });
+
+    expect(resolved).toEqual({ DB: uri, PLAIN: 'not-a-reference' });
+    expect(errors).toHaveLength(1);
+    expect(errors[0].ref).toBe(uri);
+    expect(errors[0].backend).toBeUndefined();
+    expect(errors[0].message).toMatch(/^Invalid secret reference: the path has a "\.\." segment/);
     expect(requested()).toEqual([]);
   });
 
