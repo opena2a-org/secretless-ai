@@ -2090,7 +2090,7 @@ guide now says Azure Key Vault is a push target, not a storage backend
 to a cloud secret store" heading; AWS Secrets Manager is still the one it names
 as missing.
 
-**`scan` no longer lists a key file it opened as a file it did not open
+**`scan` no longer lists a key file it reported as a file it did not open
 (#341).** In a directory holding `t.secretless-bundle`, `scan --json` reported
 the bundle as a high finding and also counted it in `skippedUnsupported`, and
 the human report listed it under `1 file not opened: ... unsupported file

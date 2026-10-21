@@ -203,8 +203,14 @@ export interface InstallShellHookOptions {
 
 export interface ShellHookChange {
   profilePath: string;
-  /** `repaired`: the hook line this tool wrote earlier no longer reached a CLI and was replaced. */
+  /**
+   * `repaired`: the profile holds the marker this tool writes, and the hook
+   * line under it no longer reached a CLI and was replaced, or there was no
+   * hook line under it and one was written (`hookLineMissing`).
+   */
   action: 'installed' | 'repaired';
+  /** Set when the line under the marker was empty or blank, or the marker ended the file. */
+  hookLineMissing?: boolean;
   command: string[];
   /** Whether `secretless-ai` is on PATH, so the hook does not depend on `command` alone. */
   cliOnPath: boolean;
@@ -216,9 +222,11 @@ export interface ShellHookPlan extends ShellHookChange {
 }
 
 /**
- * Add the hook to ~/.zshenv (macOS or zsh) or ~/.bashrc, or replace the hook
- * line this tool wrote earlier when it no longer reaches a CLI. Returns null
- * when the profile already has a working hook.
+ * Add the hook to ~/.zshenv (macOS or zsh) or ~/.bashrc, write the hook line
+ * under the marker this tool wrote earlier when the line under it is empty or
+ * blank or the marker ends the file, or replace the hook line when it no
+ * longer reaches a CLI. Returns null when the profile already has a working
+ * hook.
  */
 export function installShellHook(options: InstallShellHookOptions = {}): ShellHookChange | null {
   const plan = planShellHook(options);
@@ -229,7 +237,13 @@ export function installShellHook(options: InstallShellHookOptions = {}): ShellHo
 /** Write the profile text of `plan`. */
 export function writeShellHook(plan: ShellHookPlan): ShellHookChange {
   fs.writeFileSync(plan.profilePath, plan.contents);
-  return { profilePath: plan.profilePath, action: plan.action, command: plan.command, cliOnPath: plan.cliOnPath };
+  return {
+    profilePath: plan.profilePath,
+    action: plan.action,
+    hookLineMissing: plan.hookLineMissing,
+    command: plan.command,
+    cliOnPath: plan.cliOnPath,
+  };
 }
 
 /**
@@ -258,6 +272,13 @@ export function planShellHook(options: InstallShellHookOptions = {}): ShellHookP
   const at = lines.indexOf(SHELL_HOOK_MARKER);
   if (at !== -1) {
     const current = lines[at + 1] ?? '';
+    // A marker with an empty or blank line under it, or with none, has no
+    // hook line. hookLineRuns counts such a line as the user's own, so it is
+    // checked first, and the hook line is written right after the marker.
+    if (current.trim() === '') {
+      lines.splice(at + 1, 0, hookLine);
+      return { profilePath, action: 'repaired', hookLineMissing: true, command, cliOnPath, contents: lines.join('\n') };
+    }
     if (current === hookLine || hookLineRuns(current, pathEnv)) return null;
     lines[at + 1] = hookLine;
     return { profilePath, action: 'repaired', command, cliOnPath, contents: lines.join('\n') };

@@ -628,6 +628,32 @@ describe('doctor: secrets under names outside the known list', () => {
     expect(result.health).toBe('degraded');
   });
 
+  // An export line takes a name that starts with '_', which `secret set`
+  // refuses: the Fix said `Run: secretless-ai secret set _API_KEY`, a
+  // command that stores nothing (#351).
+  it('names no `secret set` command for an exported name `secret set` refuses (#351)', () => {
+    fs.writeFileSync(path.join(home, '.zshenv'), 'export _API_KEY=x\n');
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    const plainText = result.findings.filter((f) => f.kind === 'plain-text');
+    expect(plainText.map((f) => f.message)).toEqual(['_API_KEY is stored in plain text in ~/.zshenv (line 1)']);
+    expect(plainText[0].fix).not.toContain('secret set _API_KEY');
+    expect(plainText[0].fix).toBe(
+      `"_API_KEY" cannot be stored by \`secret set\`, which takes a letter, then letters, digits, '_' or '-'; store it under a name \`secret set\` takes, then remove line 1 from ~/.zshenv.`,
+    );
+    expect(plainText[0].verify).toBe("grep -noE '^[[:space:]]*export[[:space:]]+_API_KEY=' ~/.zshenv");
+  });
+
+  it('CONTROL: an exported name `secret set` takes still gets the `secret set` command (#351)', () => {
+    fs.writeFileSync(path.join(home, '.zshenv'), 'export API_KEY=x\n');
+
+    const result = doctor({ homeDir: home, shell: '/bin/zsh', platform: 'darwin', envOverride: {} });
+
+    const plainText = result.findings.filter((f) => f.kind === 'plain-text');
+    expect(plainText.map((f) => f.fix)).toEqual(['Run: secretless-ai secret set API_KEY, then remove line 1 from ~/.zshenv']);
+  });
+
   it('leaves --fix copying known keys only', () => {
     fs.writeFileSync(path.join(home, '.zprofile'), `export JIRA_TOKEN=${VALUE}\n`);
 
@@ -732,6 +758,38 @@ describe('doctor CLI output for a secret outside the known list', () => {
     expect(stdout).not.toContain('No keys stored yet');
     expect(stdout).not.toContain(VALUE);
     expect(status).toBe(1);
+  });
+
+  // The Fix for `export _API_KEY=...` says `secret set` cannot store that
+  // name, and to store the value under a name it takes, then remove the line.
+  // Each step, run as a user runs it (#351).
+  itIfBuilt('the Fix for a name `secret set` refuses holds when each step is run (#351)', () => {
+    fs.writeFileSync(path.join(home, '.zshenv'), 'export _API_KEY=x\n');
+    fs.mkdirSync(path.join(home, '.secretless-ai'));
+    fs.writeFileSync(path.join(home, '.secretless-ai', 'config.json'), '{"backend":"local"}\n');
+    const secretSet = (name: string) => spawnSync(process.execPath, [CLI_PATH, 'secret', 'set', name, '--no-shell-hook'], {
+      input: 'not-a-real-value',
+      encoding: 'utf-8',
+      cwd: home,
+      env: { PATH: process.env.PATH, HOME: home, SHELL: '/bin/zsh', SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' },
+    });
+
+    const before = runDoctorCli();
+    expect(before.stdout).toContain('[WARN] _API_KEY is stored in plain text in ~/.zshenv (line 1)');
+    expect(before.stdout).toContain(
+      `Fix: "_API_KEY" cannot be stored by \`secret set\`, which takes a letter, then letters, digits, '_' or '-'; store it under a name \`secret set\` takes, then remove line 1 from ~/.zshenv.`,
+    );
+    expect(before.stdout).not.toContain('secret set _API_KEY');
+
+    const refused = secretSet('_API_KEY');
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain('Invalid secret name');
+    const stored = secretSet('API_KEY');
+    expect(stored.status).toBe(0);
+    expect(stored.stdout).toContain('Stored: API_KEY');
+
+    fs.writeFileSync(path.join(home, '.zshenv'), '');
+    expect(runDoctorCli().stdout).not.toContain('_API_KEY');
   });
 });
 

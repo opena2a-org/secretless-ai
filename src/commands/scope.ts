@@ -1,4 +1,4 @@
-import { SecretStore } from '../secret-store';
+import { SecretStore, isSettableSecretName, notSettableReason } from '../secret-store';
 import { resolveBackendType } from '../backends/config';
 import { discoverScope, listBaselines, resetBaseline, loadBaseline, detectProvider } from '../scope';
 import { escapeForDisplay } from '../display-safe';
@@ -121,7 +121,12 @@ export async function runScope(args: string[]): Promise<number> {
         console.error('  If the credential is gone, remove the baseline:');
         console.error(`  Fix:    ${CLI_BARE} scope reset ${credentialName}`);
         console.error('  If the credential moved, store it again:');
-        console.error(`  Fix:    ${CLI_BARE} secret set ${credentialName}`);
+        // The store holds names `secret set` refuses, ones that start with a
+        // digit, '_' or '-'. Such a name gets a line saying so in place of the
+        // `secret set` Fix.
+        console.error(isSettableSecretName(credentialName)
+          ? `  Fix:    ${CLI_BARE} secret set ${credentialName}`
+          : `  ${notSettableReason(credentialName)}; store it again the way it was first stored.`);
         console.error(`  Verify: ${CLI_BARE} scope list\n`);
         return 1;
       }

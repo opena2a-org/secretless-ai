@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretStore, isSettableSecretName, isValidSecretName, notSettableReason } from '../secret-store';
-import { detectAgentRuntime, planShellHook, writeShellHook } from '../env';
+import { detectAgentRuntime, planShellHook, writeShellHook, SHELL_HOOK_MARKER } from '../env';
 import type { InstallShellHookOptions } from '../env';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
 import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard } from '../display-safe';
@@ -102,9 +102,14 @@ export async function ensureShellHook(options: EnsureShellHookOptions = {}): Pro
     return;
   }
   if (plan.action === 'repaired') {
-    console.log(`  The shell hook in ~/${profileName} runs a command that was not found, so new shells receive no secrets.`);
+    console.log(plan.hookLineMissing === true
+      ? `  ~/${profileName} has the line "${SHELL_HOOK_MARKER}" with no command under it.`
+      : `  The shell hook in ~/${profileName} runs a command that was not found, so new shells receive no secrets.`);
   }
-  const question = plan.action === 'installed'
+  // With no command under the marker, a yes writes a hook that exports every
+  // stored secret, as a new hook does, so it gets the question a new hook gets.
+  const adds = plan.action === 'installed' || plan.hookLineMissing === true;
+  const question = adds
     ? `  Add a hook to ~/${profileName} that exports every stored secret in each new shell? [y/N] `
     : `  Point the hook in ~/${profileName} at this copy of secretless-ai? [y/N] `;
   const answer = await (options.ask ?? askOnTerminal)(question);
@@ -120,7 +125,7 @@ export async function ensureShellHook(options: EnsureShellHookOptions = {}): Pro
   }
 
   const change = writeShellHook(plan);
-  console.log(change.action === 'installed'
+  console.log(adds
     ? `  Shell hook installed in ~/${profileName}`
     : `  Shell hook in ~/${profileName} updated: the command it ran was not found`);
   if (!change.cliOnPath) {
