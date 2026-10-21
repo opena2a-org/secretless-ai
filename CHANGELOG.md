@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+**`scan` reports a finding under the path with no symlink in it when a
+symlink in the scanned directory leads to the same file, and lists the
+symlink's path as an alias (#398).** With `src/app.ts` holding a value the
+scan reports and `.alias -> src` in the scanned directory, `scan --json`
+reported the one finding as `.alias/app.ts` and none as `src/app.ts`, so a CI
+allowlist written for `src/app.ts` did not match it: of the paths that lead to
+one file, the finding kept was the one that sorted first. It is now reported
+under the path with no symlink in it when the scan found it by that path too,
+and the other paths it was found by are listed in code-point order under a new
+`aliases` field in `--json`, and on an `Also linked as:` line under the path in
+the text report and in `scan --explain`, which names the first three and counts
+the rest. The finding keeps the severity, confidence and fix it was reported
+with: with `.env -> scripts/env.sh`, `scan --json` reports it as `critical` on
+`scripts/env.sh` with `"aliases": [".env"]`, where it reported it as
+`critical` on `.env`. A finding the scan found by one path only has no
+`aliases` field, and `--format sarif` gives the reported path alone. A
+`.secretlessignore` rule is matched against the path the scan reads: with
+`src/app.ts` in it, the scan reads that file only as `.alias/app.ts` and
+reports the finding there.
+
 **Five fresh-user findings fixed: a command given none of the arguments it
 needs exits 2, `scan --max-files` above 1000000 is refused, `scan` of a
 missing path names a file or directory, `telemetry status` offers a toggle

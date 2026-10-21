@@ -1026,6 +1026,111 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
   });
 });
 
+describe('scan() — a file reached through a link is reported under its own path (#398)', () => {
+  // Lines the gcp-service-account pattern matches. Neither holds a credential
+  // value, so no fixture here is credential-shaped.
+  const SOURCE_LINE = 'export const account = { "type": "service_account" };\n';
+  const ENV_LINE = `SERVICE_ACCOUNT='{"type": "service_account"}'\n`;
+
+  function tmpdir(prefix: string): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  }
+
+  /** `src/app.ts` holding SOURCE_LINE, and `.alias -> src`. */
+  function aliasTree(prefix: string): string {
+    const dir = tmpdir(prefix);
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src/app.ts'), SOURCE_LINE);
+    fs.symlinkSync('src', path.join(dir, '.alias'), 'dir');
+    return dir;
+  }
+
+  it('reports the path with no link in it, and lists the link path as an alias', () => {
+    // `.alias` sorts ahead of `src`, so the one finding was reported as
+    // `.alias/app.ts` and none as `src/app.ts`: a CI allowlist written for
+    // `src/app.ts` did not match what was printed.
+    const findings = scan(aliasTree('scan-398-alias-'), { scanGlobal: false });
+    expect(findings.map(f => ({ file: f.file, aliases: f.aliases }))).toEqual([
+      { file: 'src/app.ts', aliases: ['.alias/app.ts'] },
+    ]);
+  });
+
+  it('CONTROL: a file reached by one path has no aliases', () => {
+    const dir = tmpdir('scan-398-one-');
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src/app.ts'), SOURCE_LINE);
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => f.file)).toEqual(['src/app.ts']);
+    expect(findings[0]).not.toHaveProperty('aliases');
+  });
+
+  it('keeps the severity, confidence and fix the `.env` link gave the finding', () => {
+    // A change for #398 was left out of #404 because it reported this tree as
+    // `high` on `scripts/env.sh`, the severity the source walk gives that file,
+    // where the scan reported `critical` on `.env`. The finding kept is still
+    // the one the config walk made for `.env`, reported under `scripts/env.sh`.
+    const dir = tmpdir('scan-398-env-');
+    fs.mkdirSync(path.join(dir, 'scripts'));
+    fs.writeFileSync(path.join(dir, 'scripts/env.sh'), ENV_LINE);
+    fs.symlinkSync('scripts/env.sh', path.join(dir, '.env'));
+    // The same line in a `.env` that is not a link, for the values a `.env`
+    // finding carries.
+    const control = tmpdir('scan-398-envctl-');
+    fs.writeFileSync(path.join(control, '.env'), ENV_LINE);
+    const [expected] = scan(control, { scanGlobal: false });
+    expect(expected.severity).toBe('critical');
+
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      file: 'scripts/env.sh',
+      aliases: ['.env'],
+      severity: 'critical',
+      confidence: expected.confidence,
+      confidenceTier: expected.confidenceTier,
+    });
+    expect(findings[0].fix).toMatch(/^Store it with npx secretless-ai import /);
+  });
+
+  it('places the finding by the path it is reported under', () => {
+    // Findings of one severity and confidence are ordered by path, so the
+    // order is taken again once the path changes. Without that, `src/app.ts`
+    // stays where `.alias/app.ts` sorted, ahead of `lib/other.ts`.
+    const dir = aliasTree('scan-398-order-');
+    fs.mkdirSync(path.join(dir, 'lib'));
+    fs.writeFileSync(path.join(dir, 'lib/other.ts'), SOURCE_LINE);
+    expect(scan(dir, { scanGlobal: false }).map(f => f.file)).toEqual(['lib/other.ts', 'src/app.ts']);
+  });
+
+  it('lists every link path to a shared config as an alias, in code-point order', () => {
+    const dir = tmpdir('scan-398-shared-');
+    fs.mkdirSync(path.join(dir, 'common'));
+    fs.writeFileSync(path.join(dir, 'common/config.json'), `{"type": "service_account"}\n`);
+    // Created out of order; `B` is ahead of `a` by code point.
+    for (const pkg of ['a', 'B']) {
+      fs.mkdirSync(path.join(dir, 'packages', pkg), { recursive: true });
+      fs.symlinkSync(path.join(dir, 'common'), path.join(dir, 'packages', pkg, 'shared'), 'dir');
+    }
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings.map(f => ({ file: f.file, aliases: f.aliases }))).toEqual([
+      { file: 'common/config.json', aliases: ['packages/B/shared/config.json', 'packages/a/shared/config.json'] },
+    ]);
+  });
+
+  it('reports one of the paths, and lists the other, when every path to the file passes through a link', () => {
+    // `vendor/` is a directory no walk enters, so the scan reaches the file
+    // only through the two links into it.
+    const dir = tmpdir('scan-398-alllinks-');
+    fs.mkdirSync(path.join(dir, 'vendor/shared'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'vendor/shared/app.ts'), SOURCE_LINE);
+    fs.symlinkSync(path.join(dir, 'vendor/shared'), path.join(dir, 'lib'), 'dir');
+    fs.symlinkSync(path.join(dir, 'vendor/shared'), path.join(dir, 'pkg'), 'dir');
+    const findings = scan(dir, { scanGlobal: false });
+    expect(findings).toHaveLength(1);
+    expect([findings[0].file, ...(findings[0].aliases ?? [])].sort()).toEqual(['lib/app.ts', 'pkg/app.ts']);
+  });
+});
+
 describe('scan() — an unreadable file is not reported as clean (#116 P2-1)', () => {
   // "Could not read" is a third state. Rendering it as "clean" is the same
   // fail-open class as the truncation defect: the same content, readable,

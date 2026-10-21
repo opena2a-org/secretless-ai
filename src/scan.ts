@@ -44,6 +44,12 @@ export interface ScanFinding {
    * confidence is fixed because the file's presence is the finding.
    */
   confidenceFactors?: ConfidenceBreakdown;
+  /**
+   * The other paths under the scanned directory where the scan found this
+   * finding in the same file, each through a symbolic link, in code-point
+   * order. Absent when the scan found it by one path only.
+   */
+  aliases?: string[];
 }
 
 /**
@@ -1129,29 +1135,47 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     }
   }
 
-  // Sort: critical first, then by descending confidence (highest first), then by file
-  // for stable ties. Surfacing high-confidence findings ahead of low-confidence
-  // ones helps users prioritise on a noisy repo.
-  findings.sort((a, b) => {
-    if (a.severity !== b.severity) return a.severity === 'critical' ? -1 : 1;
-    if (a.confidence !== b.confidence) return b.confidence - a.confidence;
-    return a.file.localeCompare(b.file);
-  });
+  findings.sort(compareFindings);
 
   // One credential, one finding. Following symlinks means the same underlying
   // file is reachable by more than one path — twelve packages each linking to a
   // shared config turned one leaked key into thirteen criticals, so `total`
   // counted PATHS rather than credentials and a triage queue read thirteen
   // incidents. Deduplicated on the resolved file plus its position, after the
-  // sort, so the surviving path is the highest-confidence one.
+  // sort, so the finding kept is the highest-confidence one.
   return dedupeByRealFile(findings, projectDir);
 }
 
-/** Collapse findings that resolve to the same real file, line and pattern. */
+/**
+ * Critical first, then by descending confidence (highest first), then by file
+ * for stable ties. Surfacing high-confidence findings ahead of low-confidence
+ * ones helps users prioritise on a noisy repo.
+ */
+function compareFindings(a: ScanFinding, b: ScanFinding): number {
+  if (a.severity !== b.severity) return a.severity === 'critical' ? -1 : 1;
+  if (a.confidence !== b.confidence) return b.confidence - a.confidence;
+  return a.file.localeCompare(b.file);
+}
+
+/**
+ * Collapse findings that resolve to the same real file, line and pattern.
+ *
+ * The finding kept is the first of them in `findings`, which `compareFindings`
+ * ordered, so its severity, confidence and fix are those of the highest-ranked
+ * path: with `.env -> scripts/env.sh` it is the config walk's `critical`
+ * finding for `.env`, not the source walk's `high` one for `scripts/env.sh`.
+ *
+ * Its path is the one with no symbolic link in it when the scan found the
+ * finding there too, and the other paths are listed in `aliases`. It was the
+ * path that sorted first, so with `.alias -> src` the finding in `src/app.ts`
+ * was reported as `.alias/app.ts`, which a CI allowlist written for
+ * `src/app.ts` did not match (#398).
+ */
 function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFinding[] {
+  const rootReal = realpathOrNull(projectDir) ?? path.resolve(projectDir);
   const realOf = new Map<string, string>();
-  const seen = new Set<string>();
-  const out: ScanFinding[] = [];
+  const pathsOf = new Map<string, string[]>();
+  const kept = new Map<string, ScanFinding>();
   for (const f of findings) {
     let real = realOf.get(f.file);
     if (real === undefined) {
@@ -1159,10 +1183,34 @@ function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFind
       realOf.set(f.file, real);
     }
     const key = `${real}\u0000${f.line}\u0000${f.patternId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(f);
+    const paths = pathsOf.get(key);
+    if (paths) {
+      if (!paths.includes(f.file)) paths.push(f.file);
+      continue;
+    }
+    pathsOf.set(key, [f.file]);
+    kept.set(key, f);
   }
+
+  let moved = false;
+  for (const [key, f] of kept) {
+    const paths = pathsOf.get(key)!;
+    if (paths.length < 2) continue;
+    // A path with no link in it is the one that, joined to the root's real
+    // path, is the file's real path already.
+    const linkFree = paths.find(p => path.resolve(rootReal, p) === realOf.get(p));
+    if (linkFree !== undefined && linkFree !== f.file) {
+      // Changed on the finding itself, not a copy: the values `retainValues`
+      // keeps are held against this object.
+      f.file = linkFree;
+      moved = true;
+    }
+    f.aliases = paths.filter(p => p !== f.file).sort(compareCodePoints);
+  }
+  const out = [...kept.values()];
+  // A finding given another path is placed by that path among the findings of
+  // its severity and confidence.
+  if (moved) out.sort(compareFindings);
   return out;
 }
 
