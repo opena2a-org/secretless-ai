@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+**The files `init` generates name the version that wrote them, its
+instruction block names no credential variable, and `scan` lists a file it
+reads through a link out of the scan root with the file's real path (#127).**
+The guard hook `.claude/hooks/secretless-guard.sh`, the output check
+`.claude/hooks/secretless-output-check.cjs` and the block `init` writes into
+`CLAUDE.md` named no version, so nothing told which release wrote the guard a
+project runs. They now carry `# Written by secretless-ai <version>`,
+`// Written by secretless-ai <version>` and, under the block's heading,
+`<!-- Written by secretless-ai <version> -->`, as do the blocks in
+`.cursor/rules/secretless.mdc`, `.github/copilot-instructions.md`,
+`.windsurfrules` and `.clinerules/secretless.md`. A hook whose line names
+another version differs from the one this version writes: `status` reports
+`Claude Code guard script differs from the one secretless-ai <version> writes`,
+and `init` replaces it and keeps a copy, as it does a hook that differs in any
+other way. `.claude/settings.json` is not stamped. The block had an
+`Available API keys` table with a row for each of 30 known credential
+variables set in the environment `init` ran in, in a file that is usually
+committed, which published which services that machine holds keys for. With
+all 30 set, the blocks in those five files name none of them; each says that
+`npx secretless-ai verify` names the ones it knows that the shell sets,
+without their values, a command the guard hook admits. `init` leaves a block
+already in a file as it is, so a block an earlier version wrote keeps its
+table until it is deleted by hand. With `app.ts -> ../shared/app.ts` in the
+scanned directory and a line in `shared/app.ts` that the gcp-service-account
+pattern matches, `scan --json` reported the finding on `app.ts` with
+`summary.outOfRoot` 0 and `outOfRootLinks` empty, and the text report did not
+name `shared/app.ts`: a link to a file outside the scan root is followed, and
+only a link to a directory outside it, which is not followed, was listed. Each
+file read through a link out of the scan root is now listed with the absolute
+real path of the file it was read from, under a new `outOfRootFileLinks` in
+`--json`, counted in a new `summary.outOfRootFiles`, and in a
+`1 file read through a link out of the scan root:` block in the text report,
+which from the scanned directory reads `app.ts -> <real path>` above
+`Verify: ls -l app.ts`. A finding in such a file carries that path under a new
+`realPath` field in `--json`, and on a
+`Links to: <real path> (outside the scan root)` line under its path in the
+text report and in `scan --explain`. The `Fix:` of a finding in a `.env` file
+read through such a link imported the link by its absolute path; it imports
+the file the link leads to. The finding, its severity and confidence, and the
+exit code are as before, and the listing does not set the exit code.
+
 **Follow-ups to #485: `ignore ''` exits 2, a finding reached through a
 symlink keeps its path under `--min-confidence` and is counted once when the
 floor hides it, the `Verify:` line of `scan --explain` scans the path a finding
