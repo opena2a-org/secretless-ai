@@ -1,5 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER, isValidShellIdentifier, detectAgentRuntime } from './env';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { generateEnvExports, getShellHookLine, SHELL_HOOK_MARKER, isValidShellIdentifier, detectAgentRuntime, planShellHook } from './env';
 import type { WritableSecretBackend } from './backends/types';
 
 function createMockBackend(secrets: Record<string, string>): WritableSecretBackend {
@@ -124,6 +127,66 @@ describe('SHELL_HOOK_MARKER', () => {
   it('is a comment line', () => {
     expect(SHELL_HOOK_MARKER).toMatch(/^#/);
     expect(SHELL_HOOK_MARKER).toContain('secretless-ai');
+  });
+});
+
+// A marker with nothing under it: hookLineRuns counts an empty line as the
+// user's own, so the plan was null and the hook line was never written (#351).
+describe('planShellHook with no hook line under the marker (#351)', () => {
+  let home: string;
+  let cli: string;
+  let emptyPath: string;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-env-hook-'));
+    cli = path.join(home, 'pkg', 'cli.js');
+    fs.mkdirSync(path.dirname(cli));
+    fs.writeFileSync(cli, '');
+    emptyPath = path.join(home, 'empty-bin');
+    fs.mkdirSync(emptyPath);
+  });
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  const profile = (): string => path.join(home, '.bashrc');
+  const plan = () => planShellHook({ home, shell: '/bin/bash', platform: 'linux', command: [process.execPath, cli], pathEnv: emptyPath });
+
+  it('writes the hook line right after a marker that ends the profile', () => {
+    const before = `export FOO=1\n${SHELL_HOOK_MARKER}\n`;
+    fs.writeFileSync(profile(), before);
+
+    const planned = plan();
+
+    expect(planned).toMatchObject({ profilePath: profile(), action: 'repaired', hookLineMissing: true });
+    const lines = planned!.contents.split('\n');
+    expect(lines[lines.indexOf(SHELL_HOOK_MARKER) + 1]).toBe(getShellHookLine([process.execPath, cli]));
+    expect(planned!.contents).toBe(`export FOO=1\n${SHELL_HOOK_MARKER}\n${getShellHookLine([process.execPath, cli])}\n`);
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(before);
+
+    // Once written, the hook line is under the marker and nothing more is planned.
+    fs.writeFileSync(profile(), planned!.contents);
+    expect(plan()).toBeNull();
+  });
+
+  it.each([
+    ['ends the profile with no line feed', `export FOO=1\n${SHELL_HOOK_MARKER}`, (hook: string) => `export FOO=1\n${SHELL_HOOK_MARKER}\n${hook}`],
+    ['has an empty line under it', `${SHELL_HOOK_MARKER}\n\nexport FOO=1\n`, (hook: string) => `${SHELL_HOOK_MARKER}\n${hook}\n\nexport FOO=1\n`],
+    ['has a line of spaces and a tab under it', `${SHELL_HOOK_MARKER}\n  \t\nexport FOO=1\n`, (hook: string) => `${SHELL_HOOK_MARKER}\n${hook}\n  \t\nexport FOO=1\n`],
+  ])('writes the hook line right after a marker that %s', (_, before, after) => {
+    fs.writeFileSync(profile(), before);
+
+    const planned = plan();
+
+    expect(planned).toMatchObject({ action: 'repaired', hookLineMissing: true });
+    expect(planned!.contents).toBe(after(getShellHookLine([process.execPath, cli])));
+  });
+
+  it('CONTROL: a marker followed by a line of the user\'s own still plans nothing', () => {
+    fs.writeFileSync(profile(), `export FOO=1\n${SHELL_HOOK_MARKER}\necho my-own-line\n`);
+
+    expect(plan()).toBeNull();
   });
 });
 

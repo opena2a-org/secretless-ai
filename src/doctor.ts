@@ -19,6 +19,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { CLI } from './commands/utils';
+import { isSettableSecretName, notSettableReason } from './secret-store';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -439,10 +440,15 @@ export function doctor(options?: DoctorOptions): DoctorResult {
     const rel = path.relative(home, profile.path);
     for (const exp of profile.secretExports) {
       if (!exp.plainText || knownVars.includes(exp.name)) continue;
+      // An export line takes a name that starts with '_', and `secret set`
+      // refuses each of those, so such a name gets no `secret set` command.
+      const fix = isSettableSecretName(exp.name)
+        ? `Run: secretless-ai secret set ${exp.name}, then remove line ${exp.line} from ${file}`
+        : `${notSettableReason(exp.name)}; store it under a name \`secret set\` takes, then remove line ${exp.line} from ${file}.`;
       findings.push({
         severity: 'warn',
         message: `${exp.name} is stored in plain text in ${file} (line ${exp.line})`,
-        fix: `Run: secretless-ai secret set ${exp.name}, then remove line ${exp.line} from ${file}`,
+        fix,
         verify: verifyExportCommand(exp.name, rel, specs[i].syntax ?? 'posix'),
         kind: 'plain-text',
       });

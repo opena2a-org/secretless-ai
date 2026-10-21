@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // The store and the baselines are stubbed: this file tests what `scope check`
-// SAYS, and a real store on macOS is the OS keychain.
+// SAYS, and a real store on macOS is the OS keychain. The name rule of
+// `secret set` is the real one.
 const getSecret = vi.fn();
-vi.mock('../secret-store', () => ({
-  SecretStore: class { getSecret = getSecret; },
-}));
+vi.mock('../secret-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../secret-store')>();
+  return {
+    SecretStore: class { getSecret = getSecret; },
+    isSettableSecretName: actual.isSettableSecretName,
+    notSettableReason: actual.notSettableReason,
+  };
+});
 vi.mock('../backends/config', () => ({ resolveBackendType: () => 'local' }));
 
 const loadBaseline = vi.fn();
@@ -95,5 +101,55 @@ describe('scope check — a stored baseline with no stored credential (#127)', (
     expect(err.join('\n')).toContain('No baseline found for "GCP_SA_KEY".');
     expect(out.join('\n')).toContain('scope discover');
     expect(getSecret).not.toHaveBeenCalled();
+  });
+
+  // #351. The store holds names `secret set` refuses, and the second Fix
+  // offered `secret set _GCP_SA_KEY`, a command that stores nothing.
+  it('names no `secret set` command for a name `secret set` refuses, and keeps the other Fix and the Verify (#351)', async () => {
+    loadBaseline.mockReturnValue({ ...BASELINE, credentialName: '_GCP_SA_KEY' });
+    getSecret.mockResolvedValue(undefined);
+
+    expect(await runScope(['check', '_GCP_SA_KEY'])).toBe(1);
+
+    const lines = err.join('\n').split('\n');
+    expect(lines.filter((line) => line.includes('secret set _GCP_SA_KEY') || /Fix:.*secret set/.test(line))).toEqual([]);
+    expect(lines).toEqual([
+      '',
+      '  Credential "_GCP_SA_KEY" not found in secret store.',
+      '  A scope baseline for it is still stored (from 2026-03-01T10:00:00Z), so the baseline is stale.',
+      '  If the credential is gone, remove the baseline:',
+      `  Fix:    ${CLI_BARE} scope reset _GCP_SA_KEY`,
+      '  If the credential moved, store it again:',
+      `  "_GCP_SA_KEY" cannot be stored by \`secret set\`, which takes a letter, then letters, digits, '_' or '-'; store it again the way it was first stored.`,
+      `  Verify: ${CLI_BARE} scope list`,
+      '',
+    ]);
+  });
+
+  it.each(['1GCP_SA_KEY', '-GCP_SA_KEY'])('names no `secret set` command for %s (#351)', async (name) => {
+    loadBaseline.mockReturnValue({ ...BASELINE, credentialName: name });
+    getSecret.mockResolvedValue(undefined);
+
+    expect(await runScope(['check', name])).toBe(1);
+
+    const lines = err.join('\n').split('\n');
+    expect(lines.filter((line) => line.includes(`secret set ${name}`))).toEqual([]);
+    expect(lines.slice(4, 8)).toEqual([
+      `  Fix:    ${CLI_BARE} scope reset ${name}`,
+      '  If the credential moved, store it again:',
+      `  "${name}" cannot be stored by \`secret set\`, which takes a letter, then letters, digits, '_' or '-'; store it again the way it was first stored.`,
+      `  Verify: ${CLI_BARE} scope list`,
+    ]);
+  });
+
+  it('CONTROL: a name `secret set` takes still gets the `secret set` Fix (#351)', async () => {
+    loadBaseline.mockReturnValue(BASELINE);
+    getSecret.mockResolvedValue(undefined);
+
+    expect(await runScope(['check', 'GCP_SA_KEY'])).toBe(1);
+
+    const text = err.join('\n');
+    expect(text).toContain(`  Fix:    ${CLI_BARE} secret set GCP_SA_KEY`);
+    expect(text).not.toContain('cannot be stored by');
   });
 });

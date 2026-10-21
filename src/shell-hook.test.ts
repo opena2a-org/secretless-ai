@@ -236,6 +236,37 @@ describe('ensureShellHook asks before it edits the profile (#412)', () => {
     expect(fs.readFileSync(profile(), 'utf-8')).toContain(getShellHookLine([process.execPath, script]));
   });
 
+  // A marker with no command under it was read as a working hook, so the hook
+  // was never written and new shells received nothing (#351).
+  it('asks what a new hook asks when the marker has no command under it, and a yes writes it under the marker (#351)', async () => {
+    const before = `export EDITOR=vi\n${SHELL_HOOK_MARKER}\n`;
+    fs.writeFileSync(profile(), before);
+    expect(demoKeyInNewShell()).toBe('unset');
+
+    const declined = await offer({ answer: false });
+    expect(declined.questions).toEqual(['  Add a hook to ~/.bashrc that exports every stored secret in each new shell? [y/N] ']);
+    expect(declined.out).toContain(`~/.bashrc has the line "${SHELL_HOOK_MARKER}" with no command under it.`);
+    expect(declined.out).not.toContain('was not found');
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(before);
+
+    const accepted = await offer({ answer: true });
+    expect(accepted.out).toContain('Shell hook installed in ~/.bashrc');
+    expect(accepted.out).not.toContain('was not found');
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(
+      `export EDITOR=vi\n${SHELL_HOOK_MARKER}\n${getShellHookLine([process.execPath, script])}\n`,
+    );
+    expect(demoKeyInNewShell()).toBe('demo-value');
+  });
+
+  it('CONTROL: does not ask when the marker has a line of the user\'s own under it (#351)', async () => {
+    const before = `${SHELL_HOOK_MARKER}\necho my-own-line\n`;
+    fs.writeFileSync(profile(), before);
+    const { questions, out } = await offer({ answer: true });
+    expect(questions).toEqual([]);
+    expect(out).toBe('');
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(before);
+  });
+
   it('does not ask when the profile already has a working hook', async () => {
     await offer({ answer: true });
     const after = fs.readFileSync(profile(), 'utf-8');

@@ -205,7 +205,7 @@ describe('scoreFinding (composite)', () => {
   it('scores a fixed-structure AWS access key HIGH in a source file', () => {
     const r = scoreFinding({
       pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ },
-      value: 'AKIAIOSFODNN7REALKEY9',
+      value: AWS_KEY,
       filePath: 'src/config.js',
     });
     expect(r.tier).toBe('high');
@@ -215,16 +215,17 @@ describe('scoreFinding (composite)', () => {
   it('does NOT floor a definitive pattern found in a fixture path', () => {
     const r = scoreFinding({
       pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ },
-      value: 'AKIAIOSFODNN7REALKEY9',
+      value: AWS_KEY,
       filePath: 'test/fixtures/keys.txt',
     });
     expect(r.tier).not.toBe('high');
   });
 
   it('does NOT floor a low-entropy padded stub even on a definitive pattern', () => {
-    // `AKIAAAAAAAAAAAAAAAAA` matches the AWS regex but is plainly a placeholder; the
-    // entropy gate must keep it off the 'high' tier so stubs don't outrank real keys.
-    for (const value of ['AKIAAAAAAAAAAAAAAAAA', 'AKIA0000000000000000']) {
+    // `AKIA` padded with sixteen `A`s or sixteen `0`s matches the AWS regex but is plainly
+    // a placeholder; the entropy gate must keep it off the 'high' tier so stubs don't
+    // outrank real keys. Each stub is assembled from two parts, as AWS_KEY is.
+    for (const value of [['AKIA', 'A'.repeat(16)].join(''), ['AKIA', '0'.repeat(16)].join('')]) {
       const r = scoreFinding({
         pattern: { id: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/ },
         value,
