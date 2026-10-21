@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+**Follow-ups to #485: `ignore ''` exits 2, a finding reached through a
+symlink keeps its path under `--min-confidence` and is counted once when the
+floor hides it, the `Verify:` line of `scan --explain` scans the path a finding
+was scored for, `--version` names what turns telemetry on while it is off, a
+backend type or cache duration the tool does not take exits 2, and
+docs/scanning.md names the `--max-files` limit (#486).** `ignore ''` and
+`ignore --pattern ''` printed the usage of `ignore` and exited 1: an empty path
+or pattern counted as given. They exit 2 and write nothing, as `ignore` given
+nothing does, and so does `ignore app.js ''`, whose last pattern is empty.
+With `config.yaml -> scripts/app.sh` and one line in `scripts/app.sh` that the
+gcp-service-account pattern matches, `scan --json` reports the finding as
+`critical` (0.864) on `scripts/app.sh` with `"aliases": ["config.yaml"]`, and
+so did `--min-confidence 0.8`, but `--min-confidence 0.86` reported it on
+`config.yaml` with no `aliases`: the floor dropped the `scripts/app.sh` match
+(0.85) before the path to report was chosen. A path whose match scored below
+the floor is now among the paths that path is chosen from and `aliases` lists,
+so `--min-confidence 0.86` reports it on `scripts/app.sh` with
+`"aliases": ["config.yaml"]`. `summary.confidenceSuppressed` counted that one
+credential 2 under `--min-confidence 0.9`, which hides it, and 1 under 0.86,
+which reports it. It is 1 and 0: a credential is counted once, and only when the
+floor hid it, and the text report says
+`1 match scored below --min-confidence 0.9 and was hidden.` `scan --explain`
+printed `Verify: npx secretless-ai scan scripts/app.sh` under that finding,
+which `scan scripts/app.sh` reports as `high` 0.85, and a
+`Path: env or config file (1.00)` line that described `config.yaml`. It prints
+`Path: env or config file (1.00) for config.yaml: live credentials are usually kept here`
+and `Verify: npx secretless-ai scan config.yaml`, which reports the finding on
+`scripts/app.sh` as `critical` 0.864. Where the path reported scored the same
+as the link path, as `src/app.ts` does with `.alias -> src`, the finding the
+scan made for that path is the one reported, and its `Path:` and `Verify:`
+lines name no other path. `--version` with a stored `telemetry off`, and
+neither CI nor OPENA2A_TELEMETRY set, printed
+`Telemetry: off (opt-out: OPENA2A_TELEMETRY=off  •  details: opena2a.org/telemetry)`,
+a way to turn off what was off. It prints
+`Telemetry: off (turn on: 'secretless-ai telemetry on'  •  details: opena2a.org/telemetry)`.
+With OPENA2A_TELEMETRY=off set the hint is `turn on: unset OPENA2A_TELEMETRY`,
+followed by `, then 'secretless-ai telemetry on'` when it is stored off as
+well, and under CI the line gives the details alone, as the `toggle:` line of
+`telemetry status` does. `backend set ''` printed `Unknown backend type: .`; it
+prints `Unknown backend type: (none).`, as `backend set` does.
+`backend set nope`, `migrate --from nope --to local` and `cache ttl nope`
+printed their refusal and exited 1, the code for credentials found. They exit 2,
+the code for a command line that was refused and ran nothing, as
+`migrate --from local --to nope` does too, and the exit codes in
+docs/commands.md and docs/scanning.md name a backend type or cache duration the
+tool does not take among its cases. docs/scanning.md gave
+`summary.eligibleFiles` as the `--max-files` value that covers every eligible
+file, and `scan` refuses `--max-files` above 1000000 with exit 2. It gives it
+as that value when it is 1000000 or less, and says to scan a tree with more
+eligible files one subdirectory at a time.
+
 **`scan` reports a finding under the path with no symlink in it when a
 symlink in the scanned directory leads to the same file, and lists the
 symlink's path as an alias (#398).** With `src/app.ts` holding a value the

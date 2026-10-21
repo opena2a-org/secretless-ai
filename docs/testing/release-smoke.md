@@ -387,7 +387,7 @@ rm -f ~/.config/opena2a/telemetry.json   # start clean
 |---|---------|----------|
 | 10.1 | `secretless-ai --version` | Two lines: `secretless-ai 0.x.x` then `Telemetry: on (opt-out: ...)` |
 | 10.2 | `secretless-ai telemetry status` | Prints `state: on`, install_id, config path, policy URL, toggle hint |
-| 10.3 | `secretless-ai telemetry off` | Prints `Telemetry disabled for secretless-ai.` Then `--version` shows `Telemetry: off`. `~/.config/opena2a/telemetry.json` has `"enabled": false`. |
+| 10.3 | `secretless-ai telemetry off` | Prints `Telemetry disabled for secretless-ai.` Then `--version` shows `Telemetry: off (turn on: 'secretless-ai telemetry on'  •  details: opena2a.org/telemetry)`, not the `opt-out:` hint. `~/.config/opena2a/telemetry.json` has `"enabled": false`. |
 | 10.4 | `secretless-ai telemetry on` | Re-enables persistently. |
 | 10.5 | `OPENA2A_TELEMETRY=off secretless-ai telemetry status` | Shows `state: off` even though file says `on` (env wins). |
 | 10.6 | `OPENA2A_TELEMETRY_DEBUG=print secretless-ai status .` | Stderr contains a `[opena2a:telemetry]` line with the JSON payload (`tool: "secretless-ai"`, `event: "command"`, `name: "status"`, `success: true`, `duration_ms: <int>`, no PII fields). |

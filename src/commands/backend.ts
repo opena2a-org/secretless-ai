@@ -170,11 +170,14 @@ export async function runBackend(args: string[]): Promise<number> {
   if (subcommand === 'set') {
     const type = args[1];
     if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault' && type !== 'gcp-sm') {
-      console.error(`\n  Unknown backend type: ${type === undefined ? '(none)' : escapeForDisplay(type)}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
-      // No type names the types and sets nothing, so it exits EXIT_USAGE, as
-      // `migrate` without --from or --to does (#127). An empty type counts as
-      // none, as an empty pattern does for `rules test`.
-      return type ? 1 : EXIT_USAGE;
+      // An empty type counts as none, as an empty pattern does for `rules
+      // test`: it printed `Unknown backend type: .` (#486).
+      console.error(`\n  Unknown backend type: ${type ? escapeForDisplay(type) : '(none)'}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
+      // No type, or one that is not a backend, names the types and sets
+      // nothing, so it exits EXIT_USAGE, as `migrate` without --from or --to
+      // does (#127). A type that is not a backend exited 1, the code for
+      // credentials found (#486).
+      return EXIT_USAGE;
     }
 
     if (type === 'keychain') {
@@ -291,6 +294,9 @@ export async function runMigrate(args: string[]): Promise<number> {
   let toType: SelectableBackendType | undefined;
 
   const validBackends = ['local', 'keychain', '1password', 'vault', 'gcp-sm'];
+  // A --from or --to that is not a backend moves nothing: EXIT_USAGE, as a
+  // flag value `scan` cannot use is refused. It exited 1, the code for
+  // credentials found (#486).
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--from' && args[i + 1]) {
       const val = args[++i];
@@ -298,7 +304,7 @@ export async function runMigrate(args: string[]): Promise<number> {
         fromType = val as SelectableBackendType;
       } else {
         console.error(`\n  Unknown backend type: ${escapeForDisplay(val)}. Valid: ${validBackends.join(', ')}\n`);
-        return 1;
+        return EXIT_USAGE;
       }
     }
     if (args[i] === '--to' && args[i + 1]) {
@@ -307,7 +313,7 @@ export async function runMigrate(args: string[]): Promise<number> {
         toType = val as SelectableBackendType;
       } else {
         console.error(`\n  Unknown backend type: ${escapeForDisplay(val)}. Valid: ${validBackends.join(', ')}\n`);
-        return 1;
+        return EXIT_USAGE;
       }
     }
   }
@@ -451,8 +457,10 @@ export function runCache(args: string[]): number {
 
     const seconds = parseDuration(value);
     if (seconds < 0) {
+      // Nothing is set: EXIT_USAGE, the refused-command-line code. It exited
+      // 1, the code for credentials found (#486).
       console.error(`\n  Invalid duration: "${escapeForDisplay(value)}". Use: 5m, 1h, 1d, 300, or off\n`);
-      return 1;
+      return EXIT_USAGE;
     }
 
     writeCacheTtl(seconds);

@@ -312,9 +312,39 @@ export interface TelemetryState {
  */
 export function telemetryToggleLine(cli: string, state: TelemetryState): string | null {
   if (state.on) return `toggle: '${cli} telemetry off'  or  ${OPT_OUT_VARIABLE}=off`;
+  const turnOn = turnOnText(cli, state);
+  return turnOn === null ? null : `toggle: ${turnOn}`;
+}
+
+/**
+ * What turns telemetry on while it is off, or null under CI or a test runner,
+ * where nothing given here does: unsetting OPENA2A_TELEMETRY, then
+ * `telemetry on` if it is stored off as well, while the variable turns it
+ * off; `telemetry on` while a stored `telemetry off` does.
+ */
+function turnOnText(cli: string, state: TelemetryState): string | null {
   if (state.automated) return null;
-  if (state.optedOut) return `toggle: unset ${OPT_OUT_VARIABLE}${state.storedOn ? '' : `, then '${cli} telemetry on'`}`;
-  return `toggle: '${cli} telemetry on'`;
+  if (state.optedOut) return `unset ${OPT_OUT_VARIABLE}${state.storedOn ? '' : `, then '${cli} telemetry on'`}`;
+  return `'${cli} telemetry on'`;
+}
+
+/**
+ * `output`, the text the versionLine helper of @opena2a/cli-ui printed for
+ * `--version`, with the hint in its telemetry line naming what turns
+ * telemetry on while it is off. The helper's line ends with
+ * `(opt-out: OPENA2A_TELEMETRY=off  •  details: <policy>)` whatever the
+ * state, so `Telemetry: off` was followed by a way to turn off what was off
+ * (#486). The hint is the one the `toggle:` line of `telemetry status` gives:
+ * `(turn on: '<cli> telemetry on'  •  details: <policy>)` while a stored
+ * `telemetry off` turns it off, and under CI or a test runner the details
+ * alone. The helper colours the line, and the colour is kept. Output with no
+ * such hint, and output while telemetry is on, are returned as they are.
+ */
+export function withVersionHint(output: string, cli: string, state: TelemetryState): string {
+  const helperHint = `opt-out: ${OPT_OUT_VARIABLE}=off  •  `;
+  if (state.on || !output.includes(helperHint)) return output;
+  const turnOn = turnOnText(cli, state);
+  return output.replace(helperHint, () => (turnOn === null ? '' : `turn on: ${turnOn}  •  `));
 }
 
 /**

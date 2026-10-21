@@ -37,7 +37,7 @@ import { prepareArgv, supportedFlags, VERBS, EXIT_USAGE, type FormFlags, type Pr
 import { nearestMatch } from './near-miss';
 import {
   automatedRunVariable, optedOutByVariable, OPT_OUT_VARIABLE, telemetrySettingFile, readTelemetrySetting, storeTelemetrySetting,
-  dropStoredInstallId, telemetryToggleLine, withToggleLine,
+  dropStoredInstallId, telemetryToggleLine, withToggleLine, withVersionHint,
 } from './telemetry-gate';
 
 /**
@@ -102,6 +102,22 @@ function isUntrackedCall(command: string, prepared: PreparedArgv): boolean {
     || (command === 'hook' && (prepared.args.includes('--check-prompt') || prepared.args.includes('--check-only')));
 }
 
+/**
+ * Whether `runIgnore` was given no pattern to write, read from its arguments
+ * as it reads them: the pattern is the last of the values of `--pattern` and
+ * the tokens that are not flags, and it prints its usage when there is none
+ * or that one is empty (`ignore ''`, `ignore --pattern ''`, as an unset shell
+ * variable gives).
+ */
+function ignoreGivenNoPattern(args: string[]): boolean {
+  let pattern: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--pattern' && i + 1 < args.length) pattern = args[++i];
+    else if (!args[i].startsWith('--')) pattern = args[i];
+  }
+  return !pattern;
+}
+
 
 async function main(): Promise<number> {
   const rawArgs = process.argv.slice(2);
@@ -157,6 +173,13 @@ async function main(): Promise<number> {
   const setOptOut = (enabled: boolean) => (enabled && !automated && !optedOut
     ? tele.setOptOut(true)
     : storeTelemetrySetting(settingFile, enabled));
+  // Why the state shown is what it is, for the lines that name what changes it.
+  const telemetryState = () => ({
+    on: telemetryOn(),
+    automated,
+    optedOut,
+    storedOn: readTelemetrySetting(settingFile)?.enabled ?? true,
+  });
 
   // Intercept `--help` / `-h` anywhere in the args BEFORE dispatching. Most
   // subcommand runners do not parse per-subcommand help, so without this guard
@@ -180,7 +203,11 @@ async function main(): Promise<number> {
   // `-V` too: it is the version flag in commander-based CLIs, and refusing it
   // as an unknown command while `-v` works was a surprise with no upside.
   if (command === '--version' || command === '-v' || command === '-V') {
-    console.log(versionLine({ tool: TOOL, version: VERSION, telemetry: telemetryStatus() }));
+    // While telemetry is off, the helper's line still offered
+    // OPENA2A_TELEMETRY=off as the opt-out (#486); the hint names what turns
+    // it on, as `telemetry status` does.
+    const shown = versionLine({ tool: TOOL, version: VERSION, telemetry: telemetryStatus() });
+    console.log(withVersionHint(shown, CLI_BARE, telemetryState()));
     return 0;
   }
 
@@ -221,12 +248,7 @@ async function main(): Promise<number> {
     });
     // The helper's `toggle:` line offered `telemetry off` under `state: off`
     // (#127); it is replaced with one that changes the state shown.
-    const toggle = telemetryToggleLine(CLI_BARE, {
-      on: telemetryOn(),
-      automated,
-      optedOut,
-      storedOn: readTelemetrySetting(settingFile)?.enabled ?? true,
-    });
+    const toggle = telemetryToggleLine(CLI_BARE, telemetryState());
     console.log(withToggleLine(shown, TOOL, toggle));
     // `telemetry on` saves the setting and still prints `state: off` here, so
     // the line says why.
@@ -654,11 +676,12 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       return runFeedback();
     case 'ignore': {
       const code = runIgnore(args.slice(1));
-      // No path and no --pattern: `ignore` printed its usage and wrote
+      // No pattern, or an empty one: `ignore` printed its usage and wrote
       // nothing. That is a refused command line, so it exits EXIT_USAGE, as
       // `secret`, `scope` and `rules test` with nothing after them do (#127).
+      // An empty path or `--pattern ''` counted as given and exited 1 (#486).
       // runIgnore itself returns 1 for its usage.
-      return prepared.positionals.length === 0 && !prepared.values.has('--pattern') ? EXIT_USAGE : code;
+      return ignoreGivenNoPattern(args.slice(1)) ? EXIT_USAGE : code;
     }
     case 'diff':
       // Positionals, not `args.slice(1)`: an unknown flag is warned about as
