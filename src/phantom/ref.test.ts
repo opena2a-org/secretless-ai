@@ -73,6 +73,31 @@ describe('phantom/ref', () => {
     it('throws for unknown backend', () => {
       expect(() => parseSecretRef('secret://azure/secret-name')).toThrow('Unknown backend "azure"');
     });
+
+    // #387: a "." or ".." segment is resolved away in a request URL. The
+    // reference is refused by the parser, before any backend is asked.
+    it('throws for a ".." path segment with each of the five backends', () => {
+      for (const backend of ['keychain', 'vault', '1password', 'env', 'local']) {
+        const uri = `secret://${backend}/../../../other-mount/data/prod-db`;
+        expect(() => parseSecretRef(uri)).toThrow(
+          'Invalid secret reference: the path has a ".." segment, which a request URL resolves ' +
+          `away and can point outside the backend's store. Got: "${uri}"`,
+        );
+      }
+    });
+
+    it('throws for a "." path segment, and for a ".." segment after the first', () => {
+      expect(() => parseSecretRef('secret://vault/./prod-db')).toThrow('the path has a "." segment');
+      expect(() => parseSecretRef('secret://vault/prod/../other/db')).toThrow('the path has a ".." segment');
+      expect(() => parseSecretRef('secret://vault/prod-db/..')).toThrow('the path has a ".." segment');
+      expect(() => parseSecretRef('secret://vault/..?scope=read')).toThrow('the path has a ".." segment');
+    });
+
+    it('parses a segment that holds dots without being "." or ".."', () => {
+      const ref = parseSecretRef('secret://vault/prod.db/...v2/..key');
+      expect(ref.backend).toBe('vault');
+      expect(ref.path).toBe('prod.db/...v2/..key');
+    });
   });
 
   describe('isSecretRef', () => {

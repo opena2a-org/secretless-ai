@@ -75,6 +75,27 @@ the eight subcommands those lines list, and expects exit 2 from each. A NAME
 that `secret set` refuses, such as `9z`, and an empty value, as in
 `secret set A=` or `secret set A` given nothing on standard input, still exit 1.
 
+**A `secret://` reference whose path has a `.` or `..` segment is refused as
+an invalid reference before a backend is built, where `resolveRef` reported
+`Secret not found` for it (#387).** The Vault backend refuses a key with such
+a segment before its request (#384), and `resolveRef` read that refusal as an
+absent entry: with `VAULT_ADDR` set and `fetch` recorded,
+`resolveRef('secret://vault/../../../other-mount/data/prod-db')` sent no
+request and threw
+`Secret not found: secret://vault/../../../other-mount/data/prod-db`.
+`parseSecretRef` now throws
+`Invalid secret reference: the path has a ".." segment, which a request URL resolves away and can point outside the backend's store. Got: "secret://vault/../../../other-mount/data/prod-db"`
+for that reference, the same with `"."` for a `.` segment, and the same for
+each of the five backends: the check is on the path alone. A segment that
+holds dots without being `.` or `..`, such as `prod.db`, parses. The catch of
+`resolveEnvRefs` took the backend of a failed reference from a second
+`parseSecretRef` call, so a reference the parser refuses threw again from
+inside the catch and the call rejected as a whole; it now records the refusal
+in `errors`, with `backend` undefined, and leaves the reference in `resolved`
+as written. `src/phantom/resolver.vault-path.test.ts` resolves the reference
+above with `fetch` answering every read with a KV v2 body and asserts the
+refusal and no request, and `src/phantom/ref.test.ts` covers the parser.
+
 **The `purge` command in the `Fix:` block that `secret push --to azure-kv`
 prints for an HTTP 409 follows `or,` on its line, so an interactive bash or
 zsh given the whole block on standard input does not run it (#481).** The #479
