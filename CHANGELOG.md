@@ -34,6 +34,10 @@ its usage and exited 0 (`secret`, `scope`, `vault`, `broker`, `watch`) or 1
 Each now prints the same usage and exits 2, the code for a command line that
 was refused and ran nothing, as `hook`, `git-credential` and `export` given
 nothing already did; `broker --help`, `watch --help` and `vault --help` exit 0.
+`backend set` given no type printed
+`Unknown backend type: (none). Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.`
+and exited 1; it prints the same line and exits 2. `backend set ''` exits 2 as
+well.
 `scan --max-files 999999999999` ran the scan without a word, and a value above
 2^53 - 1 was refused as not "a positive whole number". A value above 1000000 is
 now refused with

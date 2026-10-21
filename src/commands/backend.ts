@@ -171,7 +171,10 @@ export async function runBackend(args: string[]): Promise<number> {
     const type = args[1];
     if (type !== 'local' && type !== 'keychain' && type !== '1password' && type !== 'vault' && type !== 'gcp-sm') {
       console.error(`\n  Unknown backend type: ${type === undefined ? '(none)' : escapeForDisplay(type)}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`);
-      return 1;
+      // No type names the types and sets nothing, so it exits EXIT_USAGE, as
+      // `migrate` without --from or --to does (#127). An empty type counts as
+      // none, as an empty pattern does for `rules test`.
+      return type ? 1 : EXIT_USAGE;
     }
 
     if (type === 'keychain') {
