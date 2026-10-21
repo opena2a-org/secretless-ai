@@ -270,6 +270,7 @@ describe('SECRETLESS_CLI_PREFIX rebrands citations + suppresses banner (#191)', 
         cwd: tmp,
         env: { ...process.env, SECRETLESS_CLI_PREFIX: 'opena2a secrets' },
       });
+      // A missing NAME is a usage error, exit 2 (#254).
       expect(res.status).toBe(2);
       expect(`${res.stdout}${res.stderr}`).toMatch(/Usage: opena2a secrets secret set/);
       expect(`${res.stdout}${res.stderr}`).not.toMatch(/npx secretless-ai/);
