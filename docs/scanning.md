@@ -18,6 +18,8 @@ The source files in an entered dot-directory count toward the file cap (`--max-f
 
 Symlinks are followed inside the scan root. A link whose target resolves outside it is not followed (otherwise a repo containing `link -> $HOME` would pull the whole home directory into the scan), and each one is listed with the command to scan its target directly, so the boundary is never silent. These do not affect the exit code.
 
+When the scan reads one file by more than one path in the scanned directory, through a symlink, a credential in it is one finding. The finding is reported under the path with no symlink in it when the scan found it by that path too, and the other paths it was found by are listed in code-point order: under `aliases` in `--json`, and on an `Also linked as:` line in the text report, which names the first three and counts the rest. It keeps the severity, confidence and fix of the path ranked first, `critical` before `high` and then the higher confidence, so with `.env -> scripts/env.sh` it is reported as `critical` on `scripts/env.sh`, as a credential in `.env` is. A `.secretlessignore` rule is matched against the path the scan reads, so with `src/app.ts` in it and `.alias -> src`, the scan reads that file only as `.alias/app.ts` and reports the finding there.
+
 ## A flag never widens scope
 
 A command line the tool cannot bind is refused with exit 2 before anything runs, rather than partly ignored. That covers an unrecognised flag, a flag given a value it cannot use, and a value-taking flag given no value at all. `--only=NAME`, `--path=DIR` and every other `--flag=value` spelling binds the same way as the spaced form.

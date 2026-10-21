@@ -1375,6 +1375,9 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, val
     // the print, after detection and redaction, so neither can split the line
     // or send the terminal a control sequence.
     console.log(`  ${sevColor('\u2502')} ${c.dim(`${escapePathForDisplay(finding.file)}:${finding.line}`)}${fixtureSuffix}`);
+    if (finding.aliases?.length) {
+      console.log(`  ${sevColor('\u2502')} ${c.dim(`Also linked as: ${aliasesText(finding.aliases)}`)}`);
+    }
     console.log(`  ${sevColor('\u2502')} ${escapeForDisplay(finding.preview)}`);
     console.log(`  ${sevColor('\u2502')} ${c.cyan('Confidence:')} ${tierColor(`${finding.confidenceTier} (${finding.confidence.toFixed(2)})`)}`);
     // What the issuing host answered, under --check-validity only. The detail
@@ -1393,6 +1396,20 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, val
   if (initNext) console.log(`  ${c.cyan('Protect now:')}        npx secretless-ai init`);
   console.log(`  ${c.cyan('Full security scan:')} npx hackmyagent secure`);
   console.log();
+}
+
+/** How many of a finding's `aliases` the text report names. */
+const ALIASES_SHOWN = 3;
+
+/**
+ * The other paths a finding was found under, each through a symbolic link, as
+ * the text report gives them: the first ALIASES_SHOWN, then how many more,
+ * which `--json` lists in full under `aliases`.
+ */
+function aliasesText(aliases: readonly string[]): string {
+  const named = aliases.slice(0, ALIASES_SHOWN).map(p => escapePathForDisplay(p)).join(', ');
+  const more = aliases.length - ALIASES_SHOWN;
+  return more > 0 ? `${named} and ${more} more` : named;
 }
 
 /** Findings whose file's presence is the finding: no pattern, no score inputs. */
@@ -1475,6 +1492,7 @@ async function runScanWithExplanations(
     const fixtureSuffix = finding.looksLikeFixture ? ' (looks like a test fixture)' : '';
     console.log(`  [${severity}] ${finding.patternName}`);
     console.log(`         ${escapePathForDisplay(finding.file)}:${finding.line}${fixtureSuffix}`);
+    if (finding.aliases?.length) console.log(`         Also linked as: ${aliasesText(finding.aliases)}`);
     console.log(`         ${escapeForDisplay(finding.preview)}`);
     console.log(`         Pattern: ${explainPattern(finding)}`);
     console.log(`         Confidence: ${explainConfidence(finding)}`);
