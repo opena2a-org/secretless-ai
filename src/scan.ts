@@ -115,6 +115,25 @@ export function lineValuesOf(finding: ScanFinding): readonly LineValue[] | undef
 }
 
 /**
+ * The path a finding was scored for, when `dedupeByRealFile` reports it under
+ * another path to the same file. Held beside the finding as MATCHED_VALUES is,
+ * so it is not in `--json`.
+ */
+const SCORED_PATH = new WeakMap<ScanFinding, string>();
+
+/**
+ * The path the scan gave a finding its severity, confidence and fix for, when
+ * the finding is reported under another path to the same file: with
+ * `config.yaml -> scripts/app.sh`, the finding the config walk made for
+ * `config.yaml`, reported under `scripts/app.sh` (#398). Undefined when the
+ * finding is reported under the path it was scored for. `scan --explain`
+ * names it on the `Path:` line and scans it in `Verify:` (#486).
+ */
+export function scoredPathOf(finding: ScanFinding): string | undefined {
+  return SCORED_PATH.get(finding);
+}
+
+/**
  * The values on `text` that `lineValuesOf` lists, each match scored for
  * `scoredPath` as a finding made from it would be. Run only under
  * `retainValues`, for a line that holds a finding.
@@ -374,6 +393,12 @@ export interface ScanStats {
    * removed anything, so a CI job read a suppressed finding as a clean repo
    * (#125). Optional so an existing caller still compiles; `scan()` counts only
    * when a filter is active.
+   *
+   * A directory scan counts them as `total` counts findings, once per file,
+   * line and pattern however many paths lead to the file, and not when another
+   * path to the same file, line and pattern kept a finding (#486): one
+   * credential in `scripts/app.sh` with `config.yaml -> scripts/app.sh` was
+   * counted 2.
    */
   confidenceSuppressed?: number;
   /**
@@ -805,6 +830,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
 
   const minConfidence = Math.max(0, Math.min(1, options?.minConfidence ?? 0));
   const includeTestsOpt = options?.includeTests ?? false;
+  // The matches scored below `minConfidence`. Counted, and their paths read,
+  // once the paths that lead to one file are collapsed (`dedupeByRealFile`).
+  const belowFloor: FloorMatch[] = [];
 
   // Helper: classify a match into a `ScanFinding` with confidence + fixture flag.
   // `lineText` is the line the match is on, read only under `retainValues`.
@@ -823,7 +851,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       filePath: file,
     });
     if (breakdown.score < minConfidence) {
-      if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
+      belowFloor.push({ file, line, patternId: pattern.id });
       return null;
     }
     const looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(file)));
@@ -1143,7 +1171,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
   // counted PATHS rather than credentials and a triage queue read thirteen
   // incidents. Deduplicated on the resolved file plus its position, after the
   // sort, so the finding kept is the highest-confidence one.
-  return dedupeByRealFile(findings, projectDir);
+  const { kept, hiddenByFloor } = dedupeByRealFile(findings, projectDir, belowFloor);
+  if (stats && hiddenByFloor > 0) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + hiddenByFloor;
+  return kept;
 }
 
 /**
@@ -1155,6 +1185,13 @@ function compareFindings(a: ScanFinding, b: ScanFinding): number {
   if (a.severity !== b.severity) return a.severity === 'critical' ? -1 : 1;
   if (a.confidence !== b.confidence) return b.confidence - a.confidence;
   return a.file.localeCompare(b.file);
+}
+
+/** Where a directory scan found a match it scored below `minConfidence`. */
+interface FloorMatch {
+  file: string;
+  line: number;
+  patternId: string;
 }
 
 /**
@@ -1169,20 +1206,45 @@ function compareFindings(a: ScanFinding, b: ScanFinding): number {
  * finding there too, and the other paths are listed in `aliases`. It was the
  * path that sorted first, so with `.alias -> src` the finding in `src/app.ts`
  * was reported as `.alias/app.ts`, which a CI allowlist written for
- * `src/app.ts` did not match (#398).
+ * `src/app.ts` did not match (#398). When the finding the scan made for that
+ * path has the severity and confidence of the one ranked first, as
+ * `src/app.ts` has with `.alias -> src`, that finding is the one kept.
+ * Otherwise the one ranked first is given that path and keeps the path it was
+ * scored for, which `scoredPathOf` returns (#486).
+ *
+ * `belowFloor` holds the matches scored below `--min-confidence`. Their paths
+ * are among those the path is chosen from and `aliases` lists, so a floor that
+ * keeps a finding does not change the path it is reported under: with
+ * `config.yaml -> scripts/app.sh` and a floor of 0.86, which the
+ * `scripts/app.sh` match (0.85) is under and the `config.yaml` one (0.864) is
+ * not, the finding was reported under `config.yaml` with no `aliases` (#486).
+ * `hiddenByFloor` counts the files, lines and patterns the floor left no
+ * finding for, once each however many paths lead to them.
  */
-function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFinding[] {
+function dedupeByRealFile(
+  findings: ScanFinding[],
+  projectDir: string,
+  belowFloor: readonly FloorMatch[] = [],
+): { kept: ScanFinding[]; hiddenByFloor: number } {
   const rootReal = realpathOrNull(projectDir) ?? path.resolve(projectDir);
   const realOf = new Map<string, string>();
+  const keyOf = (m: FloorMatch): string => {
+    let real = realOf.get(m.file);
+    if (real === undefined) {
+      real = realpathOrNull(path.resolve(projectDir, m.file)) ?? m.file;
+      realOf.set(m.file, real);
+    }
+    return `${real}\u0000${m.line}\u0000${m.patternId}`;
+  };
   const pathsOf = new Map<string, string[]>();
   const kept = new Map<string, ScanFinding>();
+  // The finding the scan made for each path, the first of them for a path
+  // two walks read, keyed on the key and the path.
+  const madeFor = new Map<string, ScanFinding>();
   for (const f of findings) {
-    let real = realOf.get(f.file);
-    if (real === undefined) {
-      real = realpathOrNull(path.resolve(projectDir, f.file)) ?? f.file;
-      realOf.set(f.file, real);
-    }
-    const key = `${real}\u0000${f.line}\u0000${f.patternId}`;
+    const key = keyOf(f);
+    const at = `${key}\u0000${f.file}`;
+    if (!madeFor.has(at)) madeFor.set(at, f);
     const paths = pathsOf.get(key);
     if (paths) {
       if (!paths.includes(f.file)) paths.push(f.file);
@@ -1191,18 +1253,35 @@ function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFind
     pathsOf.set(key, [f.file]);
     kept.set(key, f);
   }
+  const hidden = new Set<string>();
+  for (const m of belowFloor) {
+    const key = keyOf(m);
+    const paths = pathsOf.get(key);
+    if (!paths) hidden.add(key);
+    else if (!paths.includes(m.file)) paths.push(m.file);
+  }
 
   let moved = false;
-  for (const [key, f] of kept) {
+  for (const [key, first] of kept) {
     const paths = pathsOf.get(key)!;
     if (paths.length < 2) continue;
     // A path with no link in it is the one that, joined to the root's real
     // path, is the file's real path already.
     const linkFree = paths.find(p => path.resolve(rootReal, p) === realOf.get(p));
+    let f = first;
     if (linkFree !== undefined && linkFree !== f.file) {
-      // Changed on the finding itself, not a copy: the values `retainValues`
-      // keeps are held against this object.
-      f.file = linkFree;
+      const own = madeFor.get(`${key}\u0000${linkFree}`);
+      if (own !== undefined && own.severity === f.severity && own.confidence === f.confidence) {
+        // Ranked level with the first, so its own explanation, fix and
+        // fixture flag describe the path reported.
+        f = own;
+        kept.set(key, f);
+      } else {
+        // Changed on the finding itself, not a copy: the values `retainValues`
+        // keeps are held against this object.
+        SCORED_PATH.set(f, f.file);
+        f.file = linkFree;
+      }
       moved = true;
     }
     f.aliases = paths.filter(p => p !== f.file).sort(compareCodePoints);
@@ -1211,7 +1290,7 @@ function dedupeByRealFile(findings: ScanFinding[], projectDir: string): ScanFind
   // A finding given another path is placed by that path among the findings of
   // its severity and confidence.
   if (moved) out.sort(compareFindings);
-  return out;
+  return { kept: out, hiddenByFloor: hidden.size };
 }
 
 /**

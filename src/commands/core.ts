@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { init } from '../init';
 import { RULES_FILENAME } from '../custom-rules';
-import { scan, emptySkips, unreadReason, matchedValueOf, lineValuesOf, envFileOperand, SOURCE_SKIP_REASONS, UNREAD_REASONS, MAX_FILES_LIMIT, type ScanFinding } from '../scan';
+import { scan, emptySkips, unreadReason, matchedValueOf, lineValuesOf, scoredPathOf, envFileOperand, SOURCE_SKIP_REASONS, UNREAD_REASONS, MAX_FILES_LIMIT, type ScanFinding } from '../scan';
 import { IGNORE_FILENAME } from '../secretlessignore';
 import { startsWithIgnoreHeader } from './ignore';
 import { scanToSarif } from '../sarif';
@@ -1496,10 +1496,15 @@ async function runScanWithExplanations(
     console.log(`         ${escapeForDisplay(finding.preview)}`);
     console.log(`         Pattern: ${explainPattern(finding)}`);
     console.log(`         Confidence: ${explainConfidence(finding)}`);
+    // A finding reported under the path with no link in it can carry the
+    // score of a link path that ranked above that path (#398): the Path line
+    // then names the link path, and Verify scans it (#486).
+    const scoredPath = scoredPathOf(finding);
     if (finding.confidenceFactors?.pathKind) {
       const { pathScore, pathKind } = finding.confidenceFactors;
       const { label, reason } = PATH_KIND_REASONS[pathKind];
-      console.log(`         Path: ${label} (${pathScore.toFixed(2)}): ${reason}`);
+      const scoredFor = scoredPath === undefined ? '' : ` for ${escapePathForDisplay(scoredPath)}`;
+      console.log(`         Path: ${label} (${pathScore.toFixed(2)})${scoredFor}: ${reason}`);
     }
     // What the issuing host answered, under --check-validity only.
     const answer = validity?.get(finding);
@@ -1515,11 +1520,11 @@ async function runScanWithExplanations(
       console.log(`         Fix: ${finding.fix}`);
     }
     // Re-run after the fix: the finding is gone when the value is. A file
-    // flagged for existing is checked by listing it.
-    const target = verifyOperand(finding.file);
+    // flagged for existing is checked by listing it, under the path reported:
+    // its severity and confidence do not depend on the path.
     console.log(PRESENCE_FINDINGS.has(finding.patternId)
-      ? `         Verify: ls -l ${target}`
-      : `         Verify: npx secretless-ai scan ${target}`);
+      ? `         Verify: ls -l ${verifyOperand(finding.file)}`
+      : `         Verify: npx secretless-ai scan ${verifyOperand(scoredPath ?? finding.file)}`);
     // Generated context is OFF by default. Measured over 30 runs against the
     // local engine (2026-08-06): 30/30 produced text, 0/30 produced a usable
     // explanation. What survived validation was instruction-tuning noise
