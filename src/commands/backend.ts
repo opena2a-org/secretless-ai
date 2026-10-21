@@ -101,11 +101,15 @@ export async function runBackend(args: string[]): Promise<number> {
     const hasYes = args.includes('--yes');
     let prefixFilter: string | undefined;
     const prefixIdx = args.indexOf('--prefix');
-    if (prefixIdx !== -1 && args[prefixIdx + 1]) {
+    // A --prefix given is bound, empty or not. An empty one was read as no
+    // --prefix, so `--prefix '' --yes` deleted both kinds of entry (#490).
+    if (prefixIdx !== -1) {
       const val = args[prefixIdx + 1];
       if (val !== 'mcp' && val !== 'secret') {
-        console.error(`\n  Unknown prefix: ${escapeForDisplay(val)}. Use 'mcp' or 'secret'.\n`);
-        return 1;
+        // Nothing is deleted: EXIT_USAGE, as for a backend type `backend set`
+        // does not take. It exited 1, the code for credentials found (#490).
+        console.error(`\n  Unknown prefix: ${val ? escapeForDisplay(val) : '(none)'}. Use 'mcp' or 'secret'.\n`);
+        return EXIT_USAGE;
       }
       prefixFilter = val;
     }
@@ -325,9 +329,12 @@ export async function runMigrate(args: string[]): Promise<number> {
     return EXIT_USAGE;
   }
 
+  // One backend named as both copies nothing: EXIT_USAGE, as for a --from or
+  // --to that is not a backend. It exited 1, the code for credentials found
+  // (#490).
   if (fromType === toType) {
     console.error(`\n  Source and destination backends are the same: ${fromType}\n`);
-    return 1;
+    return EXIT_USAGE;
   }
 
   // Validate vault env vars before attempting migration

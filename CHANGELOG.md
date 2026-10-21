@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+**`migrate` given one backend as both `--from` and `--to`, and `backend purge`
+given a `--prefix` other than `mcp` or `secret`, exit 2, and an empty
+`--prefix` is refused where `purge` read it as none (#490).**
+`migrate --from local --to local` printed
+`Source and destination backends are the same: local` and exited 1, and the
+other four backend types given twice exited 1 too. `backend purge --prefix nope`
+printed `Unknown prefix: nope. Use 'mcp' or 'secret'.` and exited 1, with
+`--yes` as well. 1 is the code for credentials found. Both refusals return
+before a backend is built: with one `mcp/` and one `secret/` entry in the
+encrypted file, `backend list` listed both after the two had run. They exit 2,
+the code for a command line that was refused and ran nothing, as
+`backend set nope` and `migrate --from nope --to local` do (#486).
+`backend purge --prefix ''` and `backend purge --prefix=` were not refused:
+`purge` read the empty prefix as no `--prefix`, so against that file each
+printed `To confirm, run: secretless-ai backend purge --yes`, and
+`backend purge --prefix '' --yes` printed `Deleted 2 entries from local.` and
+exited 0. Each now prints `Unknown prefix: (none). Use 'mcp' or 'secret'.`, as
+`backend set ''` names an empty type, exits 2 and deletes nothing. The exit
+codes in docs/commands.md and docs/scanning.md name a `backend purge` prefix
+the tool does not take, and one backend given to `migrate` as both `--from`
+and `--to`, among the cases of 2. `src/followups-490.test.ts` runs the build
+with each of the five backend types as both `--from` and `--to`, and with
+`backend purge --prefix nope`, `--prefix ''` and `--prefix=`, and expects
+exit 2 from each. It calls `runBackend` with `purge --prefix nope --yes` and
+`purge --prefix '' --yes` against an encrypted file holding one entry of each
+kind and expects both entries to remain.
+
 **The files `init` generates name the version that wrote them, its
 instruction block names no credential variable, and `scan` lists a file it
 reads through a link out of the scan root with the file's real path (#127).**
