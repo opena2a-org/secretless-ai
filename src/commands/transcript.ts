@@ -10,7 +10,7 @@ import { pathOperand, shellQuote } from './core';
 import { CLI, CLI_BARE, VERSION } from './utils';
 import { escapeForDisplay, escapePathForDisplay } from '../display-safe';
 import { EXIT_USAGE } from '../argv';
-import { SecretStore } from '../secret-store';
+import { SecretStore, isSettableSecretName, notSettableReason } from '../secret-store';
 import { markRedactedSecretsExposed } from '../secret-exposure';
 import type { ExposureMarks, RedactedSpan } from '../secret-exposure';
 
@@ -57,7 +57,21 @@ function reportExposures(marks: ExposureMarks, dryRun: boolean): void {
     console.log(`    ${m.name}  NOT marked exposed: ${m.reason}`);
   }
   console.log('  A redacted value still works until it is replaced at its provider.');
-  console.log(`  Next:     rotate each one at its provider, then  ${CLI_BARE} secret set NAME`);
+  // The store holds names `secret set` refuses, ones that start with a digit,
+  // '_' or '-' (#509). With such a name listed, each name gets a step of its
+  // own: the command for a name `secret set` takes, the reason in place of it
+  // for a name it refuses.
+  const names = [...marks.marked, ...marks.alreadyOpen, ...marks.failed].map((m) => m.name);
+  if (names.every((name) => isSettableSecretName(name))) {
+    console.log(`  Next:     rotate each one at its provider, then  ${CLI_BARE} secret set NAME`);
+  } else {
+    console.log('  Next:     rotate each one at its provider, then store its new value');
+    for (const name of names) {
+      console.log(isSettableSecretName(name)
+        ? `            ${CLI_BARE} secret set ${name}`
+        : `            ${notSettableReason(name)}; store its new value the way it was first stored.`);
+    }
+  }
   console.log(`  Open:     ${CLI_BARE} secret list --needs-rotation${dryRun ? '   (run without --dry-run to record)' : ''}\n`);
 }
 
