@@ -10,7 +10,7 @@
  * message for a person goes to stderr, which git passes through.
  */
 
-import { SecretStore } from '../secret-store';
+import { SecretStore, isSettableSecretName, notSettableReason } from '../secret-store';
 import { EXIT_USAGE } from '../argv';
 import { nearestMatch } from '../near-miss';
 import { CLI, CLI_BARE, formatCommandError } from './utils';
@@ -140,6 +140,19 @@ function mappingFrom(values: Record<string, string>, needName: boolean): HelperM
   return { host, name: name ?? '', ...(username !== undefined ? { username } : {}) };
 }
 
+/**
+ * The line printed in place of `secret set NAME` for a name `secret set`
+ * refuses. `--name` takes any name the store takes, which includes one that
+ * starts with a digit, '_' or '-', so the line names the install command that
+ * points git at another name. `store` is the clause that says which token
+ * to store.
+ */
+function notSettableLine(mapping: HelperMapping, store: string): string {
+  const user = mapping.username !== undefined ? ` --username ${mapping.username}` : '';
+  return `  ${notSettableReason(mapping.name)}; ${store} under a name \`secret set\` takes, `
+    + `then run: ${CLI} git-credential install --host ${mapping.host} --name <NAME>${user}`;
+}
+
 export async function runGitCredential(args: string[], deps: GitCredentialDeps = {}): Promise<number> {
   const parsed = parse(args);
   const { action } = parsed;
@@ -202,7 +215,9 @@ function runInstall(values: Record<string, string>, git: GitRunner): number {
   console.log('    No credential value was written to any file.');
   console.log();
   console.log(`  Verify:  git config --global --get-all ${change.key}`);
-  console.log(`  Store:   ${CLI} secret set ${mapping.name}   (if it is not stored yet)`);
+  console.log(isSettableSecretName(mapping.name)
+    ? `  Store:   ${CLI} secret set ${mapping.name}   (if it is not stored yet)`
+    : notSettableLine(mapping, 'if it is not stored yet, store the token'));
   console.log(`  Undo:    ${CLI} git-credential uninstall --host ${mapping.host}`);
   console.log();
   return 0;
@@ -283,13 +298,17 @@ async function runGet(values: Record<string, string>, deps: GitCredentialDeps): 
   }
   if (value === undefined) {
     console.error(`  ${CLI_BARE}: ${mapping.name} is not in the secret store, so git was given no credential for ${mapping.host}.`);
-    console.error(`  Store it: ${CLI} secret set ${mapping.name}`);
+    console.error(isSettableSecretName(mapping.name)
+      ? `  Store it: ${CLI} secret set ${mapping.name}`
+      : notSettableLine(mapping, 'store the token'));
     return 1;
   }
   const problem = valueProblem(value);
   if (problem) {
     console.error(`  ${CLI_BARE}: the stored ${mapping.name} ${problem}, so it was not sent to git.`);
-    console.error(`  Store it again as a single line: ${CLI} secret set ${mapping.name}`);
+    console.error(isSettableSecretName(mapping.name)
+      ? `  Store it again as a single line: ${CLI} secret set ${mapping.name}`
+      : notSettableLine(mapping, 'store the token as a single line'));
     return 1;
   }
   (deps.writeAnswer ?? ((t: string) => { process.stdout.write(t); }))(formatAnswer(match.username, value));
@@ -317,6 +336,8 @@ async function runIgnoredAction(action: string, values: Record<string, string>, 
   const match = matchRequest(parseCredentialRequest(input), mapping);
   if (!match.ours) return 0;
   console.error(`  ${CLI_BARE}: ${mapping.host} did not accept the token stored as ${mapping.name}. It was left in the store.`);
-  console.error(`  Replace it: ${CLI} secret set ${mapping.name}`);
+  console.error(isSettableSecretName(mapping.name)
+    ? `  Replace it: ${CLI} secret set ${mapping.name}`
+    : notSettableLine(mapping, 'store the new token'));
   return 0;
 }

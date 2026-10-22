@@ -20,6 +20,32 @@ holds the README to that section. The listing changes with the next release.
 No command, flag, exit code or output other than the opening of `--help`
 changed.
 
+**`git-credential` no longer offers `secret set` for a `--name` that
+`secret set` refuses (#494).** `git-credential install --host github.com
+--name _GH_TOKEN` printed
+`Store:   npx secretless-ai secret set _GH_TOKEN   (if it is not stored yet)`,
+and that command exits 1 with `Error: Invalid secret name. Use letters,
+numbers, underscores, hyphens. Must start with a letter.`: `--name` takes any
+name the store takes, which includes one that starts with a digit, `_` or `-`.
+The line `get` prints when no value is stored under the name (`Store it:`),
+the line it prints when the stored value holds a line break
+(`Store it again as a single line:`) and the line `erase` prints
+(`Replace it:`) named the same command. Each of the four lines now gives the
+reason and the install command that points git at another name. For `get`
+with no value stored it reads ``"_GH_TOKEN" cannot be stored by `secret set`,
+which takes a letter, then letters, digits, '_' or '-'; store the token under
+a name `secret set` takes, then run: npx secretless-ai git-credential install
+--host github.com --name <NAME>``. The install line says
+`if it is not stored yet, store the token`, the line-break line
+`store the token as a single line` and the `erase` line
+`store the new token`, and the command carries the `--username` the helper
+was installed with. `install` still writes the helper for such a name and
+exits 0, and a name `secret set` takes still gets the `secret set` command in
+each of the four places. `src/followups-494.test.ts` checks the four lines for
+`_GH_TOKEN`, `1GH_TOKEN` and `-GH_TOKEN`, runs the install command a line
+names with `GH_TOKEN` in place of `<NAME>` and checks that the helper entry it
+writes names `GH_TOKEN`, and checks each `secret set` command for `GH_TOKEN`.
+
 **`migrate` given one backend as both `--from` and `--to`, and `backend purge`
 given a `--prefix` other than `mcp` or `secret`, exit 2, and an empty
 `--prefix` is refused where `purge` read it as none (#490).**
