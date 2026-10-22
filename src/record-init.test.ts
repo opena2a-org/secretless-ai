@@ -25,7 +25,41 @@ import { REPO_ROOT } from './tape.test-support';
 const SCRIPT = 'docs/vhs/record-init.sh';
 const FIXTURE_SCRIPT = 'docs/vhs/setup-fixture.sh';
 const CONTEXT_HOST = 'unix:///tmp/stand-in-docker.sock';
-const SIDECAR_WRITTEN = { version: '0.0.0', meteredCostUsd: 0, wallClockSeconds: 27.1 };
+const SIDECAR_WRITTEN = {
+  tool: 'secretless-ai',
+  version: '0.0.0',
+  prerelease: true,
+  ranAtUtc: '2026-10-22T08:14:41Z',
+  meteredCostUsd: 0,
+  wallClockSeconds: 27.1,
+};
+
+/** A README with the block the render rewrites, and text around it that a render leaves alone. */
+const README_BEFORE = [
+  '# Project',
+  '',
+  '<!-- demo:init:start -->',
+  '![an earlier recording](docs/vhs/init.gif)',
+  'Recorded with secretless-ai 0.0.0 on 2026-01-01',
+  '<!-- demo:init:end -->',
+  '',
+  'After the block.',
+  '',
+].join('\n');
+
+/** The same README after a render whose sidecar has the given caption. */
+const readmeAfter = (caption: string) => [
+  '# Project',
+  '',
+  '<!-- demo:init:start -->',
+  '![secretless-ai init sets up a project, then verify checks it](docs/vhs/init.gif)',
+  caption,
+  '[Text version](docs/vhs/init-capture.txt) · [How it was recorded](docs/vhs/init.json)',
+  '<!-- demo:init:end -->',
+  '',
+  'After the block.',
+  '',
+].join('\n');
 
 const read = (file: string) => fs.readFileSync(path.join(REPO_ROOT, file), 'utf-8');
 
@@ -131,6 +165,7 @@ beforeEach(() => {
   write(path.join(repo, SCRIPT), read(SCRIPT), 0o755);
   write(path.join(repo, FIXTURE_SCRIPT), read(FIXTURE_SCRIPT), 0o755);
   write(path.join(repo, 'package.json'), '{ "version": "0.0.0" }\n');
+  write(path.join(repo, 'README.md'), README_BEFORE);
   write(path.join(repo, 'docs/vhs/docker/Dockerfile'), 'placeholder\n');
   write(path.join(repo, 'docs/vhs/docker/vhs-0.12.0-render-context.patch'), 'placeholder\n');
   git('init', '-q');
@@ -179,6 +214,35 @@ describe('docs/vhs/record-init.sh on the host', () => {
       `PACKED_FROM_COMMIT=${head()}`,
       `COMMIT=${head()}`,
     ]));
+  });
+
+  it('passes the container PRERELEASE=false when the build shown is the published one', () => {
+    const result = record();
+    expect(result.status, result.stderr).toBe(0);
+    const run = dockerCalls().find(call => call[0] === 'run');
+    expect(passedVariables(run!)).toContain('PRERELEASE=false');
+  });
+
+  it('passes the container PRERELEASE=true for a pack of a commit no release tag names', () => {
+    write(path.join(base, 'bin', 'npm'), NPM_NOT_PUBLISHED, 0o755);
+    fs.mkdirSync(path.join(repo, 'node_modules'));
+    const result = record();
+    expect(result.status, result.stderr).toBe(0);
+    const run = dockerCalls().find(call => call[0] === 'run');
+    expect(passedVariables(run!)).toContain('PRERELEASE=true');
+  });
+
+  it('passes the container PRERELEASE=false for a pack of the commit the tag v<version> names, and true once HEAD moves past it', () => {
+    write(path.join(base, 'bin', 'npm'), NPM_NOT_PUBLISHED, 0o755);
+    fs.mkdirSync(path.join(repo, 'node_modules'));
+    git('tag', '-a', 'v0.0.0', '-m', 'release');
+    expect(record().status).toBe(0);
+    expect(passedVariables(dockerCalls().find(call => call[0] === 'run')!)).toContain('PRERELEASE=false');
+
+    fs.rmSync(dockerLog);
+    git('commit', '-q', '--allow-empty', '-m', 'after the release');
+    expect(record().status).toBe(0);
+    expect(passedVariables(dockerCalls().find(call => call[0] === 'run')!)).toContain('PRERELEASE=true');
   });
 
   it('refuses to render when the fixture script has an uncommitted change, before any docker call', () => {
@@ -280,6 +344,38 @@ describe('docs/vhs/record-init.sh after the render', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('record-init.sh: the render wrote no docs/vhs/init.json.');
     expect(result.stdout).not.toContain('sidecar: ');
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf-8')).toBe(README_BEFORE);
+  });
+
+  it('rewrites the README block from the sidecar: the image, the caption with the version, the date and the pre-release note, and the links', () => {
+    const result = record();
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf-8')).toBe(
+      readmeAfter('Recorded with secretless-ai 0.0.0 on 2026-10-22 (pre-release build)'),
+    );
+  });
+
+  it('writes no pre-release note under a recording of a release build', () => {
+    const result = record({ STAND_IN_SIDECAR: JSON.stringify({ ...SIDECAR_WRITTEN, prerelease: false }) + '\n' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf-8')).toBe(readmeAfter('Recorded with secretless-ai 0.0.0 on 2026-10-22'));
+  });
+
+  it('exits 1 and leaves the README as it was when the README holds no block to show the recording in', () => {
+    const without = '# Project\n\nNo recording here.\n';
+    write(path.join(repo, 'README.md'), without);
+    const result = record();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('record-init.sh: README.md holds no single <!-- demo:init:start --> ... <!-- demo:init:end --> block');
+    expect(result.stdout).not.toContain('sidecar: ');
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf-8')).toBe(without);
+  });
+
+  it('exits 1 and leaves the README as it was when the sidecar gives no caption', () => {
+    const result = record({ STAND_IN_SIDECAR: JSON.stringify({ version: '0.0.0', meteredCostUsd: 0, wallClockSeconds: 27.1 }) + '\n' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('record-init.sh: docs/vhs/init.json names no tool, version, prerelease and ranAtUtc to caption the recording with');
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf-8')).toBe(README_BEFORE);
   });
 });
 
@@ -296,7 +392,24 @@ describe('docs/vhs/record-init.sh inside the recording image (read from the scri
     expect(script).toContain('if ! [[ "${COMMIT:-}" =~ ^[0-9a-f]{40}$ ]]; then');
   });
 
-  it('hashes the tape into one field only', () => {
-    expect(read(SCRIPT).match(/sha\(env\.TAPE\)/g)).toEqual(['sha(env.TAPE)']);
+  it('writes prerelease from the true or false the host passed, and records no render with anything else', () => {
+    const script = read(SCRIPT);
+    expect(script).toContain('prerelease: env.PRERELEASE === "true",');
+    expect(script).toContain('if [ "${PRERELEASE:-}" != "true" ] && [ "${PRERELEASE:-}" != "false" ]; then');
+  });
+
+  it('hashes the tape once, and writes that digest as scriptSha256 and tapeSha256, the two fields that name the tape', () => {
+    const script = read(SCRIPT);
+    expect(script.match(/sha\(env\.TAPE\)/g)).toEqual(['sha(env.TAPE)']);
+    expect(script).toContain('const tapeSha256 = sha(env.TAPE);');
+    expect(script).toContain('scriptSha256: tapeSha256,');
+    expect(script.match(/^\s*tapeSha256,$/gm)).toHaveLength(1);
+  });
+
+  it('moves the MP4 index in front of its media before it is measured, and refuses an MP4 where it is not', () => {
+    const script = read(SCRIPT);
+    expect(script).toContain('-c copy -movflags +faststart');
+    expect(script.indexOf('-movflags +faststart')).toBeLessThan(script.indexOf('node - <<\'NODE\''));
+    expect(script).toContain('with moov after mdat');
   });
 });

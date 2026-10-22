@@ -14,7 +14,7 @@ secrets.json
 *.key
 *.p12
 
-# Recording outputs that are not committed (the MP4)
+# Recording outputs that are not committed (the MP4 and the WebM)
 docs/vhs/out/
 
 # Coverage

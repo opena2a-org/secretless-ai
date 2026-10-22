@@ -9,13 +9,16 @@ $ npx secretless-ai init
   Created:
     + .claude/hooks/secretless-guard.sh
     + .claude/hooks/secretless-output-check.cjs
-    + .claude/settings.json (99 deny patterns)
+    + .claude/settings.json (147 deny patterns)
     + CLAUDE.md
 
   Next steps:
     Verify: secretless-ai verify
     Scan:   secretless-ai scan
     Status: secretless-ai status
+
+  Transcript watcher not installed: no transcript directory yet. Claude Code creates ~/.claude/projects at its first session.
+    Install it then: secretless-ai watch install
 
 [exit 0]
 

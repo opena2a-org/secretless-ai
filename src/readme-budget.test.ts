@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { DEMO_START, demoCaption } from './tape.test-support';
 
 /**
  * The README is the page a visitor reads before installing. It is held to a
@@ -226,10 +227,20 @@ describe('README length budget', () => {
       .toEqual(['One two. Three.', '- a b - c d', 'After the block.']);
   });
 
-  it('no README line carries a release number or a date', () => {
+  it('no README line carries a release number or a date, other than the caption the recording\'s sidecar gives it', () => {
     // A sample that prints a version banner is shown from below the banner,
-    // and the whole of it is kept under docs/captures/.
-    const stale = readme().split('\n').flatMap((line, i) => (VERSION_OR_DATE.test(line) ? [`${i + 1}: ${line}`] : []));
+    // and the whole of it is kept under docs/captures/. The caption under the
+    // recording names the version and the day of its render: the render
+    // script writes it from docs/vhs/init.json, and
+    // src/recording-sidecar.test.ts holds that sidecar to the version in
+    // package.json, so it is the one line that moves with each release. It is
+    // allowed only as that exact line, in its place under the image.
+    const sidecar = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'docs', 'vhs', 'init.json'), 'utf-8'));
+    const lines = readme().split('\n');
+    const captionAt = lines.indexOf(DEMO_START) === -1 ? -1 : lines.indexOf(DEMO_START) + 2;
+    const stale = lines.flatMap((line, i) =>
+      VERSION_OR_DATE.test(line) && !(i === captionAt && line === demoCaption(sidecar)) ? [`${i + 1}: ${line}`] : [],
+    );
     expect(stale).toEqual([]);
   });
 

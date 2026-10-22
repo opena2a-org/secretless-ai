@@ -442,8 +442,10 @@ only which documented command names still parse.
 
 ## 10c. Recorded walkthrough
 
-The README links `docs/vhs/init.gif`, rendered from `docs/vhs/init.tape`. The
-sidecar beside it, `docs/vhs/init.json`, names the version the recording shows
+The README shows `docs/vhs/init.gif`, rendered from `docs/vhs/init.tape`, in its
+Quick start, between `<!-- demo:init:start -->` and `<!-- demo:init:end -->`,
+with a caption the render writes from the sidecar beside the recording. The
+sidecar, `docs/vhs/init.json`, names the version the recording shows
 and, as `commit`, the commit HEAD named when the render started,
 and `src/recording-sidecar.test.ts` fails while that version differs from the one
 in `package.json`. A version bump is therefore followed by a render. Commit the
@@ -452,6 +454,18 @@ the committed tree at HEAD, not the working tree. The script asks the registry
 with `npm view` and packs HEAD only when the answer is E404; any other failure,
 such as a registry npm cannot reach, stops the script and its dry run with exit
 1 and npm's error code.
+
+The caption reads `Recorded with secretless-ai <version> on <date>`. A render
+of the published package, or of a pack of the commit the tag `v<version>`
+names, records `prerelease: false`; any other render records
+`prerelease: true`, and the caption ends with `(pre-release build)`.
+
+The test also holds the tape to its pace: 120 ms a character, 800 ms before
+each Enter, a 110 by 28 terminal, a `# step:` comment and a `Screenshot` for
+each step, and a hold after each step of at least 3 s, 1 s for every 4 lines
+the step prints, and the time its sentence in `docs/vhs/init.narration.json`
+takes at 150 words a minute plus 0.5 s, and of at most 12 s. A change to the
+narration can need a longer hold.
 
 `docker build` and `docker run` use a docker configuration directory the script
 creates and removes, which names no credential helper and holds no registry
@@ -468,8 +482,10 @@ docs/vhs/record-init.sh             # needs Docker; exits 2 if ANTHROPIC_API_KEY
 
 The render's last line is `sidecar: docs/vhs/init.json sha256 <hash>, version
 <version>, meteredCostUsd <cost>, wallClockSeconds <seconds>`; put that line in
-the release record. Commit `docs/vhs/init.gif`, `docs/vhs/init-capture.txt` and
-`docs/vhs/init.json`. The MP4 the render writes to `docs/vhs/out/` is ignored
+the release record. Commit `docs/vhs/init.gif`, `docs/vhs/init-s1.png`,
+`docs/vhs/init-s2.png`, `docs/vhs/init-capture.txt`, `docs/vhs/init.json` and
+`README.md`. The MP4, remuxed so its index comes before its media, and the VP9
+WebM the render writes to `docs/vhs/out/` are for the website; they are ignored
 and never committed. Check that `meteredCostUsd` on that line is `0` and that
 `version` is the version you are tagging.
 
