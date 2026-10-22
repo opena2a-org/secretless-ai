@@ -116,6 +116,37 @@ describe('installShellHook (#333)', () => {
   });
 });
 
+// A blank line under the marker was taken as a missing hook line without the
+// lines after it being read, so a second line that runs the hook was written
+// and each new shell ran the hook twice (#498).
+describe('installShellHook adds no second line that runs the hook (#498)', () => {
+  const profile = (): string => path.join(home, '.bashrc');
+  const hook = (): string => getShellHookLine([process.execPath, script]);
+
+  it.each([
+    ['the marker, a line of spaces, then the hook line', () => `${SHELL_HOOK_MARKER}\n   \n${hook()}\n`],
+    ['the marker, a blank line, then the hook line indented', () => `${SHELL_HOOK_MARKER}\n\n  ${hook()}\n`],
+    ['the marker, a blank line, then a line of the user\'s own', () => `${SHELL_HOOK_MARKER}\n\neval "$(secretless-ai env)"\n`],
+    ['the hook line above the marker', () => `${hook()}\n${SHELL_HOOK_MARKER}\n`],
+    ['the marker over a hook line whose command was not found, then the hook line', () => `${SHELL_HOOK_MARKER}\n${BARE_HOOK_LINE}\n${hook()}\n`],
+    ['the hook line with no marker', () => `export EDITOR=vi\n${hook()}\n`],
+  ])('leaves %s as it is', (_shape, contents) => {
+    const before = contents();
+    fs.writeFileSync(profile(), before);
+    expect(install()).toBeNull();
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(before);
+  });
+
+  it('CONTROL: writes the hook line under the marker when the lines after the blank one run no hook', () => {
+    const gone = getShellHookLine([process.execPath, path.join(dir, 'npx-cache', 'cli.js')]);
+    const commented = '# eval "$(secretless-ai env)"';
+    fs.writeFileSync(profile(), `${SHELL_HOOK_MARKER}\n\n${gone}\n${commented}\n`);
+    expect(install()).toMatchObject({ action: 'repaired', hookLineMissing: true });
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(`${SHELL_HOOK_MARKER}\n${hook()}\n\n${gone}\n${commented}\n`);
+    expect(demoKeyInNewShell()).toBe('demo-value');
+  });
+});
+
 describe('hookLineRuns', () => {
   it('reads a quoted path that contains a single quote', () => {
     const quoted = path.join(dir, "it's");
@@ -261,6 +292,18 @@ describe('ensureShellHook asks before it edits the profile (#412)', () => {
   it('CONTROL: does not ask when the marker has a line of the user\'s own under it (#351)', async () => {
     const before = `${SHELL_HOOK_MARKER}\necho my-own-line\n`;
     fs.writeFileSync(profile(), before);
+    const { questions, out } = await offer({ answer: true });
+    expect(questions).toEqual([]);
+    expect(out).toBe('');
+    expect(fs.readFileSync(profile(), 'utf-8')).toBe(before);
+  });
+
+  // A blank line between the marker and a working hook line got the question
+  // a new hook gets, and a yes wrote a second line that runs the hook (#498).
+  it('does not ask when a blank line separates the marker from a working hook line (#498)', async () => {
+    const before = `${SHELL_HOOK_MARKER}\n\n${getShellHookLine([process.execPath, script])}\n`;
+    fs.writeFileSync(profile(), before);
+    expect(demoKeyInNewShell()).toBe('demo-value');
     const { questions, out } = await offer({ answer: true });
     expect(questions).toEqual([]);
     expect(out).toBe('');
