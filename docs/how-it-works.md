@@ -3,7 +3,7 @@
 1. **Scans** your project for hardcoded credentials in source files, key files, and the config files it recognizes by name; a directory scan does not open other files, such as `values.yaml` or `main.tf` (see [What a directory scan opens](scanning.md#what-a-directory-scan-opens)), and naming a file scans it: `npx secretless-ai scan deploy/values.yaml`. 57 credential patterns from [`@opena2a/credential-patterns@0.1.3`](https://www.npmjs.com/package/@opena2a/credential-patterns), lockstep-asserted. Suppresses fixture-path false positives via `.secretlessignore` defaults (`test/`, `__tests__/`, `examples/`, `e2e/`, `docs/vhs/`, `node_modules/`, etc.).
 2. **Migrates** them to secure storage: OS keychain, 1Password, HashiCorp Vault, GCP Secret Manager, or AES-256-GCM encrypted file.
 3. **Gates** AI-tool reads of credential files. 18 file patterns enforced as Claude Code deny rules, plus a PreToolUse hook that denies tool calls that would read credential files or expose secrets before they run: a gate on the assistant's tool path, not a security boundary around the machine. Other tools get instruction files or ignore patterns (see [Supported tools](#supported-tools)).
-4. **Brokers** access through environment variables. Stored values never enter AI context; a command whose own output is a credential is the one channel no layer blocks. In Claude Code a PostToolUse check warns after such a command runs (see [What the guard cannot see](managing-secrets.md#what-the-guard-cannot-see)).
+4. **Brokers** access through environment variables: commands and AI tools see the name, and the value goes to the process that uses it. In Claude Code a PostToolUse check warns after a Bash command prints a credential-shaped value.
 
 ## Architecture
 
@@ -52,7 +52,7 @@ The Stop hook `init` adds, which redacts the session transcript after each turn,
 
 `init` prints the mode of each tool it configures (`Enforced`, `Ignore file` or `Advisory`). `status` prints `Protected` only where Claude Code applies a guard hook or deny patterns; a project configured through instruction files alone reads `Advisory only`, one configured through `.aiderignore` reads `Ignore file only`, and `status --json` carries the same as `enforcement` (`hook`, `ignore-file`, `advisory` or `none`). `isProtected` and `summary.verdict` do not tell these apart.
 
-For Cursor, GitHub Copilot, Windsurf and Cline, Secretless writes an instruction file: nothing enforces it, and it has no effect unless the tool loads that file. For Aider it writes patterns to `.aiderignore`, a list of paths for Aider to leave out: no hook enforces it, and Secretless does not check that Aider applies it. The table shows the file `init` creates in a project with no rule file yet. `init` never creates a `.cursorrules` file or a single-file `.clinerules`; where a project already has one, the block is appended to it. A Cursor project whose rules live only in `.cursorrules` gets no `.mdc` file, and a Cline project with a `.cline/rules/` directory and no `.clinerules` gets `.cline/rules/secretless.md`.
+For Cursor, GitHub Copilot, Windsurf and Cline, Secretless writes an instruction file that asks the model not to read credential files. For Aider it writes patterns to `.aiderignore`, a list of paths for Aider to leave out. The table shows the file `init` creates in a project with no rule file yet. `init` never creates a `.cursorrules` file or a single-file `.clinerules`; where a project already has one, the block is appended to it. A Cursor project whose rules live only in `.cursorrules` gets no `.mdc` file, and a Cline project with a `.cline/rules/` directory and no `.clinerules` gets `.cline/rules/secretless.md`.
 
 ## Storage backends
 
@@ -95,3 +95,9 @@ npm install @nanomind/guard @nanomind/engine  # optional
 - **Generated scan context.** `scan --explain` prints a detailed view of each finding without NanoMind: the pattern that matched, the inputs to its confidence score, the path rule that applied, and Fix and Verify commands. It can also add a model-written note beside each finding, off by default and enabled with `SECRETLESS_NANOMIND_EXPLAIN=1`. The note needs the engine's local model and runtime, which installing `@nanomind/engine` does not download. It is off because the local engine does not yet produce explanations worth showing: over 30 measured runs, none were usable and several asserted things about the credential that were not true. Verified remediation always comes from the finding itself, never from the model.
 
 Both features gracefully degrade when NanoMind packages are not installed.
+
+## What it does not cover
+
+For Cursor, GitHub Copilot, Windsurf and Cline, nothing enforces the instruction file, and it has no effect unless the tool loads that file. For Aider, no hook enforces `.aiderignore`, and Secretless does not check that Aider applies it.
+
+The hook and the deny rules check a command before it runs and cannot see what it prints, so a command whose own output is a credential puts that value in AI context. In Claude Code the PostToolUse check warns after such a command runs: see [What the guard cannot see](managing-secrets.md#what-the-guard-cannot-see).

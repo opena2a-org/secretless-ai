@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+**The README opens with what Secretless does, and its limits have their own
+section near the end.** The README's opening paragraph, which `package.json`
+repeats as the description `npm search`, `npm view` and the registry listing
+show and which top-level `--help` prints, ended on two limits: Cursor, GitHub
+Copilot, Windsurf, Cline and Aider get instruction or ignore files that
+nothing enforces, and a command that prints its own credential is not
+blocked. It now says that Secretless stores API keys outside your project
+files and sets up Claude Code, Cursor, GitHub Copilot, Windsurf, Cline and
+Aider not to read credential files, and that in Claude Code a hook and deny
+rules enforce that. Both limits are unchanged and are stated in a new
+"What it does not cover" section near the end of the README and of
+docs/how-it-works.md; the paragraph on what the guard cannot see moved there
+from the README's usage section. `src/package-description.test.ts` holds the
+description to claiming enforcement for Claude Code and no other tool, and
+holds the README to that section. The listing changes with the next release.
+No command, flag, exit code or output other than the opening of `--help`
+changed.
+
 **`migrate` given one backend as both `--from` and `--to`, and `backend purge`
 given a `--prefix` other than `mcp` or `secret`, exit 2, and an empty
 `--prefix` is refused where `purge` read it as none (#490).**

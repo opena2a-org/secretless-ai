@@ -6,8 +6,9 @@ import * as path from 'path';
  * The README is the page a visitor reads before installing. It is held to a
  * short form: the first command and its output at the top, a list of tasks
  * that link to the section for each, one usage section, install, telemetry,
- * documentation and license. Reference detail lives under docs/ with a link
- * from the README. At 4376 words in 16 sections a reader had to scroll past
+ * what it does not cover, documentation and license. Reference detail lives
+ * under docs/ with a link from the README. At 4376 words in 16 sections a
+ * reader had to scroll past
  * the architecture, the supported-tools table and the backends to reach
  * Telemetry, and the sample output and two paragraphs carried version numbers
  * that went stale on every release.
@@ -22,7 +23,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const README_PATH = path.join(REPO_ROOT, 'README.md');
 const README_LINE_BUDGET = 400;
 const README_WORD_BUDGET = 896;
-const README_SECTION_BUDGET = 7;
+const README_SECTION_BUDGET = 8;
 const PARAGRAPH_WORD_CAP = 69;
 const LONG_PARAGRAPH_WORDS = 60;
 const LONG_PARAGRAPHS_ALLOWED = 1;
