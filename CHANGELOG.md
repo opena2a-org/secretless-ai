@@ -87,6 +87,25 @@ value `protect-mcp` moved, `src/mcp/protect.test.ts` checks what
 `protect-mcp` stores and writes in each case, and `src/commands/mcp.test.ts`
 what it prints.
 
+**`clean` gives the reason in place of a `secret set` command for a stored
+secret whose name `secret set` refuses (#509).** When `clean` redacted the
+value of a secret stored under `_DEMO_TOKEN`, it listed that secret among the
+stored secrets it found and printed
+`Next:     rotate each one at its provider, then  secretless-ai secret set NAME`,
+and `secret set _DEMO_TOKEN` exits 1: the store takes a name that starts with
+a digit, `_` or `-`, and `secret set` refuses each of those. When such a name
+is listed, the `Next:` line now reads
+`rotate each one at its provider, then store its new value`, and under it each
+listed name gets a line of its own: `secretless-ai secret set <name>` for a
+name `secret set` takes, and for a name it refuses
+``"_DEMO_TOKEN" cannot be stored by `secret set`, which takes a letter, then
+letters, digits, '_' or '-'; store its new value the way it was first
+stored.`` A run that lists only names `secret set` takes prints the `Next:`
+line as before. `src/followups-509.test.ts` checks these lines for one name of
+each kind under `--dry-run`, for each of `_DEMO_TOKEN`, `1DEMO_TOKEN` and
+`-DEMO_TOKEN` alone, for names already marked exposed, for names whose
+exposure could not be recorded, and for a name `secret set` takes alone.
+
 **The recording of `init` and `verify` is paced to be read, and the README
 shows it in its Quick start with a caption.** The tape typed 40 ms a
 character, ran each command 300 ms after its last character and held the
