@@ -218,8 +218,8 @@ async function handleExec(args: string[]): Promise<number> {
 
 async function handleTest(): Promise<number> {
   try {
-    await vaultTest();
-    return 0;
+    // A check that printed [FAIL] exits 1, as the other vault errors do.
+    return (await vaultTest()) ? 0 : 1;
   } catch (err) {
     return handleError(err);
   }

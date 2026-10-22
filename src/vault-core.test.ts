@@ -488,6 +488,156 @@ describeWithAimCore('vault-core', () => {
       expect(init.stdout).toMatch(/^ {2}Agent: {7}demo-agent \(aim_/m);
       expect(init.stdout).not.toContain('was not applied');
     });
+
+    // An identity.json that is there and cannot be used is left in place: a
+    // new identity would replace the key in it. `vault test` gives the step
+    // the refusal gives, and resolves false after a [FAIL] line.
+    describe('an identity.json that cannot be used, and vault test', () => {
+      const MOVE_IDENTITY = 'mv ~/.opena2a/aim-core/identity.json ~/.opena2a/aim-core/identity.json.old';
+      const NOT_JSON = '{"agentId": "aim_';
+      const writeIdentityFile = (content: string) => {
+        fs.mkdirSync(aimDataDir, { recursive: true });
+        fs.writeFileSync(identityFile(), content);
+      };
+      const refusalOf = async (fn: () => Promise<unknown>) => {
+        let refusal: unknown;
+        const lines = await captureLog(() => fn().catch((err: unknown) => { refusal = err; }));
+        expect(refusal, 'expected a refusal').toBeInstanceOf(Error);
+        return { message: (refusal as Error).message, lines };
+      };
+      const runVaultTest = async (core: VaultCore) => {
+        let passed: boolean | undefined;
+        const lines = await captureLog(async () => { passed = await core.vaultTest(); });
+        return { passed, lines };
+      };
+      // The text of the `Fix:` line of a vault test [FAIL] and of the lines under it.
+      const fixLines = (lines: string[]) => {
+        const start = lines.findIndex((l) => l.startsWith('          Fix: '));
+        expect(start, lines.join('\n')).toBeGreaterThanOrEqual(0);
+        return lines.slice(start).filter((l) => l !== '').map((l) => l.trim().replace(/^Fix: /, ''));
+      };
+
+      it.each([
+        ['that is not JSON', NOT_JSON, 'is not valid JSON'],
+        ['holding {}', '{}', 'holds no agent identity (no agentId, publicKey or secretKey)'],
+        ['without secretKey', JSON.stringify({ agentId: 'aim_x', publicKey: 'not-a-key' }), 'holds no agent identity (no secretKey)'],
+      ])('vault init --name with no vault and an identity.json %s leaves the file and names it', async (_case, content, problem) => {
+        const { vaultInit } = await import('./vault-core.js');
+        writeIdentityFile(content);
+
+        const { message, lines } = await refusalOf(() => vaultInit('demo'));
+
+        expect(message.split('\n')[0]).toBe(`~/.opena2a/aim-core/identity.json ${problem}.`);
+        expect(message.split('\n').pop()).toBe(`    ${MOVE_IDENTITY} && secretless-ai vault init`);
+        expect(lines.filter((l) => l.includes('undefined') || l.includes('was not applied'))).toEqual([]);
+        expect(fs.readFileSync(identityFile(), 'utf-8')).toBe(content);
+        expect(fs.existsSync(vaultDir)).toBe(false);
+      });
+
+      const canDenyRead = process.platform !== 'win32' && process.getuid?.() !== 0;
+      (canDenyRead ? it : it.skip)('vault init --name with no vault and an identity.json at mode 000 leaves the file and names it', async () => {
+        const { vaultInit } = await import('./vault-core.js');
+        await captureLog(() => vaultInit('first'));
+        const before = fs.readFileSync(identityFile(), 'utf-8');
+        fs.rmSync(vaultDir, { recursive: true });
+        fs.chmodSync(identityFile(), 0o000);
+
+        let message: string;
+        try {
+          ({ message } = await refusalOf(() => vaultInit('second')));
+        } finally {
+          fs.chmodSync(identityFile(), 0o600);
+        }
+
+        expect(message.split('\n')[0]).toBe('~/.opena2a/aim-core/identity.json cannot be read (EACCES).');
+        expect(fs.readFileSync(identityFile(), 'utf-8')).toBe(before);
+        expect(readIdentity().agentName).toBe('first');
+      });
+
+      it('vault list and vault init with the vault in place and identity.json holding {} name the file and move both aside', async () => {
+        const core = await import('./vault-core.js');
+        await captureLog(() => core.vaultInit());
+        writeIdentityFile('{}');
+
+        for (const run of [() => core.vaultList(), () => core.vaultInit('demo')]) {
+          const { message, lines } = await refusalOf(run);
+          const messageLines = message.split('\n');
+          expect(messageLines[0]).toBe(NO_IDENTITY);
+          expect(messageLines[1]).toBe('  ~/.opena2a/aim-core/identity.json holds no agent identity (no agentId, publicKey or secretKey).');
+          expect(messageLines.pop()).toBe(`    mv ~/.aim/vault ~/.aim/vault.old && ${MOVE_IDENTITY} && secretless-ai vault init`);
+          expect(lines.filter((l) => l.includes('undefined'))).toEqual([]);
+        }
+        expect(fs.readFileSync(identityFile(), 'utf-8')).toBe('{}');
+      });
+
+      it('vault test on a fresh home fails with vault init as the fix and writes nothing', async () => {
+        const { passed, lines } = await runVaultTest(await import('./vault-core.js'));
+
+        expect(lines).toContain('  [FAIL]  No agent identity found');
+        expect(fixLines(lines)).toEqual(['secretless-ai vault init']);
+        expect(passed).toBe(false);
+        expect(fs.readdirSync(tmpHome)).toEqual([]);
+      });
+
+      const states: Array<[string, (core: VaultCore) => Promise<unknown>, string]> = [
+        ['the vault in place and identity.json removed', async (core) => {
+          await captureLog(() => core.vaultInit());
+          fs.rmSync(identityFile());
+        }, `  [FAIL]  ${NO_IDENTITY}`],
+        ['the vault in place and identity.json holding {}', async (core) => {
+          await captureLog(() => core.vaultInit());
+          writeIdentityFile('{}');
+        }, `  [FAIL]  ${NO_IDENTITY}`],
+        ['no vault and an identity.json that is not JSON', async () => {
+          writeIdentityFile(NOT_JSON);
+        }, '  [FAIL]  ~/.opena2a/aim-core/identity.json is not valid JSON.'],
+      ];
+
+      it.each(states)('vault test with %s fails with the step vault init gives', async (_state, setUp, failLine) => {
+        const core = await import('./vault-core.js');
+        await setUp(core);
+
+        const { passed, lines } = await runVaultTest(core);
+        const { message } = await refusalOf(() => core.vaultInit());
+
+        expect(lines).toContain(failLine);
+        const fix = fixLines(lines);
+        expect(fix).not.toContain('secretless-ai vault init');
+        expect(message.split('\n').slice(-fix.length).map((l) => l.trim())).toEqual(fix);
+        expect(passed).toBe(false);
+      });
+
+      it('vault test resolves true after All checks passed', async () => {
+        const core = await import('./vault-core.js');
+        await captureLog(() => core.vaultInit());
+
+        const { passed, lines } = await runVaultTest(core);
+
+        expect(lines).toContain('  All checks passed.');
+        expect(lines.filter((l) => l.includes('[FAIL]'))).toEqual([]);
+        expect(passed).toBe(true);
+      });
+
+      it('the CLI: vault test exits 1 after a [FAIL] line and 0 after All checks passed', () => {
+        const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+        expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+        const vaultCli = (...args: string[]) => spawnSync(process.execPath, [cliPath, 'vault', ...args], {
+          env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf-8',
+          timeout: 30_000,
+        });
+
+        const failed = vaultCli('test');
+        expect(failed.stdout).toContain('  [FAIL]  No agent identity found');
+        expect(failed.status).toBe(1);
+
+        expect(vaultCli('init').status).toBe(0);
+        const passed = vaultCli('test');
+        expect(passed.stdout).toContain('  All checks passed.');
+        expect(passed.status).toBe(0);
+      });
+    });
   });
 
   it('vaultRegister with --env reads from environment', async () => {

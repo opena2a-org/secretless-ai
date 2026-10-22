@@ -36,6 +36,35 @@ predates. `src/recording-sidecar.test.ts` holds the tape, the narration, the
 sidecar and the README block to all of this. No command, flag, exit code or
 output changed.
 
+**`vault test` exits 1 when a check fails and gives the step `vault init`
+gives, and `vault init` leaves an `identity.json` it cannot use in place
+(#502).** `vault test` on an empty home printed
+`[FAIL]  No agent identity found` and exited 0, so a script that ran it as a
+check saw success. It now exits 1 after a `[FAIL]` line for a missing or
+unusable identity or a missing vault, and 0 after `All checks passed.`;
+`vaultTest()`, which the package exports, resolves to `false` where it prints
+`[FAIL]` and to `true` after `All checks passed.`. With the vault in place and
+no identity in `~/.opena2a/aim-core`, `vault test` gave
+`Fix: secretless-ai vault init`, which `vault init` refuses in that state with
+exit 1. It now gives the restore step and the
+`mv ~/.aim/vault ~/.aim/vault.old && secretless-ai vault init` command that
+`vault init` prints, and gives `Fix: secretless-ai vault init` only when there
+is no vault. With no vault, `vault init` wrote a new identity over an
+`~/.opena2a/aim-core/identity.json` it could not read (a file at mode 000)
+and exited 0, so the key in that file was lost. An `identity.json` that
+parsed and held no identity (`{}`) made `vault init --name demo` print
+`(agent undefined)` and a Node `TypeError`, and made `vault list` print the
+`TypeError` with the vault in place. `vault init` and the vault commands that
+open the vault now leave the file as it is and exit 1 with a line that names
+`~/.opena2a/aim-core/identity.json` and says it `cannot be read (EACCES)`,
+`is not valid JSON` or
+`holds no agent identity (no agentId, publicKey or secretKey)`, then the
+restore step and the command that moves the file aside
+(`mv ~/.opena2a/aim-core/identity.json ~/.opena2a/aim-core/identity.json.old && secretless-ai vault init`),
+or, with the vault in place, moves the vault and the file aside.
+`vault test` gives the same step. `src/vault-core.test.ts` checks each of
+these states, that the file is unchanged, and the exit codes of `vault test`.
+
 **`vault list` and the other vault commands no longer write an agent identity
 before `vault init`, and `vault init --name` says when it keeps the name of an
 identity that already exists.** On a home with no vault, `vault list` printed
@@ -58,11 +87,10 @@ can read in `~/.opena2a/aim-core` prints
 `An agent identity already exists in ~/.opena2a/aim-core (agent <existing name>); --name <name> was not applied.`
 before its result and uses that identity unchanged: other tools that use
 `@opena2a/aim-core` can share that directory, so an identity that can be
-read is not renamed or replaced. An `identity.json` that cannot be read or
-parsed (a file at mode 000, or a truncated one) is still replaced when there
-is no vault: the new identity takes the `--name` name, and nothing says that
-a file was replaced. With no identity there, `--name` names the new one as
-before, and without `--name` nothing new is printed. `getVaultStore()`, which
+read is not renamed or replaced. An `identity.json` that is there and cannot
+be used is left in place too: see the entry above. With no identity there,
+`--name` names the new one as before, and without `--name` nothing new is
+printed. `getVaultStore()`, which
 the package exports, no longer creates an identity either.
 `src/vault-core.test.ts` runs the six commands on an empty home and checks
 that the home is still empty afterwards, checks the refusal with the vault in
