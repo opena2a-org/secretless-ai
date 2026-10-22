@@ -90,6 +90,136 @@ describe('top-level help opening', () => {
   });
 });
 
+/**
+ * The comment above the line of src/commands/help.ts that wraps the
+ * description for help says what the description states. It still said the
+ * description states "what is not blocked" after that limit had moved from the
+ * description to the README's "What it does not cover" section (#496). Each
+ * entry pairs a thing the comment can say the description states with the
+ * description text that bears it out. The comment has to say at least one of
+ * them, and the description has to bear out each one it says.
+ */
+const HELP_SOURCE = path.join(REPO_ROOT, 'src', 'commands', 'help.ts');
+const DESCRIPTION_LINE = /\bwrapList\(DESCRIPTION\b/;
+
+interface DescriptionClaim {
+  /** What the comment says the description states. */
+  name: string;
+  said: RegExp;
+  bornOutBy: RegExp;
+}
+
+const SETS_UP = 'what Secretless sets up';
+const ENFORCED = 'where the read gate is enforced';
+const LIMITS = 'what is not blocked, covered or enforced';
+
+const DESCRIPTION_CLAIMS: readonly DescriptionClaim[] = [
+  { name: SETS_UP, said: /\bwhat Secretless sets up\b/, bornOutBy: /\bsets up\b/ },
+  {
+    name: ENFORCED,
+    said: /\bwhere the read gate is enforced\b/,
+    bornOutBy: /\bIn Claude Code a hook and deny rules enforce\b/,
+  },
+  {
+    name: LIMITS,
+    said: /\bnot (blocked|covered|enforced)\b|\bdoes not (block|cover|enforce)\b|\bnothing enforces\b/,
+    bornOutBy: /\bnot blocked\b|\bnothing enforces\b/,
+  },
+];
+
+/** The `//` lines directly above the first line of `source` that matches `line`, as one line of text. */
+function commentAbove(source: string, line: RegExp): string {
+  const lines = source.split('\n');
+  const at = lines.findIndex((l) => line.test(l));
+  if (at === -1) return '';
+  let start = at;
+  while (start > 0 && /^\s*\/\//.test(lines[start - 1])) start--;
+  return lines
+    .slice(start, at)
+    .map((l) => l.replace(/^\s*\/\/\s?/, '').trim())
+    .join(' ');
+}
+
+function claimsSaid(comment: string): DescriptionClaim[] {
+  return DESCRIPTION_CLAIMS.filter(({ said }) => said.test(comment));
+}
+
+/** What `comment` says `description` states that `description` does not bear out. */
+function claimsNotBorneOut(comment: string, description: string): string[] {
+  return claimsSaid(comment)
+    .filter(({ bornOutBy }) => !bornOutBy.test(description))
+    .map(({ name }) => name);
+}
+
+describe('the comment above the description in src/commands/help.ts', () => {
+  const comment = commentAbove(fs.readFileSync(HELP_SOURCE, 'utf-8'), DESCRIPTION_LINE);
+
+  it('says at least one thing DESCRIPTION_CLAIMS knows, and package.json `description` bears out each one it says', () => {
+    expect(comment, `src/commands/help.ts has no comment above the line matching ${DESCRIPTION_LINE}`).not.toBe('');
+    expect(
+      claimsSaid(comment).length,
+      `"${comment}" says nothing DESCRIPTION_CLAIMS pairs with description text; add what it says the description states`,
+    ).toBeGreaterThan(0);
+    expect(
+      claimsNotBorneOut(comment, PACKAGE.description),
+      `"${comment}" says the description states something package.json \`description\` does not`,
+    ).toEqual([]);
+  });
+});
+
+describe('checking what a comment says the description states', () => {
+  const LIMITS_COMMENT =
+    'The package description, not a line written here: it says where the read gate is enforced ' +
+    'and what is not blocked, and a test holds it to the README.';
+  const WITH_LIMITS =
+    'Example sets up AI coding tools not to read credential files. In Claude Code a hook and deny ' +
+    'rules enforce that. A command that prints its own credential is not blocked.';
+  const WITHOUT_LIMITS =
+    'Example sets up Claude Code and Aider not to read credential files. In Claude Code a hook and ' +
+    'deny rules enforce that.';
+
+  it('reads the comment lines directly above the line as one line, stopping at the first line that is not a comment', () => {
+    const source = [
+      '// Not this one.',
+      'const banner = "";',
+      '  // The first line',
+      '  //   and the second.',
+      "  const description = wrapList(DESCRIPTION.trim().split(/\\s+/), '  ').join('\\n');",
+    ].join('\n');
+    expect(commentAbove(source, DESCRIPTION_LINE)).toBe('The first line and the second.');
+  });
+
+  it('reads nothing where the line has no comment above it or is not in the source', () => {
+    expect(commentAbove('const description = wrapList(DESCRIPTION, "  ");', DESCRIPTION_LINE)).toBe('');
+    expect(commentAbove('// A comment.\nconst banner = "";', DESCRIPTION_LINE)).toBe('');
+  });
+
+  it('flags a comment that says the description states what is not blocked where it states no limit', () => {
+    expect(claimsNotBorneOut(LIMITS_COMMENT, WITHOUT_LIMITS)).toEqual([LIMITS]);
+    expect(claimsNotBorneOut(LIMITS_COMMENT, WITH_LIMITS)).toEqual([]);
+  });
+
+  it('flags a comment that says the description states where the read gate is enforced where it does not', () => {
+    expect(claimsNotBorneOut(LIMITS_COMMENT, 'Example sets up AI coding tools not to read credential files.')).toEqual([
+      ENFORCED,
+      LIMITS,
+    ]);
+  });
+
+  it('passes a comment naming what Secretless sets up and where the read gate is enforced where the description states both', () => {
+    const comment =
+      'The package description, not a line written here: it names what Secretless sets up and where ' +
+      'the read gate is enforced. A test holds it to the README.';
+    expect(claimsSaid(comment).map(({ name }) => name)).toEqual([SETS_UP, ENFORCED]);
+    expect(claimsNotBorneOut(comment, WITHOUT_LIMITS)).toEqual([]);
+    expect(claimsNotBorneOut(comment, 'Example stores API keys outside your project files.')).toEqual([SETS_UP, ENFORCED]);
+  });
+
+  it('finds nothing said in a comment that names none of the entries', () => {
+    expect(claimsSaid('The package description, not a line written here.')).toEqual([]);
+  });
+});
+
 describe('wrapList', () => {
   it('breaks between words, keeps their order and stays inside the width', async () => {
     const { wrapList, NOTE_WIDTH } = await import('./commands/utils.js');
