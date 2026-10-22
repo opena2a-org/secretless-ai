@@ -572,3 +572,159 @@ describe('protectMcp — clientsScanned counts clients, not configs or server ma
     expect(result.clientsScanned).toBe(2);
   });
 });
+
+describe('protectMcp — a secret in the env of a server that already runs through the wrapper (#508)', () => {
+  let homeDir: string;
+  let dataDir: string;
+  let projectDir: string;
+  let configPath: string;
+  let savedHome: string | undefined;
+  const wrapperPath = '/usr/local/bin/secretless-mcp';
+
+  beforeEach(() => {
+    homeDir = tmpDir();
+    dataDir = tmpDir();
+    projectDir = tmpDir();
+    configPath = path.join(homeDir, '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    // The configured backend is read from HOME: this home configures none
+    // unless a test writes its config.
+    savedHome = process.env.HOME;
+    process.env.HOME = homeDir;
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    cleanup(homeDir);
+    cleanup(dataDir);
+    cleanup(projectDir);
+  });
+
+  const protect = () => protectMcp({ homeDir, dataDir, projectDir, wrapperPath, backendType: 'local' });
+  const vault = () => new McpVault({
+    storeDir: path.join(dataDir, 'mcp-vault'),
+    key: `${homeDir}-secretless-mcp-${process.env.USER ?? 'default'}`,
+    backendType: 'local',
+  });
+  const wrapped = (wrapperArgs: string[], env: Record<string, string>) => ({
+    command: wrapperPath,
+    args: [...wrapperArgs, '--', 'npx', 'some-mcp'],
+    env,
+  });
+  const writeConfig = (servers: Record<string, unknown>): string => {
+    const content = JSON.stringify({ mcpServers: servers });
+    fs.writeFileSync(configPath, content);
+    return content;
+  };
+
+  it('stores it under the --client and --server its wrapper reads by, beside the secrets stored there, and removes it from the env', async () => {
+    await vault().storeServerSecrets('cursor', 'github', { GITHUB_TOKEN: 'not-a-real-token-1' });
+    const server = wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234', LOG_LEVEL: 'debug' });
+    writeConfig({ 'github-personal': server });
+
+    const result = await protect();
+
+    expect(result.secretsFound).toBe(1);
+    expect(result.serversProtected).toBe(1);
+    expect(result.alreadyProtected).toBe(0);
+    expect(result.servers).toEqual([{ client: 'cursor', server: 'github-personal', secretKeys: ['MY_SERVICE_API_KEY'] }]);
+    expect(result.unmoved).toEqual([]);
+    // Its command and args are as they were: only the stored value left its env.
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(config.mcpServers['github-personal']).toEqual({ ...server, env: { LOG_LEVEL: 'debug' } });
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({
+      GITHUB_TOKEN: 'not-a-real-token-1',
+      MY_SERVICE_API_KEY: 'FAKE-KEY-1234',
+    });
+    // The file is backed up as it was, value included, for mcp-unprotect.
+    expect(restoreConfig(configPath, path.join(dataDir, 'mcp-backups'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers['github-personal']).toEqual(server);
+  });
+
+  it('stores it for a server whose --backend argument names the backend this run stores in', async () => {
+    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', 'local'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+
+    const result = await protect();
+
+    expect(result.unmoved).toEqual([]);
+    expect(result.secretsFound).toBe(1);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers.github.env).toEqual({});
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+  });
+
+  it('leaves it, and returns the server, when another protected server reads its secrets by the same name', async () => {
+    const before = writeConfig({
+      github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+      'github-work': wrapped(['--server=github', '--client', 'cursor'], {}),
+    });
+
+    const result = await protect();
+
+    expect(result.secretsFound).toBe(0);
+    expect(result.alreadyProtected).toBe(1);
+    expect(result.unmoved).toEqual([{
+      client: 'cursor',
+      filePath: configPath,
+      server: 'github',
+      reason: 'another protected server reads its secrets by the same name, cursor/github',
+    }]);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({});
+  });
+
+  it('leaves it when its --backend argument names a backend other than the one this run stores in', async () => {
+    const before = writeConfig({
+      github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', '1password'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+    });
+
+    const result = await protect();
+
+    expect(result.secretsFound).toBe(0);
+    expect(result.unmoved).toEqual([{
+      client: 'cursor',
+      filePath: configPath,
+      server: 'github',
+      reason: 'its --backend argument is "1password", and this run stores in local',
+    }]);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
+  it('leaves it when it gives no --backend and the configured backend is not the one this run stores in', async () => {
+    fs.mkdirSync(path.join(homeDir, '.secretless-ai'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.secretless-ai', 'config.json'), JSON.stringify({ backend: '1password' }));
+    const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+
+    const result = await protect();
+
+    expect(result.unmoved.map((server) => server.reason)).toEqual([
+      'its wrapper reads from the configured backend, 1password, and this run stores in local',
+    ]);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
+  it('leaves it when its args choose the store its wrapper reads from with --vault-dir or --vault-key', async () => {
+    for (const storeFlag of [['--vault-dir', path.join(dataDir, 'other-vault')], ['--vault-key', 'not-a-real-key']]) {
+      const before = writeConfig({
+        github: wrapped(['--server', 'github', '--client', 'cursor', ...storeFlag], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+      });
+
+      const result = await protect();
+
+      expect(result.unmoved.map((server) => server.reason)).toEqual([
+        'its args choose the store its wrapper reads from with --vault-dir or --vault-key',
+      ]);
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    }
+  });
+
+  it('CONTROL: counts a server with no secret in its env as already protected and leaves the file as it is', async () => {
+    const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { LOG_LEVEL: 'debug' }) });
+
+    const result = await protect();
+
+    expect(result.alreadyProtected).toBe(1);
+    expect(result.secretsFound).toBe(0);
+    expect(result.unmoved).toEqual([]);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+});

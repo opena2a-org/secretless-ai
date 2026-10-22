@@ -30,6 +30,13 @@ export interface ServerMapSecrets {
   projectKey?: string;
   /** Map of serverName → {envKey: value} for secrets to protect */
   serverSecrets: Record<string, Record<string, string>>;
+  /**
+   * Map of serverName → env keys to remove, for a server that already runs
+   * through the wrapper: those secrets were stored under the name its wrapper
+   * reads by, so only its env changes and its command and args are left as
+   * they are.
+   */
+  storedEnvKeys?: Record<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,8 +185,10 @@ export function rewriteConfig(
  * Rewrite one or more server maps of an MCP config file, each as rewriteConfig
  * rewrites the map at the top level of a file: that map for a ServerMapSecrets
  * without a projectKey, and the map in the entry of that project under
- * `projects` for one with it. The file is read, backed up and written once,
- * so the backup is the file as it was before any of its maps was rewritten.
+ * `projects` for one with it. The keys in a map's storedEnvKeys are removed
+ * from the env of the servers they are listed for, which keep their command
+ * and args. The file is read, backed up and written once, so the backup is
+ * the file as it was before any of its maps was rewritten.
  */
 export function rewriteServerMaps(
   configPath: string,
@@ -194,10 +203,11 @@ export function rewriteServerMaps(
   const config = JSON.parse(content) as Record<string, unknown>;
 
   let serversRewritten = 0;
-  for (const { projectKey, serverSecrets } of maps) {
+  for (const { projectKey, serverSecrets, storedEnvKeys } of maps) {
     const container = projectKey === undefined ? config : projectEntry(config, projectKey);
     if (container === undefined) continue;
     serversRewritten += wrapServers(container, client, serverSecrets, wrapperPath, backendType);
+    if (storedEnvKeys !== undefined) serversRewritten += removeEnvKeys(container, storedEnvKeys);
   }
 
   // If nothing was rewritten, don't create backup or modify file
@@ -303,6 +313,32 @@ function wrapServers(
   }
 
   return serversRewritten;
+}
+
+/**
+ * Remove env keys from servers of one server map, the one in `container`
+ * under the key serverMapKey names, leaving each server's command and args as
+ * they are. Returns how many servers had a key removed; the caller writes the
+ * file.
+ */
+function removeEnvKeys(container: Record<string, unknown>, envKeys: Record<string, string[]>): number {
+  const key = serverMapKey(container);
+  const mcpServers = key === undefined ? undefined : container[key];
+  if (!mcpServers || typeof mcpServers !== 'object') return 0;
+
+  let serversChanged = 0;
+  for (const [serverName, keys] of Object.entries(envKeys)) {
+    if (!Object.prototype.hasOwnProperty.call(mcpServers, serverName)) continue;
+    const serverDef = (mcpServers as Record<string, unknown>)[serverName];
+    if (!serverDef || typeof serverDef !== 'object') continue;
+    const env = (serverDef as Record<string, unknown>)['env'];
+    if (!env || typeof env !== 'object' || Array.isArray(env)) continue;
+
+    const present = keys.filter((envKey) => Object.prototype.hasOwnProperty.call(env, envKey));
+    for (const envKey of present) delete (env as Record<string, unknown>)[envKey];
+    if (present.length > 0) serversChanged++;
+  }
+  return serversChanged;
 }
 
 /**

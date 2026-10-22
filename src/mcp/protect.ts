@@ -14,7 +14,9 @@ import { McpVault } from './vault';
 import { rewriteServerMaps, type ServerMapSecrets } from './rewrite';
 import { screenMcpEnvVars } from '../nanomind';
 import { prepareBinArgv, MCP_WRAPPER } from '../argv';
+import { resolveBackendType } from '../backends/config';
 import type { SelectableBackendType } from '../backends/config';
+import { listedName, quotedName } from '../secret-value';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,6 +83,19 @@ export interface SharedNameMcpServer extends McpServerMapLocation {
   protectedIn: McpServerMapLocation;
 }
 
+/**
+ * A server that already runs through the wrapper, with secrets in plaintext
+ * in its env that protect-mcp left there, because moving them into the store
+ * is not safe (see unmovedReason).
+ */
+export interface UnmovedMcpServer extends McpServerMapLocation {
+  client: string;
+  /** Server name as written in the config */
+  server: string;
+  /** Why the secrets were left, e.g. "another protected server reads its secrets by the same name, cursor/github". */
+  reason: string;
+}
+
 /** A project-level config protect-mcp leaves as it is (see rewrittenByProtectMcp). */
 export interface ProjectLevelMcpConfig {
   client: string;
@@ -108,6 +123,8 @@ export interface ProtectResult {
   unchecked: UncheckedMcpConfig[];
   /** Servers with secrets left as they are, in plaintext, because their name is a protected server's (see SharedNameMcpServer). */
   sharedName: SharedNameMcpServer[];
+  /** Servers that run through the wrapper with secrets left in plaintext in their env (see UnmovedMcpServer). */
+  unmoved: UnmovedMcpServer[];
   /**
    * Project-level configs left as they are, parsed or not: nothing in them was
    * checked or protected. `mcp-status` lists their servers.
@@ -127,8 +144,12 @@ export interface ProtectResult {
  * 2. For each server entry, classifies env vars into secrets vs non-secrets.
  * 3. Stores secrets in the encrypted vault, under the client and server name.
  *    A server whose name is a protected server's in another server map is
- *    returned in `sharedName`, unchanged.
- * 4. Rewrites config files to use the secretless-mcp wrapper.
+ *    returned in `sharedName`, unchanged. A server that already runs through
+ *    the wrapper has its secrets stored under the name its wrapper reads by,
+ *    or, where that is not safe, is returned in `unmoved`, unchanged.
+ * 4. Rewrites config files to use the secretless-mcp wrapper. A server that
+ *    already runs through it keeps its command and args, and the secrets
+ *    stored for it are removed from its env.
  *
  * @param options - Configuration for the protection run.
  * @returns Summary of what was scanned and protected.
@@ -182,6 +203,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       .filter((config) => config.unchecked.length > 0)
       .map((config) => ({ client: config.client, ...mapLocation(config), servers: config.unchecked })),
     sharedName: [],
+    unmoved: [],
     projectLevel,
   };
 
@@ -190,13 +212,22 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   // server map holding a protected server that reads by it, protected before
   // this run or during it, and a server with secrets in another map that
   // would be stored under it is left as it is (see SharedNameMcpServer).
+  // `readers` counts the protected servers that read by each name: a secret
+  // stored under a name is handed to every one of them.
   const nameHolders = new Map<string, McpConfigFile>();
+  const readers = new Map<string, number>();
   for (const config of configs) {
     for (const server of config.servers) {
-      const name = server.alreadyProtected ? protectedVaultName(config.client, server) : undefined;
-      if (name !== undefined && !nameHolders.has(name)) nameHolders.set(name, config);
+      if (!server.alreadyProtected) continue;
+      const name = protectedVaultName(config.client, server);
+      if (!nameHolders.has(name)) nameHolders.set(name, config);
+      readers.set(name, (readers.get(name) ?? 0) + 1);
     }
   }
+  const stores: WrapperStores = {
+    run: resolveBackendType(options.backendType),
+    configured: resolveBackendType(),
+  };
 
   // 2. For each config: classify, encrypt, rewrite. The server maps of one
   // file, the top level and each project of ~/.claude.json, are rewritten
@@ -206,16 +237,35 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 
     for (const config of fileConfigs) {
       const serverSecrets: Record<string, Record<string, string>> = {};
+      const storedEnvKeys: Record<string, string[]> = {};
 
       for (const server of config.servers) {
-        // Skip servers already wrapped by secretless-mcp
-        if (server.alreadyProtected) {
-          result.alreadyProtected++;
-          continue;
-        }
-
         // Classify env vars into secrets and non-secrets
         const classified = classifyEnvVars(server.env);
+        const secretKeys = Object.keys(classified.secrets);
+
+        // A server already wrapped by secretless-mcp reads its secrets from
+        // the store, and the wrapper does not take a value out of the file.
+        // A secret in its env is stored under the name its wrapper reads by
+        // and removed from its env, where that is safe.
+        if (server.alreadyProtected) {
+          if (secretKeys.length === 0) {
+            result.alreadyProtected++;
+            continue;
+          }
+          const readerCount = readers.get(protectedVaultName(config.client, server)) ?? 0;
+          const reason = unmovedReason(config.client, server, readerCount, stores);
+          if (reason !== undefined) {
+            result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason });
+            continue;
+          }
+          const reads = readsBy(config.client, server);
+          await vault.storeServerSecrets(reads.client, reads.server, classified.secrets);
+          storedEnvKeys[server.name] = secretKeys;
+          result.secretsFound += secretKeys.length;
+          result.servers.push({ client: config.client, server: server.name, secretKeys });
+          continue;
+        }
 
         // Screen non-secret env vars for prompt injection (if @nanomind/guard available)
         const injectionFindings = screenMcpEnvVars(classified.nonSecrets);
@@ -258,8 +308,8 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         });
       }
 
-      if (Object.keys(serverSecrets).length > 0) {
-        maps.push({ ...(config.projectKey === undefined ? {} : { projectKey: config.projectKey }), serverSecrets });
+      if (Object.keys(serverSecrets).length > 0 || Object.keys(storedEnvKeys).length > 0) {
+        maps.push({ ...(config.projectKey === undefined ? {} : { projectKey: config.projectKey }), serverSecrets, storedEnvKeys });
       }
     }
 
@@ -281,24 +331,76 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 }
 
 /**
+ * The wrapper flags given in a protected server's args, each with the value
+ * the wrapper reads for it: the args are read as the wrapper reads them, up
+ * to `--`, and a flag given twice has its last value.
+ */
+function wrapperFlags(server: McpServerEntry): Map<string, string> {
+  const args = prepareBinArgv(MCP_WRAPPER, server.args).args;
+  const flags = new Map<string, string>();
+  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+    const flag = args[i];
+    // Every wrapper flag takes a value, and the wrapper reads the token after it as that value.
+    if (MCP_WRAPPER.flags[flag] !== true || args[i + 1] === undefined) continue;
+    flags.set(flag, args[++i]);
+  }
+  return flags;
+}
+
+/**
  * The client and server name a protected server's wrapper reads its secrets
  * by: its `--client` and `--server` values, read from its args as the wrapper
  * reads them, or the config's client and the server's name where one is not
  * given.
  */
+function readsBy(client: string, server: McpServerEntry): { client: string; server: string } {
+  const flags = wrapperFlags(server);
+  return { client: flags.get('--client') ?? client, server: flags.get('--server') ?? server.name };
+}
+
+/** The name readsBy gives, as `client/server`. */
 function protectedVaultName(client: string, server: McpServerEntry): string {
-  const args = prepareBinArgv(MCP_WRAPPER, server.args).args;
-  let vaultClient = client;
-  let vaultServer = server.name;
-  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
-    const flag = args[i];
-    // Every wrapper flag takes a value, and the wrapper reads the token after it as that value.
-    if (MCP_WRAPPER.flags[flag] !== true || args[i + 1] === undefined) continue;
-    const value = args[++i];
-    if (flag === '--client') vaultClient = value;
-    if (flag === '--server') vaultServer = value;
+  const reads = readsBy(client, server);
+  return `${reads.client}/${reads.server}`;
+}
+
+/** The backend this run stores secrets in, and the configured one a wrapper given no --backend reads from. */
+interface WrapperStores {
+  run: SelectableBackendType;
+  configured: SelectableBackendType;
+}
+
+/**
+ * Why the secrets in the env of a server that runs through the wrapper are
+ * left there, or undefined when they are stored. A secret stored under a name
+ * is handed to every protected server that reads by it, so it is stored only
+ * when this server is the one server that does (`readerCount` counts them).
+ * It is stored only where its wrapper reads it, as far as this run can tell:
+ * the args name no --vault-dir or --vault-key, and give no --backend other
+ * than the backend this run stores in, or, giving none, the configured
+ * backend is that backend.
+ */
+function unmovedReason(
+  client: string,
+  server: McpServerEntry,
+  readerCount: number,
+  stores: WrapperStores,
+): string | undefined {
+  if (readerCount > 1) {
+    return `another protected server reads its secrets by the same name, ${listedName(protectedVaultName(client, server))}`;
   }
-  return `${vaultClient}/${vaultServer}`;
+  const flags = wrapperFlags(server);
+  if (flags.has('--vault-dir') || flags.has('--vault-key')) {
+    return 'its args choose the store its wrapper reads from with --vault-dir or --vault-key';
+  }
+  const backend = flags.get('--backend');
+  if (backend === undefined && stores.configured !== stores.run) {
+    return `its wrapper reads from the configured backend, ${stores.configured}, and this run stores in ${stores.run}`;
+  }
+  if (backend !== undefined && backend !== stores.run) {
+    return `its --backend argument is ${quotedName(backend)}, and this run stores in ${stores.run}`;
+  }
+  return undefined;
 }
 
 /** The configs of each file, in the order the files were found. */
