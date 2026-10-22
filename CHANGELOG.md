@@ -33,6 +33,18 @@ place and the identity removed, and checks that the `--name` line comes before
 `Identity Vault initialized.` and before `Vault already initialized`, with
 `identity.json` unchanged.
 
+**`verify` counts the transcript files it found credentials in, where it
+printed the number of credentials as a number of files.** With one transcript
+holding two GitHub tokens, `verify` printed `GitHub Token in 2 transcript files`,
+where `status` printed `2 credentials in the 1 most recent transcript` and
+`clean --dry-run` printed `2 credential(s) in 1 file(s)`. A credential type
+found more than once now prints the number of values and of distinct files:
+`2 in 1 transcript file (~/.claude/projects/<project>/<session>.jsonl: lines 3, 7)`
+when every value is in one file, with its line numbers sorted and listed once,
+and `3 in 2 transcript files` otherwise. One value still prints its
+`file:line`, and the verdict, the exit code and the order of the lines are
+unchanged. `src/verify-transcript-count.test.ts` checks each case.
+
 **The README opens with what Secretless does, and its limits have their own
 section near the end.** The README's opening paragraph, which `package.json`
 repeats as the description `npm search`, `npm view` and the registry listing

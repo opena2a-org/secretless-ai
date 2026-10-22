@@ -8,7 +8,7 @@ import { startsWithIgnoreHeader } from './ignore';
 import { scanToSarif } from '../sarif';
 import { checkFindings, summarizeValidity, stateLabel, type ProbeDeps, type ValidityResult, type ValidityState } from '../validity';
 import { status, protection, USER_SETTINGS_PATH, type HookScript } from '../status';
-import { verify } from '../verify';
+import { verify, type VerifyResult } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles, noKeysFinding, type StoreCount } from '../doctor';
 import { SecretStore } from '../secret-store';
@@ -2137,17 +2137,14 @@ export function runVerify(projectDir: string, showAll = false): number {
   // Show transcript exposure (collapsed by pattern name)
   if (result.exposedInTranscripts.length > 0) {
     console.log(divider('Exposed in Transcripts'));
-    const grouped = new Map<string, number>();
+    const grouped = new Map<string, VerifyResult['exposedInTranscripts']>();
     for (const exp of result.exposedInTranscripts) {
-      grouped.set(exp.patternName, (grouped.get(exp.patternName) ?? 0) + 1);
+      const group = grouped.get(exp.patternName);
+      if (group) group.push(exp);
+      else grouped.set(exp.patternName, [exp]);
     }
-    for (const [patternName, count] of grouped) {
-      if (count === 1) {
-        const single = result.exposedInTranscripts.find(e => e.patternName === patternName)!;
-        console.log(`  ${c.yellow('\u2502')} ${c.yellow('!')} ${c.bold(patternName)} ${c.dim(`${single.file}:${single.line}`)}`);
-      } else {
-        console.log(`  ${c.yellow('\u2502')} ${c.yellow('!')} ${c.bold(patternName)} ${c.dim(`in ${count} transcript files`)}`);
-      }
+    for (const [patternName, found] of grouped) {
+      console.log(`  ${c.yellow('\u2502')} ${c.yellow('!')} ${c.bold(patternName)} ${c.dim(describeTranscriptExposure(found))}`);
     }
   }
 
@@ -2211,6 +2208,22 @@ export function runVerify(projectDir: string, showAll = false): number {
   }
   console.log();
   return 0;
+}
+
+/**
+ * Where one credential type was found in transcripts. Each finding is one
+ * value with its own file and line, so the number of findings is not a number
+ * of files: two keys in one transcript printed `in 2 transcript files`, where
+ * `status` and `clean --dry-run` count one file. One value prints its
+ * `file:line`, several in one file print that file and their line numbers, and
+ * values in several files print the number of each.
+ */
+function describeTranscriptExposure(found: VerifyResult['exposedInTranscripts']): string {
+  if (found.length === 1) return `${found[0].file}:${found[0].line}`;
+  const files = new Set(found.map(e => e.file));
+  if (files.size > 1) return `${found.length} in ${files.size} transcript files`;
+  const lines = [...new Set(found.map(e => e.line))].sort((a, b) => a - b);
+  return `${found.length} in 1 transcript file (${found[0].file}: line${lines.length === 1 ? '' : 's'} ${lines.join(', ')})`;
 }
 
 /** "named by <manifest line>" or "from <file>", for a resolved project. */
