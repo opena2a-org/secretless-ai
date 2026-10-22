@@ -6,14 +6,16 @@ import * as path from 'path';
  * The package description is the line `npm search`, `npm view` and the
  * registry listing show beside the name, before a reader opens the README. It
  * read "One command to keep secrets out of AI. Works with Claude Code, Cursor,
- * Copilot, Windsurf, and any AI coding tool." The README's opening paragraph is
- * narrower: a hook and deny rules enforce the read gate in Claude Code, the
- * other tools get instruction or ignore files that nothing enforces, and a
- * command that prints its own credential is not blocked. A reader who chose
- * the package from the listing was told more than the README stands behind.
+ * Copilot, Windsurf, and any AI coding tool." A hook and deny rules enforce the
+ * read gate in Claude Code alone, so a reader who chose the package from the
+ * listing was told more than the README stands behind.
  *
- * These tests hold the description to that paragraph: the same sentences in
- * the same order, as plain text. The license is the last badge of the README
+ * These tests hold the description to the README's opening paragraph: the
+ * same sentences in the same order, as plain text. That paragraph says what
+ * Secretless does and claims enforcement for Claude Code and no other tool.
+ * What it does not cover, the instruction and ignore files that nothing
+ * enforces and a command whose own output is a credential, has its own section
+ * near the end of the README. The license is the last badge of the README
  * header and the manifest's `license` field, so neither the paragraph nor the
  * description repeats it. A change to either one fails here until the other
  * follows.
@@ -103,6 +105,37 @@ function sentences(text: string): string[] {
   return text.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
 }
 
+/** Words that say a read is refused, not only discouraged. */
+const ENFORCING = /\b(hooks?|deny rules?|enforced?|enforces|block(s|ed|ing)?)\b/i;
+
+/** The tools that get an instruction or ignore file, which nothing enforces. */
+const INSTRUCTION_ONLY = /\b(Cursor|Copilot|Windsurf|Cline|Aider)\b/;
+
+/** The README section that says what Secretless does not cover. */
+const LIMITS_HEADING = 'What it does not cover';
+
+/**
+ * The sentences that name a hook, deny rules, enforcement or blocking and are
+ * not about Claude Code alone: they leave Claude Code out, or they also name a
+ * tool that gets only an instruction or ignore file. What those tools get is
+ * said in the README's closing section, not beside the enforcement sentence.
+ */
+function unscopedEnforcementSentences(description: string): string[] {
+  return sentences(description).filter(
+    (s) => ENFORCING.test(s) && (!/\bClaude Code\b/.test(s) || INSTRUCTION_ONLY.test(s)),
+  );
+}
+
+/** The text of the `## heading` section, up to the next section; empty where there is none. */
+function sectionBody(readme: string, heading: string): string {
+  const marker = `\n## ${heading}\n`;
+  const start = readme.indexOf(marker);
+  if (start === -1) return '';
+  const rest = readme.slice(start + marker.length);
+  const next = rest.search(/^## /m);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
 describe('package.json description', () => {
   const paragraphs = openingParagraphs(README);
   const opening = sentences(plainText(paragraphs[0] ?? ''));
@@ -133,17 +166,33 @@ describe('package.json description', () => {
     ).toBe(opening.join(' '));
   });
 
-  it('says where the read gate is enforced and what is not blocked', () => {
-    // The limits a reader of the listing needs before installing. Read from
-    // the description itself, so an edit that drops one from the README and
-    // the manifest together fails here.
-    const limits: Array<[RegExp, string]> = [
-      [/In Claude Code a hook and deny rules enforce/, 'where the read gate is enforced'],
-      [/nothing enforces/, 'that the other tools get files nothing enforces'],
-      [/prints its own credential is not blocked/, 'that a command printing its own credential is not blocked'],
-    ];
-    for (const [limit, what] of limits) {
-      expect(PACKAGE.description, `package.json description no longer says ${what}`).toMatch(limit);
+  it('says where the read gate is enforced and claims it for no other tool', () => {
+    // Read from the description itself, so an edit that widens the claim in
+    // the README and the manifest together fails here.
+    expect(
+      PACKAGE.description,
+      'package.json description no longer says where the read gate is enforced',
+    ).toMatch(/In Claude Code a hook and deny rules enforce/);
+    expect(
+      unscopedEnforcementSentences(PACKAGE.description),
+      'a sentence of the description that names enforcement must name Claude Code and no other tool',
+    ).toEqual([]);
+  });
+
+  it('leaves what is not covered to a section near the end of the README', () => {
+    const headings = README.split('\n').filter((l) => l.startsWith('## '));
+    const limits = headings.indexOf(`## ${LIMITS_HEADING}`);
+    expect(limits, `README.md must hold a "## ${LIMITS_HEADING}" section`).toBeGreaterThan(-1);
+    expect(limits, `"${LIMITS_HEADING}" must come after "Install"`).toBeGreaterThan(headings.indexOf('## Install'));
+    const section = sectionBody(README, LIMITS_HEADING);
+    expect(section, 'the section no longer says the instruction and ignore files are not enforced').toMatch(
+      /nothing enforces/,
+    );
+    expect(section, 'the section no longer says the guard cannot see what a command prints').toMatch(
+      /cannot see what it prints/,
+    );
+    for (const text of [README, PACKAGE.description]) {
+      expect(text).not.toMatch(/prints its own credential is not blocked/);
     }
   });
 
@@ -197,5 +246,44 @@ describe('reading the description and license from a README header', () => {
   it('fails a description paragraph that names the license in a sentence of its own', () => {
     const text = readme([STATUS, CI, LICENSE_BADGE], 'Example does one thing. Apache 2.0.');
     expect(namesLicense(openingParagraphs(text)[0], LICENSE)).toBe(true);
+  });
+});
+
+describe('finding enforcement sentences that are not about Claude Code alone', () => {
+  it('flags a sentence that puts a hook or blocking on a tool that gets only an instruction or ignore file', () => {
+    expect(unscopedEnforcementSentences('PreToolUse hooks block credential reads in Claude Code, Cursor and Windsurf.')).toHaveLength(1);
+    expect(unscopedEnforcementSentences('In Claude Code and Aider a hook and deny rules enforce that.')).toHaveLength(1);
+  });
+
+  it('flags the enforcement sentence that also lists what the other tools get', () => {
+    expect(
+      unscopedEnforcementSentences(
+        'In Claude Code a hook and deny rules enforce that; Cursor and Aider get instruction or ignore files that nothing enforces.',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('flags a sentence that claims blocking without naming Claude Code', () => {
+    expect(unscopedEnforcementSentences('Blocks AI coding tools from reading secret files.')).toHaveLength(1);
+  });
+
+  it('passes a sentence that names the tools it sets up and an enforcement sentence scoped to Claude Code', () => {
+    expect(
+      unscopedEnforcementSentences(
+        'Example sets up Claude Code, Cursor and Aider not to read credential files. In Claude Code a hook and deny rules enforce that.',
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('reading one section of a README', () => {
+  const text = ['# Example', `## ${LIMITS_HEADING}`, 'Limits here.', '## Documentation', 'Links.'].join('\n\n');
+
+  it('returns the body of the section and stops at the next one', () => {
+    expect(sectionBody(text, LIMITS_HEADING).trim()).toBe('Limits here.');
+  });
+
+  it('returns nothing for a section the README does not hold', () => {
+    expect(sectionBody(text, 'No such section')).toBe('');
   });
 });

@@ -9,7 +9,7 @@
 
 [Website](https://opena2a.org/secretless) · [Discord](https://discord.gg/uRZa3KXgEn)
 
-Secretless stores API keys outside your project files and sets up AI coding tools not to read credential files. In Claude Code a hook and deny rules enforce that; Cursor, GitHub Copilot, Windsurf, Cline and Aider get instruction or ignore files that nothing enforces. A command that prints its own credential is not blocked.
+Secretless stores API keys outside your project files and sets up Claude Code, Cursor, GitHub Copilot, Windsurf, Cline and Aider not to read credential files. In Claude Code a hook and deny rules enforce that.
 
 ## Quick start
 
@@ -66,8 +66,6 @@ Commands and AI tools see the name, and the value goes to the process that uses 
 
 On a terminal, `secret set` asks before it adds a hook to `~/.zshenv` or `~/.bashrc` that exports every stored secret as an environment variable in each new terminal; `--no-shell-hook` skips the question, and with a value piped in the profile is left as it is. `secret set NAME=VALUE` puts the value in shell history.
 
-The guard hook and the deny rules that `init` installs check a command before it runs and cannot see what it prints. A command whose own output is a credential puts the value in AI context, and nothing in Secretless blocks it: see [What the guard cannot see](docs/managing-secrets.md#what-the-guard-cannot-see).
-
 `init` also registers a prompt-submit hook that refuses a prompt holding a credential-shaped value or a stored secret's value, and offers a watcher that redacts a credential reaching a saved transcript. Both are local hooks; a chat in a browser is outside their reach.
 
 ## Install
@@ -99,6 +97,12 @@ A variable counts as unset when its value is empty or only spaces, or is `false`
 While telemetry is off (`OPENA2A_TELEMETRY=off`, `telemetry off`, CI or a test runner), Secretless writes no `install_id` to the setting file (`~/.config/opena2a/telemetry.json`, or `$XDG_CONFIG_HOME/opena2a/telemetry.json` when that variable is set), and removes one an earlier run stored there, keeping the stored on or off setting. The next run with telemetry on creates an `install_id` again.
 
 Fire-and-forget with a 2-second timeout. Telemetry never blocks Secretless.
+
+## What it does not cover
+
+Cursor, GitHub Copilot, Windsurf, Cline and Aider get instruction or ignore files, and nothing enforces them.
+
+The guard hook and the deny rules check a command before it runs and cannot see what it prints, so a command whose own output is a credential puts that value in AI context: see [What the guard cannot see](docs/managing-secrets.md#what-the-guard-cannot-see).
 
 ## Documentation
 
