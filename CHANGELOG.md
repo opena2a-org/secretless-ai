@@ -19,12 +19,15 @@ read, they and `vault init` exit 1 with
 the restore step, and the command that moves the vault aside and starts a new
 one (`mv ~/.aim/vault ~/.aim/vault.old && secretless-ai vault init`), where
 they created a new identity, which cannot decrypt the credentials in the
-vault. `vault init --name <name>` with an identity of another name in
-`~/.opena2a/aim-core` prints
+vault. `vault init --name <name>` with an identity of another name that it
+can read in `~/.opena2a/aim-core` prints
 `An agent identity already exists in ~/.opena2a/aim-core (agent <existing name>); --name <name> was not applied.`
 before its result and uses that identity unchanged: other tools that use
-`@opena2a/aim-core` can share that directory, so an identity there is never
-renamed or replaced. With no identity there, `--name` names the new one as
+`@opena2a/aim-core` can share that directory, so an identity that can be
+read is not renamed or replaced. An `identity.json` that cannot be read or
+parsed (a file at mode 000, or a truncated one) is still replaced when there
+is no vault: the new identity takes the `--name` name, and nothing says that
+a file was replaced. With no identity there, `--name` names the new one as
 before, and without `--name` nothing new is printed. `getVaultStore()`, which
 the package exports, no longer creates an identity either.
 `src/vault-core.test.ts` runs the six commands on an empty home and checks
