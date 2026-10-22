@@ -70,6 +70,24 @@ line run no hook, as with a commented-out `eval "$(secretless-ai env)"` or a
 hook line whose command was not found, the hook line is still written under
 the comment line.
 
+**`watch` logs the reason in place of a `secret set` command for a stored
+secret whose name `secret set` refuses (#499).** When `watch` redacted a
+transcript holding the value of a secret stored under `_DEMO_TOKEN`, it marked
+that secret exposed and logged
+`Stored secret _DEMO_TOKEN marked exposed. Rotate it at its provider, then: secretless-ai secret set _DEMO_TOKEN`,
+and that command exits 1 with `Error: Invalid secret name. Use letters,
+numbers, underscores, hyphens. Must start with a letter.`: the store takes a
+name that starts with a digit, `_` or `-`, and `secret set` refuses each of
+those. For such a name the line now reads
+``Stored secret _DEMO_TOKEN marked exposed. Rotate it at its provider, then
+store the new value the way this one was first stored. "_DEMO_TOKEN" cannot be
+stored by `secret set`, which takes a letter, then letters, digits, '_' or
+'-'.`` A name `secret set` takes still gets the `secret set` command, and the
+exposure is recorded under either kind of name. `src/followups-499.test.ts`
+checks the line for `_DEMO_TOKEN`, `1DEMO_TOKEN` and `-DEMO_TOKEN`, that
+`secret set` refuses each of the three without opening the store, and the line
+for `DEMO_TOKEN`.
+
 **The README opens with what Secretless does, and its limits have their own
 section near the end.** The README's opening paragraph, which `package.json`
 repeats as the description `npm search`, `npm view` and the registry listing

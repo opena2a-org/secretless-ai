@@ -10,7 +10,7 @@ import * as os from 'os';
 import { spawn } from 'child_process';
 import { scanTranscriptFile, atomicWrite, defaultTranscriptDir } from './transcript';
 import type { TranscriptFinding } from './transcript';
-import { SecretStore } from './secret-store';
+import { SecretStore, isSettableSecretName, notSettableReason } from './secret-store';
 import { markRedactedSecretsExposed } from './secret-exposure';
 import type { ExposureMarks, RedactedSpan } from './secret-exposure';
 import { SECRETLESS_DIR, PID_FILE, LOG_FILE, readPidFile, isWatchRunning, watchStatus } from './watch-state';
@@ -213,7 +213,13 @@ export async function processFile(
       const marks = await markRedactedSecretsExposed(spans, createStore, { foundBy: 'watch' });
       if (marks.notChecked) log(logPath, `Not checked whether a redacted value is a stored secret: ${marks.notChecked}`);
       for (const m of marks.marked) {
-        log(logPath, `Stored secret ${m.name} marked exposed. Rotate it at its provider, then: secretless-ai secret set ${m.name}`);
+        // The store holds names `secret set` refuses, ones that start with a
+        // digit, '_' or '-'. Such a name gets the reason in place of the
+        // `secret set` command.
+        const next = isSettableSecretName(m.name)
+          ? `then: secretless-ai secret set ${m.name}`
+          : `then store the new value the way this one was first stored. ${notSettableReason(m.name)}.`;
+        log(logPath, `Stored secret ${m.name} marked exposed. Rotate it at its provider, ${next}`);
       }
       for (const m of marks.alreadyOpen) log(logPath, `Stored secret ${m.name} already marked exposed since ${m.exposedAt}`);
       for (const m of marks.failed) log(logPath, `Stored secret ${m.name} NOT marked exposed: ${m.reason}`);
