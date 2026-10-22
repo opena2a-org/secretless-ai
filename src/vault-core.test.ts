@@ -468,6 +468,89 @@ describeWithAimCore('vault-core', () => {
       expect(readIdentity().agentName).toBe('secretless-agent');
     });
 
+    // An identity.json that holds agentId, publicKey and secretKey is used as
+    // it is when its agentName is absent, empty or null: the lines say
+    // that it carries no name and show its agentId alone, and no name is
+    // written into the file (#506).
+    describe('an identity that carries no name', () => {
+      const NO_NAME = '  An agent identity already exists in ~/.opena2a/aim-core (it carries no name); --name demo was not applied.';
+      // `vault init --name first`, the vault removed, and identity.json rewritten by unname.
+      const nameless = async (core: VaultCore, unname: (identity: Record<string, unknown>) => void) => {
+        await captureLog(() => core.vaultInit('first'));
+        fs.rmSync(vaultDir, { recursive: true });
+        const identity = readIdentity();
+        unname(identity);
+        fs.writeFileSync(identityFile(), JSON.stringify(identity));
+        return { agentId: String(identity.agentId), content: fs.readFileSync(identityFile(), 'utf-8') };
+      };
+      const unnamings: Array<[string, (identity: Record<string, unknown>) => void]> = [
+        ['no agentName', (identity) => { delete identity.agentName; }],
+        ['agentName ""', (identity) => { identity.agentName = ''; }],
+        ['agentName null', (identity) => { identity.agentName = null; }],
+      ];
+
+      it.each(unnamings)('vault init --name with an identity.json holding %s says so, before and after the vault exists', async (_case, unname) => {
+        const core = await import('./vault-core.js');
+        const { agentId, content } = await nameless(core, unname);
+
+        const created = await captureLog(() => core.vaultInit('demo'));
+        const again = await captureLog(() => core.vaultInit('demo'));
+
+        for (const lines of [created, again]) {
+          expect(lines.filter((l) => l.includes('was not applied')), lines.join('\n')).toEqual([NO_NAME]);
+          expect(lines.filter((l) => l.startsWith('  Agent:'))).toEqual([`  Agent:       ${agentId} (no name)`]);
+          expect(lines.filter((l) => l.includes('undefined'))).toEqual([]);
+        }
+        expect(created).toContain('  Identity Vault initialized.');
+        expect(again).toContain(`  Vault already initialized for agent ${agentId}`);
+        expect(fs.readFileSync(identityFile(), 'utf-8')).toBe(content);
+      });
+
+      it('vault init without --name prints no notice and the agentId alone, before and after the vault exists', async () => {
+        const core = await import('./vault-core.js');
+        const { agentId } = await nameless(core, (identity) => { delete identity.agentName; });
+
+        const created = await captureLog(() => core.vaultInit());
+        const again = await captureLog(() => core.vaultInit());
+
+        for (const lines of [created, again]) {
+          expect(lines.filter((l) => l.includes('was not applied')), lines.join('\n')).toEqual([]);
+          expect(lines.filter((l) => l.startsWith('  Agent:'))).toEqual([`  Agent:       ${agentId} (no name)`]);
+        }
+        expect(created).toContain('  Identity Vault initialized.');
+        expect(again).toContain(`  Vault already initialized for agent ${agentId}`);
+      });
+
+      it('the CLI: vault init --name demo with an identity.json holding no agentName exits 0 and prints no undefined', async () => {
+        const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+        expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+        const { agentId } = await nameless(await import('./vault-core.js'), (identity) => { delete identity.agentName; });
+
+        const init = spawnSync(process.execPath, [cliPath, 'vault', 'init', '--name', 'demo'], {
+          env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf-8',
+          timeout: 30_000,
+        });
+
+        expect(init.status, init.stderr).toBe(0);
+        expect(init.stdout).not.toContain('undefined');
+        const lines = init.stdout.split('\n');
+        expect(lines).toContain(NO_NAME);
+        expect(lines).toContain(`  Agent:       ${agentId} (no name)`);
+      });
+    });
+
+    it('vault init shows a name that holds a control character escaped on the Agent line, as the notice does', async () => {
+      const { getOrCreateAgent, vaultInit } = await import('./vault-core.js');
+      const existing = await getOrCreateAgent('demo\x1b[2Jagent');
+
+      const lines = await captureLog(() => vaultInit('other'));
+
+      expect(lines).toContain(notApplied('demo\\e[2Jagent', 'other'));
+      expect(lines).toContain(`  Agent:       demo\\e[2Jagent (${existing.agentId})`);
+    });
+
     it('the CLI: vault list on a fresh home exits 1 and writes no identity, and vault init --name then uses the name', () => {
       const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
       expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);

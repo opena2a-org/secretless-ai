@@ -19,6 +19,20 @@ JSON, holds `{}` or has no `secretKey`, and, with the vault in place, one at
 mode 000: each time the error is the one `vault init` gives and the file is
 unchanged.
 
+**`vault init` says that an agent identity carries no name, where it printed
+`undefined` (#506).** With an `~/.opena2a/aim-core/identity.json` that holds
+`agentId`, `publicKey` and `secretKey` and no `agentName`,
+`vault init --name demo` printed
+`An agent identity already exists in ~/.opena2a/aim-core (agent undefined); --name demo was not applied.`
+and `Agent:       undefined (aim_...)`, and exited 0. That line now says
+`(it carries no name)`, and the `Agent:` line shows the `agentId` followed by
+`(no name)`, with or without `--name` and before and after the vault exists.
+An `agentName` that is empty or `null` is shown the same way. The command
+still uses that identity, leaves the file as it is and exits 0. The `Agent:`
+line shows an ESC character in a name as `\e`, as the `was not applied` line
+already did. `src/vault-core.test.ts` checks these cases and runs
+`vault init --name demo` through the CLI.
+
 **The recording of `init` and `verify` is paced to be read, and the README
 shows it in its Quick start with a caption.** The tape typed 40 ms a
 character, ran each command 300 ms after its last character and held the

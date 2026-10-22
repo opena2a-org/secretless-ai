@@ -340,6 +340,23 @@ function identityError(read: Exclude<IdentityRead, { kind: 'found' }>, vaultExis
 }
 
 /**
+ * The name an identity carries: its agentName when that is a non-empty
+ * string. identity.json is read as it is, so agentName can be absent or not
+ * a string in an identity that holds the agentId, publicKey and secretKey
+ * the vault uses (#506).
+ */
+function agentNameOf(agent: StoredIdentity): string | undefined {
+  const name: unknown = agent.agentName;
+  return typeof name === 'string' && name !== '' ? name : undefined;
+}
+
+/** An identity as an `Agent:` line shows it: name and agentId, or agentId and `(no name)`. */
+function agentShown(agent: StoredIdentity): string {
+  const name = agentNameOf(agent);
+  return name === undefined ? `${agent.agentId} (no name)` : `${escapeForDisplay(name)} (${agent.agentId})`;
+}
+
+/**
  * Get an unlocked VaultStore instance.
  *
  * Writes nothing: the vault is checked before the identity, and the identity
@@ -394,9 +411,11 @@ export async function vaultInit(agentName?: string): Promise<void> {
   if (read.kind === 'found') {
     agent = read.agent;
     if (agentName !== undefined && agentName !== agent.agentName) {
+      const existing = agentNameOf(agent);
+      const which = existing === undefined ? 'it carries no name' : `agent ${escapeForDisplay(existing)}`;
       console.log(
         `\n  An agent identity already exists in ${AIM_DATA_DIR_SHOWN} ` +
-        `(agent ${escapeForDisplay(String(agent.agentName))}); --name ${escapeForDisplay(agentName)} was not applied.`,
+        `(${which}); --name ${escapeForDisplay(agentName)} was not applied.`,
       );
     }
   } else if (read.kind === 'missing' && !store.exists()) {
@@ -409,7 +428,7 @@ export async function vaultInit(agentName?: string): Promise<void> {
   if (store.exists()) {
     console.log(`\n  Vault already initialized for agent ${agent.agentId}\n`);
     console.log(`  Vault path:  ${VAULT_DIR}`);
-    console.log(`  Agent:       ${agent.agentName} (${agent.agentId})\n`);
+    console.log(`  Agent:       ${agentShown(agent)}\n`);
     return;
   }
 
@@ -423,7 +442,7 @@ export async function vaultInit(agentName?: string): Promise<void> {
 
   console.log('\n  Identity Vault initialized.\n');
   console.log(`  Vault path:  ${VAULT_DIR}`);
-  console.log(`  Agent:       ${agent.agentName} (${agent.agentId})`);
+  console.log(`  Agent:       ${agentShown(agent)}`);
   console.log(`  Crypto:      XSalsa20-Poly1305, Ed25519 identity-bound`);
   console.log(`  Identity:    ${AIM_DATA_DIR}\n`);
   console.log('  Next steps:');
