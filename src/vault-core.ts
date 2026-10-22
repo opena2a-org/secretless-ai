@@ -13,7 +13,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
-import { escapePathForDisplay } from './display-safe';
+import { escapeForDisplay, escapePathForDisplay } from './display-safe';
 import { canReadHidden, readHiddenLine } from './hidden-line';
 import type { PromptOutput, TtyInput } from './hidden-line';
 
@@ -140,6 +140,10 @@ const HOME = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
 const VAULT_DIR = path.join(HOME, '.aim', 'vault');
 const AIM_DATA_DIR = path.join(HOME, '.opena2a', 'aim-core');
 
+// The same two directories as messages show them.
+const VAULT_DIR_SHOWN = '~/.aim/vault';
+const AIM_DATA_DIR_SHOWN = '~/.opena2a/aim-core';
+
 // ── Dynamic import ─────────────────────────────────────────────────
 
 let cachedVault: AimCoreVault | null = null;
@@ -222,7 +226,24 @@ export async function getOrCreateAgent(agentName?: string): Promise<StoredIdenti
 }
 
 /**
- * Get an unlocked VaultStore instance, creating the identity if needed.
+ * The refusal for a vault whose agent identity cannot be read. A new identity
+ * would not decrypt the credentials in the vault, so none is created.
+ */
+function identityUnreadableError(): Error {
+  return new Error(
+    `Vault exists, but no agent identity could be read from ${AIM_DATA_DIR_SHOWN}.\n` +
+    "  The credentials in the vault decrypt only with that identity's key, so no new identity was created.\n" +
+    `  Restore ${AIM_DATA_DIR_SHOWN} from a backup, or move the vault aside and start a new one,\n` +
+    '  which leaves the credentials in the old vault unreadable:\n' +
+    `    mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && secretless-ai vault init`,
+  );
+}
+
+/**
+ * Get an unlocked VaultStore instance.
+ *
+ * Writes nothing: the vault is checked before the identity, and the identity
+ * is read, never created. Only `vault init` creates one.
  */
 export async function getVaultStore(): Promise<{
   store: VaultStoreInstance;
@@ -231,10 +252,6 @@ export async function getVaultStore(): Promise<{
   edPublicKey: Uint8Array;
 }> {
   const vault = await loadAimCoreVault();
-  const agent = await getOrCreateAgent();
-  const edSecretKey = Buffer.from(agent.secretKey, 'base64');
-  const edPublicKey = Buffer.from(agent.publicKey, 'base64');
-
   const store = new vault.VaultStore(VAULT_DIR);
   if (!store.exists()) {
     throw new Error(
@@ -242,6 +259,12 @@ export async function getVaultStore(): Promise<{
       '  secretless-ai vault init',
     );
   }
+
+  const identity = await loadAimCoreIdentity();
+  const agent = identity.loadIdentity(AIM_DATA_DIR);
+  if (!agent) throw identityUnreadableError();
+  const edSecretKey = Buffer.from(agent.secretKey, 'base64');
+  const edPublicKey = Buffer.from(agent.publicKey, 'base64');
 
   store.unlock(edSecretKey);
   return { store, agent, edSecretKey, edPublicKey };
@@ -252,13 +275,29 @@ export async function getVaultStore(): Promise<{
 /**
  * Initialize a new vault for the current agent identity.
  * Creates ~/.aim/vault/ with an empty encrypted vault file.
+ *
+ * Other tools that use @opena2a/aim-core can share ~/.opena2a/aim-core, so an
+ * identity found there is used as it is, never renamed or replaced, and an
+ * agentName it does not carry is reported as not applied. An identity is
+ * created, under agentName, only when there is none and no vault either.
  */
 export async function vaultInit(agentName?: string): Promise<void> {
   const vault = await loadAimCoreVault();
-  const agent = await getOrCreateAgent(agentName);
+  const identity = await loadAimCoreIdentity();
+  const store = new vault.VaultStore(VAULT_DIR);
+
+  let agent = identity.loadIdentity(AIM_DATA_DIR);
+  if (!agent) {
+    if (store.exists()) throw identityUnreadableError();
+    agent = identity.createIdentity(AIM_DATA_DIR, agentName ?? 'secretless-agent');
+  } else if (agentName !== undefined && agentName !== agent.agentName) {
+    console.log(
+      `\n  An agent identity already exists in ${AIM_DATA_DIR_SHOWN} ` +
+      `(agent ${escapeForDisplay(String(agent.agentName))}); --name ${escapeForDisplay(agentName)} was not applied.`,
+    );
+  }
   const edSecretKey = Buffer.from(agent.secretKey, 'base64');
 
-  const store = new vault.VaultStore(VAULT_DIR);
   if (store.exists()) {
     console.log(`\n  Vault already initialized for agent ${agent.agentId}\n`);
     console.log(`  Vault path:  ${VAULT_DIR}`);

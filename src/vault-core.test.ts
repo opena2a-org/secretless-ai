@@ -335,6 +335,161 @@ describeWithAimCore('vault-core', () => {
     await expect(getVaultStore()).rejects.toThrow(/not initialized/i);
   });
 
+  // A vault command run before `vault init` is refused and writes nothing: the
+  // vault is checked before the identity, and outside `vault init` the identity
+  // is read, never created. Other tools that use @opena2a/aim-core can share
+  // ~/.opena2a/aim-core, so `vault init` uses an identity it finds there as it
+  // is and says so when `--name` asks for another name.
+  describe('the agent identity in ~/.opena2a/aim-core', () => {
+    type VaultCore = typeof import('./vault-core.js');
+    const identityFile = () => path.join(aimDataDir, 'identity.json');
+    const readIdentity = () => JSON.parse(fs.readFileSync(identityFile(), 'utf-8'));
+    const notApplied = (existing: string, requested: string) =>
+      `  An agent identity already exists in ~/.opena2a/aim-core (agent ${existing}); --name ${requested} was not applied.`;
+    const NO_IDENTITY = 'Vault exists, but no agent identity could be read from ~/.opena2a/aim-core.';
+
+    // Runs fn with console.log captured, one entry per printed line.
+    const captureLog = async (fn: () => Promise<unknown>) => {
+      const lines: string[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+        lines.push(...a.map(String).join(' ').split('\n'));
+      });
+      try {
+        await fn();
+      } finally {
+        spy.mockRestore();
+      }
+      return lines;
+    };
+
+    const verbs: Array<[string, (core: VaultCore) => Promise<unknown>]> = [
+      ['list', (core) => core.vaultList()],
+      ['register', (core) => core.vaultRegister('github', { value: 'placeholder-value' })],
+      ['rotate', (core) => core.vaultRotate('github', { value: 'placeholder-value' })],
+      ['revoke', (core) => core.vaultRevoke('github')],
+      ['exec', (core) => core.vaultExec('github', [process.execPath, '-e', '0'])],
+      ['migrate --env-file', async (core) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-vault-migrate-'));
+        try {
+          fs.writeFileSync(path.join(dir, 'entries.txt'), 'EXAMPLE_NAME=placeholder\n');
+          return await core.vaultMigrate({ envFile: path.join(dir, 'entries.txt') });
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }],
+    ];
+
+    it.each(verbs)('vault %s on a fresh home is refused and writes no identity', async (_verb, run) => {
+      const core = await import('./vault-core.js');
+
+      let refusal: unknown;
+      await captureLog(() => run(core).catch((err: unknown) => { refusal = err; }));
+
+      expect(String(refusal)).toMatch(/not initialized/i);
+      expect(fs.existsSync(identityFile())).toBe(false);
+      expect(fs.readdirSync(tmpHome)).toEqual([]);
+    });
+
+    it('vault list with the vault in place and its identity gone names the identity and creates none', async () => {
+      const { vaultInit, vaultList } = await import('./vault-core.js');
+      await captureLog(() => vaultInit());
+      fs.rmSync(identityFile());
+
+      let refusal: unknown;
+      await captureLog(() => vaultList().catch((err: unknown) => { refusal = err; }));
+
+      const message = refusal instanceof Error ? refusal.message : String(refusal);
+      expect(message.split('\n')[0]).toBe(NO_IDENTITY);
+      expect(message).toContain("decrypt only with that identity's key, so no new identity was created");
+      expect(message.split('\n').pop()).toBe('    mv ~/.aim/vault ~/.aim/vault.old && secretless-ai vault init');
+      expect(fs.existsSync(identityFile())).toBe(false);
+    });
+
+    it('vault init with the vault in place and its identity gone creates none', async () => {
+      const { vaultInit } = await import('./vault-core.js');
+      await captureLog(() => vaultInit());
+      fs.rmSync(identityFile());
+
+      let refusal: unknown;
+      await captureLog(() => vaultInit('demo-agent').catch((err: unknown) => { refusal = err; }));
+
+      expect(String(refusal)).toContain(NO_IDENTITY);
+      expect(fs.existsSync(identityFile())).toBe(false);
+    });
+
+    it('vault init --name with an identity of another name says so first and keeps that identity', async () => {
+      const { getOrCreateAgent, vaultInit } = await import('./vault-core.js');
+      // The identity `vault list` used to leave behind: the default name.
+      const existing = await getOrCreateAgent();
+      expect(existing.agentName).toBe('secretless-agent');
+
+      const lines = await captureLog(() => vaultInit('demo-agent'));
+
+      const notice = lines.indexOf(notApplied('secretless-agent', 'demo-agent'));
+      expect(notice, lines.join('\n')).toBeGreaterThanOrEqual(0);
+      expect(notice).toBeLessThan(lines.indexOf('  Identity Vault initialized.'));
+      expect(lines).toContain(`  Agent:       secretless-agent (${existing.agentId})`);
+      expect(readIdentity()).toEqual(existing);
+    });
+
+    it('vault init --name after vault init says so before Vault already initialized', async () => {
+      const { vaultInit } = await import('./vault-core.js');
+      await captureLog(() => vaultInit());
+      const before = readIdentity();
+
+      const lines = await captureLog(() => vaultInit('other'));
+
+      const notice = lines.indexOf(notApplied('secretless-agent', 'other'));
+      expect(notice, lines.join('\n')).toBeGreaterThanOrEqual(0);
+      expect(notice).toBeLessThan(lines.findIndex((l) => l.startsWith('  Vault already initialized for agent ')));
+      expect(readIdentity()).toEqual(before);
+    });
+
+    it('vault init --name on a fresh home creates the identity under that name', async () => {
+      const { vaultInit } = await import('./vault-core.js');
+
+      const lines = await captureLog(() => vaultInit('demo-agent'));
+
+      expect(readIdentity().agentName).toBe('demo-agent');
+      expect(lines.some((l) => l.startsWith('  Agent:       demo-agent (aim_'))).toBe(true);
+      expect(lines.filter((l) => l.includes('was not applied'))).toEqual([]);
+    });
+
+    it('vault init without --name, or with the name the identity has, prints no notice', async () => {
+      const { getOrCreateAgent, vaultInit } = await import('./vault-core.js');
+      await getOrCreateAgent();
+
+      const lines = await captureLog(async () => {
+        await vaultInit();
+        await vaultInit('secretless-agent');
+      });
+
+      expect(lines.filter((l) => l.includes('was not applied'))).toEqual([]);
+      expect(readIdentity().agentName).toBe('secretless-agent');
+    });
+
+    it('the CLI: vault list on a fresh home exits 1 and writes no identity, and vault init --name then uses the name', () => {
+      const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+      expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+      const vaultCli = (...args: string[]) => spawnSync(process.execPath, [cliPath, 'vault', ...args], {
+        env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+
+      const list = vaultCli('list');
+      expect(list.status).toBe(1);
+      expect(list.stderr).toContain('Error: Vault not initialized. Run:\n  secretless-ai vault init');
+      expect(fs.existsSync(identityFile())).toBe(false);
+
+      const init = vaultCli('init', '--name', 'demo-agent');
+      expect(init.status).toBe(0);
+      expect(init.stdout).toMatch(/^ {2}Agent: {7}demo-agent \(aim_/m);
+      expect(init.stdout).not.toContain('was not applied');
+    });
+  });
+
   it('vaultRegister with --env reads from environment', async () => {
     const { vaultInit, vaultRegister } = await import('./vault-core.js');
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
