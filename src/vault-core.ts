@@ -277,9 +277,12 @@ export async function getVaultStore(): Promise<{
  * Creates ~/.aim/vault/ with an empty encrypted vault file.
  *
  * Other tools that use @opena2a/aim-core can share ~/.opena2a/aim-core, so an
- * identity found there is used as it is, never renamed or replaced, and an
- * agentName it does not carry is reported as not applied. An identity is
- * created, under agentName, only when there is none and no vault either.
+ * identity that can be read there is used as it is, never renamed or
+ * replaced, and an agentName it does not carry is reported as not applied.
+ * With no vault, an identity is created under agentName when there is none,
+ * and also over an identity.json that loadIdentity cannot read or parse,
+ * which is replaced without notice. With a vault and no identity that can be
+ * read, nothing is created and the command fails.
  */
 export async function vaultInit(agentName?: string): Promise<void> {
   const vault = await loadAimCoreVault();
