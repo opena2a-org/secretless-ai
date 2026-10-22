@@ -33,6 +33,33 @@ line shows an ESC character in a name as `\e`, as the `was not applied` line
 already did. `src/vault-core.test.ts` checks these cases and runs
 `vault init --name demo` through the CLI.
 
+**`vault test` fails when the identity in `~/.opena2a/aim-core` does not
+decrypt the vault's credentials (#507).** With another home's valid
+`identity.json` copied over `~/.opena2a/aim-core/identity.json`, `vault test`
+printed `[OK]  Vault unlocks with agent identity` and `All checks passed.` and
+exited 0, while `vault exec` printed
+`Vault resolution denied: Failed to decrypt credential` and exited 1:
+unlocking the vault derives a key from the identity and does not check that
+key against the vault. The unlock check now decrypts each credential the vault
+holds with that key. When one does not decrypt, it prints
+`[FAIL]  Agent identity <agent> does not decrypt <n> of <total> credential(s) in the vault:`
+followed by the namespaces, then the agent the vault was created for when that
+is another agent, then the fix: restore `identity.json` from a backup of the
+identity the vault was created with, or store each of those credentials again
+with `secretless-ai vault rotate <namespace>`, one line per namespace.
+`vault test` then exits 1 and `vaultTest()` resolves to `false`. A namespace
+with a space in it is printed quoted (`'two words'`), and one with an ESC
+character in it is printed escaped inside `$'...'`, with `<namespace>` in its
+command. After either fix step, `vault test` prints
+`[OK]  Vault unlocks with agent identity (1 credential(s) decrypted)` and
+`All checks passed.` and exits 0, and `vault exec` gives the command the
+value. A vault that holds no credential has nothing to decrypt: with an
+identity other than the one it was created with, `vault test` prints
+`[OK]  Vault unlocks with agent identity (no credentials to decrypt)` and
+exits 0, and a credential then stored with that identity reaches `vault exec`.
+`src/vault-core.test.ts` checks these states, and the exit codes of
+`vault test` and `vault exec` with the other identity in place.
+
 **The recording of `init` and `verify` is paced to be read, and the README
 shows it in its Quick start with a caption.** The tape typed 40 ms a
 character, ran each command 300 ms after its last character and held the
