@@ -60,6 +60,33 @@ exits 0, and a credential then stored with that identity reaches `vault exec`.
 `src/vault-core.test.ts` checks these states, and the exit codes of
 `vault test` and `vault exec` with the other identity in place.
 
+**`mcp-status` reads the `env` of a server that runs through the wrapper, and
+`protect-mcp` moves a secret found there into the backend (#508).**
+`mcp-status` listed a server whose command is the `secretless-mcp` wrapper as
+protected without classifying its `env`, and `protect-mcp` counted it as
+protected and left its `env` as it was. The wrapper does not take a value out
+of the file, so a key added to the `env` of such a server stayed on disk: for
+a `mcp.json` holding a `secretless-mcp` server named `demo` with
+`MY_SERVICE_API_KEY` in its `env`, `mcp-status` printed `+ demo: protected`.
+It now classifies the `env` of every server and prints
+`! demo: EXPOSED (1 plaintext secret(s))`; a wrapped server with an `env`
+value it could not read gets the `?` line naming that value and no
+`protected` line. `protect-mcp` stores such a secret under the name the
+wrapper reads its secrets by (its `--client` and `--server` arguments),
+beside the secrets already stored there, and removes it from the server's
+`env`, leaving its command and args as they are. It leaves the value in place
+and lists the server under `secrets not moved`, with the reason, when another
+protected server reads its secrets by the same name (each server that reads
+by a name is given every secret stored under it), when the server's arguments
+give `--vault-dir` or `--vault-key`, or when the backend its wrapper reads
+from (its `--backend` argument, or the configured backend when it gives none)
+is not the one `protect-mcp` stores in. `docs/use-cases/secure-mcp-configs.md`
+says what `+ <name>: protected` means. `src/followups-508.test.ts` runs
+`mcp-status` on such servers and starts the built wrapper on a server whose
+value `protect-mcp` moved, `src/mcp/protect.test.ts` checks what
+`protect-mcp` stores and writes in each case, and `src/commands/mcp.test.ts`
+what it prints.
+
 **The recording of `init` and `verify` is paced to be read, and the README
 shows it in its Quick start with a caption.** The tape typed 40 ms a
 character, ran each command 300 ms after its last character and held the

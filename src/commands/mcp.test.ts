@@ -33,6 +33,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      unmoved: [],
       projectLevel: [],
     });
 
@@ -54,6 +55,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      unmoved: [],
       projectLevel: [],
     });
 
@@ -71,6 +73,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      unmoved: [],
       projectLevel: [],
     });
 
@@ -88,6 +91,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      unmoved: [],
       projectLevel: [],
     });
 
@@ -108,6 +112,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [{ client: 'windsurf', filePath: '/home/u/.windsurf/mcp.json', reason: 'not valid JSON (line 2, column 1)' }],
       unchecked: [],
       sharedName: [],
+      unmoved: [],
       projectLevel: [],
     });
 
@@ -136,6 +141,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
         },
       ],
       sharedName: [],
+      unmoved: [],
       projectLevel: [],
     });
 
@@ -171,6 +177,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
         },
       ],
       sharedName: [],
+      unmoved: [],
       projectLevel: [],
     });
 
@@ -217,6 +224,7 @@ describe('protect-mcp names where it looked, and each project-level config it le
     unparsed: [],
     unchecked: [],
     sharedName: [],
+    unmoved: [],
     projectLevel: [],
   };
 
@@ -303,6 +311,7 @@ describe('protect-mcp over the server maps of ~/.claude.json (#470)', () => {
     unparsed: [],
     unchecked: [],
     sharedName: [],
+    unmoved: [],
     projectLevel: [],
   };
   const claudeJson = '/home/u/.claude.json';
@@ -368,5 +377,65 @@ describe('protect-mcp over the server maps of ~/.claude.json (#470)', () => {
 
     expect(output).not.toMatch(RAW_CONTROL);
     expect(output).toContain('  claude-code (/home/u/.claude.json, project "/work/a\\u001b[2Jpp")\n    ? slack: entry not checked: not a JSON object');
+  });
+});
+
+describe('protect-mcp names each server that runs through the wrapper with secrets it left in its env (#508)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const base: ProtectResult = {
+    clientsScanned: 1,
+    secretsFound: 0,
+    serversProtected: 0,
+    servers: [],
+    alreadyProtected: 0,
+    injectionWarnings: [],
+    unparsed: [],
+    unchecked: [],
+    sharedName: [],
+    unmoved: [],
+    projectLevel: [],
+  };
+  const cursorJson = '/home/u/.cursor/mcp.json';
+
+  it('lists each one under its config with why, then what to do, and does not call the configs clean', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      ...base,
+      unmoved: [
+        { client: 'cursor', filePath: cursorJson, server: 'github', reason: 'its --backend argument is "1password", and this run stores in local' },
+        { client: 'cursor', filePath: cursorJson, server: 'gh\x1b[2J', reason: 'another protected server reads its secrets by the same name, cursor/github' },
+      ],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).not.toMatch(RAW_CONTROL);
+    expect(output).toContain('  No plaintext secrets were encrypted.\n');
+    expect(output).not.toContain('No plaintext secrets found');
+    expect(output).not.toContain('Already clean.');
+    expect(output).toContain([
+      '  cursor (/home/u/.cursor/mcp.json)',
+      '    ? github: secrets not moved: its --backend argument is "1password", and this run stores in local',
+      '    ? "gh\\u001b[2J": secrets not moved: another protected server reads its secrets by the same name, cursor/github',
+      '',
+      '  2 server(s) run through the wrapper with secrets in plaintext in their env that were not encrypted.',
+      '  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.',
+    ].join('\n'));
+  });
+
+  it('names them after the secrets it did encrypt', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      ...base,
+      secretsFound: 1,
+      serversProtected: 1,
+      servers: [{ client: 'cursor', server: 'slack', secretKeys: ['SLACK_BOT_TOKEN'] }],
+      unmoved: [{ client: 'cursor', filePath: cursorJson, server: 'github', reason: 'its --backend argument is "1password", and this run stores in local' }],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).toContain('1 secret(s) encrypted across 1 server(s).');
+    expect(output).toContain('  cursor (/home/u/.cursor/mcp.json)\n    ? github: secrets not moved: its --backend argument is "1password", and this run stores in local');
+    expect(output).toContain('  1 server(s) run through the wrapper with secrets in plaintext in their env that were not encrypted.');
   });
 });

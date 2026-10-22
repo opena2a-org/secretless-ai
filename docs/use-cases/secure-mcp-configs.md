@@ -119,6 +119,8 @@ Expected output:
 
 `Backend:` names where the secrets are stored. A server that still has a plaintext secret is listed as `! <name>: EXPOSED (1 plaintext secret(s))`, and a server with no secret in its `env` as `* <name>: clean (no secrets in env)`.
 
+A server listed as `+ <name>: protected` runs through the wrapper, and no secret was found in its `env`. The wrapper does not take a value out of the file, so a secret added to the `env` of such a server after `protect-mcp` rewrote it lists the server as `EXPOSED`. Run `npx secretless-ai protect-mcp` again to move the value into the backend, under the name the wrapper reads its secrets by. It leaves the value in place and names the server when another protected server reads its secrets by the same name, when the server's arguments give `--vault-dir` or `--vault-key`, or when the backend its wrapper reads from (its `--backend` argument, or the configured backend when it gives none) is not the one `protect-mcp` stores in.
+
 ## Using a different storage backend
 
 With no backend configured, secrets are stored in the OS keychain where one is available (macOS Keychain, or Linux Secret Service when `secret-tool` is installed), and otherwise in an AES-256-GCM encrypted local file. `npx secretless-ai backend set local` selects the encrypted file on any platform. To use a team-friendly backend:

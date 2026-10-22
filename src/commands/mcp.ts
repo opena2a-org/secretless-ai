@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { protectMcp } from '../mcp/protect';
-import type { SharedNameMcpServer } from '../mcp/protect';
+import type { SharedNameMcpServer, UnmovedMcpServer } from '../mcp/protect';
 import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
 import type { UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
@@ -78,12 +78,11 @@ function printUncheckedFix(count: number, command: string): void {
   console.log(`  Fix the entries above, then run \`npx secretless-ai ${command}\` again.\n`);
 }
 
-/**
- * Each server protect-mcp left because a protected server reads its secrets
- * by the same name, under its config and naming the config of that server,
- * then why and what to do.
- */
-function printSharedNameServers(servers: SharedNameMcpServer[]): void {
+/** One line for each server, under the label of its config, in the order given. */
+function printUnderConfigs<T extends { client: string; filePath: string; projectPath?: string; projectKey?: string }>(
+  servers: T[],
+  line: (server: T) => string,
+): void {
   let label: string | undefined;
   for (const server of servers) {
     const next = configLabel(server);
@@ -92,13 +91,34 @@ function printSharedNameServers(servers: SharedNameMcpServer[]): void {
       console.log(`  ${next}`);
       label = next;
     }
-    const holder = configLabel({ client: server.client, ...server.protectedIn });
-    console.log(`    ? ${listedName(server.server)}: not protected: its name is taken by a protected server in ${holder}`);
+    console.log(line(server));
   }
   console.log();
+}
+
+/**
+ * Each server protect-mcp left because a protected server reads its secrets
+ * by the same name, under its config and naming the config of that server,
+ * then why and what to do.
+ */
+function printSharedNameServers(servers: SharedNameMcpServer[]): void {
+  printUnderConfigs(servers, (server) => {
+    const holder = configLabel({ client: server.client, ...server.protectedIn });
+    return `    ? ${listedName(server.server)}: not protected: its name is taken by a protected server in ${holder}`;
+  });
   console.log(`  ${servers.length} server(s) were not protected, so their secrets are still in plaintext.`);
   console.log('  Secrets are stored under the client and server name, and a protected server reads its secrets by that name.');
   console.log('  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.\n');
+}
+
+/**
+ * Each server that runs through the wrapper with secrets protect-mcp left in
+ * its env, under its config and with why, then what to do.
+ */
+function printUnmovedServers(servers: UnmovedMcpServer[]): void {
+  printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: secrets not moved: ${server.reason}`);
+  console.log(`  ${servers.length} server(s) run through the wrapper with secrets in plaintext in their env that were not encrypted.`);
+  console.log('  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.\n');
 }
 
 export async function runProtectMcp(args: string[]): Promise<number> {
@@ -121,10 +141,13 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 
   try {
     const result = await protectMcp({ wrapperPath, backendType });
-    const { unparsed, unchecked, sharedName, projectLevel } = result;
+    const { unparsed, unchecked, sharedName, unmoved, projectLevel } = result;
     const notChecked = () => {
       if (sharedName.length > 0) {
         printSharedNameServers(sharedName);
+      }
+      if (unmoved.length > 0) {
+        printUnmovedServers(unmoved);
       }
       if (unchecked.length > 0) {
         let servers = 0;
@@ -165,9 +188,10 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     console.log(`  Scanned ${result.clientsScanned} client(s)\n`);
 
     if (result.secretsFound === 0) {
-      // A server left in plaintext because its name is taken was found with
-      // secrets in it, so none of the lines below is true of it.
-      if (sharedName.length > 0) {
+      // A server left in plaintext because its name is taken, or because its
+      // secrets were not moved into the store its wrapper reads from, was
+      // found with secrets in it, so none of the lines below is true of it.
+      if (sharedName.length > 0 || unmoved.length > 0) {
         console.log('  No plaintext secrets were encrypted.\n');
         notChecked();
         return 0;
@@ -252,28 +276,32 @@ export function runMcpStatus(): number {
 
   for (const config of configs) {
     console.log(`  ${configLabel(config)}`);
-    // A server with a part that could not be read is never listed as clean:
-    // a plaintext secret in that part was not looked for.
+    // A server with a part that could not be read is never listed as clean or
+    // protected: a plaintext secret in that part was not looked for.
     const unchecked = new Set(config.unchecked.map((server) => server.name));
     // Names are written as escapes where they hold a control character: a
     // project-level config arrives with the repository it is in.
     for (const server of config.servers) {
-      if (server.alreadyProtected) {
+      // The env of a server that runs through the wrapper is classified too:
+      // the wrapper does not take a value out of the file, so a plaintext
+      // secret added to its env stays on disk.
+      const secretCount = Object.keys(classifyEnvVars(server.env).secrets).length;
+      if (secretCount > 0) {
+        console.log(`    ! ${listedName(server.name)}: EXPOSED (${secretCount} plaintext secret(s))`);
+        if (rewrittenByProtectMcp(config)) {
+          exposedCount++;
+        } else {
+          leftExposedCount++;
+          leftExposedFiles.add(config.projectPath ?? config.filePath);
+        }
+      } else if (unchecked.has(server.name)) {
+        // Neither protected nor clean: the line printUncheckedServers writes
+        // below names the part of its entry that was not read.
+      } else if (server.alreadyProtected) {
         console.log(`    + ${listedName(server.name)}: protected`);
         protectedCount++;
       } else {
-        const secretCount = Object.keys(classifyEnvVars(server.env).secrets).length;
-        if (secretCount > 0) {
-          console.log(`    ! ${listedName(server.name)}: EXPOSED (${secretCount} plaintext secret(s))`);
-          if (rewrittenByProtectMcp(config)) {
-            exposedCount++;
-          } else {
-            leftExposedCount++;
-            leftExposedFiles.add(config.projectPath ?? config.filePath);
-          }
-        } else if (!unchecked.has(server.name)) {
-          console.log(`    * ${listedName(server.name)}: clean (no secrets in env)`);
-        }
+        console.log(`    * ${listedName(server.name)}: clean (no secrets in env)`);
       }
     }
     printUncheckedServers(config.unchecked);
