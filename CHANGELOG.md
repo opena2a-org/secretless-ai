@@ -48,6 +48,28 @@ and `3 in 2 transcript files` otherwise. One value still prints its
 `file:line`, and the verdict, the exit code and the order of the lines are
 unchanged. `src/verify-transcript-count.test.ts` checks each case.
 
+**`secret set` adds no second shell hook line when an empty line separates
+the hook's comment line from a working hook line (#498).** With `~/.bashrc`
+holding `# secretless-ai: auto-load secrets from vault`, an empty line and
+then the hook line `secret set` writes, `secret set` read the empty line as a
+missing hook line: it printed `~/.bashrc has the line "# secretless-ai:
+auto-load secrets from vault" with no command under it.`, asked `Add a hook
+to ~/.bashrc that exports every stored secret in each new shell? [y/N]`, and
+after `y` wrote a second hook line under the comment line, so a bash shell
+that read the profile ran the hook twice. The check now reads the lines of
+the whole profile, not only the line under the comment line, and when one of
+them runs the hook `secret set` prints nothing about the hook, asks nothing
+and leaves the profile as it is. A line runs the hook when it is the hook
+line `secret set` would write, a hook line it wrote earlier whose command is
+found, or a line of your own, not a comment, that contains
+`secretless-ai env`; spaces around the line are ignored. Such a line above
+the comment line, after an empty line or a line of spaces under it, after a
+hook line under it whose command was not found, or in a profile with no
+comment line now gets no second hook line. When the lines after the empty
+line run no hook, as with a commented-out `eval "$(secretless-ai env)"` or a
+hook line whose command was not found, the hook line is still written under
+the comment line.
+
 **The README opens with what Secretless does, and its limits have their own
 section near the end.** The README's opening paragraph, which `package.json`
 repeats as the description `npm search`, `npm view` and the registry listing

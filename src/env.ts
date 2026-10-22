@@ -188,6 +188,19 @@ export function hookLineRuns(line: string, pathEnv: string = process.env.PATH ??
 }
 
 /**
+ * Whether a line of a profile counts as one that runs the hook: the line
+ * `hookLine`, a hook line in a form this tool writes that still reaches a CLI,
+ * or a line of the user's own that holds `secretless-ai env` and is not a
+ * comment. Surrounding whitespace is ignored.
+ */
+function lineRunsHook(line: string, hookLine: string, pathEnv: string): boolean {
+  const text = line.trim();
+  if (text === hookLine) return true;
+  if (text === BARE_HOOK_LINE || PATH_HOOK_LINE.test(text)) return hookLineRuns(text, pathEnv);
+  return !text.startsWith('#') && text.includes('secretless-ai env');
+}
+
+/**
  * Marker comment used to identify secretless-managed lines in shell profiles.
  */
 export const SHELL_HOOK_MARKER = '# secretless-ai: auto-load secrets from vault';
@@ -269,6 +282,9 @@ export function planShellHook(options: InstallShellHookOptions = {}): ShellHookP
   const hookLine = getShellHookLine(command);
   const cliOnPath = findOnPath('secretless-ai', pathEnv) !== null;
   const lines = existing.split('\n');
+  // A profile with a line that runs the hook, anywhere in it, gets no second
+  // one (#498).
+  if (lines.some((line) => lineRunsHook(line, hookLine, pathEnv))) return null;
   const at = lines.indexOf(SHELL_HOOK_MARKER);
   if (at !== -1) {
     const current = lines[at + 1] ?? '';
@@ -279,7 +295,7 @@ export function planShellHook(options: InstallShellHookOptions = {}): ShellHookP
       lines.splice(at + 1, 0, hookLine);
       return { profilePath, action: 'repaired', hookLineMissing: true, command, cliOnPath, contents: lines.join('\n') };
     }
-    if (current === hookLine || hookLineRuns(current, pathEnv)) return null;
+    if (hookLineRuns(current, pathEnv)) return null;
     lines[at + 1] = hookLine;
     return { profilePath, action: 'repaired', command, cliOnPath, contents: lines.join('\n') };
   }

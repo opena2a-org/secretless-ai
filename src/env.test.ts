@@ -188,6 +188,14 @@ describe('planShellHook with no hook line under the marker (#351)', () => {
 
     expect(plan()).toBeNull();
   });
+
+  // The empty line was taken as a missing hook line without the lines after it
+  // being read, so a second line that runs the hook was planned (#498).
+  it('CONTROL: a marker, an empty line, then a working hook line plans nothing (#498)', () => {
+    fs.writeFileSync(profile(), `${SHELL_HOOK_MARKER}\n\n${getShellHookLine([process.execPath, cli])}\n`);
+
+    expect(plan()).toBeNull();
+  });
 });
 
 describe('detectAgentRuntime', () => {
