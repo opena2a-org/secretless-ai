@@ -18,8 +18,8 @@ export function printHelp(): void {
   // secretless's own version, which is misleading under the host's umbrella.
   // The description stays. Standalone keeps the banner exactly as before.
   const banner = IS_EMBEDDED ? '' : `  Secretless v${VERSION}\n`;
-  // The package description, not a line written here: it says where the read
-  // gate is enforced and what is not blocked, and a test holds it to the README.
+  // The package description, not a line written here: it names what Secretless
+  // sets up and where the read gate is enforced. A test holds it to the README.
   const description = wrapList(DESCRIPTION.trim().split(/\s+/), '  ').join('\n');
   console.log(`
 ${banner}${description}
