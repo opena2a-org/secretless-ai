@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+**`vault list` and the other vault commands no longer write an agent identity
+before `vault init`, and `vault init --name` says when it keeps the name of an
+identity that already exists.** On a home with no vault, `vault list` printed
+`Error: Vault not initialized. Run:` / `secretless-ai vault init` and exited 1,
+and had first written a new agent identity, its secret key included, to
+`~/.opena2a/aim-core/identity.json`. `vault register`, `rotate`, `revoke`,
+`exec`, and `migrate` with entries to move, did the same. A later
+`vault init --name demo-agent` then used that identity and printed
+`Agent:       secretless-agent (aim_...)`, and nothing said that `--name` was
+not applied. Each of these commands now checks for the vault before it reads
+the identity, and only `vault init` creates one: the same error and exit 1
+leave the home as it was. With the vault in place and no identity that can be
+read, they and `vault init` exit 1 with
+`Error: Vault exists, but no agent identity could be read from ~/.opena2a/aim-core.`,
+the restore step, and the command that moves the vault aside and starts a new
+one (`mv ~/.aim/vault ~/.aim/vault.old && secretless-ai vault init`), where
+they created a new identity, which cannot decrypt the credentials in the
+vault. `vault init --name <name>` with an identity of another name in
+`~/.opena2a/aim-core` prints
+`An agent identity already exists in ~/.opena2a/aim-core (agent <existing name>); --name <name> was not applied.`
+before its result and uses that identity unchanged: other tools that use
+`@opena2a/aim-core` can share that directory, so an identity there is never
+renamed or replaced. With no identity there, `--name` names the new one as
+before, and without `--name` nothing new is printed. `getVaultStore()`, which
+the package exports, no longer creates an identity either.
+`src/vault-core.test.ts` runs the six commands on an empty home and checks
+that the home is still empty afterwards, checks the refusal with the vault in
+place and the identity removed, and checks that the `--name` line comes before
+`Identity Vault initialized.` and before `Vault already initialized`, with
+`identity.json` unchanged.
+
 **The README opens with what Secretless does, and its limits have their own
 section near the end.** The README's opening paragraph, which `package.json`
 repeats as the description `npm search`, `npm view` and the registry listing
