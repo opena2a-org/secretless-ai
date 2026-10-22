@@ -517,11 +517,15 @@ describeWithAimCore('vault-core', () => {
         return lines.slice(start).filter((l) => l !== '').map((l) => l.trim().replace(/^Fix: /, ''));
       };
 
-      it.each([
+      // An identity.json that cannot be used: the case, the file's content, and
+      // what the refusal says is wrong with it.
+      const unusableFiles: Array<[string, string, string]> = [
         ['that is not JSON', NOT_JSON, 'is not valid JSON'],
         ['holding {}', '{}', 'holds no agent identity (no agentId, publicKey or secretKey)'],
         ['without secretKey', JSON.stringify({ agentId: 'aim_x', publicKey: 'not-a-key' }), 'holds no agent identity (no secretKey)'],
-      ])('vault init --name with no vault and an identity.json %s leaves the file and names it', async (_case, content, problem) => {
+      ];
+
+      it.each(unusableFiles)('vault init --name with no vault and an identity.json %s leaves the file and names it', async (_case, content, problem) => {
         const { vaultInit } = await import('./vault-core.js');
         writeIdentityFile(content);
 
@@ -550,6 +554,45 @@ describeWithAimCore('vault-core', () => {
         }
 
         expect(message.split('\n')[0]).toBe('~/.opena2a/aim-core/identity.json cannot be read (EACCES).');
+        expect(fs.readFileSync(identityFile(), 'utf-8')).toBe(before);
+        expect(readIdentity().agentName).toBe('first');
+      });
+
+      // getOrCreateAgent, which the package exports, leaves the file in place
+      // too, and rejects with the error `vault init` gives in the same state.
+      it.each(unusableFiles)('getOrCreateAgent with no vault and an identity.json %s leaves the file and rejects as vault init does', async (_case, content, problem) => {
+        const { getOrCreateAgent, vaultInit } = await import('./vault-core.js');
+        writeIdentityFile(content);
+
+        const { message } = await refusalOf(() => getOrCreateAgent('second'));
+        const { message: initMessage } = await refusalOf(() => vaultInit('second'));
+
+        expect(message.split('\n')[0]).toBe(`~/.opena2a/aim-core/identity.json ${problem}.`);
+        expect(message.split('\n').pop()).toBe(`    ${MOVE_IDENTITY} && secretless-ai vault init`);
+        expect(message).toBe(initMessage);
+        expect(fs.readFileSync(identityFile(), 'utf-8')).toBe(content);
+        expect(fs.existsSync(vaultDir)).toBe(false);
+      });
+
+      (canDenyRead ? it : it.skip)('getOrCreateAgent with the vault in place and identity.json at mode 000 leaves the file and rejects as vault init does', async () => {
+        const { getOrCreateAgent, vaultInit } = await import('./vault-core.js');
+        await captureLog(() => vaultInit('first'));
+        const before = fs.readFileSync(identityFile(), 'utf-8');
+        fs.chmodSync(identityFile(), 0o000);
+
+        let message: string;
+        let initMessage: string;
+        try {
+          ({ message } = await refusalOf(() => getOrCreateAgent('second')));
+          ({ message: initMessage } = await refusalOf(() => vaultInit('second')));
+        } finally {
+          fs.chmodSync(identityFile(), 0o600);
+        }
+
+        const messageLines = message.split('\n');
+        expect(messageLines.slice(0, 2)).toEqual([NO_IDENTITY, '  ~/.opena2a/aim-core/identity.json cannot be read (EACCES).']);
+        expect(messageLines.pop()).toBe(`    mv ~/.aim/vault ~/.aim/vault.old && ${MOVE_IDENTITY} && secretless-ai vault init`);
+        expect(message).toBe(initMessage);
         expect(fs.readFileSync(identityFile(), 'utf-8')).toBe(before);
         expect(readIdentity().agentName).toBe('first');
       });

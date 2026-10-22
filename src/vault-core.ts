@@ -219,14 +219,21 @@ export async function loadAimCoreIdentity(): Promise<AimCoreIdentity> {
 /**
  * Get or create the agent's Ed25519 identity.
  * Returns the stored identity (including secret key for signing).
+ *
+ * An identity is created under agentName only when there is no
+ * identity.json. One that cannot be read, is not JSON, or holds no agentId,
+ * publicKey or secretKey is left in place, and the call rejects with the
+ * error `vault init` gives in that state, which names the file.
  */
 export async function getOrCreateAgent(agentName?: string): Promise<StoredIdentity> {
-  const identity = await loadAimCoreIdentity();
-  let stored = identity.loadIdentity(AIM_DATA_DIR);
-  if (!stored) {
-    stored = identity.createIdentity(AIM_DATA_DIR, agentName ?? 'secretless-agent');
+  const read = await readAgentIdentity();
+  if (read.kind === 'found') return read.agent;
+  if (read.kind === 'unusable') {
+    const vault = await loadAimCoreVault();
+    throw identityError(read, new vault.VaultStore(VAULT_DIR).exists());
   }
-  return stored;
+  const identity = await loadAimCoreIdentity();
+  return identity.createIdentity(AIM_DATA_DIR, agentName ?? 'secretless-agent');
 }
 
 /**

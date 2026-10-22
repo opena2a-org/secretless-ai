@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+**`getOrCreateAgent()` leaves an `identity.json` it cannot use in place and
+rejects with the error `vault init` gives, where it wrote a new identity over
+it (#505).** `getOrCreateAgent()`, which the package exports, wrote a new
+identity over an `~/.opena2a/aim-core/identity.json` it could not read (a file
+at mode 000) or that was not valid JSON, so a key in that file was lost, and
+returned one that parsed and held no identity (`{}`) as it was, with no
+`secretKey`. It now leaves the file as it is and rejects with the error
+`vault init` gives in the same state, which names the file and says it
+`cannot be read (EACCES)`, `is not valid JSON` or
+`holds no agent identity (no agentId, publicKey or secretKey)`, then gives the
+restore step and the command that moves the file aside (with the vault in
+place, the vault too). With no `identity.json` it creates one as before.
+`src/vault-core.test.ts` checks, with no vault, an `identity.json` that is not
+JSON, holds `{}` or has no `secretKey`, and, with the vault in place, one at
+mode 000: each time the error is the one `vault init` gives and the file is
+unchanged.
+
 **The recording of `init` and `verify` is paced to be read, and the README
 shows it in its Quick start with a caption.** The tape typed 40 ms a
 character, ran each command 300 ms after its last character and held the
