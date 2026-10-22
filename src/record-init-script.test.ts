@@ -78,7 +78,7 @@ function run(args: string[], extraEnv: Record<string, string> = {}, npm: NpmView
 }
 
 /** The committed files a render writes, by hash, so a test can tell that none of them changed. */
-const writtenFiles = () => [SIDECAR, RECORDING, CAPTURE].map(file => `${file} ${sha256(file)}`);
+const writtenFiles = () => [SIDECAR, RECORDING, CAPTURE, ...sidecar().outputs.frames, 'README.md'].map(file => `${file} ${sha256(file)}`);
 
 beforeAll(() => {
   sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'record-init-'));
@@ -129,9 +129,10 @@ describe('record-init.sh --dry-run', () => {
     }
     expect(r.stdout).toContain(s.tape);
     expect(r.stdout).toContain(s.fixtureScript);
-    for (const file of [s.outputs.gif.path, s.outputs.capture, SIDECAR, s.outputs.mp4.path]) {
+    for (const file of [s.outputs.gif.path, s.outputs.capture, SIDECAR, s.outputs.mp4.path, s.outputs.webm.path, ...s.outputs.frames]) {
       expect(r.stdout).toContain(file);
     }
+    expect(r.stdout).toContain('readme    README.md, the block from <!-- demo:init:start --> to <!-- demo:init:end -->');
     expect(r.stdout).toContain("docker    a configuration of the script's own, with no credential helper and no registry credentials");
     expect(writtenFiles()).toEqual(before);
   });

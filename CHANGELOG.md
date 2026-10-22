@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+**The recording of `init` and `verify` is paced to be read, and the README
+shows it in its Quick start with a caption.** The tape typed 40 ms a
+character, ran each command 300 ms after its last character and held the
+output of `init` for 5 s, in a 120 by 40 terminal that a README column scales
+down to small type. It now types 120 ms a character, waits 800 ms before each
+Enter and holds the two steps for 10 s and 9 s, in a 110 by 28 terminal. Each
+hold is at least the time its sentence in the new
+`docs/vhs/init.narration.json` takes at 150 words a minute plus 0.5 s, so
+spoken narration can be added without a new recording. The tape marks its
+steps with `# step:` comments and takes a screenshot of each
+(`docs/vhs/init-s1.png`, `docs/vhs/init-s2.png`). `docs/vhs/record-init.sh`
+moves the MP4's index in front of its media so a web page's `<video>` plays
+while it downloads, encodes a VP9 WebM beside it (both stay in the ignored
+`docs/vhs/out/`), and writes `docs/vhs/init.json` starting with the keys
+`schema`, `surfaceClass`, `tool`, `version`, `prerelease`, `script`,
+`scriptSha256`, `recorder`, `commands`, `steps`, `fixture`, `fixtureSha`,
+`fixtureUncommittedChanges`, `ranAtUtc`, `durationSeconds`, `outputs`,
+`capture`, `narration`, `pace`, `exitCodes` and `meteredCostUsd`; the keys it
+wrote before follow them. It then writes the README block between
+`<!-- demo:init:start -->` and `<!-- demo:init:end -->`: the GIF, the caption
+`Recorded with secretless-ai <version> on <date>`, which ends with
+`(pre-release build)` unless the build is the published package or a pack of
+the commit the tag `v<version>` names, and links to the text version and the
+sidecar. The Documentation list no longer links the recording. The Install
+block lists the npm and Homebrew commands without comments, where it also
+repeated the Quick start's `npx secretless-ai init` (`docs/install.md` keeps
+that line), and the links at the end of the README no longer repeat the
+Website and Discord links at its top. The recording was rendered again from
+the current source, so it shows `init` creating `.claude/settings.json` with
+147 deny patterns and the transcript watcher line that the previous recording
+predates. `src/recording-sidecar.test.ts` holds the tape, the narration, the
+sidecar and the README block to all of this. No command, flag, exit code or
+output changed.
+
 **`vault list` and the other vault commands no longer write an agent identity
 before `vault init`, and `vault init --name` says when it keeps the name of an
 identity that already exists.** On a home with no vault, `vault list` printed

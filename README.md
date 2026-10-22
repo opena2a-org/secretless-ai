@@ -39,6 +39,12 @@ Captured in a project holding an empty `.claude/` directory. Run it in a project
 
 `npx secretless-ai status` prints `Protected` only where the Claude Code hook or deny patterns apply. A project set up through instruction files alone reads `Advisory only`.
 
+<!-- demo:init:start -->
+![secretless-ai init sets up a project, then verify checks it](docs/vhs/init.gif)
+Recorded with secretless-ai 0.23.1 on 2026-10-22 (pre-release build)
+[Text version](docs/vhs/init-capture.txt) · [How it was recorded](docs/vhs/init.json)
+<!-- demo:init:end -->
+
 ## Common tasks
 
 - [Store a secret and use it by name](#store-secrets-and-use-them-in-ai-sessions)
@@ -71,9 +77,8 @@ On a terminal, `secret set` asks before it adds a hook to `~/.zshenv` or `~/.bas
 ## Install
 
 ```bash
-npx secretless-ai init                        # run once, no install
-npm install -g secretless-ai                  # install globally
-brew install opena2a-org/tap/secretless-ai    # Homebrew
+npm install -g secretless-ai
+brew install opena2a-org/tap/secretless-ai
 ```
 
 [Install](docs/install.md) covers building from source, checking a release's provenance, and when Secretless reads a value it stores.
@@ -111,11 +116,11 @@ The guard hook and the deny rules check a command before it runs and cannot see 
 - [Commands](docs/commands.md): MCP protection, triage flags, exit codes
 - [Scan coverage and exit codes](docs/scanning.md), with [what a directory scan opens](docs/scanning.md#what-a-directory-scan-opens)
 - [Use cases](docs/USE-CASES.md): step-by-step guides
-- [secretless-ai init: sets up a project, then verifies the setup](docs/vhs/init.gif), [Contributing](CONTRIBUTING.md)
+- [Contributing](CONTRIBUTING.md)
 
 Security issues: report privately through [GitHub private vulnerability reporting](https://github.com/opena2a-org/secretless-ai/security/advisories/new) or `info@opena2a.org`. We acknowledge receipt within 48 hours; [SECURITY.md](SECURITY.md) has the full policy.
 
-[Website](https://opena2a.org/secretless) · [Documentation site](https://opena2a.org/docs/secretless) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn) · [aicomply](https://github.com/opena2a-org/aicomply)
+[Documentation site](https://opena2a.org/docs/secretless) · [Demos](https://opena2a.org/demos) · [aicomply](https://github.com/opena2a-org/aicomply)
 
 ## License
 
