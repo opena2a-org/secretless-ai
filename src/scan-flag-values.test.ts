@@ -94,25 +94,32 @@ describe('a scan value flag given another value flag as its value (#469)', () =>
     }
   }
 
-  itIfBuilt('under --history, the refusal names the flag that took the value', () => {
+  // One test per command line, as for the pairs above, so each start of the
+  // CLI has the default timeout to itself: twelve starts in one test ran up
+  // to and past it on CI.
+  describe('under --history, the refusal names the flag that took the value', () => {
     for (const second of VALUE_FLAGS.filter((f) => f !== '--format')) {
-      const format = cli(['scan', '--history', '--format', second]);
-      expect(format.status).toBe(2);
-      expect(format.stderr).toContain(
-        `--format needs json with --history, e.g. --format json, but was given "${second}".`,
-      );
-      expect(format.stderr).not.toContain('undefined');
+      itIfBuilt(`scan --history --format ${second}`, () => {
+        const format = cli(['scan', '--history', '--format', second]);
+        expect(format.status).toBe(2);
+        expect(format.stderr).toContain(
+          `--format needs json with --history, e.g. --format json, but was given "${second}".`,
+        );
+        expect(format.stderr).not.toContain('undefined');
+      });
     }
     for (const first of VALUE_FLAGS.filter((f) => f !== '--format')) {
       for (const second of VALUE_FLAGS.filter((f) => f !== first)) {
-        const res = cli(['scan', '--history', first, second]);
-        expect(res.status).toBe(2);
-        expect(res.stdout).toBe('');
-        // The `--history` refusal names each directory-scan flag typed (#463),
-        // so `second` is named beside `first` unless it is `--format`.
-        expect(res.stderr).toContain(`--history does not use ${first}`);
-        expect(res.stderr).not.toContain(`${second} needs`);
-        expect(res.stderr).not.toContain('undefined');
+        itIfBuilt(`scan --history ${first} ${second}`, () => {
+          const res = cli(['scan', '--history', first, second]);
+          expect(res.status).toBe(2);
+          expect(res.stdout).toBe('');
+          // The `--history` refusal names each directory-scan flag typed (#463),
+          // so `second` is named beside `first` unless it is `--format`.
+          expect(res.stderr).toContain(`--history does not use ${first}`);
+          expect(res.stderr).not.toContain(`${second} needs`);
+          expect(res.stderr).not.toContain('undefined');
+        });
       }
     }
   });
