@@ -13,7 +13,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
-import { escapeForDisplay, escapePathForDisplay } from './display-safe';
+import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard, quotePathForDisplay, shellQuote } from './display-safe';
 import { canReadHidden, readHiddenLine } from './hidden-line';
 import type { PromptOutput, TtyInput } from './hidden-line';
 
@@ -823,6 +823,44 @@ export async function vaultExec(
 }
 
 /**
+ * Prints a `vault test` [FAIL] line, the summary lines under it, and the Fix
+ * step: its first line after `Fix:` and the rest aligned under that line.
+ */
+function printTestFailure(summary: string[], fix: string[]): void {
+  const [first, ...rest] = summary;
+  console.log(`  [FAIL]  ${first}`);
+  for (const line of rest) console.log(`          ${line}`);
+  console.log(`          Fix: ${fix[0]}`);
+  for (const line of fix.slice(1)) console.log(`               ${line}`);
+  console.log('');
+}
+
+/**
+ * A namespace from the vault file in a printed list: in single quotes when it
+ * holds a character other than an ASCII letter, a digit or `_./-`, so a `, `
+ * inside a name cannot pass for the separator, or escaped inside `$'...'`
+ * when it holds a character that would reach the terminal as a control.
+ */
+function listedNamespace(namespace: string): string {
+  return hasDisplayHazard(namespace) ? quotePathForDisplay(namespace, '/') : shellQuote(namespace);
+}
+
+/** A namespace as the operand of a printed command, or `<namespace>` when it cannot be printed as itself. */
+function namespaceOperand(namespace: string): string {
+  return hasDisplayHazard(namespace) ? '<namespace>' : shellQuote(namespace);
+}
+
+/** The agent ID the vault file records, or undefined when it records none. */
+function recordedAgentId(store: VaultStoreInstance): string | undefined {
+  try {
+    const agentId: unknown = store.getAgentId();
+    return typeof agentId === 'string' && agentId !== '' ? agentId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Test vault functionality — verify init, register, resolve, zeroize cycle.
  * Resolves true after `All checks passed.`, and false after a `[FAIL]` line.
  */
@@ -846,12 +884,7 @@ export async function vaultTest(): Promise<boolean> {
       return false;
     }
     const { summary, fix } = identityProblem(read, store.exists());
-    const [first, ...rest] = summary;
-    console.log(`  [FAIL]  ${first}`);
-    for (const line of rest) console.log(`          ${line}`);
-    console.log(`          Fix: ${fix[0]}`);
-    for (const line of fix.slice(1)) console.log(`               ${line}`);
-    console.log('');
+    printTestFailure(summary, fix);
     return false;
   }
   const stored = read.agent;
@@ -865,16 +898,55 @@ export async function vaultTest(): Promise<boolean> {
   }
   console.log('  [OK]  Vault exists at ~/.aim/vault/');
 
-  // Check 4: Vault unlockable
+  // Check 4: Vault unlockable. unlock derives a key from the identity and does
+  // not check that key against the vault, so each credential in the vault is
+  // decrypted with it and the value zeroized at once. A credential stored with
+  // another identity's key does not decrypt, and `vault exec` fails on it with
+  // `Failed to decrypt credential` (#507). An empty vault holds nothing to
+  // decrypt.
+  const edSecretKey = Buffer.from(stored.secretKey, 'base64');
+  let namespaces: string[] = [];
+  const undecryptable: string[] = [];
   try {
-    const edSecretKey = Buffer.from(stored.secretKey, 'base64');
     store.unlock(edSecretKey);
-    console.log('  [OK]  Vault unlocks with agent identity');
-    vault.zeroize(edSecretKey);
+    namespaces = store.listCredentials().map((c) => c.namespace);
+    for (const namespace of namespaces) {
+      try {
+        vault.zeroize(store.resolveCredential(namespace));
+      } catch {
+        undecryptable.push(namespace);
+      }
+    }
   } catch (err) {
+    store.lock();
     console.log(`  [FAIL]  Vault unlock failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
+  } finally {
+    vault.zeroize(edSecretKey);
   }
+  if (undecryptable.length > 0) {
+    store.lock();
+    const vaultAgent = recordedAgentId(store);
+    printTestFailure(
+      [
+        `Agent identity ${escapeForDisplay(stored.agentId)} does not decrypt ${undecryptable.length} of ${namespaces.length} ` +
+          `credential(s) in the vault: ${undecryptable.map(listedNamespace).join(', ')}`,
+        ...(vaultAgent !== undefined && vaultAgent !== stored.agentId
+          ? [`The vault was created for agent ${escapeForDisplay(vaultAgent)}.`]
+          : []),
+      ],
+      [
+        `Restore ${IDENTITY_FILE_SHOWN} from a backup of the identity the vault was created with,`,
+        'or store each of these credentials again with the identity in place:',
+        ...undecryptable.map((namespace) => `  secretless-ai vault rotate ${namespaceOperand(namespace)}`),
+      ],
+    );
+    return false;
+  }
+  console.log(
+    `  [OK]  Vault unlocks with agent identity ` +
+      `(${namespaces.length > 0 ? `${namespaces.length} credential(s) decrypted` : 'no credentials to decrypt'})`,
+  );
 
   // Check 5: Credential count
   const creds = store.listCredentials();

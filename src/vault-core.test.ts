@@ -764,6 +764,149 @@ describeWithAimCore('vault-core', () => {
         expect(passed.status).toBe(0);
       });
     });
+
+    // unlock derives a key from the identity and does not check that key
+    // against the vault, so with another valid identity in identity.json
+    // `vault test` printed `[OK]  Vault unlocks with agent identity` and
+    // `All checks passed.` and exited 0, while `vault exec` failed with
+    // `Failed to decrypt credential` (#507).
+    describe('vault test with a valid identity that does not open the vault', () => {
+      const FIX_RESTORE = 'Restore ~/.opena2a/aim-core/identity.json from a backup of the identity the vault was created with,';
+      const FIX_ROTATE = 'or store each of these credentials again with the identity in place:';
+      const runVaultTest = async (core: VaultCore) => {
+        let passed: boolean | undefined;
+        const lines = await captureLog(async () => { passed = await core.vaultTest(); });
+        return { passed, lines };
+      };
+      // The [FAIL] line of a vault test and the lines under it, trimmed.
+      const failBlock = (lines: string[]) => {
+        const start = lines.findIndex((l) => l.startsWith('  [FAIL]  '));
+        expect(start, lines.join('\n')).toBeGreaterThanOrEqual(0);
+        return lines.slice(start).filter((l) => l !== '').map((l) => l.trim());
+      };
+      // vault init and a credential in each namespace, then another valid
+      // identity written over identity.json, as copying another home's
+      // identity.json over it does.
+      const replaceIdentity = async (core: VaultCore, namespaces = ['demo']) => {
+        await captureLog(async () => {
+          await core.vaultInit();
+          for (const namespace of namespaces) await core.vaultRegister(namespace, { value: 'placeholder-value' });
+        });
+        const original = fs.readFileSync(identityFile(), 'utf-8');
+        const other = (await core.loadAimCoreIdentity()).createIdentity(aimDataDir, 'other-agent');
+        return { original, vaultAgent: JSON.parse(original).agentId as string, inPlace: other.agentId };
+      };
+      // vault exec demo with a child that exits 0 only when it is given the value.
+      const execDemo = (core: VaultCore) =>
+        core.vaultExec('demo', [process.execPath, '-e', 'process.exit(process.env.DEMO === "placeholder-value" ? 0 : 3)']);
+
+      it('fails naming the credential and the agent the vault was created for, where vault exec fails', async () => {
+        const core = await import('./vault-core.js');
+        const { vaultAgent, inPlace } = await replaceIdentity(core);
+
+        const { passed, lines } = await runVaultTest(core);
+
+        expect(failBlock(lines)).toEqual([
+          `[FAIL]  Agent identity ${inPlace} does not decrypt 1 of 1 credential(s) in the vault: demo`,
+          `The vault was created for agent ${vaultAgent}.`,
+          `Fix: ${FIX_RESTORE}`,
+          FIX_ROTATE,
+          'secretless-ai vault rotate demo',
+        ]);
+        expect(lines.filter((l) => l.includes('Vault unlocks') || l.includes('All checks passed'))).toEqual([]);
+        expect(passed).toBe(false);
+        await expect(execDemo(core)).rejects.toThrow('Vault resolution denied: Failed to decrypt credential');
+      });
+
+      it('passes after either step of its Fix, and vault exec then gives the child the value', async () => {
+        const core = await import('./vault-core.js');
+        const { original } = await replaceIdentity(core);
+        const replaced = fs.readFileSync(identityFile(), 'utf-8');
+
+        // The identity the vault was created with, restored.
+        fs.writeFileSync(identityFile(), original);
+        const restored = await runVaultTest(core);
+        expect(restored.lines).toContain('  [OK]  Vault unlocks with agent identity (1 credential(s) decrypted)');
+        expect(restored.passed).toBe(true);
+        expect(await execDemo(core)).toBe(0);
+
+        // The other identity again, and the credential stored again with it.
+        fs.writeFileSync(identityFile(), replaced);
+        expect((await runVaultTest(core)).passed).toBe(false);
+        await captureLog(() => core.vaultRotate('demo', { value: 'placeholder-value' }));
+        const rotated = await runVaultTest(core);
+        expect(rotated.lines).toContain('  [OK]  Vault unlocks with agent identity (1 credential(s) decrypted)');
+        expect(rotated.passed).toBe(true);
+        expect(await execDemo(core)).toBe(0);
+      });
+
+      it('names only the credentials that do not decrypt', async () => {
+        const core = await import('./vault-core.js');
+        const { inPlace } = await replaceIdentity(core);
+        await captureLog(() => core.vaultRegister('second', { value: 'placeholder-value' }));
+
+        const { passed, lines } = await runVaultTest(core);
+
+        const block = failBlock(lines);
+        expect(block[0]).toBe(`[FAIL]  Agent identity ${inPlace} does not decrypt 1 of 2 credential(s) in the vault: demo`);
+        expect(block.filter((l) => l.startsWith('secretless-ai '))).toEqual(['secretless-ai vault rotate demo']);
+        expect(passed).toBe(false);
+      });
+
+      it('quotes a namespace for pasting, and escapes one that cannot be printed as itself and gives no command for it', async () => {
+        const core = await import('./vault-core.js');
+        const { inPlace } = await replaceIdentity(core, ['plain', 'two words', 'esc\u001b[2Jname']);
+
+        const { passed, lines } = await runVaultTest(core);
+
+        const block = failBlock(lines);
+        expect(block[0]).toBe(
+          `[FAIL]  Agent identity ${inPlace} does not decrypt 3 of 3 credential(s) in the vault: plain, 'two words', $'esc\\e[2Jname'`,
+        );
+        expect(block.filter((l) => l.startsWith('secretless-ai '))).toEqual([
+          'secretless-ai vault rotate plain',
+          "secretless-ai vault rotate 'two words'",
+          'secretless-ai vault rotate <namespace>',
+        ]);
+        expect(lines.filter((l) => l.includes('\u001b'))).toEqual([]);
+        expect(passed).toBe(false);
+      });
+
+      it('passes on a vault that holds no credential, and a credential stored with that identity then reaches vault exec', async () => {
+        const core = await import('./vault-core.js');
+        await captureLog(() => core.vaultInit());
+        (await core.loadAimCoreIdentity()).createIdentity(aimDataDir, 'other-agent');
+
+        const { passed, lines } = await runVaultTest(core);
+        expect(lines).toContain('  [OK]  Vault unlocks with agent identity (no credentials to decrypt)');
+        expect(passed).toBe(true);
+
+        await captureLog(() => core.vaultRegister('demo', { value: 'placeholder-value' }));
+        expect(await execDemo(core)).toBe(0);
+      });
+
+      it('the CLI: vault test exits 1 where vault exec exits 1', async () => {
+        const core = await import('./vault-core.js');
+        await replaceIdentity(core);
+        const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+        expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+        const vaultCli = (...args: string[]) => spawnSync(process.execPath, [cliPath, 'vault', ...args], {
+          env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf-8',
+          timeout: 30_000,
+        });
+
+        const exec = vaultCli('exec', 'demo', '--', process.execPath, '-e', '0');
+        expect(exec.stderr).toContain('Vault resolution denied: Failed to decrypt credential');
+        expect(exec.status).toBe(1);
+
+        const test = vaultCli('test');
+        expect(test.stdout).toContain('  [FAIL]  Agent identity ');
+        expect(test.stdout).not.toContain('All checks passed.');
+        expect(test.status).toBe(1);
+      }, 30_000);
+    });
   });
 
   it('vaultRegister with --env reads from environment', async () => {
