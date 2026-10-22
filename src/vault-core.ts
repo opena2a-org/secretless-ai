@@ -140,9 +140,13 @@ const HOME = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
 const VAULT_DIR = path.join(HOME, '.aim', 'vault');
 const AIM_DATA_DIR = path.join(HOME, '.opena2a', 'aim-core');
 
-// The same two directories as messages show them.
+// The file in AIM_DATA_DIR that @opena2a/aim-core keeps the identity in.
+const IDENTITY_FILE = path.join(AIM_DATA_DIR, 'identity.json');
+
+// The same two directories, and the identity file, as messages show them.
 const VAULT_DIR_SHOWN = '~/.aim/vault';
 const AIM_DATA_DIR_SHOWN = '~/.opena2a/aim-core';
+const IDENTITY_FILE_SHOWN = `${AIM_DATA_DIR_SHOWN}/identity.json`;
 
 // ── Dynamic import ─────────────────────────────────────────────────
 
@@ -226,17 +230,106 @@ export async function getOrCreateAgent(agentName?: string): Promise<StoredIdenti
 }
 
 /**
- * The refusal for a vault whose agent identity cannot be read. A new identity
- * would not decrypt the credentials in the vault, so none is created.
+ * What reading the agent identity found: an identity that holds the fields
+ * the vault uses, no identity.json, or an identity.json that is there and
+ * cannot be used, with what is wrong with it.
  */
-function identityUnreadableError(): Error {
-  return new Error(
-    `Vault exists, but no agent identity could be read from ${AIM_DATA_DIR_SHOWN}.\n` +
-    "  The credentials in the vault decrypt only with that identity's key, so no new identity was created.\n" +
-    `  Restore ${AIM_DATA_DIR_SHOWN} from a backup, or move the vault aside and start a new one,\n` +
-    '  which leaves the credentials in the old vault unreadable:\n' +
-    `    mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && secretless-ai vault init`,
-  );
+type IdentityRead =
+  | { kind: 'found'; agent: StoredIdentity }
+  | { kind: 'missing' }
+  | { kind: 'unusable'; problem: string };
+
+const IDENTITY_FIELDS = ['agentId', 'publicKey', 'secretKey'] as const;
+
+/** The fields of IDENTITY_FIELDS that value does not hold as a non-empty string. */
+function missingIdentityFields(value: unknown): string[] {
+  const record = (value !== null && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  return IDENTITY_FIELDS.filter((field) => typeof record[field] !== 'string' || record[field] === '');
+}
+
+/** 'a', 'a or b', 'a, b or c'. */
+function orList(items: string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`;
+}
+
+/**
+ * Reads the agent identity in AIM_DATA_DIR. loadIdentity returns null both
+ * when identity.json is absent and when it cannot be read or parsed, and
+ * returns whatever JSON the file holds, so the file is read again here to
+ * tell an absent file from one that is there and cannot be used.
+ */
+async function readAgentIdentity(): Promise<IdentityRead> {
+  const identity = await loadAimCoreIdentity();
+  const agent = identity.loadIdentity(AIM_DATA_DIR);
+  if (agent && missingIdentityFields(agent).length === 0) return { kind: 'found', agent };
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(IDENTITY_FILE, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { kind: 'missing' };
+    return { kind: 'unusable', problem: `cannot be read (${code ?? 'read error'})` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: 'unusable', problem: 'is not valid JSON' };
+  }
+  const missing = missingIdentityFields(parsed);
+  // A file that holds an identity now was written after loadIdentity read it.
+  if (missing.length === 0) return { kind: 'found', agent: parsed as StoredIdentity };
+  return { kind: 'unusable', problem: `holds no agent identity (no ${orList(missing)})` };
+}
+
+/**
+ * What is wrong when no identity can be used and the step that recovers from
+ * it: the vault exists, or identity.json is there and cannot be used. A new
+ * identity would not decrypt the credentials in a vault, and would replace
+ * the key in an identity.json that other tools that use @opena2a/aim-core
+ * can share, so neither state creates one. `vault init`, the other vault
+ * commands and `vault test` give the same step. The last line of `fix` is
+ * the command.
+ */
+function identityProblem(
+  read: Exclude<IdentityRead, { kind: 'found' }>,
+  vaultExists: boolean,
+): { summary: string[]; reason: string; fix: string[] } {
+  const fileProblem = read.kind === 'unusable' ? [`${IDENTITY_FILE_SHOWN} ${read.problem}.`] : [];
+  const moveIdentity = `mv ${IDENTITY_FILE_SHOWN} ${IDENTITY_FILE_SHOWN}.old`;
+  if (!vaultExists) {
+    return {
+      summary: fileProblem,
+      reason: `Other tools that use @opena2a/aim-core can share ${AIM_DATA_DIR_SHOWN}, so no new identity was written over that file.`,
+      fix: [
+        'Restore it from a backup, or move it aside and start with a new identity:',
+        `  ${moveIdentity} && secretless-ai vault init`,
+      ],
+    };
+  }
+  return {
+    summary: [`Vault exists, but no agent identity could be read from ${AIM_DATA_DIR_SHOWN}.`, ...fileProblem],
+    reason: "The credentials in the vault decrypt only with that identity's key, so no new identity was created.",
+    fix: read.kind === 'unusable'
+      ? [
+        `Restore ${IDENTITY_FILE_SHOWN} from a backup, or move it and the vault aside and start a new vault,`,
+        'which leaves the credentials in the old vault unreadable:',
+        `  mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && ${moveIdentity} && secretless-ai vault init`,
+      ]
+      : [
+        `Restore ${AIM_DATA_DIR_SHOWN} from a backup, or move the vault aside and start a new one,`,
+        'which leaves the credentials in the old vault unreadable:',
+        `  mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && secretless-ai vault init`,
+      ],
+  };
+}
+
+/** The refusal for the states identityProblem describes. */
+function identityError(read: Exclude<IdentityRead, { kind: 'found' }>, vaultExists: boolean): Error {
+  const { summary, reason, fix } = identityProblem(read, vaultExists);
+  const [first, ...rest] = [...summary, reason, ...fix];
+  return new Error([first, ...rest.map((line) => `  ${line}`)].join('\n'));
 }
 
 /**
@@ -260,9 +353,9 @@ export async function getVaultStore(): Promise<{
     );
   }
 
-  const identity = await loadAimCoreIdentity();
-  const agent = identity.loadIdentity(AIM_DATA_DIR);
-  if (!agent) throw identityUnreadableError();
+  const read = await readAgentIdentity();
+  if (read.kind !== 'found') throw identityError(read, true);
+  const agent = read.agent;
   const edSecretKey = Buffer.from(agent.secretKey, 'base64');
   const edPublicKey = Buffer.from(agent.publicKey, 'base64');
 
@@ -279,25 +372,30 @@ export async function getVaultStore(): Promise<{
  * Other tools that use @opena2a/aim-core can share ~/.opena2a/aim-core, so an
  * identity that can be read there is used as it is, never renamed or
  * replaced, and an agentName it does not carry is reported as not applied.
- * With no vault, an identity is created under agentName when there is none,
- * and also over an identity.json that loadIdentity cannot read or parse,
- * which is replaced without notice. With a vault and no identity that can be
- * read, nothing is created and the command fails.
+ * An identity is created under agentName only when there is no vault and no
+ * identity.json. An identity.json that cannot be read, is not JSON, or holds
+ * no agentId, publicKey or secretKey is left in place, and the command fails
+ * naming it, as it does with a vault and no identity that can be read.
  */
 export async function vaultInit(agentName?: string): Promise<void> {
   const vault = await loadAimCoreVault();
   const identity = await loadAimCoreIdentity();
   const store = new vault.VaultStore(VAULT_DIR);
 
-  let agent = identity.loadIdentity(AIM_DATA_DIR);
-  if (!agent) {
-    if (store.exists()) throw identityUnreadableError();
+  const read = await readAgentIdentity();
+  let agent: StoredIdentity;
+  if (read.kind === 'found') {
+    agent = read.agent;
+    if (agentName !== undefined && agentName !== agent.agentName) {
+      console.log(
+        `\n  An agent identity already exists in ${AIM_DATA_DIR_SHOWN} ` +
+        `(agent ${escapeForDisplay(String(agent.agentName))}); --name ${escapeForDisplay(agentName)} was not applied.`,
+      );
+    }
+  } else if (read.kind === 'missing' && !store.exists()) {
     agent = identity.createIdentity(AIM_DATA_DIR, agentName ?? 'secretless-agent');
-  } else if (agentName !== undefined && agentName !== agent.agentName) {
-    console.log(
-      `\n  An agent identity already exists in ${AIM_DATA_DIR_SHOWN} ` +
-      `(agent ${escapeForDisplay(String(agent.agentName))}); --name ${escapeForDisplay(agentName)} was not applied.`,
-    );
+  } else {
+    throw identityError(read, store.exists());
   }
   const edSecretKey = Buffer.from(agent.secretKey, 'base64');
 
@@ -700,8 +798,9 @@ export async function vaultExec(
 
 /**
  * Test vault functionality — verify init, register, resolve, zeroize cycle.
+ * Resolves true after `All checks passed.`, and false after a `[FAIL]` line.
  */
-export async function vaultTest(): Promise<void> {
+export async function vaultTest(): Promise<boolean> {
   const vault = await loadAimCoreVault();
 
   console.log('\n  Vault Self-Test\n');
@@ -709,22 +808,34 @@ export async function vaultTest(): Promise<void> {
   // Check 1: aim-core available
   console.log('  [OK]  @opena2a/aim-core loaded');
 
-  // Check 2: Identity exists
-  const identity = await loadAimCoreIdentity();
-  const stored = identity.loadIdentity(AIM_DATA_DIR);
-  if (!stored) {
-    console.log('  [FAIL]  No agent identity found');
-    console.log('          Fix: secretless-ai vault init\n');
-    return;
+  // Check 2: Identity exists. `vault init` creates one only when there is
+  // neither a vault nor an identity.json; otherwise the step is the one
+  // `vault init` gives when it refuses.
+  const read = await readAgentIdentity();
+  const store = new vault.VaultStore(VAULT_DIR);
+  if (read.kind !== 'found') {
+    if (read.kind === 'missing' && !store.exists()) {
+      console.log('  [FAIL]  No agent identity found');
+      console.log('          Fix: secretless-ai vault init\n');
+      return false;
+    }
+    const { summary, fix } = identityProblem(read, store.exists());
+    const [first, ...rest] = summary;
+    console.log(`  [FAIL]  ${first}`);
+    for (const line of rest) console.log(`          ${line}`);
+    console.log(`          Fix: ${fix[0]}`);
+    for (const line of fix.slice(1)) console.log(`               ${line}`);
+    console.log('');
+    return false;
   }
+  const stored = read.agent;
   console.log(`  [OK]  Agent identity: ${stored.agentId}`);
 
   // Check 3: Vault exists
-  const store = new vault.VaultStore(VAULT_DIR);
   if (!store.exists()) {
     console.log('  [FAIL]  Vault not initialized');
     console.log('          Fix: secretless-ai vault init\n');
-    return;
+    return false;
   }
   console.log('  [OK]  Vault exists at ~/.aim/vault/');
 
@@ -736,7 +847,7 @@ export async function vaultTest(): Promise<void> {
     vault.zeroize(edSecretKey);
   } catch (err) {
     console.log(`  [FAIL]  Vault unlock failed: ${err instanceof Error ? err.message : String(err)}`);
-    return;
+    return false;
   }
 
   // Check 5: Credential count
@@ -749,6 +860,7 @@ export async function vaultTest(): Promise<void> {
 
   store.lock();
   console.log('\n  All checks passed.\n');
+  return true;
 }
 
 /**
