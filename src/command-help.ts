@@ -556,6 +556,7 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
       'register <namespace> [options]',
       'list',
       'rotate <namespace> [--env <VAR>]',
+      'rotate [--env <VAR>] -- <namespace>',
       'revoke <namespace>',
       'exec <namespace> [--env-name <VAR>] -- <command> [args...]',
       'audit [--limit <n>] [--since <ISO-date>] [--namespace <ns>]',

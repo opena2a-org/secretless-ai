@@ -175,6 +175,25 @@ each kind under `--dry-run`, for each of `_DEMO_TOKEN`, `1DEMO_TOKEN` and
 `-DEMO_TOKEN` alone, for names already marked exposed, for names whose
 exposure could not be recorded, and for a name `secret set` takes alone.
 
+**`vault test` prints a `vault rotate` command that runs for a namespace that
+begins with `-` (#511).** For a credential the identity in place does not
+decrypt, `vault test` printed `secretless-ai vault rotate -x` for the
+namespace `-x`. `vault rotate` reads a first argument that begins with `-` as
+an option, so that command printed the usage line and exited 2, and
+`vault rotate -- -x` was refused the same way. `vault rotate` now takes the
+namespace as the one argument after `--`, with `--env <VAR>` before the `--`
+when it is given: `vault rotate -- -x` and `vault rotate --env <VAR> -- -x`
+rotate `-x`. For such a namespace `vault test` prints
+`secretless-ai vault rotate -- -x`, and
+`secretless-ai vault rotate -- <namespace>` when the namespace also cannot be
+printed as itself. `vault rotate -x` still exits 2, and its usage and
+`vault --help` name the second form. `src/vault-core.test.ts` runs the printed
+command through the CLI with the value on a pipe, after which `vault test`
+exits 0. `src/commands/vault.test.ts` checks these forms, and that
+`vault rotate` refuses a missing or empty namespace after `--`, a second
+argument after the namespace, and anything before the `--` other than
+`--env` or `--value` with its value.
+
 **The recording of `init` and `verify` is paced to be read, and the README
 shows it in its Quick start with a caption.** The tape typed 40 ms a
 character, ran each command 300 ms after its last character and held the

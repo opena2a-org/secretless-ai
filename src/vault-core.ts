@@ -845,9 +845,15 @@ function listedNamespace(namespace: string): string {
   return hasDisplayHazard(namespace) ? quotePathForDisplay(namespace, '/') : shellQuote(namespace);
 }
 
-/** A namespace as the operand of a printed command, or `<namespace>` when it cannot be printed as itself. */
+/**
+ * A namespace as the operand of a printed `vault rotate`, or `<namespace>`
+ * when it cannot be printed as itself. A namespace that begins with `-` goes
+ * after `--`: as the first argument, `vault rotate` reads it as an option and
+ * prints its usage (#511).
+ */
 function namespaceOperand(namespace: string): string {
-  return hasDisplayHazard(namespace) ? '<namespace>' : shellQuote(namespace);
+  const operand = hasDisplayHazard(namespace) ? '<namespace>' : shellQuote(namespace);
+  return namespace.startsWith('-') ? `-- ${operand}` : operand;
 }
 
 /** The agent ID the vault file records, or undefined when it records none. */
