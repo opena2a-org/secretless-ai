@@ -21,8 +21,9 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { maskCredentials } from './line-mask';
+import { maskCredentials, markerAt } from './line-mask';
 import { leaksAny } from './redact';
+import { scan, matchedValueOf, type ScanFinding } from './scan';
 import { runScan } from './commands/core';
 import { runScanHistory } from './commands/transcript';
 import { runDiff, gitDiscoveryFreeEnv } from './commands/diff';
@@ -136,6 +137,67 @@ describe('maskCredentials', () => {
     expect(leaksAny(out, [head])).toBe(false);
     expect(leaksAny(out, [inner])).toBe(false);
     expect(out).toBe(`token=[PyPI API Token REDACTED] ${NON_SECRET}`);
+  });
+});
+
+describe('a scan finding names the credential its preview marker names (#459)', () => {
+  // A PyPI token whose body holds a Hugging Face token shape part way in. The
+  // Hugging Face pattern comes before the PyPI pattern in the list, and the
+  // PyPI token starts first on the line.
+  const head = body(20, 'nopqrstuvwxyz');
+  const inner = ['h', 'f_', body(40, 'abcdefghijklm')].join('');
+  const pypi = ['py', 'pi-', head, inner].join('');
+  const line = `token=${pypi}`;
+
+  function only(findings: ScanFinding[]): ScanFinding {
+    expect(findings).toHaveLength(1);
+    return findings[0];
+  }
+
+  function expectPyPI(finding: ScanFinding, preview: string): void {
+    expect(finding.preview).toBe(preview);
+    expect(finding.patternId).toBe('pypi');
+    expect(finding.patternName).toBe('PyPI API Token');
+    expect(finding.fix).toContain('PYPI_API_TOKEN');
+  }
+
+  it('markerAt gives the one PyPI marker over the whole token, at the Hugging Face shape too', () => {
+    const at = line.indexOf(inner);
+    expect(at).toBeGreaterThan(line.indexOf(pypi));
+    const marker = markerAt(line, at);
+    expect(marker?.pattern.id).toBe('pypi');
+    expect(marker?.from).toBe(line.indexOf(pypi));
+    expect(marker?.to).toBe(line.length);
+    expect(markerAt(line, 0)).toBeUndefined();
+  });
+
+  it('in a source file', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'app.js'), `${line}\n`);
+    expectPyPI(only(scan(dir, { scanGlobal: false })), 'token=[PyPI API Token REDACTED]');
+  });
+
+  it('in a config file', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'config.json'), `{"token": "${pypi}"}\n`);
+    const finding = only(scan(dir, { scanGlobal: false }));
+    expect(finding.severity).toBe('critical');
+    expectPyPI(finding, '{"token": "[PyPI API Token REDACTED]"}');
+  });
+
+  it('in a file named as the scan target', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'app.js');
+    fs.writeFileSync(file, `${line}\n`);
+    expectPyPI(only(scan(file, { scanGlobal: false })), 'token=[PyPI API Token REDACTED]');
+  });
+
+  it('keeps the matched value of the PyPI token for the validity check', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'app.js'), `${line}\n`);
+    const finding = only(scan(dir, { scanGlobal: false, retainValues: true }));
+    expect(finding.patternId).toBe('pypi');
+    expect(matchedValueOf(finding)).toBe(pypi);
   });
 });
 

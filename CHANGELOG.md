@@ -21,6 +21,22 @@ and the count under that list reads
 `src/mcp/protect-pair-sources.test.ts` checks each case and
 `src/commands/mcp.test.ts` what `protect-mcp` prints.
 
+**A scan finding names the credential its preview names, where a PyPI token
+holding a Hugging Face token shape was reported as a `Hugging Face Token`
+(#459).** For a line `token=pypi-` followed by 20 letters and digits, `hf_`
+and 40 more, `scan --json` reported one finding with `patternId`
+`huggingface` and `patternName` `Hugging Face Token`, while its `preview` read
+`token=[PyPI API Token REDACTED]`: the finding took the first pattern in list
+order that matched the line, and the preview writes one marker over the token,
+named for the pattern that starts first on the line. When the marker over the
+found value names another pattern that has a real match under it, the finding
+now takes that pattern, so this line is reported as `pypi`,
+`PyPI API Token`, with the fix that names `PYPI_API_TOKEN` and the confidence
+of a PyPI token (0.907, where it was 0.786). Two credentials under markers of
+their own on one line are reported as before, for the first pattern in list
+order. `src/line-mask.test.ts` checks the line in a source file, in
+`config.json` and in a file named as the scan target.
+
 **`getOrCreateAgent()` leaves an `identity.json` it cannot use in place and
 rejects with the error `vault init` gives, where it wrote a new identity over
 it (#505).** `getOrCreateAgent()`, which the package exports, wrote a new
