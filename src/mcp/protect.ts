@@ -16,6 +16,7 @@ import { screenMcpEnvVars } from '../nanomind';
 import { prepareBinArgv, MCP_WRAPPER } from '../argv';
 import { resolveBackendType } from '../backends/config';
 import type { SelectableBackendType } from '../backends/config';
+import { effectiveBackendName } from '../backends/factory';
 import { listedName, quotedName } from '../secret-value';
 
 // ---------------------------------------------------------------------------
@@ -86,7 +87,7 @@ export interface SharedNameMcpServer extends McpServerMapLocation {
 /**
  * A server that already runs through the wrapper, with secrets in plaintext
  * in its env that protect-mcp left there, because moving them into the store
- * is not safe (see unmovedReason).
+ * is not safe (see unmovedReason and storedValueReason).
  */
 export interface UnmovedMcpServer extends McpServerMapLocation {
   client: string;
@@ -212,21 +213,23 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   // server map holding a protected server that reads by it, protected before
   // this run or during it, and a server with secrets in another map that
   // would be stored under it is left as it is (see SharedNameMcpServer).
-  // `readers` counts the protected servers that read by each name: a secret
-  // stored under a name is handed to every one of them.
+  // `readers` counts the protected servers that read by each name in every
+  // config this run parsed, the project-level ones it leaves as they are
+  // included: a secret stored under a name is handed to every one of them.
   const nameHolders = new Map<string, McpConfigFile>();
   const readers = new Map<string, number>();
-  for (const config of configs) {
+  for (const config of discovered.configs) {
     for (const server of config.servers) {
       if (!server.alreadyProtected) continue;
       const name = protectedVaultName(config.client, server);
-      if (!nameHolders.has(name)) nameHolders.set(name, config);
+      if (rewrittenByProtectMcp(config) && !nameHolders.has(name)) nameHolders.set(name, config);
       readers.set(name, (readers.get(name) ?? 0) + 1);
     }
   }
   const stores: WrapperStores = {
     run: resolveBackendType(options.backendType),
     configured: resolveBackendType(),
+    keyed: vaultKey !== undefined,
   };
 
   // 2. For each config: classify, encrypt, rewrite. The server maps of one
@@ -260,6 +263,16 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
             continue;
           }
           const reads = readsBy(config.client, server);
+          // The wrapper gives the server a value stored under an env name in
+          // place of the one in its env, so storing another value under that
+          // name would change the credential the server is given.
+          const stored = await vault.getServerSecrets(reads.client, reads.server);
+          const differing = secretKeys.filter((key) =>
+            Object.prototype.hasOwnProperty.call(stored, key) && stored[key] !== classified.secrets[key]);
+          if (differing.length > 0) {
+            result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason: storedValueReason(differing, reads) });
+            continue;
+          }
           await vault.storeServerSecrets(reads.client, reads.server, classified.secrets);
           storedEnvKeys[server.name] = secretKeys;
           result.secretsFound += secretKeys.length;
@@ -364,10 +377,16 @@ function protectedVaultName(client: string, server: McpServerEntry): string {
   return `${reads.client}/${reads.server}`;
 }
 
-/** The backend this run stores secrets in, and the configured one a wrapper given no --backend reads from. */
+/**
+ * The backend this run stores secrets in, the configured one a wrapper given
+ * no --backend reads from, and whether this run's vault has a key. Only a run
+ * given a home directory gives it one, and without one `local` is the
+ * platform keychain while no backend is configured (see effectiveBackendName).
+ */
 interface WrapperStores {
   run: SelectableBackendType;
   configured: SelectableBackendType;
+  keyed: boolean;
 }
 
 /**
@@ -378,7 +397,8 @@ interface WrapperStores {
  * It is stored only where its wrapper reads it, as far as this run can tell:
  * the args name no --vault-dir or --vault-key, and give no --backend other
  * than the backend this run stores in, or, giving none, the configured
- * backend is that backend.
+ * backend is that backend; and for `local`, which the wrapper reads from the
+ * encrypted file, this run's vault is that file.
  */
 function unmovedReason(
   client: string,
@@ -400,7 +420,28 @@ function unmovedReason(
   if (backend !== undefined && backend !== stores.run) {
     return `its --backend argument is ${quotedName(backend)}, and this run stores in ${stores.run}`;
   }
+  // The wrapper gives its store a key, so for `local` it builds the encrypted
+  // file, where this run's vault, built without one, can be the platform keychain.
+  if (stores.run === 'local' && !stores.keyed) {
+    const runStore = effectiveBackendName('local');
+    if (runStore !== 'local') {
+      return `its wrapper reads from the local encrypted file, and this run stores in ${runStore}`;
+    }
+  }
   return undefined;
+}
+
+/**
+ * Why the secrets in the env of a server that runs through the wrapper are
+ * left there when the env names in `envKeys` are stored with other values
+ * under the name its wrapper reads by.
+ */
+function storedValueReason(envKeys: string[], reads: { client: string; server: string }): string {
+  const names = envKeys.map(listedName).join(', ');
+  const pair = listedName(`${reads.client}/${reads.server}`);
+  return envKeys.length === 1
+    ? `${names} is stored under ${pair} with another value, which its wrapper gives the server in place of the one in its env`
+    : `${names} are stored under ${pair} with other values, which its wrapper gives the server in place of the ones in its env`;
 }
 
 /** The configs of each file, in the order the files were found. */

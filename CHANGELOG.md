@@ -76,12 +76,18 @@ wrapper reads its secrets by (its `--client` and `--server` arguments),
 beside the secrets already stored there, and removes it from the server's
 `env`, leaving its command and args as they are. It leaves the value in place
 and lists the server under `secrets not moved`, with the reason, when another
-protected server reads its secrets by the same name (each server that reads
-by a name is given every secret stored under it), when the server's arguments
-give `--vault-dir` or `--vault-key`, or when the backend its wrapper reads
-from (its `--backend` argument, or the configured backend when it gives none)
-is not the one `protect-mcp` stores in. `docs/use-cases/secure-mcp-configs.md`
-says what `+ <name>: protected` means. `src/followups-508.test.ts` runs
+protected server in a config it reads, a project-level one it does not
+rewrite included, reads its secrets by the same name (each server that reads
+by a name is given every secret stored under it); when another value is
+stored there under the same `env` name (the wrapper gives the server the
+stored value in place of the one in its `env`); when the server's arguments
+give `--vault-dir` or `--vault-key`; or when its wrapper reads from another
+store than the one `protect-mcp` stores in. The wrapper reads from the
+backend its `--backend` argument names, or the configured backend when it
+gives none, and for `local` it reads the encrypted file, while with no
+backend configured `protect-mcp` stores `local` secrets in the OS keychain
+where one is available. `docs/use-cases/secure-mcp-configs.md` says what
+`+ <name>: protected` means. `src/followups-508.test.ts` runs
 `mcp-status` on such servers and starts the built wrapper on a server whose
 value `protect-mcp` moved, `src/mcp/protect.test.ts` checks what
 `protect-mcp` stores and writes in each case, and `src/commands/mcp.test.ts`
