@@ -107,10 +107,12 @@ export function runRules(args: string[], projectDir: string = process.cwd()): nu
         return EXIT_USAGE;
       }
 
+      // A pattern it does not take tests nothing either, so it exits
+      // EXIT_USAGE, as no pattern does (#471).
       if (!validatePattern(pattern)) {
         console.error(`\n  Invalid pattern: ${escapeForDisplay(pattern)}`);
         console.error('  Only alphanumeric, *, ., -, _, / characters allowed.\n');
-        return 1;
+        return EXIT_USAGE;
       }
 
       console.log(`\n  Testing pattern: ${pattern}\n`);

@@ -10,6 +10,8 @@ import type { ScanFinding } from './scan';
 import { probeCredential, type ProbeFetch } from './validity';
 import { runSecret } from './commands/secrets';
 import { runBackend } from './commands/backend';
+import { runVault } from './commands/vault';
+import { runProtectMcp } from './commands/mcp';
 import { CLI } from './commands/utils';
 import { exportBundle, importBundle } from './bundle-transfer';
 import type { KdfParams } from './bundle';
@@ -40,6 +42,13 @@ import type { TtyInput } from './hidden-line';
  * - The README sample of `init` did not say where it was captured.
  * - `setup`, `vault register` and `vault rotate` read a typed value with echo
  *   on, so it stayed on the screen.
+ * - `clean`, `doctor` and `init` ran as if an argument they do not take was
+ *   not there, at exit 0; those words are what an interactive zsh passes on
+ *   from a `# remark` pasted after a command.
+ * - `warm --ttl`, `broker start --port`, `rules test`,
+ *   `vault exec <namespace> --` and `protect-mcp --backend` refused a command
+ *   line at exit 1, where docs/scanning.md gives 2 for one refused before
+ *   anything ran.
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -475,4 +484,149 @@ describe('setup, vault register and vault rotate read a typed value with echo of
     input.end('FAKE-credential-2\n');
     expect(await pending).toBe('FAKE-credential-2');
   });
+});
+
+/** The built CLI, run with `home` as HOME and in `cwd`. */
+function cliIn(args: string[], home: string = tmpDir(), cwd: string = tmpDir()) {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, OPENA2A_TELEMETRY: 'off', NO_COLOR: '1' };
+  delete env.SECRETLESS_CLI_PREFIX;
+  const res = spawnSync(process.execPath, [CLI_PATH, ...args], { encoding: 'utf-8', cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  return { status: res.status, stdout: res.stdout, stderr: res.stderr };
+}
+
+/** Every path under `dir`, to show that a refused run wrote nothing there. */
+function tree(dir: string): string[] {
+  return fs.readdirSync(dir, { recursive: true }).map(String).sort();
+}
+
+describe('clean, doctor and init refuse an argument they do not take (#471)', () => {
+  itIfBuilt('clean --dry-run: the words of a remark pasted after it are refused with exit 2, each named', () => {
+    // `# reads the transcripts under ~/.claude/projects`, which an interactive
+    // zsh with default options passes to the command as these words.
+    const res = cliIn(['clean', '--dry-run', '#', 'reads', 'the', 'transcripts', 'under', '~/.claude/projects']);
+    expect(res.status).toBe(2);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toContain(
+      "  `clean` takes no argument but the path after --path; leave the arguments out: '#', reads, the, transcripts, under, '~/.claude/projects'\n",
+    );
+    expect(res.stderr).toContain('  `clean` was not run. Nothing was changed.\n');
+    expect(res.stderr).toContain('  Supported: --dry-run, --help, --last, --path <value>\n');
+  });
+
+  itIfBuilt('clean: one argument is refused with exit 2 before a transcript is read, and the home is left as it was', () => {
+    const home = tmpDir();
+    const transcript = path.join(home, '.claude', 'projects', 'app', 'session.jsonl');
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, '{"type":"user","message":"hello"}\n');
+    const before = tree(home);
+
+    const res = cliIn(['clean', 'transcripts'], home);
+    expect(res.status).toBe(2);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toContain(
+      '  `clean` takes no argument but the path after --path; leave the argument out, or give it after --path: transcripts\n',
+    );
+    expect(tree(home)).toEqual(before);
+    expect(fs.readFileSync(transcript, 'utf-8')).toBe('{"type":"user","message":"hello"}\n');
+  });
+
+  itIfBuilt('CONTROL: clean --dry-run with the path after --path reads that transcript', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'session.jsonl'), '{"type":"user","message":"hello"}\n');
+    const res = cliIn(['clean', '--dry-run', '--path', dir]);
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain(`Scanning transcripts at ${dir}...`);
+  });
+
+  itIfBuilt('doctor: an argument is refused with exit 2, and the checks do not run', () => {
+    const res = cliIn(['doctor', 'profiles']);
+    expect(res.status).toBe(2);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toContain('  `doctor` takes no argument; leave the argument out: profiles\n');
+    expect(res.stderr).toContain('  `doctor` was not run. Nothing was changed.\n');
+    expect(res.stderr).toContain('  Supported: --fix, --help\n');
+  });
+
+  itIfBuilt('doctor: several arguments are each named, and a line feed in one is escaped on its line', () => {
+    const res = cliIn(['doctor', '#', 'checks', 'a\nb']);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain("  `doctor` takes no argument; leave the arguments out: '#', checks, $'a\\nb'\n");
+    expect(res.stderr.split('\n').filter((line) => line.startsWith('b'))).toEqual([]);
+  });
+
+  itIfBuilt('CONTROL: doctor with no argument runs its checks', () => {
+    const res = cliIn(['doctor']);
+    expect(res.status).not.toBe(2);
+    expect(res.stdout).toContain('Secretless Doctor');
+  });
+
+  itIfBuilt('init: a second argument is refused with exit 2, and nothing is written to the project', () => {
+    const project = tmpDir();
+    const res = cliIn(['init', '.', 'stray', '--no-watch'], tmpDir(), project);
+    expect(res.status).toBe(2);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toContain(
+      '  `init` takes one project directory, but 2 were given; give one, or none for the current directory: ., stray\n',
+    );
+    expect(res.stderr).toContain('  `init` was not run. Nothing was changed.\n');
+    expect(res.stderr).toContain('  Supported: --help, --no-watch\n');
+    expect(tree(project)).toEqual([]);
+  });
+
+  itIfBuilt('CONTROL: init with one directory sets that project up', () => {
+    const project = tmpDir();
+    const res = cliIn(['init', '.', '--no-watch'], tmpDir(), project);
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('Configured: Claude Code');
+    expect(tree(project)).toContain('CLAUDE.md');
+  });
+});
+
+describe('a usage refusal exits 2, the code docs/scanning.md gives a command line refused before anything ran (#471)', () => {
+  // [command line, its refusal, a line printed only once the command runs]
+  const cases: Array<[string[], string, string]> = [
+    [['warm', '--ttl', 'soon'], '  Invalid TTL: soon. Examples: 300, 5m, 1h, 1d', 'Warming session'],
+    [['broker', 'start', '--port', '0'], '  Invalid port: 0. Must be 1-65535.', 'Starting credential broker daemon'],
+    [['rules', 'test', 'a;b'], '  Invalid pattern: a;b', 'Testing pattern'],
+  ];
+  for (const [args, refusal, ran] of cases) {
+    itIfBuilt(`\`${args.join(' ')}\` is refused with exit 2`, () => {
+      const res = cliIn(args);
+      expect(res.status).toBe(2);
+      expect(res.stderr.split('\n')).toContain(refusal);
+      expect(res.stdout).not.toContain(ran);
+    });
+  }
+
+  itIfBuilt('CONTROL: `rules test` with a pattern it takes runs at exit 0', () => {
+    const res = cliIn(['rules', 'test', 'ACME_*']);
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('Testing pattern: ACME_*');
+  });
+
+  it('`vault exec <namespace> --` with no command after -- is refused with exit 2', async () => {
+    vi.stubEnv('HOME', tmpDir());
+    const res = await captured(() => runVault(['exec', 'demo', '--']));
+    expect(res.code).toBe(2);
+    expect(res.text).toContain('  Error: a command is required after --\n');
+    expect(res.text).toContain('  Usage: secretless-ai vault exec <namespace> -- <command> [args...]\n');
+  });
+
+  it('`protect-mcp --backend` with a backend type it does not take is refused with exit 2', async () => {
+    vi.stubEnv('HOME', tmpDir());
+    const res = await captured(() => runProtectMcp(['--backend', 'bogus']));
+    expect(res.code).toBe(2);
+    expect(res.text).toContain("  Unknown backend type: bogus. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n");
+  });
+
+  for (const doc of ['commands.md', 'scanning.md']) {
+    it(`docs/${doc} names an argument clean, doctor or init does not take, and a rules test pattern, among the cases of 2`, () => {
+      const text = fs.readFileSync(path.join(REPO_ROOT, 'docs', doc), 'utf-8');
+      const line = text.split('\n').find((l) => l.startsWith('Exit codes: '));
+      // From the first `2` on, which is the code's own clause.
+      const two = line?.slice(line.indexOf('`2`'));
+      expect(two).toContain('an argument `clean`, `doctor` or `init` does not take');
+      expect(two).toContain('a `rules test` pattern it does not take');
+    });
+  }
 });

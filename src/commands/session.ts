@@ -16,8 +16,10 @@ export async function runWarm(args: string[]): Promise<number> {
       if (parsed > 0) {
         ttlSeconds = parsed;
       } else {
+        // A value the flag cannot use: the session is not warmed, so it exits
+        // EXIT_USAGE, as `cache ttl` with a duration it does not take does (#471).
         console.error(`\n  Invalid TTL: ${escapeForDisplay(raw)}. Examples: 300, 5m, 1h, 1d\n`);
-        return 1;
+        return EXIT_USAGE;
       }
     }
   }

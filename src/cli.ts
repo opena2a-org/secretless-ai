@@ -439,9 +439,44 @@ function historyVerbPathRefusal(verb: 'scan-history' | 'clean-history', position
     : `\`clean-history\` redacts credentials in shell history and takes no path; leave the path out: ${paths}`;
 }
 
+/**
+ * Why `clean`, `doctor` or `init` cannot run with these positionals, or null
+ * when it takes them.
+ *
+ * `clean` reads a path only as the value of --path, `doctor` reads none, and
+ * `init` reads one, the project directory. Each ran as if a positional past
+ * those were not there, at exit 0 (#471). Those are the words an interactive
+ * zsh with default options passes on from a `# remark` pasted after a
+ * command, as `#` starts no comment there. They are refused before the
+ * command runs, and named as `clean-history` names a path it does not take.
+ */
+function strayArgumentRefusal(verb: 'clean' | 'doctor' | 'init', positionals: string[]): string | null {
+  if (verb === 'init') {
+    if (positionals.length < 2) return null;
+    const given = positionals.map((p) => listedPath(p)).join(', ');
+    return `\`init\` takes one project directory, but ${positionals.length} were given; give one, or none for the current directory: ${given}`;
+  }
+  if (positionals.length === 0) return null;
+  const named = positionals.map((p) => listedPath(p)).join(', ');
+  const many = positionals.length > 1;
+  if (verb === 'clean') {
+    return many
+      ? `\`clean\` takes no argument but the path after --path; leave the arguments out: ${named}`
+      : `\`clean\` takes no argument but the path after --path; leave the argument out, or give it after --path: ${named}`;
+  }
+  return many
+    ? `\`doctor\` takes no argument; leave the arguments out: ${named}`
+    : `\`doctor\` takes no argument; leave the argument out: ${named}`;
+}
+
 async function dispatch(args: string[], command: string | undefined, prepared: PreparedArgv): Promise<number> {
   switch (command) {
     case 'init': {
+      const refusal = strayArgumentRefusal('init', prepared.positionals);
+      if (refusal) {
+        for (const line of formatArgvErrors('init', [refusal])) console.error(line);
+        return EXIT_USAGE;
+      }
       // The first positional: `--no-watch` is a flag, not the directory.
       const dirArg = prepared.positionals[0];
       if (!rejectUnknownFlagAsDirArg('init', dirArg)) return 2;
@@ -601,10 +636,22 @@ async function dispatch(args: string[], command: string | undefined, prepared: P
       const projectDir = dirArg ? path.resolve(dirArg) : process.cwd();
       return runVerify(projectDir, showAll);
     }
-    case 'doctor':
+    case 'doctor': {
+      const refusal = strayArgumentRefusal('doctor', prepared.positionals);
+      if (refusal) {
+        for (const line of formatArgvErrors('doctor', [refusal])) console.error(line);
+        return EXIT_USAGE;
+      }
       return runDoctor(args.includes('--fix'));
-    case 'clean':
+    }
+    case 'clean': {
+      const refusal = strayArgumentRefusal('clean', prepared.positionals);
+      if (refusal) {
+        for (const line of formatArgvErrors('clean', [refusal])) console.error(line);
+        return EXIT_USAGE;
+      }
       return runClean(args.slice(1));
+    }
     case 'watch':
       return runWatch(args.slice(1));
     case 'rules':
