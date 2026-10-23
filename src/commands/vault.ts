@@ -122,15 +122,18 @@ async function handleList(): Promise<number> {
 }
 
 async function handleRotate(args: string[]): Promise<number> {
-  const namespace = args[0];
-  if (!namespace || namespace.startsWith('-')) {
+  const operands = rotateOperands(args);
+  if (!operands) {
     console.error('\n  Usage: secretless-ai vault rotate <namespace> [--env <VAR>]');
+    console.error('         secretless-ai vault rotate [--env <VAR>] -- <namespace>');
+    console.error('  A namespace that begins with - goes after --, as in the second form.');
     console.error('  Without --env, the new value is read from a prompt or a pipe.\n');
     return EXIT_USAGE;
   }
+  const { namespace, options } = operands;
 
-  const value = parseFlag(args, '--value');
-  const envVar = parseFlag(args, '--env');
+  const value = parseFlag(options, '--value');
+  const envVar = parseFlag(options, '--env');
 
   try {
     await vaultRotate(namespace, {
@@ -301,6 +304,31 @@ function printVaultHelp(): void {
 }
 
 // ── Utilities ──────────────────────────────────────────────────────
+
+/**
+ * The namespace `vault rotate` names and the arguments that hold its options,
+ * or undefined when the arguments give no namespace.
+ *
+ * The namespace is the first argument, or, when the first argument begins
+ * with `-`, the one argument after `--`, with only `--env <VAR>` or
+ * `--value <value>` before the `--`. As the first argument, a namespace that
+ * begins with `-` reads as an option, so `vault test` prints
+ * `vault rotate -- <namespace>` for one (#511).
+ */
+function rotateOperands(args: string[]): { namespace: string; options: string[] } | undefined {
+  const first = args[0];
+  if (!first) return undefined;
+  if (!first.startsWith('-')) return { namespace: first, options: args.slice(1) };
+
+  const separator = args.indexOf('--');
+  if (separator === -1 || separator % 2 !== 0 || args.length !== separator + 2 || !args[separator + 1]) {
+    return undefined;
+  }
+  for (let i = 0; i < separator; i += 2) {
+    if (args[i] !== '--env' && args[i] !== '--value') return undefined;
+  }
+  return { namespace: args[separator + 1], options: args.slice(0, separator) };
+}
 
 /** Parse a --flag value pair from args */
 function parseFlag(args: string[], flag: string): string | null {

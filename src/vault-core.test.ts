@@ -872,6 +872,27 @@ describeWithAimCore('vault-core', () => {
         expect(passed).toBe(false);
       });
 
+      // As the first argument of `vault rotate`, a namespace that begins with
+      // `-` reads as an option: `vault rotate -x` printed the usage line and
+      // exited 2, and that was the command printed here (#511).
+      it('puts a namespace that begins with - after --, where vault rotate takes it (#511)', async () => {
+        const core = await import('./vault-core.js');
+        const { inPlace } = await replaceIdentity(core, ['-x', '-two words', '-esc\u001b[2Jname']);
+
+        const { passed, lines } = await runVaultTest(core);
+
+        const block = failBlock(lines);
+        expect(block[0]).toBe(
+          `[FAIL]  Agent identity ${inPlace} does not decrypt 3 of 3 credential(s) in the vault: -x, '-two words', $'-esc\\e[2Jname'`,
+        );
+        expect(block.filter((l) => l.startsWith('secretless-ai '))).toEqual([
+          'secretless-ai vault rotate -- -x',
+          "secretless-ai vault rotate -- '-two words'",
+          'secretless-ai vault rotate -- <namespace>',
+        ]);
+        expect(passed).toBe(false);
+      });
+
       it('passes on a vault that holds no credential, and a credential stored with that identity then reaches vault exec', async () => {
         const core = await import('./vault-core.js');
         await captureLog(() => core.vaultInit());
@@ -906,6 +927,47 @@ describeWithAimCore('vault-core', () => {
         expect(test.stdout).not.toContain('All checks passed.');
         expect(test.status).toBe(1);
       }, 30_000);
+
+      it('the CLI: the vault rotate command printed for a namespace that begins with - runs, and vault test then passes (#511)', async () => {
+        const core = await import('./vault-core.js');
+        await replaceIdentity(core, ['-x']);
+        const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+        expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+        const vaultCli = (args: string[], input = '', env: NodeJS.ProcessEnv = {}) =>
+          spawnSync(process.execPath, [cliPath, 'vault', ...args], {
+            env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off', ...env },
+            input,
+            encoding: 'utf-8',
+            timeout: 30_000,
+          });
+
+        const failed = vaultCli(['test']);
+        expect(failed.status).toBe(1);
+        const printed = failed.stdout.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('secretless-ai vault rotate'));
+        expect(printed).toEqual(['secretless-ai vault rotate -- -x']);
+
+        // The printed command split at its spaces: it holds no quote or escape
+        // for a shell to remove. The value comes from a pipe.
+        const rotate = vaultCli(printed[0].split(' ').slice(2), 'placeholder-value\n');
+        expect(rotate.stderr).not.toContain('Usage:');
+        expect(rotate.stdout).toContain('Credential rotated for namespace "-x".');
+        expect(rotate.status).toBe(0);
+
+        const passed = vaultCli(['test']);
+        expect(passed.stdout).toContain('  [OK]  Vault unlocks with agent identity (1 credential(s) decrypted)');
+        expect(passed.stdout).toContain('All checks passed.');
+        expect(passed.status).toBe(0);
+
+        // --env before the --, in its = spelling.
+        const fromEnv = vaultCli(['rotate', '--env=ROTATE_511_VALUE', '--', '-x'], '', { ROTATE_511_VALUE: 'placeholder-value-2' });
+        expect(fromEnv.stdout).toContain('Credential rotated for namespace "-x".');
+        expect(fromEnv.status).toBe(0);
+        expect(await core.vaultExec(
+          '-x',
+          [process.execPath, '-e', 'process.exit(process.env.ROTATED === "placeholder-value-2" ? 0 : 3)'],
+          { envName: 'ROTATED' },
+        )).toBe(0);
+      }, 60_000);
     });
   });
 

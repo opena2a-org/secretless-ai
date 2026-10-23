@@ -111,6 +111,61 @@ describe('runVault CLI dispatch', () => {
     expect(vaultRotate).not.toHaveBeenCalled();
   });
 
+  // `vault test` prints `vault rotate -- <namespace>` for a namespace that
+  // begins with `-`; as the first argument, it reads as an option (#511).
+  it('dispatches "rotate -- -x" with the namespace after --', async () => {
+    expect(await runVault(['rotate', '--', '-x'])).toBe(0);
+    expect(vaultRotate).toHaveBeenCalledWith('-x', { value: undefined, envVar: undefined });
+  });
+
+  it('dispatches "rotate --env VAR -- -x" with the option before --', async () => {
+    expect(await runVault(['rotate', '--env', 'NEW_VALUE', '--', '-x'])).toBe(0);
+    expect(vaultRotate).toHaveBeenCalledWith('-x', { value: undefined, envVar: 'NEW_VALUE' });
+  });
+
+  it('dispatches "rotate --value <value> -- -x" with the option before --', async () => {
+    expect(await runVault(['rotate', '--value', 'placeholder-value', '--', '-x'])).toBe(0);
+    expect(vaultRotate).toHaveBeenCalledWith('-x', { value: 'placeholder-value', envVar: undefined });
+  });
+
+  it('dispatches "rotate -- --env" with --env as the namespace', async () => {
+    expect(await runVault(['rotate', '--', '--env'])).toBe(0);
+    expect(vaultRotate).toHaveBeenCalledWith('--env', { value: undefined, envVar: undefined });
+  });
+
+  it('dispatches "rotate -- --" with -- as the namespace', async () => {
+    expect(await runVault(['rotate', '--', '--'])).toBe(0);
+    expect(vaultRotate).toHaveBeenCalledWith('--', { value: undefined, envVar: undefined });
+  });
+
+  it('"rotate -x" shows a usage that names the -- form and exits 2', async () => {
+    expect(await runVault(['rotate', '-x'])).toBe(2);
+    expect(vaultRotate).not.toHaveBeenCalled();
+    const usage = consoleErrorSpy.mock.calls.map((call: unknown[]) => call.join(' ')).join('\n').split('\n');
+    expect(usage).toContain('         secretless-ai vault rotate [--env <VAR>] -- <namespace>');
+    expect(usage).toContain('  A namespace that begins with - goes after --, as in the second form.');
+  });
+
+  // [arguments after `rotate`]: no namespace, an empty one, more than one
+  // argument after --, or something other than --env or --value before it.
+  const refusedRotate: string[][] = [
+    ['--'],
+    ['--', ''],
+    ['--env', 'NEW_VALUE'],
+    ['--env', 'NEW_VALUE', '--'],
+    ['--', '-x', '--env', 'NEW_VALUE'],
+    ['--', '-x', '-y'],
+    ['--env', 'NEW_VALUE', 'stray', '--', '-x'],
+    ['--description', 'text', '--', '-x'],
+    ['-y', '--', '-x'],
+  ];
+  for (const args of refusedRotate) {
+    it(`"rotate ${args.map((a) => a || "''").join(' ')}" shows usage and exits 2`, async () => {
+      expect(await runVault(['rotate', ...args])).toBe(2);
+      expect(vaultRotate).not.toHaveBeenCalled();
+    });
+  }
+
   it('dispatches "revoke" with namespace', () => {
     runVault(['revoke', 'github']);
     expect(vaultRevoke).toHaveBeenCalledWith('github');
