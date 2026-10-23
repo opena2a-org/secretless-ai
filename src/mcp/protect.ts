@@ -72,7 +72,8 @@ export interface McpServerMapLocation {
 
 /**
  * A server with secrets that protect-mcp left as it is, because a protected
- * server in another server map reads its secrets by the same client and
+ * server in another server map, in any config it reads, a project-level one
+ * it leaves as it is included, reads its secrets by the same client and
  * server name. Secrets are stored under that name, so storing this server's
  * would hand them to the other server.
  */
@@ -85,9 +86,12 @@ export interface SharedNameMcpServer extends McpServerMapLocation {
 }
 
 /**
- * A server that already runs through the wrapper, with secrets in plaintext
- * in its env that protect-mcp left there, because moving them into the store
- * is not safe (see unmovedReason and storedValueReason).
+ * A server with secrets in plaintext in its env that protect-mcp left there,
+ * because moving them into the store is not safe: one that already runs
+ * through the wrapper (see unmovedReason and storedValueReason), or one whose
+ * secrets would be stored under a name that holds stored secrets other than
+ * its own, or, for a project-level config, any stored secret (see
+ * unwrappedStoredReason and projectStoredReason).
  */
 export interface UnmovedMcpServer extends McpServerMapLocation {
   client: string;
@@ -124,7 +128,7 @@ export interface ProtectResult {
   unchecked: UncheckedMcpConfig[];
   /** Servers with secrets left as they are, in plaintext, because their name is a protected server's (see SharedNameMcpServer). */
   sharedName: SharedNameMcpServer[];
-  /** Servers that run through the wrapper with secrets left in plaintext in their env (see UnmovedMcpServer). */
+  /** Servers with secrets left in plaintext in their env, because moving them into the store is not safe (see UnmovedMcpServer). */
   unmoved: UnmovedMcpServer[];
   /**
    * Project-level configs left as they are, parsed or not: nothing in them was
@@ -144,10 +148,13 @@ export interface ProtectResult {
  *    config other than .mcp.json is returned in `projectLevel`, unchanged.
  * 2. For each server entry, classifies env vars into secrets vs non-secrets.
  * 3. Stores secrets in the encrypted vault, under the client and server name.
- *    A server whose name is a protected server's in another server map is
- *    returned in `sharedName`, unchanged. A server that already runs through
- *    the wrapper has its secrets stored under the name its wrapper reads by,
- *    or, where that is not safe, is returned in `unmoved`, unchanged.
+ *    A server whose name is a protected server's in another server map, in
+ *    any config found, is returned in `sharedName`, unchanged, and one whose
+ *    name holds stored secrets other than its own, or, for a project-level
+ *    config, any stored secret, in `unmoved`. A server that already runs
+ *    through the wrapper has its secrets stored under the name its wrapper
+ *    reads by, or, where that is not safe, is returned in `unmoved`,
+ *    unchanged.
  * 4. Rewrites config files to use the secretless-mcp wrapper. A server that
  *    already runs through it keeps its command and args, and the secrets
  *    stored for it are removed from its env.
@@ -213,17 +220,20 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   // server map holding a protected server that reads by it, protected before
   // this run or during it, and a server with secrets in another map that
   // would be stored under it is left as it is (see SharedNameMcpServer).
-  // `readers` counts the protected servers that read by each name in every
-  // config this run parsed, the project-level ones it leaves as they are
-  // included: a secret stored under a name is handed to every one of them.
+  // `readers` holds, for each name, the config of each protected server that
+  // reads by it in every config this run parsed, the project-level ones it
+  // leaves as they are included: a secret stored under a name is handed to
+  // every one of them.
   const nameHolders = new Map<string, McpConfigFile>();
-  const readers = new Map<string, number>();
+  const readers = new Map<string, McpConfigFile[]>();
   for (const config of discovered.configs) {
     for (const server of config.servers) {
       if (!server.alreadyProtected) continue;
       const name = protectedVaultName(config.client, server);
       if (rewrittenByProtectMcp(config) && !nameHolders.has(name)) nameHolders.set(name, config);
-      readers.set(name, (readers.get(name) ?? 0) + 1);
+      const readerConfigs = readers.get(name);
+      if (readerConfigs) readerConfigs.push(config);
+      else readers.set(name, [config]);
     }
   }
   const stores: WrapperStores = {
@@ -256,17 +266,25 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
             result.alreadyProtected++;
             continue;
           }
-          const readerCount = readers.get(protectedVaultName(config.client, server)) ?? 0;
+          const readerCount = readers.get(protectedVaultName(config.client, server))?.length ?? 0;
           const reason = unmovedReason(config.client, server, readerCount, stores);
           if (reason !== undefined) {
             result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason });
             continue;
           }
           const reads = readsBy(config.client, server);
+          // A value from a project-level config is stored only under a name
+          // that holds no stored secret, so it neither adds to nor replaces
+          // the secrets stored under that name.
+          const stored = await vault.getServerSecrets(reads.client, reads.server);
+          const projectReason = projectStoredReason(config, stored, reads);
+          if (projectReason !== undefined) {
+            result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason: projectReason });
+            continue;
+          }
           // The wrapper gives the server a value stored under an env name in
           // place of the one in its env, so storing another value under that
           // name would change the credential the server is given.
-          const stored = await vault.getServerSecrets(reads.client, reads.server);
           const differing = secretKeys.filter((key) =>
             Object.prototype.hasOwnProperty.call(stored, key) && stored[key] !== classified.secrets[key]);
           if (differing.length > 0) {
@@ -296,8 +314,11 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 
         if (secretCount === 0) continue;
 
+        // A protected server in any config this run parsed that reads by this
+        // name, a project-level one it leaves as it is included, is handed
+        // every secret stored under it.
         const name = `${config.client}/${server.name}`;
-        const holder = nameHolders.get(name);
+        const holder = nameHolders.get(name) ?? readers.get(name)?.[0];
         if (holder !== undefined) {
           result.sharedName.push({
             client: config.client,
@@ -305,6 +326,19 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
             server: server.name,
             protectedIn: mapLocation(holder),
           });
+          continue;
+        }
+        // Once wrapped, the server is given every secret stored under its
+        // name, and storing replaces a value stored under the same env name,
+        // so its secrets are stored only under a name that holds none, or
+        // only its own (see unwrappedStoredReason), and a value from a
+        // project-level config only under one that holds none (see
+        // projectStoredReason).
+        const reads = { client: config.client, server: server.name };
+        const stored = await vault.getServerSecrets(reads.client, reads.server);
+        const storedReason = projectStoredReason(config, stored, reads) ?? unwrappedStoredReason(stored, classified.secrets, reads);
+        if (storedReason !== undefined) {
+          result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason: storedReason });
           continue;
         }
         nameHolders.set(name, config);
@@ -442,6 +476,60 @@ function storedValueReason(envKeys: string[], reads: { client: string; server: s
   return envKeys.length === 1
     ? `${names} is stored under ${pair} with another value, which its wrapper gives the server in place of the one in its env`
     : `${names} are stored under ${pair} with other values, which its wrapper gives the server in place of the ones in its env`;
+}
+
+/**
+ * Why the secrets in the env of a server in a project-level config, the
+ * project's .mcp.json included, are left there, or undefined when they are
+ * stored. Such a value is stored only under a name that holds no stored
+ * secret, `stored` being the secrets stored under `reads`: it never adds to or
+ * replaces them. The reason names the env names stored there, never a value.
+ */
+function projectStoredReason(
+  config: McpServerMapLocation,
+  stored: Record<string, string>,
+  reads: { client: string; server: string },
+): string | undefined {
+  const storedKeys = Object.keys(stored).sort();
+  if (config.projectPath === undefined || storedKeys.length === 0) return undefined;
+  return `${storedUnder(storedKeys, reads)}, and a value from a project-level config is stored only under a name that holds no stored secret`;
+}
+
+/**
+ * Why the secrets in the env of a server that does not yet run through the
+ * wrapper are left there, or undefined when they are stored. `stored` is what
+ * is stored under `reads`, the name they would be stored under. They are
+ * stored only when each env name stored there is one of the server's
+ * `secrets` with the same value: storing would replace a stored value, and
+ * the wrapper would give the server a stored secret it does not have. The
+ * reason names each env name stored there that is not the server's own,
+ * never a value.
+ */
+function unwrappedStoredReason(
+  stored: Record<string, string>,
+  secrets: Record<string, string>,
+  reads: { client: string; server: string },
+): string | undefined {
+  const storedKeys = Object.keys(stored).sort();
+  const otherValue = storedKeys.filter((key) => Object.prototype.hasOwnProperty.call(secrets, key) && secrets[key] !== stored[key]);
+  const notInEnv = storedKeys.filter((key) => !Object.prototype.hasOwnProperty.call(secrets, key));
+  const parts: string[] = [];
+  if (otherValue.length > 0) {
+    parts.push(`${storedUnder(otherValue, reads)} with ${otherValue.length === 1 ? 'another value' : 'other values'}`);
+  }
+  if (notInEnv.length > 0) {
+    const notIn = notInEnv.length === 1 ? 'is not in its env' : 'are not in its env';
+    parts.push(otherValue.length > 0
+      ? `${notInEnv.map(listedName).join(', ')} ${notInEnv.length === 1 ? 'is' : 'are'} stored there and ${notIn}`
+      : `${storedUnder(notInEnv, reads)} and ${notIn}`);
+  }
+  return parts.length === 0 ? undefined : parts.join(', and ');
+}
+
+/** "<names> is stored under <client/server>", or "are" for more than one name. */
+function storedUnder(envKeys: string[], reads: { client: string; server: string }): string {
+  const names = envKeys.map(listedName).join(', ');
+  return `${names} ${envKeys.length === 1 ? 'is' : 'are'} stored under ${listedName(`${reads.client}/${reads.server}`)}`;
 }
 
 /** The configs of each file, in the order the files were found. */

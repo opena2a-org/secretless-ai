@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+**`protect-mcp` stores a server's secrets only under a client/server name no
+other protected server reads, never replaces a stored value, and stores a
+value from a project-level config only under a name that holds no stored
+secret.** A server whose client/server name a protected server reads by, in
+any config `protect-mcp` reads, a project-level one it does not rewrite
+included, is listed as `not protected` with the config of that server. The
+secrets of a server that does not yet run through the wrapper are stored only
+under a name that holds no stored secret, or holds only the server's own
+`env` names with the same values. A value from a project-level config, the
+project's `.mcp.json` included, is stored only under a name that holds no
+stored secret, for a server that runs through the wrapper and for one that
+does not. A server left is listed under `secrets not moved`, and in the
+`unmoved` list of the result `protectMcp()` returns, with a reason that names
+the client/server name and the `env` names stored under it, never a value,
+and the count under that list reads
+`N server(s) have secrets in plaintext in their env that were not encrypted.`
+`src/mcp/protect-pair-sources.test.ts` checks each case and
+`src/commands/mcp.test.ts` what `protect-mcp` prints.
+
 **`getOrCreateAgent()` leaves an `identity.json` it cannot use in place and
 rejects with the error `vault init` gives, where it wrote a new identity over
 it (#505).** `getOrCreateAgent()`, which the package exports, wrote a new
