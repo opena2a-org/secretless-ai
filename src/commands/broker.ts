@@ -26,8 +26,10 @@ export async function runBroker(args: string[]): Promise<number> {
           if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) {
             port = parsed;
           } else {
+            // Refused before the broker starts, so EXIT_USAGE; exit 1 is
+            // left to a broker that could not start (#471).
             console.error(`\n  Invalid port: ${escapeForDisplay(args[i])}. Must be 1-65535.\n`);
-            return 1;
+            return EXIT_USAGE;
           }
         } else if (args[i] === '--policy-file' && args[i + 1]) {
           policyFile = path.resolve(args[++i]);

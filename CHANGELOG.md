@@ -37,6 +37,34 @@ their own on one line are reported as before, for the first pattern in list
 order. `src/line-mask.test.ts` checks the line in a source file, in
 `config.json` and in a file named as the scan target.
 
+**`clean`, `doctor` and `init` refuse an argument they do not take, with
+exit 2 (#471).** An interactive zsh with default options passes the words of
+a `# remark` pasted after a command on to it, and each of these commands ran
+without them at exit 0: `clean --dry-run # reads the transcripts` scanned the
+transcripts, `doctor # checks the shell profiles` ran its checks, and
+`init . --no-watch # sets up this project` set up the project. `clean` takes
+no argument but the path after `--path`, `doctor` takes none, and `init`
+takes one project directory. A command line with another is now refused
+before the command runs and exits 2, naming each argument as `clean-history`
+names a path it does not take:
+`` `doctor` takes no argument; leave the arguments out: '#', checks, the, shell, profiles ``.
+`src/followups-471.test.ts` runs each command through the CLI with one
+argument and with several, and checks that `clean` and `init` wrote nothing.
+
+**`warm --ttl`, `broker start --port`, `rules test`, `vault exec` and
+`protect-mcp --backend` exit 2 for a command line they refuse (#471).**
+`warm --ttl 0`, `broker start --port 0`, `rules test 'a;b'`,
+`vault exec demo --` with no command after `--`, and
+`protect-mcp --backend bogus` each printed the reason and exited 1, the code
+`scan` gives for credentials found, where docs/scanning.md gives 2 for a
+command line refused before anything ran. Each now exits 2 with the same
+reason, apart from `vault exec demo --`, which prints
+`Error: a command is required after --` and the usage line in place of
+`Error: No command specified. Usage: secretless-ai vault exec <namespace> -- <command>`.
+The exit codes in docs/scanning.md and docs/commands.md name an argument
+`clean`, `doctor` or `init` does not take, and a `rules test` pattern it does
+not take, among the cases of 2.
+
 **`getOrCreateAgent()` leaves an `identity.json` it cannot use in place and
 rejects with the error `vault init` gives, where it wrote a new identity over
 it (#505).** `getOrCreateAgent()`, which the package exports, wrote a new

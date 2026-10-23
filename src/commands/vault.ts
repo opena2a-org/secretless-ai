@@ -204,6 +204,13 @@ async function handleExec(args: string[]): Promise<number> {
     console.error('\n  Error: namespace is required before --\n');
     return EXIT_USAGE;
   }
+  // Nothing after `--` is a command line missing the command, refused here
+  // with EXIT_USAGE; vaultExec's own refusal of it reached handleError, exit 1 (#471).
+  if (command.length === 0) {
+    console.error('\n  Error: a command is required after --\n');
+    console.error('  Usage: secretless-ai vault exec <namespace> -- <command> [args...]\n');
+    return EXIT_USAGE;
+  }
 
   const envName = parseFlag(preArgs, '--env-name');
 
