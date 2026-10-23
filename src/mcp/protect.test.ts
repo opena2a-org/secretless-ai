@@ -1,10 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { protectMcp, type ProtectResult } from './protect';
 import { McpVault } from './vault';
 import { restoreConfig } from './rewrite';
+import { effectiveBackendName } from '../backends/factory';
+
+// The store `local` is without a key, as effectiveBackendName names it, is the
+// platform's: a test names it with mockReturnValueOnce, so the case runs the
+// same on every platform. Every other call reaches the real function.
+vi.mock('../backends/factory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../backends/factory')>();
+  return { ...actual, effectiveBackendName: vi.fn(actual.effectiveBackendName) };
+});
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-protect-'));
@@ -593,6 +602,7 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     process.env.HOME = homeDir;
   });
   afterEach(() => {
+    vi.mocked(effectiveBackendName).mockReset();
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     cleanup(homeDir);
@@ -672,6 +682,26 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     expect(await vault().getServerSecrets('cursor', 'github')).toEqual({});
   });
 
+  it('leaves it when the other protected server reading by the same name is in a project-level config it does not rewrite', async () => {
+    const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+    const projectConfig = path.join(projectDir, '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(projectConfig), { recursive: true });
+    fs.writeFileSync(projectConfig, JSON.stringify({ mcpServers: { repoTool: wrapped(['--server', 'github', '--client', 'cursor'], {}) } }));
+
+    const result = await protect();
+
+    expect(result.secretsFound).toBe(0);
+    expect(result.unmoved).toEqual([{
+      client: 'cursor',
+      filePath: configPath,
+      server: 'github',
+      reason: 'another protected server reads its secrets by the same name, cursor/github',
+    }]);
+    expect(result.projectLevel).toEqual([{ client: 'cursor', filePath: projectConfig, projectPath: path.join('.cursor', 'mcp.json') }]);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({});
+  });
+
   it('leaves it when its --backend argument names a backend other than the one this run stores in', async () => {
     const before = writeConfig({
       github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', '1password'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
@@ -700,6 +730,79 @@ describe('protectMcp — a secret in the env of a server that already runs throu
       'its wrapper reads from the configured backend, 1password, and this run stores in local',
     ]);
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
+  it('leaves it when its wrapper reads local from the encrypted file and this run, given no home directory, stores local in the platform keychain', async () => {
+    // As protect-mcp runs, with no home directory given: the vault has no key,
+    // so with no backend configured `local` is the platform keychain where
+    // there is one. The wrapper gives its store a key, so for `local` it reads
+    // the encrypted file.
+    const cases: Array<{ backendType?: 'local'; wrapperArgs: string[] }> = [
+      { wrapperArgs: [] },
+      { wrapperArgs: ['--backend', 'local'] },
+      { backendType: 'local', wrapperArgs: [] },
+    ];
+    for (const { backendType, wrapperArgs } of cases) {
+      vi.mocked(effectiveBackendName).mockReturnValueOnce('keychain-macos');
+      const before = writeConfig({
+        github: wrapped(['--server', 'github', '--client', 'cursor', ...wrapperArgs], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+      });
+
+      const result = await protectMcp({ dataDir, projectDir, wrapperPath, ...(backendType ? { backendType } : {}) });
+
+      expect(result.secretsFound).toBe(0);
+      expect(result.unmoved).toEqual([{
+        client: 'cursor',
+        filePath: configPath,
+        server: 'github',
+        reason: 'its wrapper reads from the local encrypted file, and this run stores in keychain-macos',
+      }]);
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    }
+  });
+
+  it('CONTROL: stores it when a home directory is given, as the vault then has a key and is the encrypted file for local', async () => {
+    vi.mocked(effectiveBackendName).mockReturnValue('keychain-macos');
+    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+
+    const result = await protect();
+
+    expect(result.unmoved).toEqual([]);
+    expect(result.secretsFound).toBe(1);
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+  });
+
+  it('leaves it when another value is stored under the same env name for the name its wrapper reads by', async () => {
+    // The wrapper gives the server the stored value in place of the one in its
+    // env, so storing this one would change the credential the server is given.
+    await vault().storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    const before = writeConfig({
+      github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-5678', OTHER_API_KEY: 'FAKE-KEY-9012' }),
+    });
+
+    const result = await protect();
+
+    expect(result.secretsFound).toBe(0);
+    expect(result.unmoved).toEqual([{
+      client: 'cursor',
+      filePath: configPath,
+      server: 'github',
+      reason: 'MY_SERVICE_API_KEY is stored under cursor/github with another value, which its wrapper gives the server in place of the one in its env',
+    }]);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+  });
+
+  it('CONTROL: stores it when the value stored under the same env name is the same value', async () => {
+    await vault().storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+
+    const result = await protect();
+
+    expect(result.unmoved).toEqual([]);
+    expect(result.secretsFound).toBe(1);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers.github.env).toEqual({});
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
   });
 
   it('leaves it when its args choose the store its wrapper reads from with --vault-dir or --vault-key', async () => {
