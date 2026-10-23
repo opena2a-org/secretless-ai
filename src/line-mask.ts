@@ -64,11 +64,7 @@ const CUT_DOWN = '\u0000';
 export function maskCredentials(line: string, options: MaskOptions = {}): string {
   const preferCaptureGroup = options.preferCaptureGroup ?? true;
   const spans: Span[] = [];
-  const add = (pattern: MaskPattern, rank: number) => {
-    for (const { from, to } of credentialSpans(line, pattern.regex, { preferCaptureGroup })) {
-      spans.push({ from, to, rank, pattern });
-    }
-  };
+  const add = (pattern: MaskPattern, rank: number) => addSpans(spans, line, pattern, rank, preferCaptureGroup);
 
   CREDENTIAL_PATTERNS.forEach(add);
   const commands = options.commandPatterns ?? [];
@@ -81,6 +77,30 @@ export function maskCredentials(line: string, options: MaskOptions = {}): string
 
   const label = options.label ?? ((pattern: MaskPattern) => `[${pattern.name} REDACTED]`);
   return render(line, merged(spans), label);
+}
+
+/** A marker `maskCredentials(line)` writes: the pattern it names and the part of the line it replaces. */
+export interface Marker {
+  pattern: MaskPattern;
+  from: number;
+  to: number;
+}
+
+/**
+ * The marker `maskCredentials(line)`, called with no options, writes over the
+ * character at `at`, or undefined where that preview keeps the character.
+ */
+export function markerAt(line: string, at: number): Marker | undefined {
+  const spans: Span[] = [];
+  CREDENTIAL_PATTERNS.forEach((pattern, rank) => addSpans(spans, line, pattern, rank, true));
+  const span = merged(spans).find((s) => s.from <= at && at < s.to);
+  return span && { pattern: span.pattern, from: span.from, to: span.to };
+}
+
+function addSpans(spans: Span[], line: string, pattern: MaskPattern, rank: number, preferCaptureGroup: boolean): void {
+  for (const { from, to } of credentialSpans(line, pattern.regex, { preferCaptureGroup })) {
+    spans.push({ from, to, rank, pattern });
+  }
 }
 
 /** The spans in line order, overlapping ones joined and labelled by the one that starts first. */

@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { CREDENTIAL_PATTERNS, CONFIG_FILES, CREDENTIAL_PREFIX_QUICK_CHECK, SOURCE_FILE_EXTENSIONS, SOURCE_SKIP_DIRS, KNOWN_EXAMPLE_KEYS, PLACEHOLDER_INDICATORS, isConfigShaped, type CredentialPattern } from './patterns';
 import { redactMatches } from './redact';
-import { maskCredentials } from './line-mask';
+import { maskCredentials, markerAt } from './line-mask';
 import { loadSecretlessIgnore, buildMatcher, defaultIgnoreLines, DEFAULT_IGNORE_PATTERNS, type IgnoreMatcher } from './secretlessignore';
 import { scoreFinding, type ConfidenceBreakdown, type ConfidenceTier } from './confidence';
 import { BUNDLE_EXTENSION } from './bundle';
@@ -103,8 +103,8 @@ export interface LineValue {
 /**
  * The values the patterns match on a finding's line, kept only under
  * `ScanOptions.retainValues` and held beside the finding as MATCHED_VALUES is.
- * A line is reported as one finding at most, for the first pattern that
- * matches it, so a line holding an AWS access key ID and its secret access key
+ * A line is reported as one finding at most, for the pattern `lineMatch`
+ * picks, so a line holding an AWS access key ID and its secret access key
  * reports the key ID alone; the validity check pairs the two from here.
  */
 const LINE_VALUES = new WeakMap<ScanFinding, readonly LineValue[]>();
@@ -649,6 +649,68 @@ export function findRealMatch(
   return null;
 }
 
+/**
+ * The pattern a finding on `line` names, with its match, or null when no
+ * pattern has a real match on the line.
+ *
+ * The first pattern in list order with a real match finds the line. The
+ * preview (`maskCredentials`) writes one marker over a credential that two
+ * patterns match parts of, named for the pattern whose span starts first: a
+ * PyPI token whose body holds a Hugging Face token shape is one PyPI marker,
+ * though the Hugging Face pattern comes first in the list. When the marker
+ * over the found value names another pattern, and that pattern has a real
+ * match whose value starts under the marker, the finding takes that pattern
+ * and match, so the finding and its preview name one credential (#459). Two
+ * credentials under markers of their own leave the first in list order.
+ */
+function lineMatch(
+  line: string,
+  opts?: Parameters<typeof findRealMatch>[2],
+): { pattern: CredentialPattern; match: RegExpMatchArray } | null {
+  for (const pattern of CREDENTIAL_PATTERNS) {
+    const match = findRealMatch(line, pattern, opts);
+    if (match) return matchUnderMarker(line, pattern, match, opts?.includeExamples === true) ?? { pattern, match };
+  }
+  return null;
+}
+
+/**
+ * The real match of the pattern the preview's marker over `match` names, when
+ * that is another pattern than `pattern` and its value starts under the
+ * marker; null otherwise. A known example skipped here is not passed to
+ * `onSuppressed`, so the count stays the one `findRealMatch` made on the way
+ * to `match`, as it was before this lookup.
+ */
+function matchUnderMarker(
+  line: string,
+  pattern: CredentialPattern,
+  match: RegExpMatchArray,
+  includeExamples: boolean,
+): { pattern: CredentialPattern; match: RegExpMatchArray } | null {
+  const marker = markerAt(line, valueStart(match));
+  if (!marker || marker.pattern.id === pattern.id) return null;
+  const named = CREDENTIAL_PATTERNS.find((p) => p.id === marker.pattern.id);
+  if (!named) return null;
+  const flags = named.regex.flags.includes('g') ? named.regex.flags : `${named.regex.flags}g`;
+  for (const m of line.matchAll(new RegExp(named.regex.source, flags))) {
+    const at = valueStart(m);
+    if (at < marker.from || at >= marker.to) continue;
+    if (includeExamples || !isKnownExample(line, m)) return { pattern: named, match: m };
+  }
+  return null;
+}
+
+/**
+ * Where a match's value starts on its line: at group 1 when the pattern
+ * captures one after a name, as the preview's marker starts (`credentialSpans`).
+ */
+function valueStart(match: RegExpMatchArray): number {
+  const index = match.index ?? 0;
+  const group = match[1];
+  const rel = group ? match[0].indexOf(group) : -1;
+  return rel > 0 ? index + rel : index;
+}
+
 /** Global config files that may contain secrets (outside project dir) */
 const GLOBAL_CONFIG_FILES = [
   { dir: path.join(os.homedir(), '.claude'), file: 'CLAUDE.md', label: '~/.claude/CLAUDE.md' },
@@ -738,37 +800,35 @@ function scanSingleFile(
       if (/process\.env\.[A-Z_]+/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
       if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
-      for (const pattern of CREDENTIAL_PATTERNS) {
-        const match = findRealMatch(line, pattern, matchOpts);
-        if (match) {
-          const breakdown = scoreFinding({
-            pattern: { id: pattern.id, regex: pattern.regex },
-            value: match[0],
-            filePath: name,
-          });
-          if (breakdown.score < minConfidence) {
-            if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
-          } else {
-            const finding: ScanFinding = {
-              file: display,
-              line: i + 1,
-              patternId: pattern.id,
-              patternName: pattern.name,
-              severity,
-              preview: maskCredentials(line).trim().substring(0, 80),
-              fix: fixFor(pattern, { envFile }),
-              confidence: breakdown.score,
-              confidenceTier: breakdown.tier,
-              looksLikeFixture: false,
-              ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
-            };
-            if (options?.retainValues) {
-              keepMatchedValue(finding, match);
-              LINE_VALUES.set(finding, valuesOnLine(line, matchOpts.includeExamples, minConfidence, name));
-            }
-            findings.push(finding);
+      const found = lineMatch(line, matchOpts);
+      if (found) {
+        const { pattern, match } = found;
+        const breakdown = scoreFinding({
+          pattern: { id: pattern.id, regex: pattern.regex },
+          value: match[0],
+          filePath: name,
+        });
+        if (breakdown.score < minConfidence) {
+          if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
+        } else {
+          const finding: ScanFinding = {
+            file: display,
+            line: i + 1,
+            patternId: pattern.id,
+            patternName: pattern.name,
+            severity,
+            preview: maskCredentials(line).trim().substring(0, 80),
+            fix: fixFor(pattern, { envFile }),
+            confidence: breakdown.score,
+            confidenceTier: breakdown.tier,
+            looksLikeFixture: false,
+            ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
+          };
+          if (options?.retainValues) {
+            keepMatchedValue(finding, match);
+            LINE_VALUES.set(finding, valuesOnLine(line, matchOpts.includeExamples, minConfidence, name));
           }
-          break;
+          findings.push(finding);
         }
       }
     }
@@ -913,14 +973,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         const line = lines[i];
         if (line.length > 4096) continue;
         if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
-        for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = findRealMatch(line, pattern, matchOpts);
-          if (match) {
-            const masked = maskCredentials(line);
-            const finding = buildFinding(global.label, i + 1, pattern, match, 'critical', masked, line);
-            if (finding) findings.push(finding);
-            break;
-          }
+        const found = lineMatch(line, matchOpts);
+        if (found) {
+          const masked = maskCredentials(line);
+          const finding = buildFinding(global.label, i + 1, found.pattern, found.match, 'critical', masked, line);
+          if (finding) findings.push(finding);
         }
       }
     } catch { /* skip */ }
@@ -1021,16 +1078,14 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           continue;
         }
 
-        for (const pattern of CREDENTIAL_PATTERNS) {
-          const match = findRealMatch(line, pattern, matchOpts);
-          if (match) {
-            // Mask every credential on the line in the preview
-            const masked = maskCredentials(line);
+        // One finding per line
+        const found = lineMatch(line, matchOpts);
+        if (found) {
+          // Mask every credential on the line in the preview
+          const masked = maskCredentials(line);
 
-            const finding = buildFinding(configFile, i + 1, pattern, match, 'critical', masked, line);
-            if (finding) findings.push(finding);
-            break; // One finding per line
-          }
+          const finding = buildFinding(configFile, i + 1, found.pattern, found.match, 'critical', masked, line);
+          if (finding) findings.push(finding);
         }
       }
     } catch {
@@ -1095,15 +1150,12 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           // Skip os.environ references (Python)
           if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
-          for (const pattern of CREDENTIAL_PATTERNS) {
-            const match = findRealMatch(line, pattern, matchOpts);
-            if (match) {
-              const masked = maskCredentials(line);
+          const found = lineMatch(line, matchOpts);
+          if (found) {
+            const masked = maskCredentials(line);
 
-              const finding = buildFinding(relPath, i + 1, pattern, match, 'high', masked, line);
-              if (finding) findings.push(finding);
-              break;
-            }
+            const finding = buildFinding(relPath, i + 1, found.pattern, found.match, 'high', masked, line);
+            if (finding) findings.push(finding);
           }
         }
       } catch {
