@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { protectMcp } from '../mcp/protect';
-import type { SharedNameMcpServer, UnmovedMcpServer } from '../mcp/protect';
+import type { RefusedNameMcpServer, SharedNameMcpServer, UnmovedMcpServer } from '../mcp/protect';
 import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
 import type { UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
@@ -113,6 +113,17 @@ function printSharedNameServers(servers: SharedNameMcpServer[]): void {
 }
 
 /**
+ * Each server protect-mcp left because the store refuses its name, under its
+ * config and with why, then what to do.
+ */
+function printRefusedNameServers(servers: RefusedNameMcpServer[]): void {
+  printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: not protected: ${server.reason}`);
+  console.log(`  ${servers.length} server(s) were not protected, so their secrets are still in plaintext.`);
+  console.log('  The store takes only A-Z, a-z, 0-9, - and _ in a server name.');
+  console.log('  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.\n');
+}
+
+/**
  * Each server with secrets protect-mcp left in its env, wrapped or not, under
  * its config and with why, then what to do.
  */
@@ -144,10 +155,13 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 
   try {
     const result = await protectMcp({ wrapperPath, backendType });
-    const { unparsed, unchecked, sharedName, unmoved, projectLevel } = result;
+    const { unparsed, unchecked, sharedName, refusedName, unmoved, projectLevel } = result;
     const notChecked = () => {
       if (sharedName.length > 0) {
         printSharedNameServers(sharedName);
+      }
+      if (refusedName.length > 0) {
+        printRefusedNameServers(refusedName);
       }
       if (unmoved.length > 0) {
         printUnmovedServers(unmoved);
@@ -191,10 +205,11 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     console.log(`  Scanned ${result.clientsScanned} client(s)\n`);
 
     if (result.secretsFound === 0) {
-      // A server left in plaintext because its name is taken, or because its
-      // secrets were not moved into the store its wrapper reads from, was
-      // found with secrets in it, so none of the lines below is true of it.
-      if (sharedName.length > 0 || unmoved.length > 0) {
+      // A server left in plaintext because its name is taken or refused, or
+      // because its secrets were not moved into the store its wrapper reads
+      // from, was found with secrets in it, so none of the lines below is
+      // true of it.
+      if (sharedName.length > 0 || refusedName.length > 0 || unmoved.length > 0) {
         console.log('  No plaintext secrets were encrypted.\n');
         notChecked();
         return 0;

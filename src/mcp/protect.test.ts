@@ -5,14 +5,20 @@ import * as os from 'os';
 import { protectMcp, type ProtectResult } from './protect';
 import { McpVault } from './vault';
 import { restoreConfig } from './rewrite';
-import { effectiveBackendName } from '../backends/factory';
+import { createBackend, effectiveBackendName } from '../backends/factory';
+import { LocalBackend } from '../backends/local';
 
 // The store `local` is without a key, as effectiveBackendName names it, is the
-// platform's: a test names it with mockReturnValueOnce, so the case runs the
-// same on every platform. Every other call reaches the real function.
+// platform's: a test names it with a mock, so the case runs the same on every
+// platform, and where the run then stores, builds an encrypted file in its
+// place with createBackend. Every other call reaches the real function.
 vi.mock('../backends/factory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../backends/factory')>();
-  return { ...actual, effectiveBackendName: vi.fn(actual.effectiveBackendName) };
+  return {
+    ...actual,
+    createBackend: vi.fn(actual.createBackend),
+    effectiveBackendName: vi.fn(actual.effectiveBackendName),
+  };
 });
 
 function tmpDir(): string {
@@ -602,6 +608,7 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     process.env.HOME = homeDir;
   });
   afterEach(() => {
+    vi.mocked(createBackend).mockReset();
     vi.mocked(effectiveBackendName).mockReset();
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
@@ -732,33 +739,34 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
   });
 
-  it('leaves it when its wrapper reads local from the encrypted file and this run, given no home directory, stores local in the platform keychain', async () => {
+  it('stores it in the platform keychain, where its wrapper reads local, when this run is given no home directory and no backend is configured (#513)', async () => {
     // As protect-mcp runs, with no home directory given: the vault has no key,
-    // so with no backend configured `local` is the platform keychain where
-    // there is one. The wrapper gives its store a key, so for `local` it reads
-    // the encrypted file.
+    // and neither has the store of a wrapper whose args name no --vault-dir or
+    // --vault-key, so with no backend configured both build `local`, named or
+    // not, as the platform keychain where there is one. That keychain is
+    // named here, and this run's store is an encrypted file standing in for
+    // it. Until #513 the wrapper gave its store a key and read `local` from
+    // the encrypted file, and these cases were left in the env.
+    vi.mocked(effectiveBackendName).mockImplementation((type) => (type === 'local' ? 'keychain-macos' : type));
+    vi.mocked(createBackend).mockImplementation((_type, config) => new LocalBackend({ ...config, key: 'not-a-real-key' }));
     const cases: Array<{ backendType?: 'local'; wrapperArgs: string[] }> = [
       { wrapperArgs: [] },
       { wrapperArgs: ['--backend', 'local'] },
       { backendType: 'local', wrapperArgs: [] },
     ];
     for (const { backendType, wrapperArgs } of cases) {
-      vi.mocked(effectiveBackendName).mockReturnValueOnce('keychain-macos');
-      const before = writeConfig({
+      writeConfig({
         github: wrapped(['--server', 'github', '--client', 'cursor', ...wrapperArgs], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
       });
 
       const result = await protectMcp({ dataDir, projectDir, wrapperPath, ...(backendType ? { backendType } : {}) });
 
-      expect(result.secretsFound).toBe(0);
-      expect(result.unmoved).toEqual([{
-        client: 'cursor',
-        filePath: configPath,
-        server: 'github',
-        reason: 'its wrapper reads from the local encrypted file, and this run stores in keychain-macos',
-      }]);
-      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+      expect(result.unmoved).toEqual([]);
+      expect(result.secretsFound).toBe(1);
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers.github.env).toEqual({});
     }
+    const standIn = new McpVault({ backend: new LocalBackend({ storeDir: path.join(dataDir, 'mcp-vault'), key: 'not-a-real-key' }) });
+    expect(await standIn.getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
   });
 
   it('CONTROL: stores it when a home directory is given, as the vault then has a key and is the encrypted file for local', async () => {

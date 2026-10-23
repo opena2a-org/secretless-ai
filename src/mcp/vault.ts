@@ -25,6 +25,16 @@ function validateName(label: string, value: string): void {
   }
 }
 
+/**
+ * Why the vault refuses `name` as a client or server name, or undefined when
+ * it takes it: the rule validateName applies, for a caller that reports the
+ * refusal and goes on.
+ */
+export function mcpNameProblem(name: string): string | undefined {
+  if (name === '') return 'it is empty';
+  return SAFE_NAME.test(name) ? undefined : 'it holds a character other than A-Z, a-z, 0-9, - or _';
+}
+
 export interface McpVaultOptions {
   /** Store directory for the backend (passed as config.storeDir) */
   storeDir?: string;
@@ -57,6 +67,15 @@ export class McpVault {
       : resolveBackendType();
 
     this.backend = createBackend(backendType, config);
+  }
+
+  /**
+   * Name of the backend this vault reads and writes (`local`,
+   * `keychain-macos`, `1password`, ...). The cache layer's `cached(<name>)` is
+   * given as the name of the backend under it, as SecretStore.backendName is.
+   */
+  get backendName(): string {
+    return this.backend.name.replace(/^cached\((.*)\)$/, '$1');
   }
 
   /**

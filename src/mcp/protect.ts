@@ -10,7 +10,7 @@ import * as path from 'path';
 import { discoverMcpConfigsDetailed, rewrittenByProtectMcp } from './discover';
 import type { McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
-import { McpVault } from './vault';
+import { McpVault, mcpNameProblem } from './vault';
 import { rewriteServerMaps, type ServerMapSecrets } from './rewrite';
 import { screenMcpEnvVars } from '../nanomind';
 import { prepareBinArgv, MCP_WRAPPER } from '../argv';
@@ -86,6 +86,19 @@ export interface SharedNameMcpServer extends McpServerMapLocation {
 }
 
 /**
+ * A server with secrets that protect-mcp left as it is: secrets are stored
+ * under the server's name, and the store refuses that name (see
+ * mcpNameProblem).
+ */
+export interface RefusedNameMcpServer extends McpServerMapLocation {
+  client: string;
+  /** Server name as written in the config */
+  server: string;
+  /** Why the store refuses the name, e.g. "the store refuses its name, since it is empty". */
+  reason: string;
+}
+
+/**
  * A server with secrets in plaintext in its env that protect-mcp left there,
  * because moving them into the store is not safe: one that already runs
  * through the wrapper (see unmovedReason and storedValueReason), or one whose
@@ -128,6 +141,8 @@ export interface ProtectResult {
   unchecked: UncheckedMcpConfig[];
   /** Servers with secrets left as they are, in plaintext, because their name is a protected server's (see SharedNameMcpServer). */
   sharedName: SharedNameMcpServer[];
+  /** Servers with secrets left as they are, in plaintext, because the store refuses their name (see RefusedNameMcpServer). */
+  refusedName: RefusedNameMcpServer[];
   /** Servers with secrets left in plaintext in their env, because moving them into the store is not safe (see UnmovedMcpServer). */
   unmoved: UnmovedMcpServer[];
   /**
@@ -149,15 +164,17 @@ export interface ProtectResult {
  * 2. For each server entry, classifies env vars into secrets vs non-secrets.
  * 3. Stores secrets in the encrypted vault, under the client and server name.
  *    A server whose name is a protected server's in another server map, in
- *    any config found, is returned in `sharedName`, unchanged, and one whose
- *    name holds stored secrets other than its own, or, for a project-level
- *    config, any stored secret, in `unmoved`. A server that already runs
- *    through the wrapper has its secrets stored under the name its wrapper
- *    reads by, or, where that is not safe, is returned in `unmoved`,
- *    unchanged.
+ *    any config found, is returned in `sharedName`, unchanged, one whose name
+ *    the vault refuses in `refusedName`, and one whose name holds stored
+ *    secrets other than its own, or, for a project-level config, any stored
+ *    secret, in `unmoved`. A server that already runs through the wrapper
+ *    has its secrets stored under the name its wrapper reads by, or, where
+ *    that is not safe, is returned in `unmoved`, unchanged.
  * 4. Rewrites config files to use the secretless-mcp wrapper. A server that
  *    already runs through it keeps its command and args, and the secrets
- *    stored for it are removed from its env.
+ *    stored for it are removed from its env. A file with a server that ran
+ *    through the wrapper before this run keeps the backup an earlier run
+ *    wrote (see RewriteOptions.keepBackup).
  *
  * @param options - Configuration for the protection run.
  * @returns Summary of what was scanned and protected.
@@ -176,7 +193,11 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   const backupDir = path.join(dataDir, 'mcp-backups');
 
   // Derive a deterministic vault key from homeDir when provided (testing),
-  // otherwise let LocalBackend use its default machine-based key.
+  // otherwise give none, as the wrapper gives none when its args name no
+  // --vault-dir or --vault-key: both then build one store for one backend,
+  // and for `local` it is the platform keychain while no backend is
+  // configured, where there is one, and otherwise LocalBackend's encrypted
+  // file under its default machine-based key.
   const vaultKey = home
     ? `${home}-secretless-mcp-${process.env.USER ?? 'default'}`
     : undefined;
@@ -211,6 +232,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       .filter((config) => config.unchecked.length > 0)
       .map((config) => ({ client: config.client, ...mapLocation(config), servers: config.unchecked })),
     sharedName: [],
+    refusedName: [],
     unmoved: [],
     projectLevel,
   };
@@ -314,6 +336,18 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 
         if (secretCount === 0) continue;
 
+        // The vault refuses such a name by throwing, which ended the run (#513).
+        const problem = mcpNameProblem(server.name);
+        if (problem !== undefined) {
+          result.refusedName.push({
+            client: config.client,
+            ...mapLocation(config),
+            server: server.name,
+            reason: `the store refuses its name, since ${problem}`,
+          });
+          continue;
+        }
+
         // A protected server in any config this run parsed that reads by this
         // name, a project-level one it leaves as it is included, is handed
         // every secret stored under it.
@@ -360,8 +394,12 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       }
     }
 
-    // Rewrite config file if any servers had secrets
+    // Rewrite config file if any servers had secrets. A file in which a
+    // server already runs through the wrapper keeps the backup an earlier run
+    // wrote, where there is one: the file as it was before protect-mcp
+    // changed it, which mcp-unprotect restores (#513).
     if (maps.length > 0) {
+      const rewrittenBefore = fileConfigs.some((config) => config.servers.some((server) => server.alreadyProtected));
       const rewriteResult = rewriteServerMaps(
         filePath,
         fileConfigs[0].client,
@@ -369,6 +407,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         options.wrapperPath,
         backupDir,
         options.backendType,
+        { keepBackup: rewrittenBefore },
       );
       result.serversProtected += rewriteResult.serversRewritten;
     }
@@ -414,8 +453,10 @@ function protectedVaultName(client: string, server: McpServerEntry): string {
 /**
  * The backend this run stores secrets in, the configured one a wrapper given
  * no --backend reads from, and whether this run's vault has a key. Only a run
- * given a home directory gives it one, and without one `local` is the
- * platform keychain while no backend is configured (see effectiveBackendName).
+ * given a home directory, as a test is, gives it one, so its `local` is the
+ * encrypted file, and a test starts the wrapper with that key (--vault-key).
+ * Without one, this run and a wrapper whose args name no --vault-dir or
+ * --vault-key build one store for one backend (see storeName).
  */
 interface WrapperStores {
   run: SelectableBackendType;
@@ -424,15 +465,36 @@ interface WrapperStores {
 }
 
 /**
+ * The store a vault built for the backend `type` is, by the name of the
+ * backend: `local` with a key is the encrypted file, and without one it is
+ * what effectiveBackendName names, the platform keychain while no backend is
+ * configured, where there is one. That keychain is the one `keychain` builds,
+ * so `keychain` has its name where `local` upgrades to it. Two backends with
+ * the same name here build one store. Names are compared, not stores built:
+ * building the 1password backend runs `op account get`, which can open a
+ * dialog (see isOnePasswordAvailable).
+ */
+function storeName(type: string, keyed: boolean): string {
+  if (type === 'local') return keyed ? 'local' : effectiveBackendName('local');
+  if (type === 'keychain') {
+    const upgrade = effectiveBackendName('local');
+    return upgrade === 'local' ? 'keychain' : upgrade;
+  }
+  return type;
+}
+
+/**
  * Why the secrets in the env of a server that runs through the wrapper are
- * left there, or undefined when they are stored. A secret stored under a name
- * is handed to every protected server that reads by it, so it is stored only
- * when this server is the one server that does (`readerCount` counts them).
- * It is stored only where its wrapper reads it, as far as this run can tell:
- * the args name no --vault-dir or --vault-key, and give no --backend other
- * than the backend this run stores in, or, giving none, the configured
- * backend is that backend; and for `local`, which the wrapper reads from the
- * encrypted file, this run's vault is that file.
+ * left there, or undefined when they are stored. They are stored under the
+ * name its wrapper reads by, so the vault has to take that name. A secret
+ * stored under a name is handed to every protected server that reads by it,
+ * so it is stored only when this server is the one server that does
+ * (`readerCount` counts them). It is stored only where its wrapper reads it,
+ * as far as this run can tell: the args name no --vault-dir or --vault-key,
+ * and the backend its wrapper reads from, its --backend argument or the
+ * configured backend when it gives none, builds the store this run stores in
+ * (see storeName). A reason names the store this run stores in by its
+ * storeName.
  */
 function unmovedReason(
   client: string,
@@ -440,6 +502,8 @@ function unmovedReason(
   readerCount: number,
   stores: WrapperStores,
 ): string | undefined {
+  const refused = refusedNameReason(readsBy(client, server));
+  if (refused !== undefined) return refused;
   if (readerCount > 1) {
     return `another protected server reads its secrets by the same name, ${listedName(protectedVaultName(client, server))}`;
   }
@@ -448,18 +512,23 @@ function unmovedReason(
     return 'its args choose the store its wrapper reads from with --vault-dir or --vault-key';
   }
   const backend = flags.get('--backend');
-  if (backend === undefined && stores.configured !== stores.run) {
-    return `its wrapper reads from the configured backend, ${stores.configured}, and this run stores in ${stores.run}`;
-  }
-  if (backend !== undefined && backend !== stores.run) {
-    return `its --backend argument is ${quotedName(backend)}, and this run stores in ${stores.run}`;
-  }
-  // The wrapper gives its store a key, so for `local` it builds the encrypted
-  // file, where this run's vault, built without one, can be the platform keychain.
-  if (stores.run === 'local' && !stores.keyed) {
-    const runStore = effectiveBackendName('local');
-    if (runStore !== 'local') {
-      return `its wrapper reads from the local encrypted file, and this run stores in ${runStore}`;
+  const runStore = storeName(stores.run, stores.keyed);
+  const wrapperStore = storeName(backend ?? stores.configured, stores.keyed);
+  if (wrapperStore === runStore) return undefined;
+  return backend === undefined
+    ? `its wrapper reads from the configured backend, ${wrapperStore}, and this run stores in ${runStore}`
+    : `its --backend argument is ${quotedName(backend)}, and this run stores in ${runStore}`;
+}
+
+/**
+ * Why the vault refuses the client or server name a protected server's
+ * wrapper reads its secrets by, or undefined when it takes both.
+ */
+function refusedNameReason(reads: { client: string; server: string }): string | undefined {
+  for (const [label, name] of [['client', reads.client], ['server', reads.server]] as const) {
+    const problem = mcpNameProblem(name);
+    if (problem !== undefined) {
+      return `its wrapper reads its secrets by the ${label} name ${quotedName(name)}, which the store refuses, since ${problem}`;
     }
   }
   return undefined;

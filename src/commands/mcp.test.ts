@@ -33,6 +33,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      refusedName: [],
       unmoved: [],
       projectLevel: [],
     });
@@ -55,6 +56,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      refusedName: [],
       unmoved: [],
       projectLevel: [],
     });
@@ -73,6 +75,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      refusedName: [],
       unmoved: [],
       projectLevel: [],
     });
@@ -91,6 +94,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [],
       unchecked: [],
       sharedName: [],
+      refusedName: [],
       unmoved: [],
       projectLevel: [],
     });
@@ -112,6 +116,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       unparsed: [{ client: 'windsurf', filePath: '/home/u/.windsurf/mcp.json', reason: 'not valid JSON (line 2, column 1)' }],
       unchecked: [],
       sharedName: [],
+      refusedName: [],
       unmoved: [],
       projectLevel: [],
     });
@@ -141,6 +146,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
         },
       ],
       sharedName: [],
+      refusedName: [],
       unmoved: [],
       projectLevel: [],
     });
@@ -177,6 +183,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
         },
       ],
       sharedName: [],
+      refusedName: [],
       unmoved: [],
       projectLevel: [],
     });
@@ -224,6 +231,7 @@ describe('protect-mcp names where it looked, and each project-level config it le
     unparsed: [],
     unchecked: [],
     sharedName: [],
+    refusedName: [],
     unmoved: [],
     projectLevel: [],
   };
@@ -311,6 +319,7 @@ describe('protect-mcp over the server maps of ~/.claude.json (#470)', () => {
     unparsed: [],
     unchecked: [],
     sharedName: [],
+    refusedName: [],
     unmoved: [],
     projectLevel: [],
   };
@@ -393,6 +402,7 @@ describe('protect-mcp names each server that runs through the wrapper with secre
     unparsed: [],
     unchecked: [],
     sharedName: [],
+    refusedName: [],
     unmoved: [],
     projectLevel: [],
   };
