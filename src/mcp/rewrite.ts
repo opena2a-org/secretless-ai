@@ -39,6 +39,20 @@ export interface ServerMapSecrets {
   storedEnvKeys?: Record<string, string[]>;
 }
 
+export interface RewriteOptions {
+  /**
+   * Keep the backup of this file an earlier run wrote, when there is one that
+   * restoreConfig can read, in place of backing the file up as it is now.
+   * protect-mcp asks for this when the file already has a server that runs
+   * through the wrapper, as a file an earlier run rewrote has, and the backup
+   * that run wrote is the file as it was before protect-mcp changed it. Each
+   * run that rewrote the file replaced its backup, so mcp-unprotect restored
+   * the file as the last run found it, with the servers earlier runs
+   * protected still running through the wrapper (#513).
+   */
+  keepBackup?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -188,7 +202,8 @@ export function rewriteConfig(
  * `projects` for one with it. The keys in a map's storedEnvKeys are removed
  * from the env of the servers they are listed for, which keep their command
  * and args. The file is read, backed up and written once, so the backup is
- * the file as it was before any of its maps was rewritten.
+ * the file as it was before any of its maps was rewritten, unless
+ * options.keepBackup keeps the one an earlier run wrote.
  */
 export function rewriteServerMaps(
   configPath: string,
@@ -197,6 +212,7 @@ export function rewriteServerMaps(
   wrapperPath: string,
   backupDir: string,
   backendType?: string,
+  options?: RewriteOptions,
 ): RewriteResult {
   // Read and parse the config file
   const content = fs.readFileSync(configPath, 'utf-8');
@@ -218,18 +234,23 @@ export function rewriteServerMaps(
   // Create backup directory with restricted permissions
   fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
 
-  // Save encrypted backup of original content (prevents plaintext secret leakage)
-  const bkFilename = backupFilename(configPath);
-  const bkPath = path.join(backupDir, bkFilename);
-  const backupKey = deriveBackupKey(backupDir);
-  const encryptedBackup = encryptBackup(content, backupKey);
-  fs.writeFileSync(bkPath, encryptedBackup, { mode: 0o600 });
-  fs.chmodSync(bkPath, 0o600);
-
-  // Update manifest
   const manifest = readManifest(backupDir);
-  manifest[configPath] = bkPath;
-  writeManifest(backupDir, manifest);
+  const earlier = manifest[configPath];
+  let bkPath: string;
+  if (options?.keepBackup === true && readBackup(earlier, backupDir) !== undefined) {
+    bkPath = earlier;
+  } else {
+    // Save encrypted backup of original content (prevents plaintext secret leakage)
+    bkPath = path.join(backupDir, backupFilename(configPath));
+    const backupKey = deriveBackupKey(backupDir);
+    const encryptedBackup = encryptBackup(content, backupKey);
+    fs.writeFileSync(bkPath, encryptedBackup, { mode: 0o600 });
+    fs.chmodSync(bkPath, 0o600);
+
+    // Update manifest
+    manifest[configPath] = bkPath;
+    writeManifest(backupDir, manifest);
+  }
 
   // Write modified config back
   const newContent = JSON.stringify(config, null, 2) + '\n';
@@ -352,11 +373,24 @@ function removeEnvKeys(container: Record<string, unknown>, envKeys: Record<strin
  * @returns true if restored, false if no backup found
  */
 export function restoreConfig(configPath: string, backupDir: string): boolean {
-  const manifest = readManifest(backupDir);
-  const bkPath = manifest[configPath];
-
-  if (!bkPath || !fs.existsSync(bkPath)) {
+  const backupContent = readBackup(readManifest(backupDir)[configPath], backupDir);
+  if (backupContent === undefined) {
     return false;
+  }
+
+  fs.writeFileSync(configPath, backupContent, { mode: 0o600 });
+  fs.chmodSync(configPath, 0o600);
+
+  return true;
+}
+
+/**
+ * The content of the backup at `bkPath`, as restoreConfig writes it back, or
+ * undefined when there is no backup there or it is not valid JSON.
+ */
+function readBackup(bkPath: string | undefined, backupDir: string): string | undefined {
+  if (!bkPath || !fs.existsSync(bkPath)) {
+    return undefined;
   }
 
   const rawBackup = fs.readFileSync(bkPath);
@@ -382,11 +416,8 @@ export function restoreConfig(configPath: string, backupDir: string): boolean {
   try {
     JSON.parse(backupContent);
   } catch {
-    return false;
+    return undefined;
   }
 
-  fs.writeFileSync(configPath, backupContent, { mode: 0o600 });
-  fs.chmodSync(configPath, 0o600);
-
-  return true;
+  return backupContent;
 }

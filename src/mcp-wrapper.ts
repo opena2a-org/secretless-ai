@@ -91,10 +91,17 @@ function parseArgs(argv: string[]): {
 
   if (separatorIdx === -1 || separatorIdx >= argv.length - 1) return null;
 
+  // `--vault-dir` and `--vault-key` choose the encrypted file for `local`: given
+  // either, the store has a key, this one when `--vault-key` gives none. Given
+  // neither, the store has no key and is built as `protect-mcp` builds it, so
+  // for `local` both read and write one store: with no backend configured,
+  // the OS keychain where one is available, and otherwise the encrypted file.
+  // A key here made `local` the file while `protect-mcp` stored in the
+  // keychain, and a server it protected found none of its secrets (#513).
   const home = os.homedir();
-  if (!vaultDir) vaultDir = path.join(home, ".secretless-ai", "mcp-vault");
-  if (!vaultKey)
+  if (vaultDir && !vaultKey)
     vaultKey = `${home}-secretless-${process.env.USER ?? "default"}`;
+  if (!vaultDir) vaultDir = path.join(home, ".secretless-ai", "mcp-vault");
 
   return {
     server,
@@ -177,7 +184,7 @@ async function main(): Promise<void> {
   try {
     vault = new McpVault({
       storeDir: args.vaultDir,
-      key: args.vaultKey,
+      ...(args.vaultKey ? { key: args.vaultKey } : {}),
       backendType,
     });
     secrets = await vault.getServerSecrets(args.client, args.server);
@@ -198,10 +205,12 @@ async function main(): Promise<void> {
   // typo, a client that is not a real client, or a vault in another backend.
   // Starting the child would run it with none of its credentials while the
   // config still reads as protected, so refuse, as for an empty name, and say
-  // which pairs do exist (names only, never values).
+  // which pairs do exist (names only, never values). The backend is named as
+  // built: `local` with no key is the OS keychain while no backend is configured.
   if (Object.keys(secrets).length === 0) {
+    const store = vault.backendName;
     process.stderr.write(
-      `secretless-mcp: No secrets are stored for client "${args.client}", server "${args.server}" in the ${backendType} backend. The server was not started.\n`,
+      `secretless-mcp: No secrets are stored for client "${args.client}", server "${args.server}" in the ${store} backend. The server was not started.\n`,
     );
     let pairs: string[] | null = null;
     try {
@@ -215,7 +224,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         pairs.length > 0
           ? `secretless-mcp: Stored client/server pairs: ${pairs.join(", ")}\n`
-          : `secretless-mcp: The ${backendType} backend holds no MCP server secrets.\n`,
+          : `secretless-mcp: The ${store} backend holds no MCP server secrets.\n`,
       );
     }
     process.stderr.write(

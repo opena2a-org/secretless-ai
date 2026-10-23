@@ -65,6 +65,54 @@ The exit codes in docs/scanning.md and docs/commands.md name an argument
 `clean`, `doctor` or `init` does not take, and a `rules test` pattern it does
 not take, among the cases of 2.
 
+**`protect-mcp` and the `secretless-mcp` wrapper read and write one store,
+`protect-mcp` goes on past a server name the store refuses, and
+`mcp-unprotect` restores a config as it was before the first `protect-mcp`
+run (#513).** With no backend configured, `protect-mcp` stored `local`
+secrets in the OS keychain where one is available (the macOS Keychain, or the
+Linux Secret Service when `secret-tool` is installed), while the wrapper gave
+its store a key and read `local` from the encrypted file under
+`~/.secretless-ai/mcp-vault`, so a server `protect-mcp` rewrote to run through
+the wrapper found none of its secrets. On macOS, `mcp-status` printed
+`Backend: keychain-macos` and the wrapper
+`No secrets are stored for client "cursor", server "github" in the local backend.`
+The wrapper now gives its store a key only when its arguments give
+`--vault-dir` or `--vault-key`, which keep reading `local` from the encrypted
+file, so for the same `--backend` argument, or none, it builds the store
+`protect-mcp` builds; that message now names the backend it read
+(`keychain-macos` there). With the two building one store, `protect-mcp` now
+moves a secret found in the `env` of a server that runs through the wrapper
+into the keychain on such a machine, where it left it with the reason
+`its wrapper reads from the local encrypted file, and this run stores in keychain-macos`.
+It compares the store each backend builds, not the backend names, so the
+secret of a server given `--backend keychain` is moved there too, and a
+reason for leaving one names the store the run uses, as in
+`its --backend argument is "1password", and this run stores in keychain-macos`.
+Versions before 0.12.3 stored `local` in the encrypted file with no backend
+configured; the wrapper of a server protected by one of them reads it there
+when its arguments give `--vault-dir` with the absolute path of
+`~/.secretless-ai/mcp-vault`. A client or server name the store refuses, one
+that is empty or holds a character other than `A-Z`, `a-z`, `0-9`, `-` or
+`_` such as `my.server`, made `protect-mcp` print
+`Error: Invalid server name: "my.server". Only alphanumeric, dash, and underscore allowed.`
+and exit 1. A server with such a name is now listed as `not protected` with
+the reason, one that runs through the wrapper and reads by such a name under
+`secrets not moved`, and `protect-mcp` goes on to the next server and
+exits 0. Each `protect-mcp` run that rewrote a file replaced its backup, so
+after a second run `mcp-unprotect` restored the file as that run found it, with the
+server the first run protected still running through the wrapper. A run that
+rewrites a file in which a server already runs through the wrapper now keeps
+the backup an earlier run wrote, so `mcp-unprotect` restores the file as it
+was before the first run. `src/followups-513.test.ts` starts the built
+wrapper from the arguments `protect-mcp` writes, runs `protect-mcp` with no
+home directory as the command does, and runs `mcp-unprotect` after two
+`protect-mcp` runs; on the commit this one starts from, 9 of its 13 tests
+fail and the 4 marked CONTROL pass. `src/mcp/protect.test.ts` now expects the
+secret moved, where it expected it left, for a wrapper given no `--backend`
+or `--backend local` and for a run given `--backend local`.
+`docs/use-cases/secure-mcp-configs.md` says which store the wrapper reads,
+when a name is refused, and which backup `mcp-unprotect` restores.
+
 **`getOrCreateAgent()` leaves an `identity.json` it cannot use in place and
 rejects with the error `vault init` gives, where it wrote a new identity over
 it (#505).** `getOrCreateAgent()`, which the package exports, wrote a new
@@ -147,9 +195,8 @@ stored value in place of the one in its `env`); when the server's arguments
 give `--vault-dir` or `--vault-key`; or when its wrapper reads from another
 store than the one `protect-mcp` stores in. The wrapper reads from the
 backend its `--backend` argument names, or the configured backend when it
-gives none, and for `local` it reads the encrypted file, while with no
-backend configured `protect-mcp` stores `local` secrets in the OS keychain
-where one is available. `docs/use-cases/secure-mcp-configs.md` says what
+gives none (see #513 for the store it builds for `local`).
+`docs/use-cases/secure-mcp-configs.md` says what
 `+ <name>: protected` means. `src/followups-508.test.ts` runs
 `mcp-status` on such servers and starts the built wrapper on a server whose
 value `protect-mcp` moved, `src/mcp/protect.test.ts` checks what
