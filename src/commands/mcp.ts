@@ -112,12 +112,12 @@ function printSharedNameServers(servers: SharedNameMcpServer[]): void {
 }
 
 /**
- * Each server that runs through the wrapper with secrets protect-mcp left in
- * its env, under its config and with why, then what to do.
+ * Each server with secrets protect-mcp left in its env, wrapped or not, under
+ * its config and with why, then what to do.
  */
 function printUnmovedServers(servers: UnmovedMcpServer[]): void {
   printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: secrets not moved: ${server.reason}`);
-  console.log(`  ${servers.length} server(s) run through the wrapper with secrets in plaintext in their env that were not encrypted.`);
+  console.log(`  ${servers.length} server(s) have secrets in plaintext in their env that were not encrypted.`);
   console.log('  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.\n');
 }
 

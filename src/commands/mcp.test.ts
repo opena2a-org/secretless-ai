@@ -418,7 +418,7 @@ describe('protect-mcp names each server that runs through the wrapper with secre
       '    ? github: secrets not moved: its --backend argument is "1password", and this run stores in local',
       '    ? "gh\\u001b[2J": secrets not moved: another protected server reads its secrets by the same name, cursor/github',
       '',
-      '  2 server(s) run through the wrapper with secrets in plaintext in their env that were not encrypted.',
+      '  2 server(s) have secrets in plaintext in their env that were not encrypted.',
       '  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.',
     ].join('\n'));
   });
@@ -436,6 +436,25 @@ describe('protect-mcp names each server that runs through the wrapper with secre
 
     expect(output).toContain('1 secret(s) encrypted across 1 server(s).');
     expect(output).toContain('  cursor (/home/u/.cursor/mcp.json)\n    ? github: secrets not moved: its --backend argument is "1password", and this run stores in local');
-    expect(output).toContain('  1 server(s) run through the wrapper with secrets in plaintext in their env that were not encrypted.');
+    expect(output).toContain('  1 server(s) have secrets in plaintext in their env that were not encrypted.');
+  });
+
+  it('lists a server not yet wrapped, left because its name holds stored secrets, without saying it runs through the wrapper', async () => {
+    vi.mocked(protectMcp).mockResolvedValue({
+      ...base,
+      unmoved: [{ client: 'cursor', filePath: cursorJson, server: 'github', reason: 'OTHER_API_KEY is stored under cursor/github and is not in its env' }],
+    });
+
+    const output = await protectOutput();
+
+    expect(output).toContain('  No plaintext secrets were encrypted.\n');
+    expect(output).not.toContain('Already clean.');
+    expect(output).toContain([
+      '  cursor (/home/u/.cursor/mcp.json)',
+      '    ? github: secrets not moved: OTHER_API_KEY is stored under cursor/github and is not in its env',
+      '',
+      '  1 server(s) have secrets in plaintext in their env that were not encrypted.',
+    ].join('\n'));
+    expect(output).not.toContain('run through the wrapper');
   });
 });
