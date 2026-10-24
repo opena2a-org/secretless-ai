@@ -166,10 +166,19 @@ const MOVED_LINE = (server: string, moved: { directory: string; commandChanged?:
   + (moved.commandChanged ? '; its command or arguments changed since it was bound' : '');
 
 /**
+ * The line for a home entry at its binding's place that carried no id or
+ * another one, given its binding's id, and the change when its command or
+ * arguments changed since it was bound.
+ */
+const OUT_OF_DATE_LINE = (server: string, commandChanged: boolean): string =>
+  `    ~ ${listedName(server)}: its binding was out of date; bound again`
+  + (commandChanged ? '; its command or arguments changed since it was bound' : '');
+
+/**
  * The servers protect-mcp bound this run, under their configs: bound in
  * place, bound in place of a server no longer in its config, bound again
- * after their project directory moved, and bound again after their command
- * changed. Then the count.
+ * after their project directory moved, bound again after their command
+ * changed, and given their binding's id again. Then the count.
  */
 function printBoundServers(bound: BoundMcpServer[], rebound: ReboundMcpServer[]): void {
   const boundLine = (server: BoundMcpServer): string => {
@@ -182,7 +191,9 @@ function printBoundServers(bound: BoundMcpServer[], rebound: ReboundMcpServer[])
     ...bound.map((server) => ({ ...server, line: boundLine(server) })),
     ...rebound.map((server) => ({
       ...server,
-      line: `    ~ ${listedName(server.server)}: its command or arguments changed since it was bound; bound again`,
+      line: server.outOfDate
+        ? OUT_OF_DATE_LINE(server.server, server.commandChanged === true)
+        : `    ~ ${listedName(server.server)}: its command or arguments changed since it was bound; bound again`,
     })),
   ];
   printUnderConfigs(inConfigOrder(lines), (server) => server.line);

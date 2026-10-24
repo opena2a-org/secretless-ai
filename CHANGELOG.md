@@ -47,6 +47,13 @@ under the new path first, so `mcp-unprotect` there restores the file, and its
 line names the old directory and any change to the command. A copy of a bound
 entry whose file no longer exists is reported with that fact.
 
+**`protect-mcp` writes a home entry's binding back into it when the entry,
+at the place its binding names, carries no binding or another one**, as after a
+home config is restored from an older copy. Where the entry's command changed,
+the binding takes the command first. A `.mcp.json` entry in that state is left
+unchanged, since its file comes with the repository, and its line says to add
+the server again under a new name with its values.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more
