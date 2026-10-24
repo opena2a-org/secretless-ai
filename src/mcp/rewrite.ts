@@ -20,6 +20,8 @@ export interface RewriteResult {
   serversRewritten: number;
   /** Servers that already ran through the wrapper and had their --binding set (see bindServers). */
   serversBound?: number;
+  /** Servers whose command was set to the wrapper path in this write (see ServerMapSecrets.repoint). Absent when none. */
+  repointed?: Array<{ projectKey?: string; server: string }>;
   backupPath: string | null;
 }
 
@@ -47,6 +49,12 @@ export interface ServerMapSecrets {
    * the wrapper has its --binding set in place (see bindServers).
    */
   bindings?: Record<string, string>;
+  /**
+   * Servers that run through another build's wrapper, by name: their command
+   * is set to the wrapper path in this write, and nothing else of them changes
+   * (see repointServers).
+   */
+  repoint?: string[];
 }
 
 export interface RewriteOptions {
@@ -201,7 +209,8 @@ export function rewriteConfig(
  * without a projectKey, and the map in the entry of that project under
  * `projects` for one with it. The keys in a map's storedEnvKeys are removed
  * from the env of the servers they are listed for, which keep their command
- * and args. The file is read, backed up and written once, so the backup is
+ * and args, and the servers in its repoint have their command set to
+ * `wrapperPath`. The file is read, backed up and written once, so the backup is
  * the file as it was before any of its maps was rewritten, unless
  * options.keepBackup keeps the one an earlier run wrote.
  */
@@ -220,7 +229,8 @@ export function rewriteServerMaps(
 
   let serversRewritten = 0;
   let serversBound = 0;
-  for (const { projectKey, serverSecrets, storedEnvKeys, bindings } of maps) {
+  const repointed: Array<{ projectKey?: string; server: string }> = [];
+  for (const { projectKey, serverSecrets, storedEnvKeys, bindings, repoint } of maps) {
     const container = projectKey === undefined ? config : projectEntry(config, projectKey);
     if (container === undefined) continue;
     serversRewritten += wrapServers(container, client, serverSecrets, wrapperPath, backendType, bindings);
@@ -230,10 +240,15 @@ export function rewriteServerMaps(
       const wrapped = Object.entries(bindings).filter(([name]) => !Object.prototype.hasOwnProperty.call(serverSecrets, name));
       serversBound += bindServers(container, Object.fromEntries(wrapped));
     }
+    if (repoint !== undefined) {
+      for (const server of repointServers(container, repoint, wrapperPath)) {
+        repointed.push({ ...(projectKey === undefined ? {} : { projectKey }), server });
+      }
+    }
   }
 
   // If nothing was rewritten, don't create backup or modify file
-  if (serversRewritten === 0 && serversBound === 0) {
+  if (serversRewritten === 0 && serversBound === 0 && repointed.length === 0) {
     return { serversRewritten: 0, serversBound: 0, backupPath: null };
   }
 
@@ -263,7 +278,7 @@ export function rewriteServerMaps(
   fs.writeFileSync(configPath, newContent, { mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
 
-  return { serversRewritten, serversBound, backupPath: bkPath };
+  return { serversRewritten, serversBound, ...(repointed.length === 0 ? {} : { repointed }), backupPath: bkPath };
 }
 
 /** The entry of one project under `projects`, when it is a JSON object. */
@@ -375,6 +390,33 @@ export function bindServers(container: Record<string, unknown>, bindings: Record
     serversChanged++;
   }
   return serversChanged;
+}
+
+/**
+ * Set to `wrapperPath` the command of servers that run through another
+ * build's wrapper, in the server map of `container` under the key
+ * serverMapKey names. Nothing else of an entry changes: not its args, so not
+ * the digest of the command after its `--`, not its env, not the order of its
+ * keys. A server is changed only when its command runs through a secretless
+ * wrapper (see runsThroughSecretlessWrapper) and is not `wrapperPath`. Returns
+ * the names of the servers changed; the caller writes the file.
+ */
+function repointServers(container: Record<string, unknown>, names: readonly string[], wrapperPath: string): string[] {
+  const key = serverMapKey(container);
+  const mcpServers = key === undefined ? undefined : container[key];
+  if (!mcpServers || typeof mcpServers !== 'object') return [];
+
+  const changed: string[] = [];
+  for (const name of names) {
+    if (!Object.prototype.hasOwnProperty.call(mcpServers, name)) continue;
+    const serverDef = (mcpServers as Record<string, unknown>)[name];
+    if (!serverDef || typeof serverDef !== 'object' || Array.isArray(serverDef)) continue;
+    const command = (serverDef as Record<string, unknown>)['command'];
+    if (typeof command !== 'string' || command === wrapperPath || !runsThroughSecretlessWrapper(command, wrapperPath)) continue;
+    (serverDef as Record<string, unknown>)['command'] = wrapperPath;
+    changed.push(name);
+  }
+  return changed;
 }
 
 /**

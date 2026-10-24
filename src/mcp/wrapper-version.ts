@@ -46,6 +46,44 @@ export function readWrapperVersion(dir: string): string {
   return packageVersionAbove(dir) ?? 'unknown';
 }
 
+/** A semver version: MAJOR.MINOR.PATCH, an optional prerelease, an optional build. */
+const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+/** Whether `version` is a semver version, as a package.json version is; `'unknown'` is not. */
+export function isVersion(version: string): boolean {
+  return VERSION.test(version);
+}
+
+/**
+ * The order of two versions by semver precedence: negative when `a` is lower
+ * than `b`, 0 when they are equal, positive when it is higher, and undefined
+ * when either is not a version. A prerelease is lower than its release, and
+ * build metadata is not compared.
+ */
+export function compareVersions(a: string, b: string): number | undefined {
+  const left = VERSION.exec(a);
+  const right = VERSION.exec(b);
+  if (!left || !right) return undefined;
+  for (let i = 1; i <= 3; i++) {
+    const diff = Number(left[i]) - Number(right[i]);
+    if (diff !== 0) return diff;
+  }
+  const leftPre = left[4] === undefined ? [] : left[4].split('.');
+  const rightPre = right[4] === undefined ? [] : right[4].split('.');
+  if (leftPre.length === 0 || rightPre.length === 0) return rightPre.length - leftPre.length;
+  for (let i = 0; i < Math.min(leftPre.length, rightPre.length); i++) {
+    const x = leftPre[i];
+    const y = rightPre[i];
+    if (x === y) continue;
+    const xNumeric = /^\d+$/.test(x);
+    const yNumeric = /^\d+$/.test(y);
+    if (xNumeric && yNumeric) return Number(x) - Number(y);
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return leftPre.length - rightPre.length;
+}
+
 /** Record `version` beside an installed wrapper copy in `binDir`. */
 export function writeWrapperVersion(binDir: string, version: string): void {
   fs.writeFileSync(
