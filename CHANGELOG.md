@@ -32,6 +32,12 @@ entry in a file it did not restore, and names that entry. In a backend shared
 between machines (1password, vault, gcp-sm) it leaves a pair with no binding,
 since an entry on another machine may read it.
 
+**`protect-mcp` binds a `.mcp.json` entry to a pair with no name stored only
+when it stores the entry's values from its env.** Its backup of the file is
+evidence only for names stored under the pair, so an entry with no value in its
+env is left, and its line says to put the values in its env and run
+`protect-mcp`.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more
