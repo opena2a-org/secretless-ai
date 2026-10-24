@@ -221,7 +221,7 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
     );
   });
 
-  it('p6: a .mcp.json entry that carries a home binding is listed as a copy, and its file is not written', async () => {
+  it('p6: a .mcp.json entry that carries a home binding is listed as a copy, the binding is replaced, and the copy is not written', async () => {
     const file = write(cursorConfig(), { mcpServers: { github: plain() } });
     await protect();
     const home0 = fs.readFileSync(file, 'utf-8');
@@ -232,14 +232,39 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
     const { output } = await run(() => runProtectMcp([]));
 
     expect(output).toContain(
-      `    ? github: a copy of a bound entry: it carries the binding of server "github" in ${file}, so the wrapper gives it that server's secrets. `
+      `    ? github: a copy of a bound entry: it carried the binding of server "github" in ${file}; the binding was replaced, and this entry no longer starts. `
+        + 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.\n\n'
+        + '  1 copied binding(s) replaced; those copies no longer start.\n',
+    );
+    expect(output).not.toContain('Protected servers start as before.');
+    expect(fs.readFileSync(copy, 'utf-8')).toBe(copy0);
+    const after = await store().getBinding('cursor', 'github');
+    expect(ID.test(after?.id ?? '') && after?.id !== record!.id, 'the binding holds a new id').toBe(true);
+    expect({ ...after, id: '', boundAt: '', boundBy: '' }).toEqual({ ...record, id: '', boundAt: '', boundBy: '' });
+    expect(home0.split(record!.id).join(after!.id) === fs.readFileSync(file, 'utf-8'), 'the home entry changed only in its id').toBe(true);
+    expect(output.includes(record!.id) || output.includes(after!.id), 'an id is printed').toBe(false);
+  });
+
+  it('p6b: a home entry that carries a project binding is listed as a copy, and nothing is written: a project binding is not replaced', async () => {
+    const bound = write(projectConfig(), { mcpServers: { github: plain() } });
+    await protect();
+    const record = await store().getBinding('claude-code', 'github');
+    expect(record?.scope).toBe('project');
+    const bound0 = fs.readFileSync(bound, 'utf-8');
+    const copy = write(cursorConfig(), { mcpServers: { github: servers(bound).github } });
+    const copy0 = fs.readFileSync(copy, 'utf-8');
+
+    const { output } = await run(() => runProtectMcp([]));
+
+    expect(output).toContain(
+      `    ? github: a copy of a bound entry: it carries the binding of server "github" in ${bound}, so the wrapper gives it that server's secrets. `
         + 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.\n\n'
         + '  1 server(s) are copies of a bound entry and receive its secrets.\n',
     );
     expect(fs.readFileSync(copy, 'utf-8')).toBe(copy0);
-    expect(fs.readFileSync(file, 'utf-8')).toBe(home0);
-    expect(await store().getBinding('cursor', 'github')).toEqual(record);
-    expect(output).not.toContain(record!.id);
+    expect(fs.readFileSync(bound, 'utf-8')).toBe(bound0);
+    expect(JSON.stringify(await store().getBinding('claude-code', 'github')) === JSON.stringify(record), 'the binding is unchanged').toBe(true);
+    expect(output.includes(record!.id), 'an id is printed').toBe(false);
   });
 
   it('p7: an unprotected server whose pair is bound to an entry in another project is left as it is', async () => {

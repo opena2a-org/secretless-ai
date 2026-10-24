@@ -187,12 +187,24 @@ function printUnboundServers(servers: UnboundMcpServer[]): void {
   console.log(`  ${servers.length} server(s) run through the wrapper but are not bound, so the wrapper does not start them. Each line above says what to change.\n`);
 }
 
-/** The servers that carry the binding of another entry, under their configs, then the count. */
+/**
+ * The servers that carry the binding of another entry, under their configs:
+ * those whose home binding protect-mcp replaced, which no longer start, and
+ * the others, which receive that entry's secrets. Then the counts.
+ */
 function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
-  printUnderConfigs(servers, (server) =>
-    `    ? ${listedName(server.server)}: a copy of a bound entry: it carries the binding of ${boundEntryName(server.boundTo)}, so the wrapper gives it that server's secrets. `
-    + 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.');
-  console.log(`  ${servers.length} server(s) are copies of a bound entry and receive its secrets.\n`);
+  const remove = 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.';
+  printUnderConfigs(servers, (server) => {
+    if (server.replaced) {
+      return `    ? ${listedName(server.server)}: a copy of a bound entry: it carried the binding of ${boundEntryName(server.boundTo)}; the binding was replaced, and this entry no longer starts. ${remove}`;
+    }
+    const failed = server.replaceError === undefined ? '' : ` The binding could not be replaced: ${server.replaceError}.`;
+    return `    ? ${listedName(server.server)}: a copy of a bound entry: it carries the binding of ${boundEntryName(server.boundTo)}, so the wrapper gives it that server's secrets.${failed} ${remove}`;
+  });
+  const replaced = servers.filter((server) => server.replaced).length;
+  if (servers.length > replaced) console.log(`  ${servers.length - replaced} server(s) are copies of a bound entry and receive its secrets.`);
+  if (replaced > 0) console.log(`  ${replaced} copied binding(s) replaced; those copies no longer start.`);
+  console.log();
 }
 
 /** The binding lists of a protect-mcp run, each only when it has a server. */
@@ -344,7 +356,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
 
     // Only while every server that runs through the wrapper is bound: the
     // wrapper starts no other.
-    if (result.unbound.length === 0) {
+    if (result.unbound.length === 0 && !result.copies.some((copy) => copy.replaced)) {
       console.log('  Protected servers start as before.');
     }
     console.log('  Run `npx secretless-ai mcp-status` to check status anytime.');
