@@ -30,7 +30,7 @@ export interface McpServerEntry {
   command: string;
   args: string[];
   env: Record<string, string>;
-  /** true if command is the secretless-mcp binary or the mcp-wrapper.js script */
+  /** true if its command runs through a secretless-mcp wrapper (see runsThroughSecretlessWrapper) */
   alreadyProtected: boolean;
 }
 
@@ -169,19 +169,28 @@ export function serverMapKey(raw: Record<string, unknown>): string | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * Check if a server command indicates it is already wrapped by secretless-mcp.
+ * This build's own wrapper, `mcp-wrapper.js` in the directory above this
+ * module (`dist/` for the built package): the path protect-mcp writes into
+ * the configs it rewrites.
  */
-function isProtectedCommand(command: string): boolean {
+export function thisBuildWrapperPath(): string {
+  return path.resolve(__dirname, '..', 'mcp-wrapper.js');
+}
+
+/**
+ * Whether a server entry's command runs through a secretless-mcp wrapper: the
+ * bare `secretless-mcp`, a path ending `/secretless-mcp`, `wrapperPath` (this
+ * build's wrapper, or the one a rewrite writes), or any path ending
+ * `/mcp-wrapper.js` that contains `secretless`, as another build's wrapper and
+ * an installed copy do. Discovery, protect-mcp's rewrite and its re-point of
+ * an entry to this build's wrapper all decide by this one function.
+ */
+export function runsThroughSecretlessWrapper(command: string, wrapperPath: string = thisBuildWrapperPath()): boolean {
+  if (command === '') return false;
   if (command === 'secretless-mcp') return true;
   if (command.endsWith('/secretless-mcp')) return true;
-
-  // The protect-mcp command rewrites configs to use the full path to mcp-wrapper.js
-  // (e.g., /Users/.../dist/mcp-wrapper.js). Detect that as protected too.
-  const wrapperPath = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
   if (command === wrapperPath) return true;
-  if (command.endsWith('/mcp-wrapper.js') && command.includes('secretless')) return true;
-
-  return false;
+  return command.endsWith('/mcp-wrapper.js') && command.includes('secretless');
 }
 
 /**
@@ -251,7 +260,7 @@ function parseServers(raw: Record<string, unknown>): { servers: McpServerEntry[]
       command,
       args,
       env,
-      alreadyProtected: isProtectedCommand(command),
+      alreadyProtected: runsThroughSecretlessWrapper(command),
     });
   }
 

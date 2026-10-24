@@ -114,6 +114,14 @@ was deleted is taken over by the one home entry that reads its pair. Where a
 binding's entry is gone and several entries read its pair, each is left with
 the line that names the others.
 
+**Discovery and `protect-mcp`'s rewrite decide by one function which entries
+run through a secretless wrapper.** An entry runs through one when its command
+is `secretless-mcp`, a path ending `/secretless-mcp`, this build's wrapper, or
+a path ending `/mcp-wrapper.js` that contains `secretless`, as another build's
+wrapper and an installed copy do. The rewrite leaves the command of every
+entry discovery reads as wrapped, and discovery reads this build's wrapper at
+its own path.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more
