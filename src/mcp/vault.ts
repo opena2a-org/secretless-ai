@@ -172,6 +172,19 @@ export async function checkLaunch(vault: McpVault, launch: McpLaunch): Promise<M
   return { refused: false, binding };
 }
 
+/**
+ * The backends whose pairs and bindings are this machine's alone: a config
+ * file absent here is absent for every entry that reads them. Every other
+ * backend (1password, vault, gcp-sm) is shared between machines, and a pair
+ * stored in it may be read by entries on other machines.
+ */
+const PER_MACHINE_BACKENDS: readonly string[] = ['local', 'keychain-macos', 'keychain-linux'];
+
+/** Whether the store a vault reads, by its backend name (McpVault.backendName), is this machine's alone. */
+export function isPerMachineStore(backendName: string): boolean {
+  return PER_MACHINE_BACKENDS.includes(backendName);
+}
+
 /** Validates client/server names to prevent path traversal. */
 const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
 
