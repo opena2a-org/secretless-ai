@@ -6,15 +6,171 @@
  *
  * By default uses the LocalBackend for backward compatibility.
  * Can be configured to use the OS keychain backend via backendType option.
+ *
+ * Beside a pair, `protect-mcp` stores its binding (McpBinding) under
+ * `mcp-binding/{client}/{server}`, and the wrapper reads the pair's secrets
+ * only for the config entry and command the binding names (checkLaunch).
  */
 
+import * as crypto from 'crypto';
 import { createBackend } from '../backends/factory';
 import { resolveBackendType } from '../backends/config';
 import type { WritableSecretBackend } from '../backends/types';
 import type { SelectableBackendType } from '../backends/config';
-import { findSecretValueProblem, unstorableMcpSecretError } from '../secret-value';
+import { findSecretValueProblem, listedName, unstorableMcpSecretError } from '../secret-value';
 
 const MCP_PREFIX = 'mcp';
+
+/**
+ * The prefix of a pair's binding. It is outside MCP_PREFIX, so neither
+ * getServerSecrets nor listEntries returns it, and the wrapper never gives it
+ * to a server as an env var: a backend resolves a path to the key equal to it
+ * and the keys under `<path>/`.
+ */
+const BINDING_PREFIX = 'mcp-binding';
+
+/**
+ * The config entry a stored client/server pair was taken from, and the
+ * command it was bound with. `protect-mcp` stores it beside the pair and
+ * writes `id` into the entry's wrapper args as `--binding <id>`: the id lives
+ * only in that entry and here, so another config entry cannot carry it, and
+ * the digest stops a changed command inside the entry. The id is a credential:
+ * nothing prints it.
+ */
+export interface McpBinding {
+  schema: 1;
+  /** 32 lowercase hex digits: 16 random bytes (see newBindingId). */
+  id: string;
+  /** 'home' for a config in the home directory, 'project' for the project's .mcp.json. */
+  scope: 'home' | 'project';
+  /** The config file, as discovery found it: an absolute path. */
+  file: string;
+  /** For a server map kept for one project in ~/.claude.json: the key it is under. */
+  projectKey?: string;
+  /** The config's client. */
+  client: string;
+  /** The server's name as written in the config. */
+  server: string;
+  /** The command the wrapper starts, with its arguments: see commandDigest. */
+  commandDigest: string;
+  /** When it was stored: ISO 8601, UTC. */
+  boundAt: string;
+  /** The secretless-ai version that stored it. */
+  boundBy: string;
+}
+
+const BINDING_ID = /^[0-9a-f]{32}$/;
+const COMMAND_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/** Whether `value` is a binding id: exactly 32 lowercase hex digits. */
+export function isBindingId(value: unknown): value is string {
+  return typeof value === 'string' && BINDING_ID.test(value);
+}
+
+/** A new binding id: 16 random bytes as 32 lowercase hex digits. */
+export function newBindingId(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+/**
+ * `sha256:` and the SHA-256, in lowercase hex, of the UTF-8 bytes of
+ * JSON.stringify([command, ...args]): the command the wrapper starts, after
+ * its own `--`, with its arguments.
+ */
+export function commandDigest(command: string, args: readonly string[]): string {
+  return `sha256:${crypto.createHash('sha256').update(JSON.stringify([command, ...args]), 'utf8').digest('hex')}`;
+}
+
+/** The binding in `text`, or undefined when it is not a schema-1 binding. */
+function parseBinding(text: string): McpBinding | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const b = value as Record<string, unknown>;
+  const isText = (v: unknown): v is string => typeof v === 'string' && v !== '';
+  if (b.schema !== 1 || !isBindingId(b.id) || (b.scope !== 'home' && b.scope !== 'project')) return undefined;
+  if (!isText(b.file) || !isText(b.client) || !isText(b.server) || !isText(b.boundAt) || !isText(b.boundBy)) return undefined;
+  if (typeof b.commandDigest !== 'string' || !COMMAND_DIGEST.test(b.commandDigest)) return undefined;
+  if (b.projectKey !== undefined && typeof b.projectKey !== 'string') return undefined;
+  return {
+    schema: 1,
+    id: b.id,
+    scope: b.scope,
+    file: b.file,
+    ...(b.projectKey === undefined ? {} : { projectKey: b.projectKey }),
+    client: b.client,
+    server: b.server,
+    commandDigest: b.commandDigest,
+    boundAt: b.boundAt,
+    boundBy: b.boundBy,
+  };
+}
+
+/**
+ * The config entry a binding names, for a line: `server "<s>" in <file>`, and
+ * `, project <key>` for a server map kept for one project in ~/.claude.json.
+ * Each name and path is written as listedName writes it.
+ */
+export function boundEntryName(binding: Pick<McpBinding, 'server' | 'file' | 'projectKey'>): string {
+  const project = binding.projectKey === undefined ? '' : `, project ${listedName(binding.projectKey)}`;
+  return `server "${listedName(binding.server)}" in ${listedName(binding.file)}${project}`;
+}
+
+/** What a secretless-mcp wrapper is asked to start, read from its args. */
+export interface McpLaunch {
+  /** The client and server name it reads its secrets by: its --client and --server. */
+  client: string;
+  server: string;
+  /** The value of its --binding, or undefined when its args give none. */
+  binding: string | undefined;
+  /** The command after its own `--`, and that command's arguments. */
+  command: string;
+  args: readonly string[];
+}
+
+/**
+ * Whether the wrapper starts a launch with the secrets stored for its pair,
+ * and when not, which check refused it. `binding` is the pair's binding, for
+ * every check that read one.
+ */
+export type McpLaunchVerdict =
+  | { refused: false; binding: McpBinding }
+  /** The entry carries no well-formed --binding. */
+  | { refused: 'entry-not-bound' }
+  /** No schema-1 binding is stored for the pair. */
+  | { refused: 'no-binding-stored' }
+  /** The binding stored for the pair has another id: it is another entry's. */
+  | { refused: 'other-binding'; binding: McpBinding }
+  /** The binding's id is the entry's, and its command and arguments are not. */
+  | { refused: 'other-command'; binding: McpBinding };
+
+/** Whether two binding ids are equal, compared in constant time. */
+function sameBindingId(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+/**
+ * The checks the secretless-mcp wrapper runs before it reads a secret value,
+ * in this order: the entry carries a well-formed --binding; a binding is
+ * stored for the pair; its id is the entry's; its command digest is the
+ * digest of the command and arguments after the entry's `--`. Only a launch
+ * that passes all four is given the pair's secrets. `mcp-status` runs the
+ * same function, so the two never disagree on whether an entry starts.
+ */
+export async function checkLaunch(vault: McpVault, launch: McpLaunch): Promise<McpLaunchVerdict> {
+  if (!isBindingId(launch.binding)) return { refused: 'entry-not-bound' };
+  const binding = await vault.getBinding(launch.client, launch.server);
+  if (binding === undefined) return { refused: 'no-binding-stored' };
+  if (!sameBindingId(binding.id, launch.binding)) return { refused: 'other-binding', binding };
+  if (binding.commandDigest !== commandDigest(launch.command, launch.args)) return { refused: 'other-command', binding };
+  return { refused: false, binding };
+}
 
 /** Validates client/server names to prevent path traversal. */
 const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
@@ -130,7 +286,7 @@ export class McpVault {
   }
 
   /**
-   * Remove all secrets for a specific MCP server.
+   * Remove all secrets for a specific MCP server, and the pair's binding.
    */
   async removeServerSecrets(client: string, server: string): Promise<void> {
     validateName('client', client);
@@ -141,6 +297,40 @@ export class McpVault {
     for (const key of Object.keys(existing)) {
       await this.backend.delete(key);
     }
+    const bindingKey = `${BINDING_PREFIX}/${client}/${server}`;
+    const binding = await this.backend.resolve(bindingKey, { exact: true });
+    if (Object.prototype.hasOwnProperty.call(binding, bindingKey)) {
+      await this.backend.delete(bindingKey);
+    }
+  }
+
+  /**
+   * The binding stored for a client/server pair, or undefined when none is
+   * stored or what is stored is not a schema-1 binding. One read of one key,
+   * in the store the pair is in.
+   */
+  async getBinding(client: string, server: string): Promise<McpBinding | undefined> {
+    validateName('client', client);
+    validateName('server', server);
+    const key = `${BINDING_PREFIX}/${client}/${server}`;
+    const raw = await this.backend.resolve(key, { exact: true });
+    if (!Object.prototype.hasOwnProperty.call(raw, key)) return undefined;
+    return parseBinding(raw[key]);
+  }
+
+  /**
+   * Store the binding of a client/server pair, replacing the one stored
+   * before. protect-mcp stores it before the pair's secrets, so a store that
+   * refuses it leaves no secret without a binding.
+   */
+  async storeBinding(client: string, server: string, binding: McpBinding): Promise<void> {
+    validateName('client', client);
+    validateName('server', server);
+    const text = JSON.stringify(binding);
+    if (parseBinding(text) === undefined) {
+      throw new Error(`Invalid binding for ${listedName(`${client}/${server}`)}: not a schema-1 binding.`);
+    }
+    await this.backend.store(`${BINDING_PREFIX}/${client}/${server}`, text);
   }
 
   /**
