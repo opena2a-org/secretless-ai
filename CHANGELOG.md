@@ -54,6 +54,15 @@ the binding takes the command first. A `.mcp.json` entry in that state is left
 unchanged, since its file comes with the repository, and its line says to add
 the server again under a new name with its values.
 
+**`protect-mcp` says a bound entry's file no longer exists only when it does
+not.** A file it cannot check, such as one in a directory it cannot search, is
+named with the error code. In a backend shared between machines, a file absent
+here is named as not found on this machine, and no entry takes its binding
+over. In a backend this machine alone uses, a home binding whose config file
+was deleted is taken over by the one home entry that reads its pair. Where a
+binding's entry is gone and several entries read its pair, each is left with
+the line that names the others.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more

@@ -444,7 +444,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
           const plan = await bindWrapped(binder, config, server, secretKeys.length > 0 && storeReason === undefined);
           if (plan.kind === 'left') result.unbound.push({ ...location, reason: plan.reason });
           if (plan.kind === 'copy') {
-            const boundFile = boundFileClause(plan.binding);
+            const boundFile = boundFileClause(binder, plan.binding);
             result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...(boundFile === '' ? {} : { boundFile }) });
           }
           if (plan.kind === 'replace') {
@@ -811,8 +811,14 @@ async function bindWrapped(
     if (carriesId && (await movedEntry(binder, config, reads, binding))) {
       return placed(config, server, { kind: 'bind', id: newBindingId(), digest, movedFrom: binding });
     }
-    if (!here && orphanedBinding(binder, binding) && scopeOf(config) === binding.scope && soleReader(binder, reads)) {
-      return placed(config, server, { kind: 'bind', id: newBindingId(), digest, tookOver: binding });
+    if (!here && orphanedBinding(binder, binding)) {
+      // The binding's entry is gone: the one entry that reads the pair, of
+      // its scope, takes it over, and where several read it none does.
+      const others = otherReaders(binder, reads, server);
+      if (others.length > 0) return { kind: 'left', reason: otherReadersReason(reads, others), binding };
+      if (scopeOf(config) === binding.scope) {
+        return placed(config, server, { kind: 'bind', id: newBindingId(), digest, tookOver: binding });
+      }
     }
     if (carriesId) return replacePlan(binder, binding) ?? { kind: 'copy', binding };
     if (here && binding.scope === 'home') {
@@ -821,10 +827,10 @@ async function bindWrapped(
       return { kind: 'stale', binding, digest };
     }
     if (here) return { kind: 'left', reason: otherIdReason(reads), binding };
-    return { kind: 'left', reason: boundElsewhereReason(reads, binding), binding };
+    return { kind: 'left', reason: boundElsewhereReason(reads, binding, boundFileClause(binder, binding)), binding };
   }
 
-  const others = (binder.rewrittenReaders.get(`${reads.client}/${reads.server}`) ?? []).filter((r) => r.server !== server);
+  const others = otherReaders(binder, reads, server);
   if (others.length > 0) return { kind: 'left', reason: otherReadersReason(reads, others) };
   if (scopeOf(config) === 'project') {
     // A project-level config comes with the repository it is in, so its
@@ -1075,11 +1081,23 @@ function soleReader(binder: Binder, reads: { client: string; server: string }): 
   return (binder.rewrittenReaders.get(`${reads.client}/${reads.server}`) ?? []).length === 1;
 }
 
+/** The other servers in the configs this run rewrites that run through the wrapper reading this pair. */
+function otherReaders(
+  binder: Binder,
+  reads: { client: string; server: string },
+  server: McpServerEntry,
+): Array<{ config: McpConfigFile; server: McpServerEntry }> {
+  return (binder.rewrittenReaders.get(`${reads.client}/${reads.server}`) ?? []).filter((r) => r.server !== server);
+}
+
 /**
  * Whether the entry a binding names is no longer in its config: its file is
- * one this run read, and the server map there holds no server of that name.
- * A file this run did not read, one in another project directory or one that
- * could not be parsed, may still hold it.
+ * one this run read, and the server map there holds no server of that name;
+ * or, for a home binding in a store that is this machine's alone, its file
+ * does not exist on this machine (a home config's path is fixed by the home
+ * directory, so the entry is gone). A file this run did not read, one in
+ * another project directory or one that could not be parsed, may still hold
+ * it, and so may a file on another machine where the store is shared.
  */
 function orphanedBinding(binder: Binder, binding: McpBinding): boolean {
   const inFile = (config: { filePath: string; projectKey?: string }) => sameFile(config.filePath, binding.file);
@@ -1087,7 +1105,9 @@ function orphanedBinding(binder: Binder, binding: McpBinding): boolean {
     return false;
   }
   const fileConfigs = binder.discovered.configs.filter(inFile);
-  if (fileConfigs.length === 0) return false;
+  if (fileConfigs.length === 0) {
+    return binding.scope === 'home' && isPerMachineStore(binder.vault.backendName) && recordFileState(binding).state === 'absent';
+  }
   const map = fileConfigs.find((config) => config.projectKey === binding.projectKey);
   if (map === undefined) return true;
   return !map.servers.some((s) => s.name === binding.server) && !map.unchecked.some((s) => s.name === binding.server);
@@ -1098,10 +1118,11 @@ function orphanedBinding(binder: Binder, binding: McpBinding): boolean {
  * stat answers, `absent` when it fails with ENOENT or ENOTDIR, and `unknown`,
  * with the error code, when it fails for another reason, such as a directory
  * this run cannot search. stat follows a symlink, so a dangling one is absent.
+ * protect-mcp's lines and mcp-status's states both read it, never the id.
  */
-type RecordFileState = { state: 'present' } | { state: 'absent' } | { state: 'unknown'; code: string };
+export type RecordFileState = { state: 'present' } | { state: 'absent' } | { state: 'unknown'; code: string };
 
-function recordFileState(binding: Pick<McpBinding, 'file'>): RecordFileState {
+export function recordFileState(binding: Pick<McpBinding, 'file'>): RecordFileState {
   try {
     fs.statSync(binding.file);
     return { state: 'present' };
@@ -1135,15 +1156,33 @@ async function movedEntry(
   return backupHoldsSecrets(binder.backupDir, binding.file, binding.server, stored);
 }
 
-/** The clause a line naming a bound entry ends with when the entry's file does not exist on this machine. */
+/**
+ * The clause a line naming a bound entry ends with when the entry's file does
+ * not exist on this machine and the store is this machine's alone.
+ */
 const FILE_GONE = (file: string): string => `${listedName(file)} no longer exists.`;
 
 /**
- * The sentence a line naming a bound entry carries about the entry's file
- * when it is not present on this machine, or '' when it is.
+ * The clause for a bound entry's file absent here when the store is shared
+ * between machines: the entry may be on another machine, so it states only
+ * that the file was not found on this one.
  */
-function boundFileClause(binding: McpBinding): string {
-  return recordFileState(binding).state === 'absent' ? FILE_GONE(binding.file) : '';
+const FILE_NOT_FOUND_HERE = (file: string): string => `${listedName(file)} was not found on this machine.`;
+
+/** The clause for a bound entry's file that could not be checked: the error code, and nothing of a missing file. */
+const FILE_UNCHECKED = (file: string, code: string): string => `${listedName(file)} could not be checked (${escapeForDisplay(code)}).`;
+
+/**
+ * The sentence a line naming a bound entry carries about the entry's file
+ * when it is not present on this machine (see recordFileState), or '' when it
+ * is: absent with a store that is this machine's alone, absent with a store
+ * shared between machines, or not checked, with the error code.
+ */
+function boundFileClause(binder: Binder, binding: McpBinding): string {
+  const file = recordFileState(binding);
+  if (file.state === 'present') return '';
+  if (file.state === 'unknown') return FILE_UNCHECKED(binding.file, file.code);
+  return isPerMachineStore(binder.vault.backendName) ? FILE_GONE(binding.file) : FILE_NOT_FOUND_HERE(binding.file);
 }
 
 /**
@@ -1203,10 +1242,11 @@ function notInBackupReason(reads: { client: string; server: string }): string {
     + `If this entry is yours, ${STORE_AGAIN}`;
 }
 
-function boundElsewhereReason(reads: { client: string; server: string }, binding: McpBinding): string {
-  const gone = fs.existsSync(binding.file) ? '' : ` ${listedName(binding.file)} no longer exists.`;
+/** `fileClause`: what boundFileClause says of the bound entry's file, or ''. */
+function boundElsewhereReason(reads: { client: string; server: string }, binding: McpBinding, fileClause: string): string {
+  const file = fileClause === '' ? '' : ` ${fileClause}`;
   return `the secrets stored under ${pairName(reads)} are bound to ${boundEntryName(binding)}. `
-    + `To run this server as well, add it again under a new name with its values and run \`npx secretless-ai protect-mcp\`.${gone}`;
+    + `To run this server as well, add it again under a new name with its values and run \`npx secretless-ai protect-mcp\`.${file}`;
 }
 
 /**
