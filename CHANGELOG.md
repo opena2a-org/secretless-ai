@@ -70,7 +70,12 @@ copies of a bound entry. `mcp-status` says for each protected entry whether
 the wrapper starts it, from the check the wrapper runs. `mcp-unprotect`
 deletes a pair and its binding from the store only where the restored file
 holds every stored name at an equal value, and names the stored names it left
-otherwise. No command prints a binding id.
+otherwise. A project-level entry starts only in its project's directory or
+below it, and no bound entry starts while a project-level config other than
+its own, in its start directory or a directory above it, holds its binding:
+the refusal names that file. `protect-mcp` replaces a home binding it finds
+in a copy of its entry, so the copy no longer starts, and `mcp-status` names
+each entry these checks stop. No command prints a binding id.
 
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
