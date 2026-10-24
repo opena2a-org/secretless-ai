@@ -53,6 +53,25 @@ delivery, such as the built-in `HttpsDownstreamCaller` the broker daemon uses.
 `src/broker/grant-resolver.audit-record.test.ts` and
 `src/broker/grant-resolver.reason-codes.test.ts` check each member and code.
 
+**The secretless-mcp wrapper starts a server only from the config entry
+`protect-mcp` bound its secrets to, with the command they were bound with.**
+`protect-mcp` stores a binding beside each client/server pair it stores and
+writes its id into the entry's wrapper arguments as `--binding`. Before it
+reads a secret, the wrapper checks that the entry carries a binding, that one
+is stored for the pair, that the two match, and that the command and
+arguments after its `--` are the ones bound. An entry that fails a check exits
+1 with one line that names the check, then the fix, and nothing is started.
+A server protected by an earlier version does not start until `protect-mcp`
+binds it: run `npx secretless-ai protect-mcp` after upgrading. It binds, in a
+home config, the one entry that reads a pair, and in the project's
+`.mcp.json` an entry whose stored secrets its first backup of the file holds,
+and lists the entries it bound, the ones it could not bind with why, and
+copies of a bound entry. `mcp-status` says for each protected entry whether
+the wrapper starts it, from the check the wrapper runs. `mcp-unprotect`
+deletes a pair and its binding from the store only where the restored file
+holds every stored name at an equal value, and names the stored names it left
+otherwise. No command prints a binding id.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more
