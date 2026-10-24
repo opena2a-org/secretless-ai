@@ -9,7 +9,10 @@
  * A server is started only from the config entry `protect-mcp` bound the
  * pair's secrets to, with the command that entry had when it was bound: the
  * entry carries the binding's id (`--binding`), and the binding stored beside
- * the pair holds the id and the command's digest (see checkLaunch).
+ * the pair holds the id and the command's digest (see checkLaunch). A
+ * project-level binding starts only in its project's directory or below it,
+ * and no binding starts while another project-level config visible from the
+ * start directory holds its id (see checkLaunchPlace).
  *
  * Usage:
  *   secretless-mcp --server <name> --client <client> --binding <id> [--vault-dir <path>] [--vault-key <key>] -- <command> [args...]
@@ -26,6 +29,8 @@ import type { McpLaunchVerdict } from "./mcp/vault";
 import { resolveBackendType } from "./backends/config";
 import { readWrapperArgv, wrapperFlag } from "./argv";
 import { readWrapperVersion } from "./mcp/wrapper-version";
+import { checkLaunchPlace } from "./mcp/discover";
+import type { McpPlaceVerdict } from "./mcp/discover";
 import { listedName } from "./secret-value";
 import { escapeForDisplay } from "./display-safe";
 
@@ -154,6 +159,38 @@ async function refuseLaunch(
 }
 
 /**
+ * Print why checkLaunchPlace refused this launch, then the fix line, and exit
+ * 1 with nothing started. Names and paths only: never the id.
+ */
+function refusePlace(
+  verdict: Exclude<McpPlaceVerdict, { refused: false }>,
+  client: string,
+  server: string,
+): never {
+  const entry = `client "${listedName(client)}", server "${listedName(server)}"`;
+  process.stderr.write(`secretless-mcp: ${placeRefusal(verdict, entry)}\n`);
+  process.stderr.write(BINDING_FIX);
+  process.exit(1);
+}
+
+/** The line that says why checkLaunchPlace refused a launch. */
+function placeRefusal(verdict: Exclude<McpPlaceVerdict, { refused: false }>, entry: string): string {
+  const notStarted = "so no secret was read. The server was not started.";
+  switch (verdict.refused) {
+    case "outside-project":
+      return `The secrets stored for ${entry} are bound to the project in ${listedName(verdict.project)}, and this entry was started in ${listedName(verdict.startDir)}, ${notStarted}`;
+    case "project-unresolved":
+      return `The secrets stored for ${entry} are bound to the project in ${listedName(verdict.project)}, and ${listedName(verdict.path)} could not be resolved (${verdict.code}), ${notStarted}`;
+    case "start-unresolved":
+      return `The directory the entry for ${entry} was started in could not be resolved (${verdict.code}), ${notStarted}`;
+    case "copy-found":
+      return `The binding of the secrets stored for ${entry} also appears in ${listedName(verdict.file)}, and a bound entry starts only from the config protect-mcp bound it in, ${notStarted} Remove that copy.`;
+    case "copy-unchecked":
+      return `${listedName(verdict.file)} could not be checked for a copy of the binding of the secrets stored for ${entry} (${verdict.why}), ${notStarted}`;
+  }
+}
+
+/**
  * The client/server pairs the store holds secrets for, sorted, each as
  * listedName writes it, or null when they could not be listed. Names only,
  * never values: a hint beside a refusal, which stands without it.
@@ -253,7 +290,13 @@ async function main(): Promise<void> {
     });
     if (verdict.refused !== false) {
       await refuseLaunch(verdict, args.client, args.server, vault);
+      return;
     }
+    // Then where it was started: a project-level binding only in its
+    // project's directory or below it (S1), and no other project-level config
+    // visible from that directory holds its id (S2).
+    const place = checkLaunchPlace(verdict.binding);
+    if (place.refused !== false) refusePlace(place, args.client, args.server);
     secrets = await vault.getServerSecrets(args.client, args.server);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
