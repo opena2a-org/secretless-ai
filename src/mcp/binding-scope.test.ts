@@ -300,3 +300,72 @@ describe('T3: a project binding found in a nested project-level config is refuse
     expect(inX).toContain('  Remove each copy of a project binding named above; protect-mcp does not replace a project binding.\n');
   });
 });
+
+describe('T4: protect-mcp replaces a home binding it finds in a project .mcp.json', () => {
+  it('T4: the home entry and the binding take a new id, the copy is not written and no longer starts, and the home entry starts', async () => {
+    const { file, entry, sentinel, id } = await homeRecord('T4');
+    const p = dir('p');
+    const copy = write(path.join(p, '.mcp.json'), { mcpServers: { github: entry } });
+    const copy0 = fs.readFileSync(copy);
+    const before = await store().getBinding('cursor', 'github');
+
+    const out = runCliIn('T4', p, ['protect-mcp']);
+
+    const own = entryOf(file, 'github');
+    const next = idOf(own.args);
+    expect(ID.test(next ?? '') && next !== id, 'the entry carries a new binding id').toBe(true);
+    planted.push({ cell: 'T4', id: next!, config: fs.readFileSync(file, 'utf-8') });
+    const after = await store().getBinding('cursor', 'github');
+    expect(after?.id === next, 'the stored binding holds the new id').toBe(true);
+    expect({ ...after, id: '', boundAt: '', boundBy: '' }).toEqual({ ...before, id: '', boundAt: '', boundBy: '' });
+    expect(JSON.stringify(own.args.map((arg) => (arg === next ? id : arg))) === JSON.stringify(entry.args), 'the home entry changed only in its id').toBe(true);
+    expect(fs.readFileSync(copy).equals(copy0)).toBe(true);
+    expect(out).toContain(
+      `    ? github: a copy of a bound entry: it carried the binding of server "github" in ${file}; the binding was replaced, and this entry no longer starts. `,
+    );
+
+    const q = dir('q');
+    expectRefused(
+      startIn('T4', q, entry.args),
+      sentinel,
+      `secretless-mcp: The binding in the config entry for ${HOME_ENTRY} does not match the one stored for its secrets, which belongs to server "github" in ${file}, ${NOT_STARTED}`,
+    );
+    expectStarted(startIn('T4', q, own.args), sentinel);
+  });
+});
+
+describe('T6: a copy within ~/.claude.json under another project key', () => {
+  it('T6: it starts (a home config is not searched for copies) until protect-mcp replaces the binding, then exits 1 with the binding line', async () => {
+    const sentinel = path.join(scratch, 'started.json');
+    const file = write(path.join(home, '.claude.json'), {
+      mcpServers: { github: { command: process.execPath, args: stubArgs(sentinel), env: { [NAME]: VALUE } } },
+    });
+    const q = dir('q');
+    await protectMcp({ projectDir: q, wrapperPath: WRAPPER_PATH });
+    const config = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const entry = config.mcpServers.github;
+    const id = idOf(entry.args);
+    expect(ID.test(id ?? ''), 'the entry carries a binding id').toBe(true);
+    const elsewhere = dir('elsewhere');
+    config.projects = { [elsewhere]: { mcpServers: { github: entry } } };
+    write(file, config);
+    planted.push({ cell: 'T6', id: id!, config: fs.readFileSync(file, 'utf-8') });
+
+    expectStarted(startIn('T6', q, entry.args), sentinel);
+
+    runCliIn('T6', q, ['protect-mcp']);
+    const now = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const next = idOf(now.mcpServers.github.args);
+    expect(ID.test(next ?? '') && next !== id, 'the entry carries a new binding id').toBe(true);
+    planted.push({ cell: 'T6', id: next!, config: fs.readFileSync(file, 'utf-8') });
+    const copied = now.projects[elsewhere].mcpServers.github;
+    expect(idOf(copied.args) === id, 'the copy keeps the old id').toBe(true);
+
+    expectRefused(
+      startIn('T6', q, copied.args),
+      sentinel,
+      `secretless-mcp: The binding in the config entry for client "claude-code", server "github" does not match the one stored for its secrets, which belongs to server "github" in ${file}, ${NOT_STARTED}`,
+    );
+    expectStarted(startIn('T6', q, now.mcpServers.github.args), sentinel);
+  });
+});
