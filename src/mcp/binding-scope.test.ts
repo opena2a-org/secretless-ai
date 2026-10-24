@@ -369,3 +369,17 @@ describe('T6: a copy within ~/.claude.json under another project key', () => {
     expectStarted(startIn('T6', q, now.mcpServers.github.args), sentinel);
   });
 });
+
+describe('T5: no output carries a binding id', () => {
+  it('the stdout and stderr every cell above captured hold none of the ids planted, and each planted config holds its id', () => {
+    expect(planted.length).toBeGreaterThan(0);
+    expect(captured.length).toBeGreaterThan(0);
+    let hits = 0;
+    for (const { cell, id, config } of planted) {
+      expect(config.includes(id), `${cell}: the scratch config holds the id it planted`).toBe(true);
+      hits += captured.filter((c) => c.text.includes(id)).length;
+    }
+    console.log(`T5: ${planted.length} planted id(s), ${captured.length} captured output(s), ${hits} holding a planted id`);
+    expect(hits).toBe(0);
+  });
+});
