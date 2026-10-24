@@ -35,6 +35,10 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [],
     });
 
@@ -58,6 +62,10 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [],
     });
 
@@ -77,6 +85,10 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [],
     });
 
@@ -96,6 +108,10 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [],
     });
 
@@ -118,6 +134,10 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [],
     });
 
@@ -148,6 +168,10 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [],
     });
 
@@ -185,6 +209,10 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [],
     });
 
@@ -233,6 +261,10 @@ describe('protect-mcp names where it looked, and each project-level config it le
     sharedName: [],
     refusedName: [],
     unmoved: [],
+    bound: [],
+    rebound: [],
+    unbound: [],
+    copies: [],
     projectLevel: [],
   };
 
@@ -256,6 +288,10 @@ describe('protect-mcp names where it looked, and each project-level config it le
   it('names each project-level config it left by its path from the project, instead of "No MCP configurations found."', async () => {
     vi.mocked(protectMcp).mockResolvedValue({
       ...nothingFound,
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [
         { client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' },
         { client: 'unknown', filePath: '/home/u/proj/mcp.json', projectPath: 'mcp.json' },
@@ -277,6 +313,10 @@ describe('protect-mcp names where it looked, and each project-level config it le
     vi.mocked(protectMcp).mockResolvedValue({
       ...nothingFound,
       clientsScanned: 1,
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [{ client: 'vscode', filePath: '/home/u/proj/.vscode/mcp.json', projectPath: '.vscode/mcp.json' }],
     });
 
@@ -295,6 +335,10 @@ describe('protect-mcp names where it looked, and each project-level config it le
       secretsFound: 1,
       serversProtected: 1,
       servers: [{ client: 'claude-code', server: 'slack', secretKeys: ['SLACK_BOT_TOKEN'] }],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
       projectLevel: [{ client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' }],
     });
 
@@ -321,6 +365,10 @@ describe('protect-mcp over the server maps of ~/.claude.json (#470)', () => {
     sharedName: [],
     refusedName: [],
     unmoved: [],
+    bound: [],
+    rebound: [],
+    unbound: [],
+    copies: [],
     projectLevel: [],
   };
   const claudeJson = '/home/u/.claude.json';
@@ -404,6 +452,10 @@ describe('protect-mcp names each server that runs through the wrapper with secre
     sharedName: [],
     refusedName: [],
     unmoved: [],
+    bound: [],
+    rebound: [],
+    unbound: [],
+    copies: [],
     projectLevel: [],
   };
   const cursorJson = '/home/u/.cursor/mcp.json';

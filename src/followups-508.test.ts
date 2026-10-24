@@ -79,6 +79,26 @@ async function protectInProcess(): Promise<Awaited<ReturnType<typeof protectMcp>
   }
 }
 
+/**
+ * protect-mcp in this process as the command runs it: no home directory given
+ * and the local backend configured, so its store is the one mcp-status and the
+ * wrapper build from the args it writes. USER is unset as the spawned CLI has it.
+ */
+async function protectAsTheCommandRunsIt(): Promise<Awaited<ReturnType<typeof protectMcp>>> {
+  const saved = { HOME: process.env.HOME, USER: process.env.USER };
+  process.env.HOME = home;
+  delete process.env.USER;
+  try {
+    write(home, path.join('.secretless-ai', 'config.json'), { backend: 'local' });
+    return await protectMcp({ projectDir: project, wrapperPath: WRAPPER_PATH });
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
 describe('mcp-status classifies the env of a server that runs through the wrapper (#508)', () => {
   it('lists a server whose command is secretless-mcp, with a key in its env, as exposed', () => {
     write(project, 'mcp.json', { mcpServers: { demo: { command: 'secretless-mcp', env: { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' } } } });
@@ -104,7 +124,7 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
     expect(out).toContain([
       `  cursor (${cursorJson})`,
       '    ! exposed: EXPOSED (1 plaintext secret(s))',
-      '    + wrapped: protected',
+      '    ? wrapped: protected, not bound, so the wrapper does not start it',
       '    ? partial: env value API_TOKEN not checked: not a string',
       '',
     ].join('\n'));
@@ -119,13 +139,13 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
     });
     expect(runCli(['mcp-status'])).toContain('    ! github: EXPOSED (1 plaintext secret(s))\n');
 
-    const result = await protectInProcess();
+    const result = await protectAsTheCommandRunsIt();
     expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['MY_SERVICE_API_KEY'] }]);
     expect(fs.readFileSync(cursorJson, 'utf-8')).not.toContain('FAKE-KEY-1234');
 
     const out = runCli(['mcp-status']);
 
-    expect(out).toContain(`  cursor (${cursorJson})\n    + github: protected\n`);
+    expect(out).toContain(`  cursor (${cursorJson})\n    + github: protected and bound\n`);
     expect(out).not.toContain('EXPOSED');
   });
 
