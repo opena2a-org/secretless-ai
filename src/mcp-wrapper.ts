@@ -6,8 +6,13 @@
  * Decrypts secrets from the Secretless vault, injects them as env vars,
  * and spawns the real MCP server. Designed to add <10ms overhead.
  *
+ * A server is started only from the config entry `protect-mcp` bound the
+ * pair's secrets to, with the command that entry had when it was bound: the
+ * entry carries the binding's id (`--binding`), and the binding stored beside
+ * the pair holds the id and the command's digest (see checkLaunch).
+ *
  * Usage:
- *   secretless-mcp --server <name> --client <client> [--vault-dir <path>] [--vault-key <key>] -- <command> [args...]
+ *   secretless-mcp --server <name> --client <client> --binding <id> [--vault-dir <path>] [--vault-key <key>] -- <command> [args...]
  *   secretless-mcp --version
  */
 
@@ -16,10 +21,13 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-import { McpVault } from "./mcp/vault";
+import { McpVault, boundEntryName, checkLaunch } from "./mcp/vault";
+import type { McpLaunchVerdict } from "./mcp/vault";
 import { resolveBackendType } from "./backends/config";
-import { prepareBinArgv, MCP_WRAPPER } from "./argv";
+import { readWrapperArgv, wrapperFlag } from "./argv";
 import { readWrapperVersion } from "./mcp/wrapper-version";
+import { listedName } from "./secret-value";
+import { escapeForDisplay } from "./display-safe";
 
 function parseArgs(argv: string[]): {
   server: string;
@@ -27,69 +35,44 @@ function parseArgs(argv: string[]): {
   vaultDir: string;
   vaultKey: string;
   backend: string;
+  binding: string | undefined;
   childCommand: string;
   childArgs: string[];
 } | null {
-  let server = "";
-  let client = "";
-  let vaultDir = "";
-  let vaultKey = "";
-  let backend = "";
-  let separatorIdx = -1;
-
   // Normalise before parsing, so `--server=NAME` binds here exactly as it does
   // in the CLI. Without it every flag below is dropped on the equals spelling:
   // `--vault-dir=/path` silently falls back to the DEFAULT vault and
   // `--backend=1password` silently falls back to the configured backend, so the
   // wrapper reads credentials from somewhere other than where it was told to.
-  // The child command after `--` is left untouched.
-  argv = prepareBinArgv(MCP_WRAPPER, argv).args;
+  // The child command after `--` is left untouched. protect-mcp and
+  // mcp-status read an entry's args with the same function.
+  const read = readWrapperArgv(argv);
 
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--") {
-      separatorIdx = i;
-      break;
-    }
-    // `!== undefined`, not truthiness: `--server ''` is the flag WITH an empty
-    // value. Read as "flag absent" it produced an empty server name, and an
-    // empty name looks up no secrets — so the wrapper spawned the MCP server
-    // with none of its credentials and said nothing. Same shape as #110.
-    if (argv[i] === "--server" && argv[i + 1] !== undefined) {
-      server = argv[++i];
-      continue;
-    }
-    if (argv[i] === "--client" && argv[i + 1] !== undefined) {
-      client = argv[++i];
-      continue;
-    }
-    if (argv[i] === "--vault-dir" && argv[i + 1] !== undefined) {
-      vaultDir = argv[++i];
-      continue;
-    }
-    if (argv[i] === "--vault-key" && argv[i + 1] !== undefined) {
-      vaultKey = argv[++i];
-      continue;
-    }
-    if (argv[i] === "--backend" && argv[i + 1] !== undefined) {
-      const val = argv[++i];
-      if (
-        val !== "local" &&
-        val !== "keychain" &&
-        val !== "1password" &&
-        val !== "vault" &&
-        val !== "gcp-sm"
-      ) {
-        process.stderr.write(
-          `secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`,
-        );
-        process.exit(1);
-      }
-      backend = val;
-      continue;
+  // `!== undefined`, not truthiness: `--server ''` is the flag WITH an empty
+  // value. Read as "flag absent" it produced an empty server name, and an
+  // empty name looks up no secrets — so the wrapper spawned the MCP server
+  // with none of its credentials and said nothing. Same shape as #110.
+  const server = wrapperFlag(read, "--server") ?? "";
+  const client = wrapperFlag(read, "--client") ?? "";
+  let vaultDir = wrapperFlag(read, "--vault-dir") ?? "";
+  let vaultKey = wrapperFlag(read, "--vault-key") ?? "";
+  for (const val of read.values.get("--backend") ?? []) {
+    if (
+      val !== "local" &&
+      val !== "keychain" &&
+      val !== "1password" &&
+      val !== "vault" &&
+      val !== "gcp-sm"
+    ) {
+      process.stderr.write(
+        `secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`,
+      );
+      process.exit(1);
     }
   }
+  const backend = wrapperFlag(read, "--backend") ?? "";
 
-  if (separatorIdx === -1 || separatorIdx >= argv.length - 1) return null;
+  if (read.child === undefined) return null;
 
   // `--vault-dir` and `--vault-key` choose the encrypted file for `local`: given
   // either, the store has a key, this one when `--vault-key` gives none. Given
@@ -109,13 +92,82 @@ function parseArgs(argv: string[]): {
     vaultDir,
     vaultKey,
     backend,
-    childCommand: argv[separatorIdx + 1],
-    childArgs: argv.slice(separatorIdx + 2),
+    binding: wrapperFlag(read, "--binding"),
+    childCommand: read.child.command,
+    childArgs: read.child.args,
   };
 }
 
 const USAGE =
   "Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]";
+
+/** The line every refusal of checkLaunch ends with: what to look at, then what to run. */
+const BINDING_FIX =
+  "secretless-mcp: Run 'npx secretless-ai mcp-status' to see which config entries are bound, then 'npx secretless-ai protect-mcp' to bind the entries it protected.\n";
+
+/**
+ * Print why checkLaunch refused this launch, then the fix line, and exit 1
+ * with nothing started. Names, paths and the store's name only: never a
+ * value, an id or a digest.
+ */
+async function refuseLaunch(
+  verdict: Exclude<McpLaunchVerdict, { refused: false }>,
+  client: string,
+  server: string,
+  vault: McpVault,
+): Promise<never> {
+  const entry = `client "${listedName(client)}", server "${listedName(server)}"`;
+  switch (verdict.refused) {
+    case "entry-not-bound":
+      process.stderr.write(
+        `secretless-mcp: The config entry for ${entry} is not bound to its stored secrets, so no secret was read. The server was not started.\n`,
+      );
+      break;
+    case "no-binding-stored": {
+      const store = vault.backendName;
+      process.stderr.write(
+        `secretless-mcp: No binding for ${entry} is stored in the ${store} backend, so no secret was read. The server was not started.\n`,
+      );
+      const pairs = await storedPairs(vault);
+      if (pairs !== null) {
+        process.stderr.write(
+          pairs.length > 0
+            ? `secretless-mcp: Stored client/server pairs: ${pairs.join(", ")}\n`
+            : `secretless-mcp: The ${store} backend holds no MCP server secrets.\n`,
+        );
+      }
+      break;
+    }
+    case "other-binding":
+      process.stderr.write(
+        `secretless-mcp: The binding in the config entry for ${entry} does not match the one stored for its secrets, which belongs to ${boundEntryName(verdict.binding)}, so no secret was read. The server was not started.\n`,
+      );
+      break;
+    case "other-command":
+      process.stderr.write(
+        `secretless-mcp: The command or arguments in the config entry for ${entry} are not the ones its stored secrets were bound to, so no secret was read. The server was not started.\n`,
+      );
+      break;
+  }
+  process.stderr.write(BINDING_FIX);
+  process.exit(1);
+}
+
+/**
+ * The client/server pairs the store holds secrets for, sorted, each as
+ * listedName writes it, or null when they could not be listed. Names only,
+ * never values: a hint beside a refusal, which stands without it.
+ */
+async function storedPairs(vault: McpVault): Promise<string[] | null> {
+  try {
+    return (await vault.listEntries())
+      .map((e) => `${e.client}/${e.server}`)
+      .sort()
+      .map(listedName);
+  } catch {
+    return null;
+  }
+}
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
@@ -169,7 +221,7 @@ async function main(): Promise<void> {
   if (backendType === "local") {
     if (!fs.existsSync(args.vaultDir)) {
       process.stderr.write(
-        `secretless-mcp: Vault directory not found: ${args.vaultDir}\n`,
+        `secretless-mcp: Vault directory not found: ${listedName(args.vaultDir)}\n`,
       );
       process.stderr.write(
         `secretless-mcp: Run 'npx secretless-ai protect-mcp' to set up MCP secret protection.\n`,
@@ -187,11 +239,26 @@ async function main(): Promise<void> {
       ...(args.vaultKey ? { key: args.vaultKey } : {}),
       backendType,
     });
+    // Before a value is read: this entry carries the id of the binding
+    // protect-mcp stored for the pair, and starts the command that entry was
+    // bound with. An entry another file supplies, such as a project's
+    // .mcp.json that came with a repository, carries no id this machine's
+    // protect-mcp wrote, and a changed command does not match the digest.
+    const verdict = await checkLaunch(vault, {
+      client: args.client,
+      server: args.server,
+      binding: args.binding,
+      command: args.childCommand,
+      args: args.childArgs,
+    });
+    if (verdict.refused !== false) {
+      await refuseLaunch(verdict, args.client, args.server, vault);
+    }
     secrets = await vault.getServerSecrets(args.client, args.server);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(
-      `secretless-mcp: Failed to load secrets for ${args.client}/${args.server}: ${msg}\n`,
+      `secretless-mcp: Failed to load secrets for ${listedName([args.client, args.server].join("/"))}: ${escapeForDisplay(msg)}\n`,
     );
     process.stderr.write(
       `secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`,
@@ -210,16 +277,10 @@ async function main(): Promise<void> {
   if (Object.keys(secrets).length === 0) {
     const store = vault.backendName;
     process.stderr.write(
-      `secretless-mcp: No secrets are stored for client "${args.client}", server "${args.server}" in the ${store} backend. The server was not started.\n`,
+      `secretless-mcp: No secrets are stored for client "${listedName(args.client)}", server "${listedName(args.server)}" in the ${store} backend. The server was not started.\n`,
     );
-    let pairs: string[] | null = null;
-    try {
-      pairs = (await vault.listEntries())
-        .map((e) => `${e.client}/${e.server}`)
-        .sort();
-    } catch {
-      // Listing is a hint; the refusal above stands without it.
-    }
+    // Listing is a hint; the refusal above stands without it.
+    const pairs = await storedPairs(vault);
     if (pairs !== null) {
       process.stderr.write(
         pairs.length > 0
