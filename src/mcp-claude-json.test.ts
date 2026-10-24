@@ -68,13 +68,12 @@ async function protectInProcess(): Promise<void> {
   process.env.HOME = home;
   delete process.env.USER;
   try {
-    await protectMcp({
-      homeDir: home,
-      dataDir: path.join(home, '.secretless-ai'),
-      projectDir: project,
-      wrapperPath: WRAPPER_PATH,
-      backendType: 'local',
-    });
+    // As the command runs it: no home directory given and the local backend
+    // configured, so its store is the one mcp-status, mcp-unprotect and the
+    // wrapper build from the args it writes.
+    fs.mkdirSync(path.join(home, '.secretless-ai'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.secretless-ai', 'config.json'), JSON.stringify({ backend: 'local' }));
+    await protectMcp({ projectDir: project, wrapperPath: WRAPPER_PATH });
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name];
@@ -131,8 +130,8 @@ describe('protect-mcp, mcp-status and mcp-unprotect over ~/.claude.json', () => 
     expect(protectedFile).not.toContain('not-a-real-token');
 
     const status = runCli(['mcp-status']);
-    expect(status).toContain(`  claude-code (${claudeJson})\n    + github: protected\n`);
-    expect(status).toContain(`  claude-code (${claudeJson}, project /work/app)\n    + slack: protected\n`);
+    expect(status).toContain(`  claude-code (${claudeJson})\n    + github: protected and bound\n`);
+    expect(status).toContain(`  claude-code (${claudeJson}, project /work/app)\n    + slack: protected and bound\n`);
     expect(status).not.toContain('EXPOSED');
 
     const unprotect = runCli(['mcp-unprotect']);
