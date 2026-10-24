@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { isBoundEntry, protectMcp } from '../mcp/protect';
+import { isBoundEntry, protectMcp, sameFile } from '../mcp/protect';
 import type {
   BoundMcpServer,
   CopiedBindingMcpServer,
@@ -16,8 +16,8 @@ import { checkLaunchPlace, discoverMcpConfigsDetailed, mcpConfigLocations, rewri
 import type { McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
-import { McpVault, boundEntryName, checkLaunch } from '../mcp/vault';
-import type { McpLaunchVerdict } from '../mcp/vault';
+import { McpVault, boundEntryName, checkLaunch, isPerMachineStore } from '../mcp/vault';
+import type { McpBinding, McpLaunchVerdict } from '../mcp/vault';
 import { resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import type { SelectableBackendType } from '../backends/config';
@@ -633,13 +633,34 @@ function placeState(place: Exclude<McpPlaceVerdict, { refused: false }>): string
 }
 
 /**
+ * The line for a pair mcp-unprotect leaves because its binding names an entry
+ * in a file this run did not restore: that entry's location.
+ */
+const LEFT_BOUND_UNRESTORED = (label: string, entry: string): string =>
+  `  ? ${label}: left in the store; it is bound to ${entry}, which this run did not restore.`;
+
+/**
+ * The line for a pair with no binding that mcp-unprotect leaves in a store
+ * shared between machines.
+ */
+const LEFT_SHARED_UNBOUND = (label: string, backend: string): string =>
+  `  ? ${label}: left in the store; it has no binding, and an entry on another machine may read it from the ${backend} backend.`;
+
+/**
  * After a file is restored, each pair its wrapped entries read is deleted
  * from the store, with its binding, only where an entry of that server's name
  * in the restored file holds every name stored under the pair at an equal
- * value: the file then has them, and nothing is lost. Any other pair is left,
- * and its line names the stored names the file does not hold (names only).
+ * value, and the pair's binding is absent or names an entry in a file this
+ * run restored (`restoredFiles`): the file then has them, and no entry
+ * outside the restored files loses them. In a store shared between machines,
+ * a pair with no binding is left: an entry on another machine may read it.
+ * Any other pair is left, and its line names the stored names the file does
+ * not hold, or the entry its binding names (names and paths only).
  */
-async function clearRestoredPairs(reads: Array<{ filePath: string; reads: WrapperRead }>): Promise<void> {
+async function clearRestoredPairs(
+  reads: Array<{ filePath: string; reads: WrapperRead }>,
+  restoredFiles: readonly string[],
+): Promise<void> {
   const restored = discoverMcpConfigsDetailed().configs;
   // A pair is looked at once per store.
   const done = new Map<McpVault, Set<string>>();
@@ -668,16 +689,33 @@ async function clearRestoredPairs(reads: Array<{ filePath: string; reads: Wrappe
       entries
         .map((entry) => names.filter((name) => entry.env[name] !== stored[name]))
         .sort((a, b) => a.length - b.length)[0] ?? names;
-    if (notHeld.length === 0) {
-      await pair.vault.removeServerSecrets(pair.client, pair.server);
-      console.log(
-        `  - Deleted from the store: ${label} (${names.length} name(s); the restored file holds the same values)`,
-      );
-    } else {
+    if (notHeld.length > 0) {
       console.log(
         `  ? ${label}: left in the store: ${notHeld.map(listedName).join(', ')}. The restored file does not hold these values.`,
       );
+      continue;
     }
+    let found: McpBinding | undefined;
+    try {
+      found = await pair.vault.getBinding(pair.client, pair.server);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  ? ${label}: left in the store; it could not be read (${escapeForDisplay(msg)}).`);
+      continue;
+    }
+    const binding = found;
+    if (binding === undefined && !isPerMachineStore(pair.vault.backendName)) {
+      console.log(LEFT_SHARED_UNBOUND(label, pair.vault.backendName));
+      continue;
+    }
+    if (binding !== undefined && !restoredFiles.some((file) => sameFile(file, binding.file))) {
+      console.log(LEFT_BOUND_UNRESTORED(label, boundEntryName(binding)));
+      continue;
+    }
+    await pair.vault.removeServerSecrets(pair.client, pair.server);
+    console.log(
+      `  - Deleted from the store: ${label} (${names.length} name(s); the restored file holds the same values)`,
+    );
   }
 }
 
@@ -706,19 +744,20 @@ export async function runMcpUnprotect(): Promise<number> {
       .filter((entry) => entry.alreadyProtected)
       .map((entry) => ({ filePath: config.filePath, reads: wrapperRead(entry, vaults) })),
   );
-  let restored = 0;
+  const restoredFiles: string[] = [];
   const cleared: Array<{ filePath: string; reads: WrapperRead }> = [];
 
   for (const filePath of files) {
     if (restoreConfig(filePath, backupDir)) {
       console.log(`  + Restored: ${filePath}`);
-      restored++;
+      restoredFiles.push(filePath);
       for (const entry of wrapped) {
         if (entry.filePath === filePath && entry.reads) cleared.push({ filePath, reads: entry.reads });
       }
     }
   }
-  await clearRestoredPairs(cleared);
+  await clearRestoredPairs(cleared, restoredFiles);
+  const restored = restoredFiles.length;
 
   // A config that could not be parsed was not looked at, so "no backups"
   // covers only the configs that were read.
