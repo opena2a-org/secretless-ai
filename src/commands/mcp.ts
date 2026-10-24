@@ -157,18 +157,29 @@ function projectSuffix(entry: { projectKey?: string }): string {
 }
 
 /**
+ * The line for a .mcp.json entry bound again after its project directory
+ * moved: the directory it was bound in, and the change when its command or
+ * arguments changed since.
+ */
+const MOVED_LINE = (server: string, moved: { directory: string; commandChanged?: true }): string =>
+  `    + ${listedName(server)}: bound again; its project directory moved from ${listedName(moved.directory)}`
+  + (moved.commandChanged ? '; its command or arguments changed since it was bound' : '');
+
+/**
  * The servers protect-mcp bound this run, under their configs: bound in
- * place, bound in place of a server no longer in its config, and bound again
- * after their command changed. Then the count.
+ * place, bound in place of a server no longer in its config, bound again
+ * after their project directory moved, and bound again after their command
+ * changed. Then the count.
  */
 function printBoundServers(bound: BoundMcpServer[], rebound: ReboundMcpServer[]): void {
+  const boundLine = (server: BoundMcpServer): string => {
+    if (server.movedFrom !== undefined) return MOVED_LINE(server.server, server.movedFrom);
+    return server.tookOver === undefined
+      ? `    + ${listedName(server.server)}: bound`
+      : `    + ${listedName(server.server)}: bound (took over the binding of server "${listedName(server.tookOver.server)}", no longer in ${listedName(server.tookOver.file)}${projectSuffix(server.tookOver)})`;
+  };
   const lines = [
-    ...bound.map((server) => ({
-      ...server,
-      line: server.tookOver === undefined
-        ? `    + ${listedName(server.server)}: bound`
-        : `    + ${listedName(server.server)}: bound (took over the binding of server "${listedName(server.tookOver.server)}", no longer in ${listedName(server.tookOver.file)}${projectSuffix(server.tookOver)})`,
-    })),
+    ...bound.map((server) => ({ ...server, line: boundLine(server) })),
     ...rebound.map((server) => ({
       ...server,
       line: `    ~ ${listedName(server.server)}: its command or arguments changed since it was bound; bound again`,
@@ -198,8 +209,9 @@ function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
     if (server.replaced) {
       return `    ? ${listedName(server.server)}: a copy of a bound entry: it carried the binding of ${boundEntryName(server.boundTo)}; the binding was replaced, and this entry no longer starts. ${remove}`;
     }
+    const gone = server.boundFile === undefined ? '' : ` ${server.boundFile}`;
     const failed = server.replaceError === undefined ? '' : ` The binding could not be replaced: ${server.replaceError}.`;
-    return `    ? ${listedName(server.server)}: a copy of a bound entry: it carries the binding of ${boundEntryName(server.boundTo)}, so the wrapper gives it that server's secrets.${failed} ${remove}`;
+    return `    ? ${listedName(server.server)}: a copy of a bound entry: it carries the binding of ${boundEntryName(server.boundTo)}, so the wrapper gives it that server's secrets.${gone}${failed} ${remove}`;
   });
   const replaced = servers.filter((server) => server.replaced).length;
   if (servers.length > replaced) console.log(`  ${servers.length - replaced} server(s) are copies of a bound entry and receive its secrets.`);

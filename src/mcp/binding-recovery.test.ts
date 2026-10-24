@@ -1,16 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { protectMcp } from './protect';
-import { McpVault } from './vault';
+import { McpVault, commandDigest, newBindingId } from './vault';
 import { rewriteConfig } from './rewrite';
+import { runProtectMcp } from '../commands/mcp';
 
 /**
  * A binding after its entry, its file or its store changed outside
  * protect-mcp. mcp-unprotect deletes a pair only where its binding names a
- * file it restored. No output carries a binding id.
+ * file it restored. protect-mcp binds a pair with no name stored only to the
+ * values an entry brings, and binds again a .mcp.json entry whose project
+ * directory moved, where this machine's backup of the old file holds the
+ * stored values. No output carries a binding id.
  *
  * The wrapper and the CLI run from the build (`dist/`), started in the
  * directory a client starts them in. Values are assembled at run time and are
@@ -157,6 +161,32 @@ function putValuesBack(file: string, name: string): void {
   write(file, config);
 }
 
+/** A command of the CLI in this process, from `cwd`, with what it prints; the output is kept. */
+async function run(cell: string, command: () => Promise<number>, cwd: string): Promise<string> {
+  const lines: string[] = [];
+  const capture = (...parts: unknown[]) => { lines.push(parts.map(String).join(' ')); };
+  const log = vi.spyOn(console, 'log').mockImplementation(capture);
+  const error = vi.spyOn(console, 'error').mockImplementation(capture);
+  const at = vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+  try {
+    const code = await command();
+    expect(code).toBe(0);
+  } finally {
+    log.mockRestore();
+    error.mockRestore();
+    at.mockRestore();
+  }
+  const output = lines.join('\n');
+  captured.push({ cell, text: output });
+  return output;
+}
+
+/** The command after an entry's own `--`, as its digest covers it. */
+function digestOf(args: string[]): string {
+  const child = args.slice(args.indexOf('--') + 1);
+  return commandDigest(child[0], child.slice(1));
+}
+
 /** The run started the server: exit 0 and the sentinel written, holding the stored value. */
 function expectStarted(res: ReturnType<typeof startIn>, sentinel: string) {
   expect(res.status, res.stderr).toBe(0);
@@ -266,6 +296,159 @@ describe('a pair whose names and binding were deleted is bound again only to the
     expect(result.unbound).toHaveLength(2);
     expect(await store().getServerSecrets('claude-code', 'github')).toEqual({});
     expect(await store().getBinding('claude-code', 'github')).toBeUndefined();
+  });
+});
+
+describe('T7: protect-mcp binds again a .mcp.json entry whose project directory moved', () => {
+  /** `github` bound in project A, then A moved to A2: the binding names A's .mcp.json, which no longer exists. */
+  async function movedProject(cell: string) {
+    const a = real(dir('a'));
+    const sentinel = path.join(scratch, 'moved-started.json');
+    const file = write(path.join(a, '.mcp.json'), { mcpServers: { github: plain(sentinel) } });
+    await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
+    const id = plant(cell, file, idOf(entryOf(file, 'github').args));
+    const a2 = path.join(path.dirname(a), 'a2');
+    fs.renameSync(a, a2);
+    return { a, a2, file, moved: path.join(a2, '.mcp.json'), sentinel, id };
+  }
+
+  const manifestKeys = () => Object.keys(JSON.parse(fs.readFileSync(path.join(backupDir(), 'manifest.json'), 'utf-8')));
+
+  it('T7a: started in the moved directory, it exits 1 naming the old directory, and the server does not start', async () => {
+    const { a, a2, moved, sentinel } = await movedProject('T7a');
+
+    const res = startIn('T7a', a2, entryOf(moved, 'github').args);
+
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(`are bound to the project in ${a}, and ${a} could not be resolved (ENOENT)`);
+    expect(fs.existsSync(sentinel)).toBe(false);
+  });
+
+  it('T7b: protect-mcp in the moved directory binds it again with a new id, names the old directory, and moves the backup to the new path', async () => {
+    const { a, a2, file, moved, id } = await movedProject('T7b');
+
+    const output = await run('T7b', () => runProtectMcp([]), a2);
+
+    expect(output).toContain(`  claude-code (.mcp.json)\n    + github: bound again; its project directory moved from ${a}\n`);
+    const now = idOf(entryOf(moved, 'github').args);
+    plant('T7b', moved, now);
+    expect(now).not.toBe(id);
+    expect(await store().getBinding('claude-code', 'github')).toMatchObject({ id: now, scope: 'project', file: moved });
+    expect(manifestKeys()).toContain(moved);
+    expect(manifestKeys()).not.toContain(file);
+  });
+
+  it('T7c: after protect-mcp, started in the moved directory, the server starts', async () => {
+    const { a2, moved, sentinel } = await movedProject('T7c');
+    await run('T7c', () => runProtectMcp([]), a2);
+    plant('T7c', moved, idOf(entryOf(moved, 'github').args));
+
+    expectStarted(startIn('T7c', a2, entryOf(moved, 'github').args), sentinel);
+  });
+
+  it('T7d: mcp-unprotect in the moved directory restores the file and deletes the pair and its binding', async () => {
+    const { a2, moved, sentinel } = await movedProject('T7d');
+    await run('T7d', () => runProtectMcp([]), a2);
+
+    const out = runCliIn('T7d', a2, ['mcp-unprotect']);
+
+    expect(out).toContain(`  + Restored: ${moved}\n`);
+    expect(entryOf(moved, 'github')).toEqual(plain(sentinel));
+    expect(await store().getServerSecrets('claude-code', 'github')).toEqual({});
+    expect(await store().getBinding('claude-code', 'github')).toBeUndefined();
+  });
+
+  it('T7e: a copy of the bound .mcp.json in another directory while the original exists is reported as a copy and not taken over', async () => {
+    const a = real(dir('a'));
+    const file = write(path.join(a, '.mcp.json'), { mcpServers: { github: plain(path.join(scratch, 'started.json')) } });
+    await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
+    plant('T7e', file, idOf(entryOf(file, 'github').args));
+    const b = real(dir('b'));
+    const copy = path.join(b, '.mcp.json');
+    fs.copyFileSync(file, copy);
+    const before = fs.readFileSync(copy, 'utf-8');
+
+    const output = await run('T7e', () => runProtectMcp([]), b);
+
+    expect(output).toContain(
+      `    ? github: a copy of a bound entry: it carries the binding of server "github" in ${file}, so the wrapper gives it that server's secrets. Remove this entry;`,
+    );
+    expect(output).not.toContain('bound again');
+    expect((await store().getBinding('claude-code', 'github'))!.file).toBe(file);
+    expect(fs.readFileSync(copy, 'utf-8')).toBe(before);
+  });
+
+  it('T7f: a binding naming a file that does not exist, with no backup of it here, is reported as a copy with the missing-file clause; nothing is written', async () => {
+    const gone = path.join(real(scratch), 'gone', '.mcp.json');
+    const sentinel = path.join(scratch, 'started.json');
+    const child = [process.execPath, ...stubArgs(sentinel)];
+    const id = newBindingId();
+    await store().storeBinding('claude-code', 'github', {
+      schema: 1,
+      id,
+      scope: 'project',
+      file: gone,
+      client: 'claude-code',
+      server: 'github',
+      commandDigest: commandDigest(child[0], child.slice(1)),
+      boundAt: new Date().toISOString(),
+      boundBy: 'test',
+    });
+    await store().storeServerSecrets('claude-code', 'github', { [NAME]: VALUE });
+    const b = real(dir('b'));
+    const copy = write(path.join(b, '.mcp.json'), {
+      mcpServers: { github: { command: WRAPPER_PATH, args: ['--server', 'github', '--client', 'claude-code', '--binding', id, '--', ...child], env: {} } },
+    });
+    plant('T7f', copy, id);
+    const before = fs.readFileSync(copy, 'utf-8');
+    const record = await store().getBinding('claude-code', 'github');
+
+    const output = await run('T7f', () => runProtectMcp([]), b);
+
+    expect(output).toContain(
+      `    ? github: a copy of a bound entry: it carries the binding of server "github" in ${gone}, so the wrapper gives it that server's secrets. ${gone} no longer exists. Remove this entry;`,
+    );
+    expect(fs.readFileSync(copy, 'utf-8')).toBe(before);
+    expect(await store().getBinding('claude-code', 'github')).toEqual(record);
+    expect(fs.existsSync(path.join(backupDir(), 'manifest.json'))).toBe(false);
+  });
+
+  it('T7g: a moved entry whose command changed is bound again, its line names the change, and the binding takes its command now', async () => {
+    const { a, a2, moved, sentinel } = await movedProject('T7g');
+    const config = JSON.parse(fs.readFileSync(moved, 'utf-8'));
+    config.mcpServers.github.args = [...config.mcpServers.github.args, 'extra'];
+    write(moved, config);
+
+    const output = await run('T7g', () => runProtectMcp([]), a2);
+
+    expect(output).toContain(
+      `    + github: bound again; its project directory moved from ${a}; its command or arguments changed since it was bound\n`,
+    );
+    const entry = entryOf(moved, 'github');
+    plant('T7g', moved, idOf(entry.args));
+    expect(await store().getBinding('claude-code', 'github')).toMatchObject({ id: idOf(entry.args), file: moved, commandDigest: digestOf(entry.args) });
+    expectStarted(startIn('T7g', a2, entry.args), sentinel);
+  });
+
+  it('T7h: where the store refuses the new binding, the backup stays filed under the old path, nothing is written, and the line names the error', async () => {
+    const { a2, file, moved, id } = await movedProject('T7h');
+    const before = fs.readFileSync(moved, 'utf-8');
+    const vaultDir = path.join(home, '.secretless-ai', 'mcp-vault');
+    // The local store writes through a file it creates beside its own.
+    fs.chmodSync(vaultDir, 0o500);
+    let output: string;
+    try {
+      output = await run('T7h', () => runProtectMcp([]), a2);
+    } finally {
+      fs.chmodSync(vaultDir, 0o700);
+    }
+
+    expect(output).toContain('    ? github: not bound: the binding could not be stored (');
+    expect(output).not.toContain('bound again');
+    expect(manifestKeys()).toContain(file);
+    expect(manifestKeys()).not.toContain(moved);
+    expect(fs.readFileSync(moved, 'utf-8')).toBe(before);
+    expect(await store().getBinding('claude-code', 'github')).toMatchObject({ id, file });
   });
 });
 
