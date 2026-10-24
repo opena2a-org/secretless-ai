@@ -32,7 +32,7 @@ npx secretless-ai protect-mcp
 
   3 secret(s) encrypted across 3 server(s).
 
-  MCP servers will start normally — no workflow changes needed.
+  Protected servers start as before.
   Run `npx secretless-ai mcp-status` to check status anytime.
   Run `npx secretless-ai mcp-unprotect` to restore originals.
 ```
