@@ -14,10 +14,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { WritableSecretBackend, BackendHealth } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
 import { boundedFetch, describeRequest, type BoundedResponse } from './bounded-fetch';
 import { resolveGcpProject } from './gcp-project';
 import type { GcpProjectResolution } from './gcp-project';
+import { escapeForDisplay } from '../display-safe';
 
 const SM_BASE_URL = 'https://secretmanager.googleapis.com';
 const OAUTH2_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -31,6 +32,157 @@ const TOKEN_LIFETIME_SECONDS = 3600; // 1 hour
  * Names must be 1-255 characters, alphanumeric plus dash and underscore.
  */
 const SECRET_NAME_REGEX = /^[a-zA-Z0-9_-]{1,255}$/;
+const MAX_SECRET_NAME_LENGTH = 255;
+
+/**
+ * `secret set NAME` stores the key `secret/NAME` (SecretStore). Such a key, and
+ * a key with no '/', is stored under the bare name NAME: the project's own
+ * secrets are this backend's plain secrets, named as every release named them.
+ */
+const PLAIN_KEY_PREFIX = 'secret/';
+
+/**
+ * Every other key, an MCP server's `mcp/<client>/<server>/<ENV>` among them, is
+ * stored under a name derived from the whole key (encodeStoreKey), on a secret
+ * created with this label. A secret of such a name without the label was not
+ * created by this backend: a read under a key never returns it, and a write or
+ * a delete never touches it.
+ */
+const STORE_KEY_LABEL = 'secretless-ai';
+const STORE_KEY_LABEL_VALUE = 'store-key';
+
+/** Between the encoded segments of a key. No encoded segment holds a '-'. */
+const SEGMENT_SEPARATOR = '--';
+
+/** The segments encodeSegment writes: letters, digits, `__`, and `_` with two upper-case hex digits. */
+const ENCODED_SEGMENT = /^(?:[A-Za-z0-9]|__|_[0-9A-F]{2})*$/;
+
+const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
+
+function validateSecretName(name: string): void {
+  if (!SECRET_NAME_REGEX.test(name)) {
+    throw new Error(
+      `Invalid secret name '${name}'. ` +
+      `GCP Secret Manager names must match: [a-zA-Z0-9_-]{1,255}. ` +
+      `Use dashes or underscores instead of slashes or dots.`
+    );
+  }
+}
+
+/**
+ * The bare name a plain key is stored under: the key itself when it holds no
+ * '/', NAME for `secret/NAME`, and undefined for every other key.
+ */
+function plainName(key: string): string | undefined {
+  if (!key.includes('/')) return key;
+  const name = key.slice(PLAIN_KEY_PREFIX.length);
+  return key.startsWith(PLAIN_KEY_PREFIX) && !name.includes('/') ? name : undefined;
+}
+
+/**
+ * One '/'-separated segment of a key, in letters, digits and '_': a letter or
+ * digit stands for itself, '_' is written `__`, and every other UTF-8 byte is
+ * '_' and two upper-case hex digits ('-' is `_2D`). Undefined for a segment
+ * that is not well-formed Unicode, which no name can give back.
+ */
+function encodeSegment(segment: string): string | undefined {
+  const bytes = Buffer.from(segment, 'utf-8');
+  if (bytes.toString('utf-8') !== segment) return undefined;
+  let encoded = '';
+  for (const byte of bytes) {
+    const alphanumeric = (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a);
+    if (alphanumeric) encoded += String.fromCharCode(byte);
+    else if (byte === 0x5f) encoded += '__';
+    else encoded += `_${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+  return encoded;
+}
+
+/** The segment encodeSegment wrote as `encoded`, or undefined when it writes no such text. */
+function decodeSegment(encoded: string): string | undefined {
+  if (!ENCODED_SEGMENT.test(encoded)) return undefined;
+  const bytes: number[] = [];
+  for (let i = 0; i < encoded.length;) {
+    if (encoded[i] !== '_') {
+      bytes.push(encoded.charCodeAt(i));
+      i += 1;
+    } else if (encoded[i + 1] === '_') {
+      bytes.push(0x5f);
+      i += 2;
+    } else {
+      bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16));
+      i += 3;
+    }
+  }
+  try {
+    return UTF8_STRICT.decode(Uint8Array.from(bytes));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The Secret Manager name a store key is stored under.
+ *
+ * A plain key (`secret/NAME`, or a key with no '/') keeps its bare name. Every
+ * other key is each of its '/'-separated segments encoded (encodeSegment) and
+ * joined with `--`, so `mcp/cursor/github/GITHUB_TOKEN` is
+ * `mcp--cursor--github--GITHUB__TOKEN`. No encoded segment holds a '-', so a
+ * name splits back into exactly the segments it was made of: decodeStoreKey
+ * returns the key, and two keys never share a name.
+ *
+ * Throws, and nothing is sent, for a key no name can hold: a plain name outside
+ * [a-zA-Z0-9_-]{1,255}, a key that is not well-formed Unicode, or one whose
+ * name would be longer than the 255 characters the API allows.
+ */
+export function encodeStoreKey(key: string): string {
+  const plain = plainName(key);
+  if (plain !== undefined) {
+    validateSecretName(plain);
+    return plain;
+  }
+  const segments = key.split('/').map(encodeSegment);
+  if (segments.some((segment) => segment === undefined)) {
+    throw new Error(
+      `GCP Secret Manager: the key '${escapeForDisplay(key)}' is not well-formed Unicode, so no secret name can hold it. Nothing was written.`,
+    );
+  }
+  const name = segments.join(SEGMENT_SEPARATOR);
+  if (name.length > MAX_SECRET_NAME_LENGTH) {
+    throw new Error(
+      `GCP Secret Manager: the key '${escapeForDisplay(key)}' would be stored under a name of ${name.length} characters, `
+      + `over the ${MAX_SECRET_NAME_LENGTH} a secret name may have. Nothing was written. Use a shorter client, server or env name.`,
+    );
+  }
+  return name;
+}
+
+/**
+ * The store key `name` stands for when encodeStoreKey derives `name` from it,
+ * and undefined for every other name: a bare name, or text encodeStoreKey
+ * never writes.
+ */
+export function decodeStoreKey(name: string): string | undefined {
+  const parts = name.split(SEGMENT_SEPARATOR);
+  if (parts.length < 2) return undefined;
+  const segments = parts.map(decodeSegment);
+  if (segments.some((segment) => segment === undefined)) return undefined;
+  const key = segments.join('/');
+  if (plainName(key) !== undefined) return undefined;
+  try {
+    return encodeStoreKey(key) === name ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a path names one plain secret, `secret/NAME`. It is read as an exact
+ * read: the keys stored under `secret/` are one name deep (SecretStore).
+ */
+function isPlainEntry(resolvePath: string): boolean {
+  return resolvePath.startsWith(PLAIN_KEY_PREFIX) && plainName(resolvePath) !== undefined;
+}
 
 /**
  * A Google API request that did not complete in time. Names the host, which is
@@ -116,46 +268,60 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   /**
    * Resolve secrets from GCP Secret Manager.
    *
-   * - resolve("secret/KEY") returns { "secret/KEY": "value" } (exact match on "KEY")
-   * - resolve("secret") lists all secrets and returns all key-value pairs
+   * - An exact read (`{ exact: true }`), and a read of `secret/NAME`, reads the
+   *   one secret the key is stored under (encodeStoreKey) and returns
+   *   `{ [path]: value }`, or `{}` when there is none. It lists nothing.
+   * - Any other path is a prefix: the project's secret names are listed, and a
+   *   value is read only for each secret whose key is the path or lies under
+   *   `path/` (every key for ''). A secret's key comes from its name and label
+   *   (listKeys), so resolve("secret") returns the project's plain secrets and
+   *   no MCP server's, and resolve("mcp/<client>/<server>") returns that
+   *   server's secrets and no other value in the project.
    */
-  async resolve(resolvePath: string): Promise<Record<string, string>> {
+  async resolve(resolvePath: string, options?: ResolveOptions): Promise<Record<string, string>> {
     const { projectId, token } = await this.ensureAuth();
-
-    // Extract the secret name from path (last segment)
-    const segments = resolvePath.split('/');
-    const secretName = segments[segments.length - 1];
-
-    // Try direct read first
-    try {
-      const value = await this.getSecretValue(projectId, secretName, token);
-      return { [resolvePath]: value };
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('not found')) {
-        // If the path looks like a prefix (not a specific secret name), list all
-        return this.listPrefix(projectId, resolvePath, token);
-      }
-      throw err;
+    if (options?.exact || isPlainEntry(resolvePath)) {
+      return this.readKey(projectId, resolvePath, token);
     }
+    return this.readUnder(projectId, resolvePath, token);
   }
 
   async store(key: string, value: string): Promise<void> {
-    // Extract secret name from key path
-    const segments = key.split('/');
-    const secretName = segments[segments.length - 1];
-
-    this.validateSecretName(secretName);
-
+    const secretName = encodeStoreKey(key);
     const { projectId, token } = await this.ensureAuth();
 
-    // Try to create the secret first
-    const created = await this.createSecret(projectId, secretName, token);
-
-    if (!created) {
-      // Secret might already exist -- that's fine, we'll add a version
+    if (plainName(key) !== undefined) {
+      // A plain secret is created when absent, and a version is added to it.
+      await this.createSecret(projectId, secretName, token);
+      await this.addSecretVersion(projectId, secretName, value, token);
+      return;
     }
 
-    // Add a new version with the value
+    // A secret named after a whole key is created with the store-key label, and
+    // a version is added to an existing one only when it carries the label.
+    const created = await this.createSecret(projectId, secretName, token, {
+      [STORE_KEY_LABEL]: STORE_KEY_LABEL_VALUE,
+    });
+    if (!created) {
+      const state = await this.storeKeyState(projectId, secretName, token);
+      if (state === 'other') {
+        throw new Error(
+          [
+            `GCP Secret Manager: ${this.projectLabel(projectId)} holds a secret named ${secretName} that secretless-ai did not create `
+            + `for the key '${escapeForDisplay(key)}': it has no ${STORE_KEY_LABEL}=${STORE_KEY_LABEL_VALUE} label. Nothing was written to it.`,
+            '',
+            `  Verify:  gcloud secrets describe ${secretName} --project ${projectId}`,
+            `  Fix:     if it holds this key's value, label it: gcloud secrets update ${secretName} --project ${projectId} --update-labels=${STORE_KEY_LABEL}=${STORE_KEY_LABEL_VALUE}`,
+          ].join('\n'),
+        );
+      }
+      if (state === 'absent') {
+        throw new Error(
+          `GCP Secret Manager: the secret ${secretName} in ${this.projectLabel(projectId)} was deleted while it was being written. `
+          + 'Nothing was written; run the command again.',
+        );
+      }
+    }
     await this.addSecretVersion(projectId, secretName, value, token);
   }
 
@@ -201,10 +367,20 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   }
 
   async delete(key: string): Promise<boolean> {
-    const segments = key.split('/');
-    const secretName = segments[segments.length - 1];
+    let secretName: string;
+    try {
+      secretName = encodeStoreKey(key);
+    } catch {
+      return false; // no secret can be stored under this key
+    }
 
     const { projectId, token } = await this.ensureAuth();
+
+    // A secret named after a whole key is deleted only when it carries the
+    // store-key label: one secretless-ai did not create is left as it is.
+    if (plainName(key) === undefined && await this.storeKeyState(projectId, secretName, token) !== 'stored-key') {
+      return false;
+    }
 
     const url = `${SM_BASE_URL}/v1/projects/${projectId}/secrets/${secretName}`;
     const response = await this.request('DELETE', url, token);
@@ -278,13 +454,7 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   // --- Private helpers ---
 
   private validateSecretName(name: string): void {
-    if (!SECRET_NAME_REGEX.test(name)) {
-      throw new Error(
-        `Invalid secret name '${name}'. ` +
-        `GCP Secret Manager names must match: [a-zA-Z0-9_-]{1,255}. ` +
-        `Use dashes or underscores instead of slashes or dots.`
-      );
-    }
+    validateSecretName(name);
   }
 
   /**
@@ -455,14 +625,15 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   }
 
   /**
-   * Get the latest version of a secret's value.
+   * The value of a secret's latest version, or undefined when the secret does
+   * not exist or holds no version.
    */
-  private async getSecretValue(projectId: string, secretName: string, token: string): Promise<string> {
+  private async getSecretValue(projectId: string, secretName: string, token: string): Promise<string | undefined> {
     const url = `${SM_BASE_URL}/v1/projects/${projectId}/secrets/${secretName}/versions/latest:access`;
     const response = await this.request('GET', url, token);
 
     if (response.status === 404) {
-      throw new Error(`Secret '${secretName}' not found in ${this.projectLabel(projectId)}`);
+      return undefined;
     }
 
     if (response.status === 403) {
@@ -489,13 +660,19 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   }
 
   /**
-   * Create a secret resource (without a version).
+   * Create a secret resource (without a version), with `labels` when given.
    * Returns true if created, false if it already exists.
    */
-  private async createSecret(projectId: string, secretName: string, token: string): Promise<boolean> {
+  private async createSecret(
+    projectId: string,
+    secretName: string,
+    token: string,
+    labels?: Record<string, string>,
+  ): Promise<boolean> {
     const url = `${SM_BASE_URL}/v1/projects/${projectId}/secrets?secretId=${secretName}`;
     const response = await this.request('POST', url, token, {
       replication: { automatic: {} },
+      ...(labels ? { labels } : {}),
     });
 
     if (response.status === 409) {
@@ -548,15 +725,82 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   }
 
   /**
-   * List all secrets in the project and read their values.
-   * Used as a fallback when resolve() doesn't find an exact match.
+   * The one secret `key` is stored under, as `{ [key]: value }`, or `{}` when
+   * there is none. A name derived from a whole key is read only on a secret
+   * that carries the store-key label. Nothing is listed.
    */
-  private async listPrefix(
-    projectId: string,
-    prefix: string,
-    token: string,
-  ): Promise<Record<string, string>> {
+  private async readKey(projectId: string, key: string, token: string): Promise<Record<string, string>> {
+    let secretName: string;
+    try {
+      secretName = encodeStoreKey(key);
+    } catch {
+      return {}; // no secret can be stored under this key
+    }
+    if (plainName(key) === undefined && await this.storeKeyState(projectId, secretName, token) !== 'stored-key') {
+      return {};
+    }
+    const value = await this.getSecretValue(projectId, secretName, token);
+    return value === undefined ? {} : { [key]: value };
+  }
+
+  /**
+   * Each key that is `prefix` or lies under `prefix/` (every key for ''), with
+   * its value. Names are listed (listKeys), and a value is read only for a key
+   * selected here.
+   */
+  private async readUnder(projectId: string, prefix: string, token: string): Promise<Record<string, string>> {
     const results: Record<string, string> = {};
+    for (const { key, secretName } of await this.listKeys(projectId, token)) {
+      if (prefix !== '' && key !== prefix && !key.startsWith(`${prefix}/`)) continue;
+      try {
+        const value = await this.getSecretValue(projectId, secretName, token);
+        if (value !== undefined) results[key] = value;
+      } catch {
+        // Skip secrets we can't read (permission issues, etc.)
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Whether the secret `secretName` exists and carries the store-key label.
+   * Reads the secret's resource, which carries no payload, never a version's
+   * value.
+   */
+  private async storeKeyState(
+    projectId: string,
+    secretName: string,
+    token: string,
+  ): Promise<'absent' | 'stored-key' | 'other'> {
+    const url = `${SM_BASE_URL}/v1/projects/${projectId}/secrets/${secretName}`;
+    const response = await this.request('GET', url, token);
+
+    if (response.status === 404) return 'absent';
+    if (response.status === 403) {
+      throw new Error(
+        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Viewer' role.`
+      );
+    }
+    if (!response.ok) {
+      throw new Error(`GCP Secret Manager: read failed (HTTP ${response.status})`);
+    }
+    const body = await response.json() as { labels?: Record<string, string> };
+    return body.labels?.[STORE_KEY_LABEL] === STORE_KEY_LABEL_VALUE ? 'stored-key' : 'other';
+  }
+
+  /**
+   * The key of each secret in the project, from a listing of names and labels;
+   * no value is read. A secret with the store-key label whose name
+   * decodeStoreKey reads is that key, and every other secret is the plain key
+   * `secret/<name>`. Keys are selected by the caller on the decoded key, not
+   * with the list API's filter, so a selection never depends on how the API
+   * matches a name.
+   */
+  private async listKeys(
+    projectId: string,
+    token: string,
+  ): Promise<Array<{ key: string; secretName: string }>> {
+    const keys: Array<{ key: string; secretName: string }> = [];
     let pageToken: string | undefined;
 
     do {
@@ -576,11 +820,11 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
             + `Verify access: gcloud secrets list --project ${projectId} --limit 1`
           );
         }
-        return results;
+        return keys;
       }
 
       const body = await response.json() as {
-        secrets?: Array<{ name?: string }>;
+        secrets?: Array<{ name?: string; labels?: Record<string, string> }>;
         nextPageToken?: string;
       };
 
@@ -591,20 +835,18 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
         // Extract secret name from full resource path
         // Format: projects/{project}/secrets/{name}
         const parts = secret.name.split('/');
-        const name = parts[parts.length - 1];
+        const secretName = parts[parts.length - 1];
 
-        try {
-          const value = await this.getSecretValue(projectId, name, token);
-          results[`${prefix}/${name}`] = value;
-        } catch {
-          // Skip secrets we can't read (permission issues, no versions, etc.)
-        }
+        const storedKey = secret.labels?.[STORE_KEY_LABEL] === STORE_KEY_LABEL_VALUE
+          ? decodeStoreKey(secretName)
+          : undefined;
+        keys.push({ key: storedKey ?? `${PLAIN_KEY_PREFIX}${secretName}`, secretName });
       }
 
       pageToken = body.nextPageToken;
     } while (pageToken);
 
-    return results;
+    return keys;
   }
 
   /**

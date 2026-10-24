@@ -129,7 +129,10 @@ With no backend configured, secrets are stored in the OS keychain where one is a
 npx secretless-ai protect-mcp --backend 1password
 npx secretless-ai protect-mcp --backend keychain
 npx secretless-ai protect-mcp --backend vault
+npx secretless-ai protect-mcp --backend gcp-sm
 ```
+
+On the `gcp-sm` backend, each secret of a server is a secret in the GCP project named after its client, server and env name: `GITHUB_TOKEN` of the `github` server in Cursor is `mcp--cursor--github--GITHUB__TOKEN`. Letters and digits are kept, `_` is written `__`, and each UTF-8 byte of any other character is written as `_` and two hex digits, so `-` is `_2D`. The secret carries the label `secretless-ai=store-key`, and the wrapper gives a server only the labelled secrets under its own client and server name, never another secret in the project. `protect-mcp` adds a version only to a secret that carries the label, so it never writes to a secret of that name that it did not create; it stops and prints the `gcloud` command that shows that secret. A server protected on `gcp-sm` by secretless-ai 0.23.0 or earlier is protected again with `npx secretless-ai mcp-unprotect`, then `npx secretless-ai protect-mcp --backend gcp-sm`.
 
 ## Restoring original configs
 
