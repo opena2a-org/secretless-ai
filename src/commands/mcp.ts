@@ -1,16 +1,30 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { protectMcp } from '../mcp/protect';
-import type { RefusedNameMcpServer, SharedNameMcpServer, UnmovedMcpServer } from '../mcp/protect';
+import { isBoundEntry, protectMcp } from '../mcp/protect';
+import type {
+  BoundMcpServer,
+  CopiedBindingMcpServer,
+  ProtectResult,
+  ReboundMcpServer,
+  RefusedNameMcpServer,
+  SharedNameMcpServer,
+  UnboundMcpServer,
+  UnmovedMcpServer,
+} from '../mcp/protect';
 import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
-import type { UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
+import type { McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
+import { McpVault, boundEntryName, checkLaunch } from '../mcp/vault';
+import type { McpLaunchVerdict } from '../mcp/vault';
 import { resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import type { SelectableBackendType } from '../backends/config';
 import { listedName } from '../secret-value';
 import { escapeForDisplay } from '../display-safe';
-import { EXIT_USAGE } from '../argv';
+import { EXIT_USAGE, readWrapperArgv, wrapperFlag } from '../argv';
+import type { WrapperArgv } from '../argv';
 
 function getWrapperPath(): string {
   return path.resolve(__dirname, '..', 'mcp-wrapper.js');
@@ -104,6 +118,10 @@ function printUnderConfigs<T extends { client: string; filePath: string; project
  */
 function printSharedNameServers(servers: SharedNameMcpServer[]): void {
   printUnderConfigs(servers, (server) => {
+    if (server.boundTo !== undefined) {
+      const pair = listedName(`${server.client}/${server.server}`);
+      return `    ? ${listedName(server.server)}: not protected: the secrets stored under ${pair} are bound to ${boundEntryName(server.boundTo)}`;
+    }
     const holder = configLabel({ client: server.client, ...server.protectedIn });
     return `    ? ${listedName(server.server)}: not protected: its name is taken by a protected server in ${holder}`;
   });
@@ -131,6 +149,63 @@ function printUnmovedServers(servers: UnmovedMcpServer[]): void {
   printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: secrets not moved: ${server.reason}`);
   console.log(`  ${servers.length} server(s) have secrets in plaintext in their env that were not encrypted.`);
   console.log('  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.\n');
+}
+
+/** `, project <key>` for an entry kept for one project in ~/.claude.json, otherwise nothing. */
+function projectSuffix(entry: { projectKey?: string }): string {
+  return entry.projectKey === undefined ? '' : `, project ${listedName(entry.projectKey)}`;
+}
+
+/**
+ * The servers protect-mcp bound this run, under their configs: bound in
+ * place, bound in place of a server no longer in its config, and bound again
+ * after their command changed. Then the count.
+ */
+function printBoundServers(bound: BoundMcpServer[], rebound: ReboundMcpServer[]): void {
+  const lines = [
+    ...bound.map((server) => ({
+      ...server,
+      line: server.tookOver === undefined
+        ? `    + ${listedName(server.server)}: bound`
+        : `    + ${listedName(server.server)}: bound (took over the binding of server "${listedName(server.tookOver.server)}", no longer in ${listedName(server.tookOver.file)}${projectSuffix(server.tookOver)})`,
+    })),
+    ...rebound.map((server) => ({
+      ...server,
+      line: `    ~ ${listedName(server.server)}: its command or arguments changed since it was bound; bound again`,
+    })),
+  ];
+  printUnderConfigs(inConfigOrder(lines), (server) => server.line);
+  console.log(`  ${lines.length} server(s) bound to their config entries.\n`);
+}
+
+/**
+ * The servers that run through the wrapper and are not bound, under their
+ * configs with why, then the count and what the lines are for.
+ */
+function printUnboundServers(servers: UnboundMcpServer[]): void {
+  printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: not bound: ${server.reason}`);
+  console.log(`  ${servers.length} server(s) run through the wrapper but are not bound, so the wrapper does not start them. Each line above says what to change.\n`);
+}
+
+/** The servers that carry the binding of another entry, under their configs, then the count. */
+function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
+  printUnderConfigs(servers, (server) =>
+    `    ? ${listedName(server.server)}: a copy of a bound entry: it carries the binding of ${boundEntryName(server.boundTo)}, so the wrapper gives it that server's secrets. `
+    + 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.');
+  console.log(`  ${servers.length} server(s) are copies of a bound entry and receive its secrets.\n`);
+}
+
+/** The binding lists of a protect-mcp run, each only when it has a server. */
+function printBindingLists(result: ProtectResult): void {
+  if (result.bound.length > 0 || result.rebound.length > 0) printBoundServers(result.bound, result.rebound);
+  if (result.unbound.length > 0) printUnboundServers(result.unbound);
+  if (result.copies.length > 0) printCopiedBindings(result.copies);
+}
+
+/** Entries reordered so the ones under one config label are together, labels in the order first seen. */
+function inConfigOrder<T extends { client: string; filePath: string; projectPath?: string; projectKey?: string }>(entries: T[]): T[] {
+  const labels = [...new Set(entries.map((entry) => configLabel(entry)))];
+  return labels.flatMap((label) => entries.filter((entry) => configLabel(entry) === label));
 }
 
 export async function runProtectMcp(args: string[]): Promise<number> {
@@ -211,6 +286,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
       // true of it.
       if (sharedName.length > 0 || refusedName.length > 0 || unmoved.length > 0) {
         console.log('  No plaintext secrets were encrypted.\n');
+        printBindingLists(result);
         notChecked();
         return 0;
       }
@@ -218,20 +294,24 @@ export async function runProtectMcp(args: string[]): Promise<number> {
       // printed over a config, or a part of a server entry, that was not read.
       if (unchecked.length > 0) {
         console.log('  No plaintext secrets found in the parts of the MCP configs that were read.\n');
+        printBindingLists(result);
         notChecked();
         return 0;
       }
       if (unparsed.length > 0) {
         console.log('  No plaintext secrets found in the MCP configs that were read.\n');
+        printBindingLists(result);
         notChecked();
         return 0;
       }
       if (projectLevel.length > 0) {
         console.log('  No plaintext secrets found in the MCP configs that were checked.\n');
+        printBindingLists(result);
         notChecked();
         return 0;
       }
       console.log('  No plaintext secrets found in MCP configs. Already clean.\n');
+      printBindingLists(result);
       return 0;
     }
 
@@ -248,6 +328,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
       console.log(`  ${result.alreadyProtected} server(s) already protected.`);
     }
     console.log();
+    printBindingLists(result);
     notChecked();
     // Show injection warnings from NanoMind guard (if available)
     if (result.injectionWarnings.length > 0) {
@@ -261,7 +342,11 @@ export async function runProtectMcp(args: string[]): Promise<number> {
       console.log('  that could manipulate AI tool behavior.\n');
     }
 
-    console.log('  MCP servers will start normally — no workflow changes needed.');
+    // Only while every server that runs through the wrapper is bound: the
+    // wrapper starts no other.
+    if (result.unbound.length === 0) {
+      console.log('  Protected servers start as before.');
+    }
     console.log('  Run `npx secretless-ai mcp-status` to check status anytime.');
     console.log('  Run `npx secretless-ai mcp-unprotect` to restore originals.\n');
     return 0;
@@ -271,7 +356,84 @@ export async function runProtectMcp(args: string[]): Promise<number> {
   }
 }
 
-export function runMcpStatus(): number {
+/** The backends the wrapper takes as --backend (parseArgs in mcp-wrapper.ts). */
+const WRAPPER_BACKENDS = ['local', 'keychain', '1password', 'vault', 'gcp-sm'];
+
+/**
+ * The store a wrapped entry's wrapper reads, built from the entry's args as
+ * the wrapper builds it: its --backend or the configured backend, and its
+ * --vault-dir and --vault-key or their defaults. Undefined where the wrapper
+ * stops before it reads a binding: an unknown --backend, or a local store
+ * whose directory is missing, which is not created here (building the local
+ * backend writes into it). One vault is built per store.
+ */
+function wrapperVault(read: WrapperArgv, vaults: Map<string, McpVault>): McpVault | undefined {
+  if ((read.values.get('--backend') ?? []).some((value) => !WRAPPER_BACKENDS.includes(value))) return undefined;
+  const home = os.homedir();
+  let vaultDir = wrapperFlag(read, '--vault-dir') ?? '';
+  let vaultKey = wrapperFlag(read, '--vault-key') ?? '';
+  if (vaultDir && !vaultKey) vaultKey = `${home}-secretless-${process.env.USER ?? 'default'}`;
+  if (!vaultDir) vaultDir = path.join(home, '.secretless-ai', 'mcp-vault');
+  const backendType = wrapperFlag(read, '--backend') || resolveBackendType();
+  if (backendType === 'local' && !fs.existsSync(vaultDir)) return undefined;
+  const store = JSON.stringify([backendType, vaultDir, vaultKey]);
+  let vault = vaults.get(store);
+  if (!vault) {
+    vault = new McpVault({ storeDir: vaultDir, ...(vaultKey ? { key: vaultKey } : {}), backendType });
+    vaults.set(store, vault);
+  }
+  return vault;
+}
+
+/** The pair a wrapped entry's wrapper reads its secrets by, and the store it reads them from. */
+interface WrapperRead {
+  read: WrapperArgv;
+  client: string;
+  server: string;
+  vault: McpVault;
+}
+
+/**
+ * What a wrapped entry's wrapper reads, or undefined where the wrapper stops
+ * before it reads anything: no command after its `--`, an empty --client or
+ * --server, or no store (see wrapperVault).
+ */
+function wrapperRead(entry: McpServerEntry, vaults: Map<string, McpVault>): WrapperRead | undefined {
+  const read = readWrapperArgv(entry.args);
+  const client = wrapperFlag(read, '--client') ?? '';
+  const server = wrapperFlag(read, '--server') ?? '';
+  if (read.child === undefined || !client || !server) return undefined;
+  const vault = wrapperVault(read, vaults);
+  return vault ? { read, client, server, vault } : undefined;
+}
+
+/**
+ * Whether the wrapper starts a wrapped entry, from checkLaunch, the function
+ * the wrapper runs before it reads a secret: the verdict, nothing where the
+ * wrapper stops before that check, or the store's error where reading the
+ * binding failed (the wrapper then starts nothing either).
+ */
+async function entryLaunch(
+  entry: McpServerEntry,
+  vaults: Map<string, McpVault>,
+): Promise<{ verdict?: McpLaunchVerdict; error?: string }> {
+  const reads = wrapperRead(entry, vaults);
+  if (!reads?.read.child) return {};
+  try {
+    const verdict = await checkLaunch(reads.vault, {
+      client: reads.client,
+      server: reads.server,
+      binding: wrapperFlag(reads.read, '--binding'),
+      command: reads.read.child.command,
+      args: reads.read.child.args,
+    });
+    return { verdict };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function runMcpStatus(): Promise<number> {
   console.log('\n  Secretless MCP Status\n');
 
   // Report where secrets actually go, matching `backend` and `secret list`.
@@ -291,6 +453,15 @@ export function runMcpStatus(): number {
   // Exposed servers in the project-level configs protect-mcp leaves as they are.
   let leftExposedCount = 0;
   const leftExposedFiles = new Set<string>();
+  // Wrapped entries the wrapper does not start, by why: not bound (no binding,
+  // another entry's binding, or a changed command), or in a project-level
+  // config protect-mcp does not rewrite; and those it starts with another
+  // entry's secrets.
+  let notBoundCount = 0;
+  let otherEntryCount = 0;
+  let projectLevelCount = 0;
+  const projectLevelFiles = new Set<string>();
+  const vaults = new Map<string, McpVault>();
 
   for (const config of configs) {
     console.log(`  ${configLabel(config)}`);
@@ -304,8 +475,9 @@ export function runMcpStatus(): number {
       // the wrapper does not take a value out of the file, so a plaintext
       // secret added to its env stays on disk.
       const secretCount = Object.keys(classifyEnvVars(server.env).secrets).length;
+      const name = listedName(server.name);
       if (secretCount > 0) {
-        console.log(`    ! ${listedName(server.name)}: EXPOSED (${secretCount} plaintext secret(s))`);
+        console.log(`    ! ${name}: EXPOSED (${secretCount} plaintext secret(s))`);
         if (rewrittenByProtectMcp(config)) {
           exposedCount++;
         } else {
@@ -316,10 +488,46 @@ export function runMcpStatus(): number {
         // Neither protected nor clean: the line printUncheckedServers writes
         // below names the part of its entry that was not read.
       } else if (server.alreadyProtected) {
-        console.log(`    + ${listedName(server.name)}: protected`);
         protectedCount++;
+        // Whether the wrapper starts this entry comes from checkLaunch, the
+        // function the wrapper runs, so the two never disagree on it.
+        const launch = await entryLaunch(server, vaults);
+        const verdict = launch.verdict;
+        if (verdict && verdict.refused === false) {
+          if (isBoundEntry(verdict.binding, config, server.name)) {
+            console.log(`    + ${name}: protected and bound`);
+          } else {
+            console.log(
+              `    ? ${name}: carries the binding of the entry for ${boundEntryName(verdict.binding)}, so the wrapper starts it with that entry's secrets`,
+            );
+            otherEntryCount++;
+          }
+        } else if (!rewrittenByProtectMcp(config)) {
+          console.log(
+            `    ? ${name}: runs through the wrapper from a config protect-mcp does not rewrite, so it is never bound and the wrapper does not start it`,
+          );
+          projectLevelCount++;
+          projectLevelFiles.add(config.projectPath ?? config.filePath);
+        } else if (launch.error !== undefined) {
+          console.log(
+            `    ? ${name}: protected, but its binding could not be read (${escapeForDisplay(launch.error)}), so the wrapper does not start it`,
+          );
+        } else if (verdict?.refused === 'other-binding') {
+          console.log(
+            `    ? ${name}: the secrets it reads are bound to the entry for ${boundEntryName(verdict.binding)}, so the wrapper does not start it`,
+          );
+          notBoundCount++;
+        } else if (verdict?.refused === 'other-command') {
+          console.log(
+            `    ? ${name}: protected, but its command or arguments changed since it was bound, so the wrapper does not start it`,
+          );
+          notBoundCount++;
+        } else {
+          console.log(`    ? ${name}: protected, not bound, so the wrapper does not start it`);
+          notBoundCount++;
+        }
       } else {
-        console.log(`    * ${listedName(server.name)}: clean (no secrets in env)`);
+        console.log(`    * ${name}: clean (no secrets in env)`);
       }
     }
     printUncheckedServers(config.unchecked);
@@ -335,6 +543,25 @@ export function runMcpStatus(): number {
     console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
   } else if (protectedCount > 0) {
     console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
+  }
+  if (notBoundCount > 0) {
+    console.log(`  ${notBoundCount} protected server(s) are not bound, so the wrapper does not start them.`);
+    console.log(
+      '  Run `npx secretless-ai protect-mcp` to bind the entries it protected; it names each entry it cannot bind, and why.\n',
+    );
+  }
+  if (otherEntryCount > 0) {
+    console.log(
+      `  ${otherEntryCount} server(s) start with secrets bound to another entry. Remove each one unless it should start with those secrets.\n`,
+    );
+  }
+  if (projectLevelCount > 0) {
+    console.log(
+      `  ${projectLevelCount} server(s) run through the wrapper from project-level configs protect-mcp does not rewrite, so they do not start: ${[...projectLevelFiles].map(listedName).join(', ')}.`,
+    );
+    console.log(
+      "  protect-mcp binds entries only in home configs and in a project's .mcp.json; to run one of these servers, add it to one of those and run `npx secretless-ai protect-mcp`.\n",
+    );
   }
   if (leftExposedCount > 0) {
     console.log(
@@ -352,10 +579,58 @@ export function runMcpStatus(): number {
   return 0;
 }
 
-export function runMcpUnprotect(): number {
+/**
+ * After a file is restored, each pair its wrapped entries read is deleted
+ * from the store, with its binding, only where an entry of that server's name
+ * in the restored file holds every name stored under the pair at an equal
+ * value: the file then has them, and nothing is lost. Any other pair is left,
+ * and its line names the stored names the file does not hold (names only).
+ */
+async function clearRestoredPairs(reads: Array<{ filePath: string; reads: WrapperRead }>): Promise<void> {
+  const restored = discoverMcpConfigsDetailed().configs;
+  // A pair is looked at once per store.
+  const done = new Map<McpVault, Set<string>>();
+  for (const { filePath, reads: pair } of reads) {
+    const pairs = done.get(pair.vault) ?? new Set<string>();
+    done.set(pair.vault, pairs);
+    const key = JSON.stringify([pair.client, pair.server]);
+    if (pairs.has(key)) continue;
+    pairs.add(key);
+    const label = listedName(`${pair.client}/${pair.server}`);
+    let stored: Record<string, string>;
+    try {
+      stored = await pair.vault.getServerSecrets(pair.client, pair.server);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  ? ${label}: left in the store; it could not be read (${escapeForDisplay(msg)}).`);
+      continue;
+    }
+    const names = Object.keys(stored).sort();
+    if (names.length === 0) continue;
+    const entries = restored
+      .filter((config) => config.filePath === filePath)
+      .flatMap((config) => config.servers)
+      .filter((entry) => entry.name === pair.server);
+    const notHeld =
+      entries
+        .map((entry) => names.filter((name) => entry.env[name] !== stored[name]))
+        .sort((a, b) => a.length - b.length)[0] ?? names;
+    if (notHeld.length === 0) {
+      await pair.vault.removeServerSecrets(pair.client, pair.server);
+      console.log(
+        `  - Deleted from the store: ${label} (${names.length} name(s); the restored file holds the same values)`,
+      );
+    } else {
+      console.log(
+        `  ? ${label}: left in the store: ${notHeld.map(listedName).join(', ')}. The restored file does not hold these values.`,
+      );
+    }
+  }
+}
+
+export async function runMcpUnprotect(): Promise<number> {
   console.log('\n  Secretless MCP Unprotect\n');
 
-  const os = require('os');
   const home = os.homedir();
   const backupDir = path.join(home, '.secretless-ai', 'mcp-backups');
 
@@ -370,14 +645,27 @@ export function runMcpUnprotect(): number {
   const unparsed = discovered.unparsed.filter(
     (config) => rewrittenByProtectMcp(config) && !files.includes(config.filePath),
   );
+  // The pairs each file's wrapped entries read, taken before the file is
+  // restored: the restored file no longer names them.
+  const vaults = new Map<string, McpVault>();
+  const wrapped = configs.flatMap((config) =>
+    config.servers
+      .filter((entry) => entry.alreadyProtected)
+      .map((entry) => ({ filePath: config.filePath, reads: wrapperRead(entry, vaults) })),
+  );
   let restored = 0;
+  const cleared: Array<{ filePath: string; reads: WrapperRead }> = [];
 
   for (const filePath of files) {
     if (restoreConfig(filePath, backupDir)) {
       console.log(`  + Restored: ${filePath}`);
       restored++;
+      for (const entry of wrapped) {
+        if (entry.filePath === filePath && entry.reads) cleared.push({ filePath, reads: entry.reads });
+      }
     }
   }
+  await clearRestoredPairs(cleared);
 
   // A config that could not be parsed was not looked at, so "no backups"
   // covers only the configs that were read.
