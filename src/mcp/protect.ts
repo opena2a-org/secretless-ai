@@ -149,6 +149,10 @@ export interface CopiedBindingMcpServer extends McpServerMapLocation {
   server: string;
   /** The entry the binding names. */
   boundTo: McpBoundEntry;
+  /** protect-mcp replaced that home binding with a new id (see replaceBinding): this entry no longer starts. */
+  replaced?: true;
+  /** Why protect-mcp could not replace that home binding: this entry still receives its secrets. */
+  replaceError?: string;
 }
 
 /**
@@ -372,6 +376,8 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     backupDir,
     bindings: new Map(),
     boundBy: packageVersionAbove(__dirname) ?? 'unknown',
+    wrapperPath: options.wrapperPath,
+    backendType: options.backendType,
   };
 
   // 2. For each config: classify, encrypt, rewrite. The server maps of one
@@ -425,6 +431,10 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
           const plan = await bindWrapped(binder, config, server, secretKeys.length > 0 && storeReason === undefined);
           if (plan.kind === 'left') result.unbound.push({ ...location, reason: plan.reason });
           if (plan.kind === 'copy') result.copies.push({ ...location, boundTo: boundEntry(plan.binding) });
+          if (plan.kind === 'replace') {
+            const why = await replaceBinding(binder, plan, reads);
+            result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...(why === undefined ? { replaced: true } : { replaceError: why }) });
+          }
           const bound = await applyBinding(binder, plan, config, server, bindings, result);
           if (!bound && (plan.kind === 'bind' || plan.kind === 'rebind')) {
             result.unbound.push({ ...location, reason: bindingNotStoredReason(binder.lastError) });
@@ -441,7 +451,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
           // The secrets stored under the name are given only to the entry
           // bound to it, so a secret is stored only from that entry.
           if (!bound) {
-            const reason = plan.kind === 'left' || plan.kind === 'copy'
+            const reason = plan.kind === 'left' || plan.kind === 'copy' || plan.kind === 'replace'
               ? (plan.binding === undefined
                 ? `this server is not bound to ${pairName(reads)}`
                 : `the secrets stored under ${pairName(reads)} are bound to ${boundEntryName(plan.binding)}`)
@@ -707,6 +717,9 @@ interface Binder {
   boundBy: string;
   /** Why the store refused the binding applyBinding last stored. */
   lastError?: unknown;
+  /** The wrapper path and backend this run writes into a config it rewrites. */
+  wrapperPath: string;
+  backendType?: string;
 }
 
 /** What this run does for the binding of a server that runs through the wrapper (see bindWrapped). */
@@ -720,15 +733,22 @@ type BindingPlan =
   /** This entry is not bound, with why. `binding` is the pair's binding, when one is stored. */
   | { kind: 'left'; reason: string; binding?: McpBinding }
   /** This entry carries the binding of the entry it names, at another place: a copy. Nothing is written. */
-  | { kind: 'copy'; binding: McpBinding };
+  | { kind: 'copy'; binding: McpBinding }
+  /**
+   * A copy of an entry bound in a home config, which is in its file: the
+   * binding is replaced, and the copy is not written (see replaceBinding).
+   */
+  | { kind: 'replace'; binding: McpBinding; owner: { config: McpConfigFile; server: McpServerEntry } };
 
 /**
  * Whether the pair a server that runs through the wrapper reads is bound to
  * it, and what this run does about that. Bound to this entry (its id, place
  * and command): nothing; its command changed, in a home config: bound again,
  * where a project-level entry is left. Bound to another entry: left, or, for
- * an entry carrying its id, reported as a copy; when that entry is no longer
- * in its config, the one entry of its scope that reads the pair takes it over.
+ * an entry carrying its id, reported as a copy, and the binding replaced where
+ * that entry is bound in a home config and is in its file; when that entry is
+ * no longer in its config, the one entry of its scope that reads the pair
+ * takes it over.
  * No binding stored: bound in place when this is the one entry of the configs
  * this run rewrites that reads the pair, in a home config, or in the
  * project's .mcp.json when this run stores its secrets into an empty pair or
@@ -761,7 +781,7 @@ async function bindWrapped(
     if (!here && orphanedBinding(binder, binding) && scopeOf(config) === binding.scope && soleReader(binder, reads)) {
       return placed(config, server, { kind: 'bind', id: newBindingId(), digest, tookOver: binding });
     }
-    if (carriesId) return { kind: 'copy', binding };
+    if (carriesId) return replacePlan(binder, binding) ?? { kind: 'copy', binding };
     if (here) return { kind: 'left', reason: otherIdReason(reads), binding };
     return { kind: 'left', reason: boundElsewhereReason(reads, binding), binding };
   }
@@ -827,7 +847,7 @@ async function applyBinding(
   result: ProtectResult,
 ): Promise<boolean> {
   if (plan.kind === 'bound') return true;
-  if (plan.kind === 'left' || plan.kind === 'copy') return false;
+  if (plan.kind === 'left' || plan.kind === 'copy' || plan.kind === 'replace') return false;
   const reads = wrapperReads(config.client, server);
   const location = { client: config.client, ...mapLocation(config), server: server.name };
   try {
@@ -849,6 +869,74 @@ async function applyBinding(
   bindings[server.name] = plan.id;
   result.bound.push({ ...location, ...(plan.tookOver === undefined ? {} : { tookOver: boundEntry(plan.tookOver) }) });
   return true;
+}
+
+/**
+ * For a copy of an entry bound in a home config: the plan that replaces the
+ * binding, where that entry is in its file as this run read it and its args
+ * take an id in place. A project binding is left as it is: its copy is
+ * reported, and the wrapper refuses it from a directory where it is visible.
+ */
+function replacePlan(binder: Binder, binding: McpBinding): BindingPlan | undefined {
+  if (binding.scope !== 'home') return undefined;
+  for (const config of binder.discovered.configs) {
+    if (config.projectKey !== binding.projectKey || !sameFile(config.filePath, binding.file)) continue;
+    const server = config.servers.find((s) => s.name === binding.server);
+    if (server === undefined) continue;
+    const args = rawServerArgs(config, server.name);
+    if (args === undefined || withWrapperBinding(args, binding.id) === undefined) return undefined;
+    return { kind: 'replace', binding, owner: { config, server } };
+  }
+  return undefined;
+}
+
+/**
+ * Replace a home binding a copy of its entry carries: a new id is stored for
+ * the pair, with the same entry and command, before it is written into the
+ * bound entry's args, so the copy, which keeps the old id, no longer starts.
+ * A store that refuses the new binding leaves the entry as it is; a file that
+ * cannot be written gets the old binding stored back. Returns why it was not
+ * replaced, or undefined.
+ */
+async function replaceBinding(
+  binder: Binder,
+  plan: Extract<BindingPlan, { kind: 'replace' }>,
+  reads: { client: string; server: string },
+): Promise<string | undefined> {
+  const id = newBindingId();
+  try {
+    await storeBindingOf(binder, reads, { ...plan.binding, id, boundAt: new Date().toISOString(), boundBy: binder.boundBy });
+  } catch (err) {
+    return `the store refused the new binding (${firstLine(err)})`;
+  }
+  const { config, server } = plan.owner;
+  try {
+    rewriteServerMaps(
+      config.filePath,
+      config.client,
+      [{ ...(config.projectKey === undefined ? {} : { projectKey: config.projectKey }), serverSecrets: {}, bindings: { [server.name]: id } }],
+      binder.wrapperPath,
+      binder.backupDir,
+      binder.backendType,
+      { keepBackup: true },
+    );
+  } catch (err) {
+    try {
+      await storeBindingOf(binder, reads, plan.binding);
+    } catch {
+      // The line this returns says the entry was not written.
+    }
+    return `${listedName(config.filePath)} could not be written (${firstLine(err)})`;
+  }
+  // Later in this run, the bound entry is read as its file now holds it.
+  server.args = withWrapperBinding(server.args, id) ?? server.args;
+  return undefined;
+}
+
+/** The first line of an error's message, as a line may show it. */
+function firstLine(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return escapeForDisplay(message.split('\n')[0]);
 }
 
 /** A new binding of the pair a server reads, to that server's entry in `config`. */
