@@ -363,10 +363,115 @@ export const MCP_WRAPPER: VerbSpec = {
     '--vault-dir': true,
     '--vault-key': true,
     '--backend': true,
+    // The id of the binding protect-mcp stored for the entry (see McpBinding).
+    '--binding': true,
   },
   unknownFlags: 'warn',
   passthrough: true,
 };
+
+/** A secretless-mcp wrapper's args, read as the wrapper reads them (see readWrapperArgv). */
+export interface WrapperArgv {
+  /**
+   * Each value flag of MCP_WRAPPER given before the `--` that ends the
+   * wrapper's own args, with every value given for it, in order. The wrapper
+   * reads the last one.
+   */
+  values: Map<string, string[]>;
+  /** The command after that `--`, and its arguments, or undefined when no command follows one. */
+  child?: { command: string; args: string[] };
+}
+
+/**
+ * Read a secretless-mcp wrapper's args as the wrapper reads them: normalised
+ * by prepareBinArgv, then each value flag of MCP_WRAPPER takes the token after
+ * it as its value, the first `--` no flag took ends the wrapper's own args,
+ * and the token after it is the command the wrapper starts. The wrapper,
+ * protect-mcp and mcp-status read a config entry's args with this function,
+ * so they read the same pair, binding and command from it.
+ */
+export function readWrapperArgv(argv: readonly string[]): WrapperArgv {
+  const args = prepareBinArgv(MCP_WRAPPER, [...argv]).args;
+  const values = new Map<string, string[]>();
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--') {
+      return i + 1 < args.length ? { values, child: { command: args[i + 1], args: args.slice(i + 2) } } : { values };
+    }
+    if (MCP_WRAPPER.flags[args[i]] === true && args[i + 1] !== undefined) {
+      const flag = args[i];
+      const value = args[++i];
+      const given = values.get(flag);
+      if (given) given.push(value);
+      else values.set(flag, [value]);
+    }
+  }
+  return { values };
+}
+
+/**
+ * The value readWrapperArgv reads for a flag of MCP_WRAPPER: the last one
+ * given, or undefined when the args give none.
+ */
+export function wrapperFlag(argv: WrapperArgv, flag: string): string | undefined {
+  const given = argv.values.get(flag);
+  return given === undefined ? undefined : given[given.length - 1];
+}
+
+/**
+ * A wrapper's args with `--binding <id>`: the value the wrapper reads for
+ * --binding replaced where it stands, or, where the args give none, the flag
+ * and id inserted immediately before the `--` that ends the wrapper's own
+ * args. Every other token keeps its place and its bytes. Undefined when no
+ * command follows a `--` in the args, or when the result would not read back
+ * (readWrapperArgv) as the same flags and command with this id.
+ */
+export function withWrapperBinding(argv: readonly string[], id: string): string[] | undefined {
+  const before = readWrapperArgv(argv);
+  if (before.child === undefined) return undefined;
+
+  // The raw tokens, walked as readWrapperArgv walks the normalised ones: a
+  // `--flag=value` before the first `--` is one token here and two there.
+  const firstDashes = argv.indexOf('--');
+  let separator = -1;
+  let bindingAt = -1;
+  let bindingJoined = false;
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (token === '--') {
+      separator = i;
+      break;
+    }
+    const eq = token.indexOf('=');
+    const inHead = firstDashes === -1 || i < firstDashes;
+    if (inHead && token.startsWith('--') && eq !== -1 && MCP_WRAPPER.flags[token.slice(0, eq)] === true) {
+      if (token.slice(0, eq) === '--binding') {
+        bindingAt = i;
+        bindingJoined = true;
+      }
+      continue;
+    }
+    if (MCP_WRAPPER.flags[token] === true && argv[i + 1] !== undefined) {
+      if (token === '--binding') {
+        bindingAt = i;
+        bindingJoined = false;
+      }
+      i++;
+    }
+  }
+  if (separator === -1) return undefined;
+
+  const next = [...argv];
+  if (bindingAt === -1) next.splice(separator, 0, '--binding', id);
+  else if (bindingJoined) next[bindingAt] = `--binding=${id}`;
+  else next[bindingAt + 1] = id;
+
+  const after = readWrapperArgv(next);
+  const others = (read: WrapperArgv) =>
+    JSON.stringify([...read.values].filter(([flag]) => flag !== '--binding').sort(([a], [b]) => a.localeCompare(b)));
+  if (wrapperFlag(after, '--binding') !== id) return undefined;
+  if (JSON.stringify(after.child) !== JSON.stringify(before.child) || others(after) !== others(before)) return undefined;
+  return next;
+}
 
 export interface PreparedArgv {
   /** argv with every registered `--flag=value` split into two tokens. */
