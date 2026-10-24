@@ -446,6 +446,22 @@ export function readConfigBackup(configPath: string, backupDir: string): string 
 }
 
 /**
+ * File the backup kept for `fromPath` under `toPath` in the manifest, for a
+ * config file that moved, so restoreConfig restores it at its new path.
+ * Returns what puts the manifest back as it was, or undefined, with nothing
+ * changed, when the manifest names no backup for `fromPath`.
+ */
+export function moveConfigBackup(fromPath: string, toPath: string, backupDir: string): (() => void) | undefined {
+  const manifest = readManifest(backupDir);
+  if (!Object.prototype.hasOwnProperty.call(manifest, fromPath)) return undefined;
+  const before = { ...manifest };
+  manifest[toPath] = manifest[fromPath];
+  delete manifest[fromPath];
+  writeManifest(backupDir, manifest);
+  return () => writeManifest(backupDir, before);
+}
+
+/**
  * The content of the backup at `bkPath`, as restoreConfig writes it back, or
  * undefined when there is no backup there or it is not valid JSON.
  */

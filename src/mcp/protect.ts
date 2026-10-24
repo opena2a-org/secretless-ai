@@ -11,9 +11,9 @@ import * as path from 'path';
 import { discoverMcpConfigsDetailed, rewrittenByProtectMcp, serverMapKey } from './discover';
 import type { McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
-import { McpVault, boundEntryName, commandDigest, isBindingId, mcpNameProblem, newBindingId } from './vault';
+import { McpVault, boundEntryName, commandDigest, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId } from './vault';
 import type { McpBinding } from './vault';
-import { readConfigBackup, rewriteServerMaps, type ServerMapSecrets } from './rewrite';
+import { moveConfigBackup, readConfigBackup, rewriteServerMaps, type ServerMapSecrets } from './rewrite';
 import { packageVersionAbove } from './wrapper-version';
 import { screenMcpEnvVars } from '../nanomind';
 import { readWrapperArgv, withWrapperBinding, wrapperFlag } from '../argv';
@@ -113,6 +113,12 @@ export interface BoundMcpServer extends McpServerMapLocation {
   server: string;
   /** For a binding taken over from a server no longer in its config: that server's entry. */
   tookOver?: McpBoundEntry;
+  /**
+   * For a .mcp.json entry bound again after its project directory moved (see
+   * movedEntry): the directory it was bound in, and whether its command or
+   * arguments changed since.
+   */
+  movedFrom?: { directory: string; commandChanged?: true };
 }
 
 /**
@@ -149,6 +155,8 @@ export interface CopiedBindingMcpServer extends McpServerMapLocation {
   server: string;
   /** The entry the binding names. */
   boundTo: McpBoundEntry;
+  /** A sentence on that entry's file when it is not present on this machine (see boundFileClause). */
+  boundFile?: string;
   /** protect-mcp replaced that home binding with a new id (see replaceBinding): this entry no longer starts. */
   replaced?: true;
   /** Why protect-mcp could not replace that home binding: this entry still receives its secrets. */
@@ -430,7 +438,10 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
           // whether or not a secret in its env is stored.
           const plan = await bindWrapped(binder, config, server, secretKeys.length > 0 && storeReason === undefined);
           if (plan.kind === 'left') result.unbound.push({ ...location, reason: plan.reason });
-          if (plan.kind === 'copy') result.copies.push({ ...location, boundTo: boundEntry(plan.binding) });
+          if (plan.kind === 'copy') {
+            const boundFile = boundFileClause(plan.binding);
+            result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...(boundFile === '' ? {} : { boundFile }) });
+          }
           if (plan.kind === 'replace') {
             const why = await replaceBinding(binder, plan, reads);
             result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...(why === undefined ? { replaced: true } : { replaceError: why }) });
@@ -728,8 +739,12 @@ type BindingPlan =
   | { kind: 'bound' }
   /** The pair is bound to this entry, in a home config, and its command changed: the binding takes its command now. */
   | { kind: 'rebind'; binding: McpBinding; digest: string }
-  /** This entry is bound in place: a new binding, and its id in the entry's args. */
-  | { kind: 'bind'; id: string; digest: string; tookOver?: McpBinding }
+  /**
+   * This entry is bound in place: a new binding, and its id in the entry's
+   * args. `movedFrom`: the binding of this entry before its project directory
+   * moved, whose backup is filed under this file first (see movedEntry).
+   */
+  | { kind: 'bind'; id: string; digest: string; tookOver?: McpBinding; movedFrom?: McpBinding }
   /** This entry is not bound, with why. `binding` is the pair's binding, when one is stored. */
   | { kind: 'left'; reason: string; binding?: McpBinding }
   /** This entry carries the binding of the entry it names, at another place: a copy. Nothing is written. */
@@ -748,7 +763,8 @@ type BindingPlan =
  * an entry carrying its id, reported as a copy, and the binding replaced where
  * that entry is bound in a home config and is in its file; when that entry is
  * no longer in its config, the one entry of its scope that reads the pair
- * takes it over.
+ * takes it over; a .mcp.json entry carrying its id after its project directory
+ * moved is bound again (see movedEntry).
  * No binding stored: bound in place when this is the one entry of the configs
  * this run rewrites that reads the pair, in a home config, or in the
  * project's .mcp.json when this run stores its secrets into an empty pair or
@@ -777,6 +793,9 @@ async function bindWrapped(
       if (binding.commandDigest === digest) return { kind: 'bound' };
       if (scopeOf(config) === 'home') return { kind: 'rebind', binding, digest };
       return { kind: 'left', reason: changedProjectCommandReason(), binding };
+    }
+    if (carriesId && (await movedEntry(binder, config, reads, binding))) {
+      return placed(config, server, { kind: 'bind', id: newBindingId(), digest, movedFrom: binding });
     }
     if (!here && orphanedBinding(binder, binding) && scopeOf(config) === binding.scope && soleReader(binder, reads)) {
       return placed(config, server, { kind: 'bind', id: newBindingId(), digest, tookOver: binding });
@@ -850,6 +869,10 @@ async function applyBinding(
   if (plan.kind === 'left' || plan.kind === 'copy' || plan.kind === 'replace') return false;
   const reads = wrapperReads(config.client, server);
   const location = { client: config.client, ...mapLocation(config), server: server.name };
+  // A moved entry's backup is filed under this file before its binding is
+  // stored, so mcp-unprotect restores it here, and put back as it was when
+  // the store refuses the binding.
+  let unmove: (() => void) | undefined;
   try {
     if (plan.kind === 'rebind') {
       await storeBindingOf(binder, reads, {
@@ -861,13 +884,26 @@ async function applyBinding(
       result.rebound.push(location);
       return true;
     }
+    if (plan.movedFrom !== undefined) unmove = moveConfigBackup(plan.movedFrom.file, config.filePath, binder.backupDir);
     await storeBindingOf(binder, reads, newBinding(binder, config, server.name, plan.id, plan.digest));
   } catch (err) {
+    try {
+      unmove?.();
+    } catch {
+      // The line this leads to names the store's error.
+    }
     binder.lastError = err;
     return false;
   }
   bindings[server.name] = plan.id;
-  result.bound.push({ ...location, ...(plan.tookOver === undefined ? {} : { tookOver: boundEntry(plan.tookOver) }) });
+  const moved = plan.movedFrom;
+  result.bound.push({
+    ...location,
+    ...(plan.tookOver === undefined ? {} : { tookOver: boundEntry(plan.tookOver) }),
+    ...(moved === undefined
+      ? {}
+      : { movedFrom: { directory: path.dirname(moved.file), ...(moved.commandDigest === plan.digest ? {} : { commandChanged: true as const }) } }),
+  });
   return true;
 }
 
@@ -1017,6 +1053,59 @@ function orphanedBinding(binder: Binder, binding: McpBinding): boolean {
   const map = fileConfigs.find((config) => config.projectKey === binding.projectKey);
   if (map === undefined) return true;
   return !map.servers.some((s) => s.name === binding.server) && !map.unchecked.some((s) => s.name === binding.server);
+}
+
+/**
+ * The state of the file a binding names, on this machine: `present` when
+ * stat answers, `absent` when it fails with ENOENT or ENOTDIR, and `unknown`,
+ * with the error code, when it fails for another reason, such as a directory
+ * this run cannot search. stat follows a symlink, so a dangling one is absent.
+ */
+type RecordFileState = { state: 'present' } | { state: 'absent' } | { state: 'unknown'; code: string };
+
+function recordFileState(binding: Pick<McpBinding, 'file'>): RecordFileState {
+  try {
+    fs.statSync(binding.file);
+    return { state: 'present' };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'unknown error';
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { state: 'absent' } : { state: 'unknown', code };
+  }
+}
+
+/**
+ * Whether a .mcp.json entry carrying a project binding's id, where the
+ * binding names another file, is the binding's own entry, moved with its
+ * project directory: the file the binding names does not exist on this
+ * machine, the store is this machine's alone, the entry is the one entry of
+ * the configs this run rewrites that reads the pair, and this machine's
+ * backup of the file the binding names holds a server of the binding's name
+ * whose env holds every name stored under the pair at an equal value. A copy
+ * made while the original exists, and a binding on a store shared between
+ * machines, are never taken this way.
+ */
+async function movedEntry(
+  binder: Binder,
+  config: McpConfigFile,
+  reads: { client: string; server: string },
+  binding: McpBinding,
+): Promise<boolean> {
+  if (scopeOf(config) !== 'project' || binding.scope !== 'project') return false;
+  if (!soleReader(binder, reads) || !isPerMachineStore(binder.vault.backendName)) return false;
+  if (recordFileState(binding).state !== 'absent') return false;
+  const stored = await binder.vault.getServerSecrets(reads.client, reads.server);
+  return backupHoldsSecrets(binder.backupDir, binding.file, binding.server, stored);
+}
+
+/** The clause a line naming a bound entry ends with when the entry's file does not exist on this machine. */
+const FILE_GONE = (file: string): string => `${listedName(file)} no longer exists.`;
+
+/**
+ * The sentence a line naming a bound entry carries about the entry's file
+ * when it is not present on this machine, or '' when it is.
+ */
+function boundFileClause(binding: McpBinding): string {
+  return recordFileState(binding).state === 'absent' ? FILE_GONE(binding.file) : '';
 }
 
 /**
