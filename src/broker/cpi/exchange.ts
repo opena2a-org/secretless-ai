@@ -11,6 +11,7 @@
  * appearing in this file would be a bug against AAP Principle 4.
  */
 
+import * as crypto from 'crypto';
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import {
   capCredentialLife,
@@ -81,8 +82,10 @@ export class ExchangeProvider implements CredentialProvider {
       throw new Error(`ExchangeProvider received non-exchange binding (${bound.mode})`);
     }
 
-    // 1. Mint the broker assertion from verified ATX claims (never from agent input).
-    const assertion = mintBrokerAssertion(ctx, bound, this.signingKey);
+    // 1. Mint the broker assertion from verified ATX claims (never from agent input). Its `jti`
+    //    (16 random bytes, lowercase hex: AAP §8.1) is drawn here so the credential can report it.
+    const cgtJti = crypto.randomBytes(16).toString('hex');
+    const assertion = mintBrokerAssertion(ctx, bound, this.signingKey, undefined, cgtJti);
 
     // 2. RFC 8693 token exchange for a scoped downstream token.
     const params: Record<string, string> = {
@@ -110,6 +113,7 @@ export class ExchangeProvider implements CredentialProvider {
       token: res.access_token,
       tokenType: res.token_type ?? 'Bearer',
       expiresInSeconds: capCredentialLife(res.expires_in, bound.ttlSeconds),
+      cgtJti,
     };
   }
 }

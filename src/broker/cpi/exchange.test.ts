@@ -182,3 +182,25 @@ describe('Okta adapter (vendor isolation, AAP Principle 4)', () => {
     expect(transport.last?.tokenEndpoint).toBe('https://acme.okta.com/oauth2/aus123/v1/token');
   });
 });
+
+describe('ExchangeProvider reports the CGT it minted', () => {
+  it('reports the jti of the broker assertion it presented, new for each resolution', async () => {
+    const key = generateBrokerSigningKey('https://broker.acme.example', 'broker-key-1');
+    const transport = new FakeTransport();
+    const provider = new ExchangeProvider(
+      { tokenEndpoint: 'https://idp.acme.example/token' },
+      key,
+      transport,
+    );
+    const reported: string[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const cred = await provider.resolve(CTX, BINDING);
+      const presented = transport.last?.params.subject_token ?? '';
+      const claims = JSON.parse(Buffer.from(presented.split('.')[1], 'base64url').toString('utf-8'));
+      expect(cred.cgtJti).toMatch(/^[0-9a-f]{32}$/);
+      expect(cred.cgtJti).toBe(claims.jti);
+      reported.push(cred.cgtJti as string);
+    }
+    expect(reported[0] === reported[1]).toBe(false);
+  });
+});

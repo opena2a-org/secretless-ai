@@ -79,6 +79,12 @@ export interface ScopedCredential {
   tokenType: string;
   /** Seconds until the scoped credential expires: at most the binding's TTL (capCredentialLife). */
   expiresInSeconds: number;
+  /**
+   * The `jti` of the CGT (the broker assertion) minted to obtain this credential, when one was:
+   * 32 lowercase hex characters (AAP §8.1). The grant record carries it, so a token service's
+   * record of the CGT links to the broker's record of the resolution. Absent in Retrieve mode.
+   */
+  cgtJti?: string;
 }
 
 /**

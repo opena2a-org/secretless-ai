@@ -265,13 +265,13 @@ Before the call is made, the broker checks, in order:
 2. With `--aim-url`, that AIM does not report the agent as unverified.
 3. The binding's `match` predicates against the verified credential. A version 1.0 credential is denied here: its signature does not cover the capabilities and OASB level that bindings match on.
 
-Every denial is the same `403 {"error":"denied"}`, so an agent learns nothing about the policy from it. The reason is in the audit log as a `grant` event, with the agent id and the grant. A request the broker cannot parse gets a 400 that says what is missing.
+Every denial is the same `403 {"error":"denied"}`, so an agent learns nothing about the policy from it. The reason is in the audit log as a `grant` event, with the agent's verified DID and the grant: a code that names the check that decided, such as `atx-revoked` or `policy-trust-class-missing` (`GRANT_AUDIT_REASONS` in `src/broker/types.ts` lists every code). Before the credential verifies, the agent id is written only when it is a DID, and a grant only when the grant file names it; anything else is written as `unparsed:<length>`. A request the broker cannot parse gets a 400 that says what is missing.
 
 Things to know:
 
 - The grant file is read at start. Restart the broker after any edit, including adding an agent to `crl.entries`.
 - A file the broker cannot apply as written stops the start with the reason: a key it does not read, a repeated key, a misspelled predicate, an OASB floor it cannot rank. It does not start without the part it could not read.
-- A binding whose `providerId` is not under `providers` loads, and every request for that grant is denied. The audit log records `no provider "<id>"`.
+- A binding whose `providerId` is not under `providers` loads, and every request for that grant is denied. The audit log records `provider-not-registered`.
 - `broker status` does not report grants. The two start lines above are where the loaded counts appear.
 
 ## AIM-connected mode

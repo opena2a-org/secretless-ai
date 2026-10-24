@@ -316,12 +316,17 @@ describe('POST /grant on a broker started by startDaemon', () => {
     expect(audit.some((e) => e.eventType === 'startup')).toBe(true);
     const granted = audit.filter((e) => e.eventType === 'grant');
     expect(granted).toHaveLength(1);
+    expect(claims.jti).toMatch(/^[0-9a-f]{32}$/);
     expect(granted[0]).toMatchObject({
-      agentId: AGENT_ID,
+      agentId: 'did:opena2a:agent:acme/orders-reader',
       credentialName: 'grant://orders-db',
       policyId: 'grant://orders-db',
       result: 'allowed',
+      reason: 'resolved-exchange',
+      cgtJti: claims.jti,
     });
+    // The HTTPS caller delivers no salt, so the record commits to no operation.
+    expect('operationCommitment' in granted[0]).toBe(false);
     expect(JSON.stringify(audit)).not.toContain(SCOPED_TOKEN);
   });
 
@@ -356,7 +361,7 @@ describe('POST /grant on a broker started by startDaemon', () => {
     const denied = readAudit(path.join(dir, 'audit.log')).filter((e) => e.eventType === 'grant');
     expect(denied).toHaveLength(1);
     expect(denied[0].result).toBe('denied');
-    expect(String(denied[0].reason)).toContain('REVOKED');
+    expect(denied[0].reason).toBe('atx-revoked');
   });
 
   it('denies an agent AIM reports as not verified when the broker is started with an AIM URL', async () => {
@@ -381,7 +386,7 @@ describe('POST /grant on a broker started by startDaemon', () => {
     expect(aimLookups).toEqual([`/api/v1/agents/${AGENT_ID}`]);
     expect(tokenRequests).toHaveLength(0);
     const denied = readAudit(path.join(dir, 'audit.log')).filter((e) => e.eventType === 'grant');
-    expect(denied.map((e) => e.reason)).toEqual(['AIM reports agent not verified']);
+    expect(denied.map((e) => e.reason)).toEqual(['aim-agent-unverified']);
   });
 
   it('startDaemon prints nothing on a grant start', async () => {

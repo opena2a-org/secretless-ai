@@ -32,27 +32,53 @@ export interface OperationResult {
 
 /** Performs the downstream call. Injectable so tests don't hit the network. */
 export interface DownstreamCaller {
-  call(audience: string, op: AgentOperation, cred: ScopedCredential): Promise<OperationResult>;
+  /**
+   * Whether this caller delivers the operation salt to the resource with the request. The broker
+   * commits to an operation only when the caller declares that it does: with any other caller it
+   * draws no salt and the record carries no operation commitment, because nobody would hold the
+   * salt that opens it.
+   */
+  readonly deliversSalt?: boolean;
+  /**
+   * `salt`, when given, is the 32-byte salt the broker's record commits to with this operation.
+   * The caller delivers it to the resource with the request, and the resource keeps it beside the
+   * operation in its own record. It never goes inside `op`, a token, a URL or a query parameter,
+   * and the resource never returns it.
+   */
+  call(
+    audience: string,
+    op: AgentOperation,
+    cred: ScopedCredential,
+    salt?: Uint8Array,
+  ): Promise<OperationResult>;
 }
 
 export class EphemeralWorker {
   constructor(private readonly caller: DownstreamCaller) {}
 
+  /** Whether this worker's caller delivers operation salts to the resource (see DownstreamCaller). */
+  get deliversSalt(): boolean {
+    return this.caller.deliversSalt === true;
+  }
+
   /**
    * Run the operation with the scoped credential and return ONLY the result.
    * `cred` is intentionally not returned, not stored on the instance, and not logged.
+   * `salt`, when given, goes to the caller with the operation and nowhere else.
    */
   async run(
     binding: ResourceBinding,
     cred: ScopedCredential,
     op: AgentOperation,
+    salt?: Uint8Array,
   ): Promise<OperationResult> {
     // Origin-pin before the scoped credential is handed to ANY caller implementation: a
     // crafted `op.path` must not be able to repoint the request host and exfiltrate the
     // token. Enforced here (not only in HttpsDownstreamCaller) so every DownstreamCaller —
-    // including proxies and test doubles — inherits the guard. Throws ⇒ caller never runs.
+    // including proxies and test doubles — inherits the guard. Throws ⇒ caller never runs,
+    // and the salt goes nowhere.
     resolveDownstreamUrl(binding.audience, op.path);
-    return this.caller.call(binding.audience, op, cred);
+    return this.caller.call(binding.audience, op, cred, salt);
   }
 }
 
@@ -81,6 +107,12 @@ export function resolveDownstreamUrl(audience: string, path: string): URL {
 
 /** Default HTTPS downstream caller. Adds the scoped token as a bearer credential. */
 export class HttpsDownstreamCaller implements DownstreamCaller {
+  /**
+   * No wire carrier for the salt is named yet, so this caller delivers none, and the broker
+   * commits to no operation it forwards through it.
+   */
+  readonly deliversSalt = false;
+
   call(audience: string, op: AgentOperation, cred: ScopedCredential): Promise<OperationResult> {
     return new Promise((resolve, reject) => {
       let url: URL;

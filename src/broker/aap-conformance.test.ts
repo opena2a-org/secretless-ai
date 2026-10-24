@@ -509,7 +509,7 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
   });
 
   it('audits the verified ATX identity, not the agent-supplied agentId', async () => {
-    const atx = (globalThis as any).__aapTestAtx; // verified identity is "aim_orders_reader"
+    const atx = (globalThis as any).__aapTestAtx; // verified DID is did:opena2a:agent:acme/orders-reader
 
     await brokerPost(socketPath, '/grant', brokerToken, {
       agentId: 'attacker-claims-to-be-someone-else',
@@ -520,7 +520,7 @@ describe('AAP v1 conformance: no credential or backend identifier in the agent c
 
     const audit = fs.readFileSync(auditPath, 'utf-8');
     // The action is attributed to the cryptographically-verified ATX identity...
-    expect(audit).toContain('aim_orders_reader');
+    expect(audit).toContain('"agentId":"did:opena2a:agent:acme/orders-reader"');
     // ...never to the unverified value the caller supplied.
     expect(audit).not.toContain('attacker-claims-to-be-someone-else');
   });
