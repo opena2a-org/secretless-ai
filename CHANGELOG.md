@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**The broker's grant audit record carries the CGT `jti` and a salted operation
+commitment, and names the agent by its verified ATX DID; its reason field is a
+closed code, and unverified inputs are written in parsed form or as a fixed
+marker with their length.** The commitment is the SHA-256 of a fresh 32-byte
+salt followed by the RFC 8785 bytes of the operation as forwarded. The salt
+goes to the resource with the operation and is never written to the log, and a
+downstream caller that does not declare that it delivers the salt gets none, so
+its records carry no commitment. `src/broker/grant-resolver.audit-record.test.ts`
+and `src/broker/grant-resolver.reason-codes.test.ts` check each member and
+code.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more

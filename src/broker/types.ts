@@ -76,24 +76,103 @@ export interface PolicyConstraints {
   // first, and the type should stay silent about it until then.
 }
 
+/**
+ * The reason codes of a grant record (an {@link AuditEntry} with `eventType` "grant"), a closed
+ * set. A code names the check that decided. No text from the agent, the operation, a provider or
+ * the downstream reaches the signed record through `reason`, and no exception text does.
+ */
+export const GRANT_AUDIT_REASONS = [
+  // The ATX did not verify, by the verifier's reject category.
+  'atx-unsupported-version',
+  'atx-expired',
+  'atx-revoked',
+  'atx-untrusted-issuer',
+  'atx-signature-invalid',
+  'atx-malformed',
+  // The ATX did not verify, with no reject category or one this build does not know.
+  'atx-rejected',
+  // The verifier threw.
+  'atx-verifier-error',
+  'aim-agent-unverified',
+  'aim-lookup-error',
+  'grant-reference-invalid',
+  // The grant policy denied, by the predicate that decided.
+  'policy-no-binding',
+  'policy-capabilities-unsigned',
+  'policy-no-capability-list',
+  'policy-trust-class-missing',
+  'policy-trust-level-not-number',
+  'policy-trust-level-below-minimum',
+  'policy-oasb-level-absent',
+  'policy-oasb-level-unrankable',
+  'policy-oasb-level-below-floor',
+  // The grant policy denied without naming a predicate this build knows.
+  'policy-denied',
+  'policy-error',
+  'provider-not-registered',
+  'provider-mode-unsupported',
+  'provider-error',
+  'provider-returned-no-credential',
+  // The operation path would leave the binding's origin; nothing was forwarded.
+  'operation-path-refused',
+  // The operation is outside the JSON value space, so it cannot be committed to; nothing was forwarded.
+  'operation-not-canonical',
+  // The operation was handed to the downstream caller, and the call failed.
+  'downstream-error',
+  // The operation ran, by the CPI mode that resolved its credential.
+  'resolved-retrieve',
+  'resolved-assume',
+  'resolved-exchange',
+] as const;
+
+/** A reason code of a grant record. */
+export type GrantAuditReason = (typeof GRANT_AUDIT_REASONS)[number];
+
+/** The reason codes a grant policy evaluation names for a denial. */
+export type GrantPolicyDenial = Extract<GrantAuditReason, `policy-${string}`>;
+
 /** Audit log entry for credential access attempts. */
 export interface AuditEntry {
   /** ISO 8601 timestamp. */
   timestamp: string;
   /** Event classification (e.g., "resolve", "health", "startup"). */
   eventType: string;
-  /** Agent that made the request. */
+  /**
+   * Agent that made the request. A grant record carries the verified ATX DID once the ATX
+   * verifies. Before that it carries the agent-supplied id only when the id parses as a DID (W3C
+   * DID Core syntax), and otherwise the marker `unparsed:<length>`, the length in UTF-8 bytes.
+   */
   agentId: string;
-  /** Credential that was requested. */
+  /**
+   * Credential that was requested. A grant record carries the grant reference only when it names
+   * a configured grant, and otherwise the marker `unparsed:<length>`.
+   */
   credentialName: string;
   /** Policy rule that matched (empty if no match). */
   policyId: string;
   /** Whether the request was allowed or denied. */
   result: 'allowed' | 'denied';
-  /** Human-readable reason for the decision. */
+  /**
+   * Reason for the decision. A grant record carries a {@link GrantAuditReason} code; other event
+   * types carry a description.
+   */
   reason: string;
   /** Request processing time in milliseconds. */
   latencyMs: number;
+  /**
+   * The `jti` of the CGT minted for this resolution: 32 lowercase hex characters, or
+   * `unparsed:<length>` when a provider reported one in another form. Absent when no CGT was
+   * minted: Retrieve mode, or a denial before minting.
+   */
+  cgtJti?: string;
+  /**
+   * Lowercase hex SHA-256 of a fresh 32-byte salt followed by the RFC 8785 (JCS) bytes of the
+   * operation as handed to the downstream caller. The salt goes to the resource with the
+   * operation, and the resource keeps it beside the operation in its own record; it is never
+   * written here. Absent when the downstream caller does not deliver salts, and on any denial
+   * before the operation is forwarded.
+   */
+  operationCommitment?: string;
 }
 
 /** AIM agent identity information (subset of AIM API response). */

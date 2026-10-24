@@ -5,9 +5,10 @@
  * scoped bearer token rides on that request — a host change is a token exfiltration.
  */
 
+import * as crypto from 'crypto';
 import { describe, it, expect } from 'vitest';
-import { resolveDownstreamUrl, HttpsDownstreamCaller } from './worker';
-import type { ScopedCredential } from './cpi/types';
+import { resolveDownstreamUrl, EphemeralWorker, HttpsDownstreamCaller } from './worker';
+import type { ResourceBinding, ScopedCredential } from './cpi/types';
 
 const AUDIENCE = 'https://api.orders.internal';
 
@@ -56,5 +57,57 @@ describe('HttpsDownstreamCaller — rejects host-changing paths without making a
     await expect(
       caller.call(AUDIENCE, { method: 'GET', path: '@evil.com/collect' }, cred),
     ).rejects.toThrow(/origin|absolute/i);
+  });
+});
+
+describe('EphemeralWorker — the operation salt goes to the caller and nowhere else', () => {
+  const cred: ScopedCredential = {
+    token: crypto.randomBytes(16).toString('hex'),
+    tokenType: 'Bearer',
+    expiresInSeconds: 300,
+  };
+  const binding: ResourceBinding = {
+    mode: 'exchange',
+    providerId: 'orders-idp',
+    scope: 'orders.read',
+    audience: AUDIENCE,
+    ttlSeconds: 300,
+  };
+  const answer = async () => ({ status: 200, body: null });
+
+  it('reports whether its caller delivers salts', () => {
+    expect(new EphemeralWorker({ deliversSalt: true, call: answer }).deliversSalt).toBe(true);
+    expect(new EphemeralWorker({ call: answer }).deliversSalt).toBe(false);
+    expect(new EphemeralWorker(new HttpsDownstreamCaller()).deliversSalt).toBe(false);
+  });
+
+  it('hands the salt to the caller with the operation', async () => {
+    const received: Array<Uint8Array | undefined> = [];
+    const worker = new EphemeralWorker({
+      deliversSalt: true,
+      call: async (_audience, _op, _cred, salt) => {
+        received.push(salt);
+        return answer();
+      },
+    });
+    const salt = crypto.randomBytes(32);
+    await worker.run(binding, cred, { method: 'GET', path: '/orders' }, salt);
+    expect(received).toHaveLength(1);
+    expect(Buffer.from(received[0] as Uint8Array).equals(salt)).toBe(true);
+  });
+
+  it('never runs the caller, so the salt goes nowhere, when the origin pin refuses the path', async () => {
+    let ran = false;
+    const worker = new EphemeralWorker({
+      deliversSalt: true,
+      call: async () => {
+        ran = true;
+        return answer();
+      },
+    });
+    await expect(
+      worker.run(binding, cred, { method: 'GET', path: '//evil.com/collect' }, crypto.randomBytes(32)),
+    ).rejects.toThrow(/absolute/);
+    expect(ran).toBe(false);
   });
 });

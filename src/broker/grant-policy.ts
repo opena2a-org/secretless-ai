@@ -27,6 +27,7 @@
 
 import type { ResolutionContext } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import { MAX_GRANT_TTL_SECONDS, type CpiMode, type ResourceBinding } from './cpi/types';
+import type { GrantPolicyDenial } from './types';
 import { isGrantRef } from '../grant';
 import { nearestMatch } from '../near-miss';
 
@@ -74,8 +75,13 @@ export interface GrantBinding {
 export interface GrantEvaluation {
   allowed: boolean;
   binding?: GrantBinding;
-  /** Reason for the decision. Logged to audit; NEVER returned to the agent (AAP §6.6). */
+  /**
+   * Reason for the decision, for a caller's diagnostics; NEVER returned to the agent (AAP §6.6).
+   * It can quote what the credential carries, so the grant record writes `code` instead.
+   */
   reason: string;
+  /** Set on every denial: the predicate that decided, as the code the grant record carries. */
+  code?: GrantPolicyDenial;
 }
 
 /**
@@ -188,6 +194,15 @@ export class GrantPolicy {
   }
 
   /**
+   * True when a binding governs exactly this grant reference. The grant record writes a grant
+   * reference only when it passes this check, so what it writes is the operator's name and never
+   * text an agent chose.
+   */
+  configures(grant: unknown): boolean {
+    return typeof grant === 'string' && this.bindings.some((b) => b.grant === grant);
+  }
+
+  /**
    * Evaluate a grant name against the policy and a verified-ATX context. Default-deny.
    * `grantName` is the logical name (without the `grant://` scheme).
    */
@@ -196,12 +211,20 @@ export class GrantPolicy {
     // from inside the decision function, so a caller's catch decides the outcome. The in-tree
     // caller always passes a parsed string; a library consumer need not.
     if (typeof grantName !== 'string') {
-      return { allowed: false, reason: 'grant name is not a string (default deny)' };
+      return {
+        allowed: false,
+        reason: 'grant name is not a string (default deny)',
+        code: 'policy-no-binding',
+      };
     }
     const target = `grant://${grantName}`;
     const binding = this.bindings.find((b) => b.grant === target);
     if (!binding) {
-      return { allowed: false, reason: `No binding for ${target} (default deny)` };
+      return {
+        allowed: false,
+        reason: `No binding for ${target} (default deny)`,
+        code: 'policy-no-binding',
+      };
     }
     const m = binding.match;
 
@@ -219,6 +242,7 @@ export class GrantPolicy {
         reason:
           'ATX does not cover capabilities or scan summary under its signature (credential ' +
           'version 1.0), so the predicates this binding matches on are set by the holder',
+        code: 'policy-capabilities-unsigned',
       };
     }
 
@@ -229,7 +253,12 @@ export class GrantPolicy {
     // denies: the alternative is a raw TypeError thrown from inside the decision function, or a
     // comparison against a non-number that is silently `false` and therefore never denies.
     if (!Array.isArray(ctx.capabilities)) {
-      return { allowed: false, binding, reason: 'ATX carries no capability list' };
+      return {
+        allowed: false,
+        binding,
+        reason: 'ATX carries no capability list',
+        code: 'policy-no-capability-list',
+      };
     }
     // Read by INDEX. `Array.isArray` is true for an Array subclass and for a Proxy over an array,
     // and both can override `includes` — but a `for…of` is no better, because it consults
@@ -252,7 +281,12 @@ export class GrantPolicy {
       if (ctx.capabilities[i] === m.trustClass) { hasTrustClass = true; break; }
     }
     if (!hasTrustClass) {
-      return { allowed: false, binding, reason: `ATX lacks trust class "${m.trustClass}"` };
+      return {
+        allowed: false,
+        binding,
+        reason: `ATX lacks trust class "${m.trustClass}"`,
+        code: 'policy-trust-class-missing',
+      };
     }
     if (m.minTrustLevel !== undefined) {
       if (typeof ctx.trustLevel !== 'number' || !Number.isFinite(ctx.trustLevel)) {
@@ -260,6 +294,7 @@ export class GrantPolicy {
           allowed: false,
           binding,
           reason: `ATX trust level is not a number, so it satisfies no minimum (required ${m.minTrustLevel})`,
+          code: 'policy-trust-level-not-number',
         };
       }
       if (ctx.trustLevel < m.minTrustLevel) {
@@ -267,6 +302,7 @@ export class GrantPolicy {
           allowed: false,
           binding,
           reason: `trust level ${ctx.trustLevel} below minimum ${m.minTrustLevel}`,
+          code: 'policy-trust-level-below-minimum',
         };
       }
     }
@@ -289,6 +325,7 @@ export class GrantPolicy {
           allowed: false,
           binding,
           reason: `OASB level absent; binding requires ${m.oasbLevel}`,
+          code: 'policy-oasb-level-absent',
         };
       }
       if (have === undefined) {
@@ -308,6 +345,7 @@ export class GrantPolicy {
             // binding it violated.
             `OASB level ${describe(ctx.oasbLevel)} is not one of ${rankableLevels()}, so it ` +
             `satisfies no floor; binding requires ${m.oasbLevel}`,
+          code: 'policy-oasb-level-unrankable',
         };
       }
       if (have < required) {
@@ -315,6 +353,7 @@ export class GrantPolicy {
           allowed: false,
           binding,
           reason: `OASB level ${ctx.oasbLevel} below required ${m.oasbLevel}`,
+          code: 'policy-oasb-level-below-floor',
         };
       }
     }

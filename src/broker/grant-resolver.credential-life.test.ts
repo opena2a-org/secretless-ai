@@ -17,6 +17,7 @@ import type {
   ResolutionContext,
 } from '@opena2a/atx-verify' with { 'resolution-mode': 'import' };
 import type { AuditLogger } from './audit';
+import type { AuditEntry } from './types';
 import { generateBrokerSigningKey } from './cpi/assertion';
 import { ExchangeProvider, type TokenExchangeResponse } from './cpi/exchange';
 import { MapProviderRegistry } from './cpi/registry';
@@ -118,7 +119,7 @@ async function resolveThrough(
   const handed: ScopedCredential[] = [];
   const reasons: string[] = [];
   const audit = {
-    logEvent: (...event: unknown[]) => void reasons.push(String(event[5])),
+    log: (entry: AuditEntry) => void reasons.push(entry.reason),
   } as unknown as AuditLogger;
   const resolver = new GrantResolver({
     verifier: VERIFIER,
@@ -216,7 +217,7 @@ describe('GrantResolver: the life handed to the worker is held to the binding TT
       const { outcome, handed, reasons } = await resolveThrough(providerReturning(nothing));
       expect(outcome).toEqual({ ok: false, denial: { code: 'denied' } });
       expect(handed).toEqual([]);
-      expect(reasons).toEqual(['provider "orders-idp" returned no credential']);
+      expect(reasons).toEqual(['provider-returned-no-credential']);
     });
   }
 });
@@ -232,13 +233,25 @@ describe('The exchange site and the grant resolver report a life by one rule', (
         ttlSeconds: 300,
         trustClass: 'orders:read',
       });
-      expect(cred).toEqual({ token: TOKEN, tokenType: 'Bearer', expiresInSeconds: expected });
+      expect(cred).toEqual({
+        token: TOKEN,
+        tokenType: 'Bearer',
+        expiresInSeconds: expected,
+        cgtJti: expect.stringMatching(/^[0-9a-f]{32}$/),
+      });
     });
 
     it(`the resolver hands on ${expected}s from ExchangeProvider for expires_in ${label(stated)}`, async () => {
       const { outcome, handed } = await resolveThrough(exchangeStating(stated));
       expect(outcome.ok).toBe(true);
-      expect(handed).toEqual([{ token: TOKEN, tokenType: 'Bearer', expiresInSeconds: expected }]);
+      expect(handed).toEqual([
+        {
+          token: TOKEN,
+          tokenType: 'Bearer',
+          expiresInSeconds: expected,
+          cgtJti: expect.stringMatching(/^[0-9a-f]{32}$/),
+        },
+      ]);
     });
   }
 });
