@@ -133,10 +133,35 @@ async function projectRecord(cell: string, name = 'a') {
   return { a, file, entry, sentinel, id };
 }
 
-/** The run started the server: exit 0 and the sentinel written. */
+/** `github` in the home cursor config, protected by protect-mcp: a home binding. */
+async function homeRecord(cell: string) {
+  const sentinel = path.join(scratch, 'home-started.json');
+  const file = write(path.join(home, '.cursor', 'mcp.json'), { mcpServers: { github: plain(sentinel) } });
+  await protectMcp({ projectDir: dir('setup'), wrapperPath: WRAPPER_PATH });
+  const entry = entryOf(file, 'github');
+  const id = plant(cell, file, idOf(entry.args));
+  return { file, entry, sentinel, id };
+}
+
+/** A server that runs through the wrapper, as an earlier version wrote it: no --binding. */
+const wrappedUnbound = (client: string, server: string) => ({
+  command: WRAPPER_PATH,
+  args: ['--server', server, '--client', client, '--', process.execPath, '-e', 'x'],
+  env: {},
+});
+
+/** Puts the values back in an entry's env, as an operator does by hand. */
+function putValuesBack(file: string, name: string): void {
+  const config = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  config.mcpServers[name].env = { ...config.mcpServers[name].env, [NAME]: VALUE };
+  write(file, config);
+}
+
+/** The run started the server: exit 0 and the sentinel written, holding the stored value. */
 function expectStarted(res: ReturnType<typeof startIn>, sentinel: string) {
   expect(res.status, res.stderr).toBe(0);
   expect(fs.existsSync(sentinel)).toBe(true);
+  expect(JSON.parse(fs.readFileSync(sentinel, 'utf-8'))[NAME]).toBe(VALUE);
   fs.rmSync(sentinel, { force: true });
 }
 
@@ -161,6 +186,86 @@ describe('mcp-unprotect deletes a pair only where its binding names a file it re
     expect(await store().getServerSecrets('claude-code', 'github')).toEqual({ [NAME]: VALUE });
     expect(await store().getBinding('claude-code', 'github')).toEqual(record);
     expectStarted(startIn('u2', a, entry.args), sentinel);
+  });
+});
+
+describe('a pair whose names and binding were deleted is bound again only to the values an entry brings', () => {
+  const NOT_IN_BACKUP =
+    "the secrets stored under claude-code/github are not in protect-mcp's backup of this file, and a project-level entry is bound only to values protect-mcp stores from its file. "
+    + "If this entry is yours, put the server's values in its env, and run `npx secretless-ai protect-mcp`.";
+
+  it('m1: a .mcp.json entry given its values again is bound with a new id, its values stored, and it starts', async () => {
+    const { a, file, sentinel, id: stale } = await projectRecord('m1');
+    await store().removeServerSecrets('claude-code', 'github');
+    putValuesBack(file, 'github');
+
+    const result = await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
+
+    expect(result.bound).toEqual([{ client: 'claude-code', filePath: path.join(a, '.mcp.json'), projectPath: '.mcp.json', server: 'github' }]);
+    const entry = entryOf(file, 'github');
+    const record = await store().getBinding('claude-code', 'github');
+    expect(record).toMatchObject({ scope: 'project', file: path.join(a, '.mcp.json') });
+    expect(idOf(entry.args)).toBe(record!.id);
+    expect(record!.id).not.toBe(stale);
+    plant('m1', file, record!.id);
+    expect(entry.env ?? {}).not.toHaveProperty(NAME);
+    expect(await store().getServerSecrets('claude-code', 'github')).toEqual({ [NAME]: VALUE });
+    expectStarted(startIn('m1', a, entry.args), sentinel);
+  });
+
+  it('m2: a home entry given its values again is bound with a new id, its values stored, and it starts', async () => {
+    const { file, sentinel, id: stale } = await homeRecord('m2');
+    await store().removeServerSecrets('cursor', 'github');
+    putValuesBack(file, 'github');
+
+    const result = await protectMcp({ projectDir: dir('setup'), wrapperPath: WRAPPER_PATH });
+
+    expect(result.bound).toEqual([{ client: 'cursor', filePath: file, server: 'github' }]);
+    const entry = entryOf(file, 'github');
+    const record = await store().getBinding('cursor', 'github');
+    expect(record).toMatchObject({ scope: 'home', file });
+    expect(idOf(entry.args)).toBe(record!.id);
+    expect(record!.id).not.toBe(stale);
+    plant('m2', file, record!.id);
+    expect(entry.env ?? {}).not.toHaveProperty(NAME);
+    expect(await store().getServerSecrets('cursor', 'github')).toEqual({ [NAME]: VALUE });
+    expectStarted(startIn('m2', dir('elsewhere'), entry.args), sentinel);
+  });
+
+  it('m3: a .mcp.json entry with no value in its env is left, though the backup holds a server of its name; nothing is written', async () => {
+    const { a, file } = await projectRecord('m3');
+    await store().removeServerSecrets('claude-code', 'github');
+    const before = fs.readFileSync(file, 'utf-8');
+
+    const result = await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
+
+    expect(result.bound).toEqual([]);
+    expect(result.unbound).toEqual([
+      { client: 'claude-code', filePath: path.join(a, '.mcp.json'), projectPath: '.mcp.json', server: 'github', reason: NOT_IN_BACKUP },
+    ]);
+    expect(await store().getBinding('claude-code', 'github')).toBeUndefined();
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+  });
+
+  it('m4: with a second wrapped reader of the pair in a home config, both are left with the others reason and nothing is stored', async () => {
+    const { a, file } = await projectRecord('m4');
+    await store().removeServerSecrets('claude-code', 'github');
+    putValuesBack(file, 'github');
+    const settings = write(path.join(home, '.claude', 'settings.json'), { mcpServers: { github: wrappedUnbound('claude-code', 'github') } });
+
+    const result = await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
+
+    const others = (other: string) =>
+      `claude-code/github is also read by server "github" in ${other}, and the secrets stored under a name are bound to one entry only. `
+      + 'Keep one of these entries, remove the others, and run `npx secretless-ai protect-mcp`; to run another as well, add it again under a new name with its values.';
+    expect(result.bound).toEqual([]);
+    expect(result.unbound).toEqual(expect.arrayContaining([
+      { client: 'claude-code', filePath: path.join(a, '.mcp.json'), projectPath: '.mcp.json', server: 'github', reason: others(settings) },
+      { client: 'claude-code', filePath: settings, server: 'github', reason: others(path.join(a, '.mcp.json')) },
+    ]));
+    expect(result.unbound).toHaveLength(2);
+    expect(await store().getServerSecrets('claude-code', 'github')).toEqual({});
+    expect(await store().getBinding('claude-code', 'github')).toBeUndefined();
   });
 });
 
