@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { McpVault } from './vault';
+import { protectMcp } from './protect';
+import { McpVault, commandDigest, newBindingId } from './vault';
 import { rewriteConfig } from './rewrite';
 import { createBackend } from '../backends/factory';
 import type { ResolveOptions, WritableSecretBackend } from '../backends/types';
-import { runMcpUnprotect } from '../commands/mcp';
+import { runMcpUnprotect, runProtectMcp } from '../commands/mcp';
 
 /**
  * A binding on a store shared between machines (1password, vault, gcp-sm):
@@ -126,5 +127,70 @@ describe('mcp-unprotect on a shared store', () => {
     );
     expect(output).not.toContain('Deleted from the store');
     expect(await sharedVault().getServerSecrets('claude-code', 'github')).toEqual({ [NAME]: VALUE });
+  });
+});
+
+describe('protect-mcp on a shared store', () => {
+  /** A server that runs through the wrapper, as an earlier version wrote it: no --binding. */
+  const wrappedUnbound = (client: string, server: string) => ({
+    command: WRAPPER_PATH,
+    args: ['--server', server, '--client', client, '--', process.execPath, '-e', 'x'],
+    env: {},
+  });
+
+  it('e3: a home binding whose file is absent here is not taken over, and the line says only that the file was not found on this machine', async () => {
+    const gone = path.join(home, '.cursor', 'mcp.json');
+    await sharedVault().storeBinding('cursor', 'github', {
+      schema: 1,
+      id: newBindingId(),
+      scope: 'home',
+      file: gone,
+      client: 'cursor',
+      server: 'github',
+      commandDigest: commandDigest(process.execPath, ['-e', 'x']),
+      boundAt: new Date().toISOString(),
+      boundBy: 'test',
+    });
+    await sharedVault().storeServerSecrets('cursor', 'github', { [NAME]: VALUE });
+    const settings = write(path.join(home, '.claude', 'settings.json'), { mcpServers: { github: wrappedUnbound('cursor', 'github') } });
+    const before = fs.readFileSync(settings, 'utf-8');
+    const record = await sharedVault().getBinding('cursor', 'github');
+
+    const { code, output } = await run(() => runProtectMcp([]));
+
+    expect(code).toBe(0);
+    expect(output).toContain(
+      `    ? github: not bound: the secrets stored under cursor/github are bound to server "github" in ${gone}. `
+        + `To run this server as well, add it again under a new name with its values and run \`npx secretless-ai protect-mcp\`. ${gone} was not found on this machine.`,
+    );
+    expect(output).not.toContain('no longer exists');
+    expect(output).not.toContain('mcp-forget');
+    expect(output).not.toContain('took over');
+    expect(fs.readFileSync(settings, 'utf-8')).toBe(before);
+    expect(await sharedVault().getBinding('cursor', 'github')).toEqual(record);
+  });
+
+  it('e3: a .mcp.json entry whose project directory moved is not bound again, though this machine\'s backup holds the stored values', async () => {
+    const a = fs.realpathSync(project);
+    const file = write(path.join(a, '.mcp.json'), { mcpServers: { github: plain() } });
+    await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
+    const record = await sharedVault().getBinding('claude-code', 'github');
+    expect(record).toMatchObject({ scope: 'project', file });
+    const a2 = `${a}-moved`;
+    fs.renameSync(a, a2);
+    const moved = path.join(a2, '.mcp.json');
+    const before = fs.readFileSync(moved, 'utf-8');
+
+    try {
+      const { output } = await run(() => runProtectMcp([]), a2);
+
+      expect(output).toContain(`it carries the binding of server "github" in ${file}, so the wrapper gives it that server's secrets. ${file} was not found on this machine.`);
+      expect(output).not.toContain('bound again');
+      expect(output).not.toContain('mcp-forget');
+      expect(fs.readFileSync(moved, 'utf-8')).toBe(before);
+      expect(await sharedVault().getBinding('claude-code', 'github')).toEqual(record);
+    } finally {
+      fs.renameSync(a2, a);
+    }
   });
 });
