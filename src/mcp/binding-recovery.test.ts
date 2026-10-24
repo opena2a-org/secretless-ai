@@ -452,6 +452,178 @@ describe('T7: protect-mcp binds again a .mcp.json entry whose project directory 
   });
 });
 
+describe('X3: an entry at its binding\'s place carrying another id is bound again in a home config, and left in a .mcp.json', () => {
+  /** Writes `id` as the entry's --binding, or removes the flag and its value where `id` is undefined. */
+  function setId(file: string, name: string, id: string | undefined): void {
+    const config = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const args: string[] = config.mcpServers[name].args;
+    const at = args.indexOf('--binding');
+    if (id === undefined) args.splice(at, 2);
+    else args[at + 1] = id;
+    write(file, config);
+  }
+
+  /** The wrapper refused the entry with B1, the binding check: exit 1, nothing started. */
+  function expectB1(res: ReturnType<typeof startIn>, sentinel: string, client: string) {
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(`The binding in the config entry for client "${client}", server "github" does not match the one stored for its secrets`);
+    expect(fs.existsSync(sentinel)).toBe(false);
+  }
+
+  const OTHER_ID_PROJECT =
+    'its binding does not match the one stored for claude-code/github. '
+    + 'If this entry is yours, add the server again under a new name with its values, remove this entry, and run `npx secretless-ai protect-mcp`.';
+
+  it('X3-a and X3-f: a home entry whose id was replaced is refused with B1, then bound again with its binding\'s id; nothing else changes, and it starts', async () => {
+    const { file, sentinel, id } = await homeRecord('X3-a');
+    const bound = fs.readFileSync(file, 'utf-8');
+    const record = await store().getBinding('cursor', 'github');
+    const stale = newBindingId();
+    setId(file, 'github', stale);
+    plant('X3-a', file, stale);
+
+    const refused = startIn('X3-a', dir('elsewhere'), entryOf(file, 'github').args);
+    expectB1(refused, sentinel, 'cursor');
+    // X3-f: the refusal does not say the stored binding is another entry's.
+    expect(refused.stderr).not.toMatch(/another|different/);
+
+    const output = await run('X3-a', () => runProtectMcp([]), dir('setup'));
+
+    expect(output).toContain(`  cursor (${file})\n    ~ github: its binding was out of date; bound again\n`);
+    expect(output.match(/^ {4}~ /gm)).toHaveLength(1);
+    expect(idOf(entryOf(file, 'github').args)).toBe(id);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(bound);
+    expect(await store().getBinding('cursor', 'github')).toEqual(record);
+    expectStarted(startIn('X3-a', dir('elsewhere'), entryOf(file, 'github').args), sentinel);
+  });
+
+  it('X3-b: the same with a child argument changed: the binding takes the command first, then the entry its id, and it starts', async () => {
+    const { file, sentinel, id } = await homeRecord('X3-b');
+    const stale = newBindingId();
+    setId(file, 'github', stale);
+    plant('X3-b', file, stale);
+    const config = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    config.mcpServers.github.args = [...config.mcpServers.github.args, 'extra'];
+    write(file, config);
+
+    const output = await run('X3-b', () => runProtectMcp([]), dir('setup'));
+
+    expect(output).toContain(
+      `  cursor (${file})\n    ~ github: its binding was out of date; bound again; its command or arguments changed since it was bound\n`,
+    );
+    expect(output.match(/^ {4}~ /gm)).toHaveLength(1);
+    const entry = entryOf(file, 'github');
+    expect(idOf(entry.args)).toBe(id);
+    expect(await store().getBinding('cursor', 'github')).toMatchObject({ id, file, commandDigest: digestOf(entry.args) });
+    expectStarted(startIn('X3-b', dir('elsewhere'), entry.args), sentinel);
+  });
+
+  it('X3-c: a .mcp.json entry whose id was replaced is left, its line gives the new-name remedy, and nothing is written', async () => {
+    const { a, file } = await projectRecord('X3-c');
+    const stale = newBindingId();
+    setId(file, 'github', stale);
+    plant('X3-c', file, stale);
+    const before = fs.readFileSync(file, 'utf-8');
+    const record = await store().getBinding('claude-code', 'github');
+
+    const output = await run('X3-c', () => runProtectMcp([]), a);
+
+    expect(output).toContain(`  claude-code (.mcp.json)\n    ? github: not bound: ${OTHER_ID_PROJECT}\n`);
+    expect(output).not.toContain('mcp-forget');
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    expect(await store().getBinding('claude-code', 'github')).toEqual(record);
+  });
+
+  it('X3-d: a home entry at its binding\'s place with no --binding is given its binding\'s id, and starts', async () => {
+    const { file, sentinel, id } = await homeRecord('X3-d');
+    const bound = fs.readFileSync(file, 'utf-8');
+    setId(file, 'github', undefined);
+
+    const output = await run('X3-d', () => runProtectMcp([]), dir('setup'));
+
+    expect(output).toContain(`  cursor (${file})\n    ~ github: its binding was out of date; bound again\n`);
+    expect(idOf(entryOf(file, 'github').args)).toBe(id);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(bound);
+    expectStarted(startIn('X3-d', dir('elsewhere'), entryOf(file, 'github').args), sentinel);
+  });
+
+  it('X3-e: a stale home entry and a copy carrying its binding, seen in one run, converge: the entry carries the binding\'s id, the copy is refused, and a second run writes nothing', async () => {
+    const { file, entry, sentinel, id } = await homeRecord('X3-e');
+    const p = dir('p');
+    const copy = write(path.join(p, '.mcp.json'), { mcpServers: { github: entry } });
+    const stale = newBindingId();
+    setId(file, 'github', stale);
+    plant('X3-e', file, stale);
+
+    await run('X3-e', () => runProtectMcp([]), p);
+
+    const record = await store().getBinding('cursor', 'github');
+    expect(idOf(entryOf(file, 'github').args)).toBe(record!.id);
+    plant('X3-e', file, record!.id);
+    expect(idOf(entryOf(copy, 'github').args)).toBe(id);
+    expectB1(startIn('X3-e', p, entryOf(copy, 'github').args), sentinel, 'cursor');
+    expectStarted(startIn('X3-e', dir('elsewhere'), entryOf(file, 'github').args), sentinel);
+
+    const files = [fs.readFileSync(file, 'utf-8'), fs.readFileSync(copy, 'utf-8')];
+    await run('X3-e', () => runProtectMcp([]), p);
+    expect([fs.readFileSync(file, 'utf-8'), fs.readFileSync(copy, 'utf-8')]).toEqual(files);
+    expect(await store().getBinding('cursor', 'github')).toEqual(record);
+  });
+
+  it('T9: after the binding\'s id is replaced in the store, protect-mcp writes it into the home entry; the entry starts, and one carrying the old id is refused', async () => {
+    const { file, entry, sentinel, id } = await homeRecord('T9');
+    const record = await store().getBinding('cursor', 'github');
+    const replaced = newBindingId();
+    await store().storeBinding('cursor', 'github', { ...record!, id: replaced });
+
+    await run('T9', () => runProtectMcp([]), dir('setup'));
+
+    expect(idOf(entryOf(file, 'github').args)).toBe(replaced);
+    plant('T9', file, replaced);
+    expect(idOf(entry.args)).toBe(id);
+    expectStarted(startIn('T9', dir('elsewhere'), entryOf(file, 'github').args), sentinel);
+    expectB1(startIn('T9', dir('elsewhere'), entry.args), sentinel, 'cursor');
+  });
+
+  it('st1: a .mcp.json entry carrying another id: after protect-mcp the file and the binding are byte-identical, and it is refused with B1 in its project', async () => {
+    const { a, file, sentinel } = await projectRecord('st1');
+    const stale = newBindingId();
+    setId(file, 'github', stale);
+    plant('st1', file, stale);
+    const before = fs.readFileSync(file, 'utf-8');
+    const record = await store().getBinding('claude-code', 'github');
+
+    await run('st1', () => runProtectMcp([]), a);
+
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    expect(await store().getBinding('claude-code', 'github')).toEqual(record);
+    expectB1(startIn('st1', a, entryOf(file, 'github').args), sentinel, 'claude-code');
+  });
+
+  it('st2: following the printed remedy, the server added again under a new name with its values is bound and starts', async () => {
+    const { a, file } = await projectRecord('st2');
+    const stale = newBindingId();
+    setId(file, 'github', stale);
+    plant('st2', file, stale);
+    const output = await run('st2', () => runProtectMcp([]), a);
+    expect(output).toContain(OTHER_ID_PROJECT);
+
+    // Add it again under a new name with its values, remove this entry, and run protect-mcp.
+    const sentinel = path.join(scratch, 'renamed-started.json');
+    const config = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    delete config.mcpServers.github;
+    config.mcpServers['github-2'] = plain(sentinel);
+    write(file, config);
+    const again = await run('st2', () => runProtectMcp([]), a);
+
+    expect(again).toContain('  + claude-code/github-2\n');
+    const entry = entryOf(file, 'github-2');
+    plant('st2', file, idOf(entry.args));
+    expect(await store().getBinding('claude-code', 'github-2')).toMatchObject({ id: idOf(entry.args), scope: 'project' });
+    expectStarted(startIn('st2', a, entry.args), sentinel);
+  });
+});
+
 describe('no output carries a binding id', () => {
   it('the stdout and stderr every cell above captured hold none of the ids planted, and each planted config holds its id', () => {
     expect(planted.length).toBeGreaterThan(0);

@@ -122,13 +122,18 @@ export interface BoundMcpServer extends McpServerMapLocation {
 }
 
 /**
- * A bound server in a home config whose command or arguments changed since
- * it was bound, bound again this run to the command it has now.
+ * A bound server in a home config bound again this run: its command or
+ * arguments changed since it was bound, and the binding takes the command it
+ * has now; or, with `outOfDate`, it is at its binding's place and carried no
+ * id or another one, and its binding's id is written into it, after the
+ * binding takes its command where that changed (`commandChanged`).
  */
 export interface ReboundMcpServer extends McpServerMapLocation {
   client: string;
   /** Server name as written in the config */
   server: string;
+  outOfDate?: true;
+  commandChanged?: true;
 }
 
 /**
@@ -447,7 +452,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
             result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...(why === undefined ? { replaced: true } : { replaceError: why }) });
           }
           const bound = await applyBinding(binder, plan, config, server, bindings, result);
-          if (!bound && (plan.kind === 'bind' || plan.kind === 'rebind')) {
+          if (!bound && (plan.kind === 'bind' || plan.kind === 'rebind' || plan.kind === 'stale')) {
             result.unbound.push({ ...location, reason: bindingNotStoredReason(binder.lastError) });
           }
 
@@ -740,6 +745,12 @@ type BindingPlan =
   /** The pair is bound to this entry, in a home config, and its command changed: the binding takes its command now. */
   | { kind: 'rebind'; binding: McpBinding; digest: string }
   /**
+   * This entry, in a home config, is at its binding's place and carries no id
+   * or another one: the binding's id is written into its args, after the
+   * binding takes its command where that changed.
+   */
+  | { kind: 'stale'; binding: McpBinding; digest: string }
+  /**
    * This entry is bound in place: a new binding, and its id in the entry's
    * args. `movedFrom`: the binding of this entry before its project directory
    * moved, whose backup is filed under this file first (see movedEntry).
@@ -764,7 +775,10 @@ type BindingPlan =
  * that entry is bound in a home config and is in its file; when that entry is
  * no longer in its config, the one entry of its scope that reads the pair
  * takes it over; a .mcp.json entry carrying its id after its project directory
- * moved is bound again (see movedEntry).
+ * moved is bound again (see movedEntry). At the binding's place with no id or
+ * another one: a home entry is given the binding's id, since its file is the
+ * operator's and the id's only other copy is in it; a .mcp.json entry is left,
+ * since its file comes with the repository.
  * No binding stored: bound in place when this is the one entry of the configs
  * this run rewrites that reads the pair, in a home config, or in the
  * project's .mcp.json when this run stores its secrets into an empty pair or
@@ -801,6 +815,11 @@ async function bindWrapped(
       return placed(config, server, { kind: 'bind', id: newBindingId(), digest, tookOver: binding });
     }
     if (carriesId) return replacePlan(binder, binding) ?? { kind: 'copy', binding };
+    if (here && binding.scope === 'home') {
+      const args = rawServerArgs(config, server.name);
+      if (args === undefined || withWrapperBinding(args, binding.id) === undefined) return { kind: 'left', reason: NO_BINDING_ARG };
+      return { kind: 'stale', binding, digest };
+    }
     if (here) return { kind: 'left', reason: otherIdReason(reads), binding };
     return { kind: 'left', reason: boundElsewhereReason(reads, binding), binding };
   }
@@ -820,6 +839,9 @@ async function bindWrapped(
   return placed(config, server, { kind: 'bind', id: newBindingId(), digest });
 }
 
+/** Why an entry whose args cannot take an id in place is left. */
+const NO_BINDING_ARG = 'its args do not take a --binding before the -- that ends its wrapper\'s own args';
+
 /**
  * A plan that writes an id into an entry's args, when the args take it in
  * place (see withWrapperBinding), and otherwise one that leaves the entry.
@@ -827,7 +849,7 @@ async function bindWrapped(
 function placed(config: McpConfigFile, server: McpServerEntry, plan: Extract<BindingPlan, { kind: 'bind' }>): BindingPlan {
   const args = rawServerArgs(config, server.name);
   if (args === undefined || withWrapperBinding(args, plan.id) === undefined) {
-    return { kind: 'left', reason: 'its args do not take a --binding before the -- that ends its wrapper\'s own args' };
+    return { kind: 'left', reason: NO_BINDING_ARG };
   }
   return plan;
 }
@@ -882,6 +904,22 @@ async function applyBinding(
         boundBy: binder.boundBy,
       });
       result.rebound.push(location);
+      return true;
+    }
+    if (plan.kind === 'stale') {
+      // The binding takes the entry's command before its id is written into
+      // the entry, so a store that refuses it leaves the entry as it is.
+      const commandChanged = plan.binding.commandDigest !== plan.digest;
+      if (commandChanged) {
+        await storeBindingOf(binder, reads, {
+          ...plan.binding,
+          commandDigest: plan.digest,
+          boundAt: new Date().toISOString(),
+          boundBy: binder.boundBy,
+        });
+      }
+      bindings[server.name] = plan.binding.id;
+      result.rebound.push({ ...location, outOfDate: true, ...(commandChanged ? { commandChanged: true as const } : {}) });
       return true;
     }
     if (plan.movedFrom !== undefined) unmove = moveConfigBackup(plan.movedFrom.file, config.filePath, binder.backupDir);
@@ -1171,8 +1209,17 @@ function boundElsewhereReason(reads: { client: string; server: string }, binding
     + `To run this server as well, add it again under a new name with its values and run \`npx secretless-ai protect-mcp\`.${gone}`;
 }
 
+/**
+ * The end of a reason whose fix is the server added again under a new name,
+ * where storing its values again would not bind it: the pair still holds
+ * values, and a project-level value is stored only into an empty pair.
+ */
+const ADD_UNDER_NEW_NAME =
+  'If this entry is yours, add the server again under a new name with its values, remove this entry, and run `npx secretless-ai protect-mcp`.';
+
+/** For a .mcp.json entry at its binding's place that carries no id or another one (a home one is bound again). */
 function otherIdReason(reads: { client: string; server: string }): string {
-  return `its binding does not match the one stored for ${pairName(reads)}. If this entry is yours, ${STORE_AGAIN}`;
+  return `its binding does not match the one stored for ${pairName(reads)}. ${ADD_UNDER_NEW_NAME}`;
 }
 
 /** Why a server's secrets were not stored, or it was not bound: the store refused its binding. */
