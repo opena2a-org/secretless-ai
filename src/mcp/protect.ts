@@ -1022,9 +1022,12 @@ function orphanedBinding(binder: Binder, binding: McpBinding): boolean {
 /**
  * Whether protect-mcp's backup of a config file, the file as it was before
  * protect-mcp first changed it, holds a server of this name whose env holds
- * every secret in `stored` with the same value.
+ * every secret in `stored` with the same value. A pair with no name stored
+ * proves nothing, so it is never held: an entry is bound to an empty pair only
+ * when this run stores its values from its env.
  */
 function backupHoldsSecrets(backupDir: string, filePath: string, serverName: string, stored: Record<string, string>): boolean {
+  if (Object.keys(stored).length === 0) return false;
   const content = readConfigBackup(filePath, backupDir);
   if (content === undefined) return false;
   let parsed: unknown;
