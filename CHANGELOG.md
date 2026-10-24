@@ -38,6 +38,15 @@ evidence only for names stored under the pair, so an entry with no value in its
 env is left, and its line says to put the values in its env and run
 `protect-mcp`.
 
+**`protect-mcp` binds again a `.mcp.json` entry whose project directory
+moved.** Run in the new directory, it binds the entry that carries the old
+binding with a new id where the old file no longer exists on this machine, the
+backend is this machine's alone (local or keychain), and this machine's backup
+of the old file holds every value stored for the server. It files that backup
+under the new path first, so `mcp-unprotect` there restores the file, and its
+line names the old directory and any change to the command. A copy of a bound
+entry whose file no longer exists is reported with that fact.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more
