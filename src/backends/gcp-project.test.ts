@@ -214,9 +214,23 @@ describe('GCPSecretManagerBackend — a manifest-named project is never silent (
 
   it('a project the credentials cannot list is an error, not an empty answer', async () => {
     const a = repo('org-a/app', 'gcp.projectId: acme-org-a\n');
-    await expect(backendIn(a, 404).resolve('secret/DATABASE_URL')).rejects.toThrow(
+    await expect(backendIn(a, 404).resolve('secret')).rejects.toThrow(
       'cannot list secrets in project acme-org-a',
     );
+  });
+
+  it('an exact read of a name the project does not hold returns nothing and lists nothing', async () => {
+    const a = repo('org-a/app', 'gcp.projectId: acme-org-a\n');
+    const backend = backendIn(a, 404);
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(String(url));
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    await expect(backend.resolve('secret/DATABASE_URL', { exact: true })).resolves.toEqual({});
+    expect(urls).toEqual([
+      'https://secretmanager.googleapis.com/v1/projects/acme-org-a/secrets/DATABASE_URL/versions/latest:access',
+    ]);
   });
 
   it('CONTROL: the user-wide project keeps the old empty answer for a name it does not hold', async () => {

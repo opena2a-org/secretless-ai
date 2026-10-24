@@ -4317,6 +4317,15 @@ unsafe pattern characters no longer configures nothing while `init` exits 0,
 and the problem is reported even when Claude Code is not among the configured
 tools.
 
+### Security
+
+- On the gcp-sm backend a read for one MCP server returns only that server's
+  secrets, and a server with none stored gets none; an MCP secret is stored
+  under a name derived from its client, server and env name, so two servers
+  with the same env name never share or overwrite a secret. Servers protected
+  on gcp-sm before this release must be protected again: run mcp-unprotect,
+  then protect-mcp.
+
 ### Fixed
 
 - The size `scan` prints for a file skipped for size reads as larger than the
