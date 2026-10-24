@@ -987,7 +987,7 @@ export function isBoundEntry(binding: McpBinding, config: McpServerMapLocation, 
 }
 
 /** Whether two paths reach one file. */
-function sameFile(a: string, b: string): boolean {
+export function sameFile(a: string, b: string): boolean {
   if (path.resolve(a) === path.resolve(b)) return true;
   try {
     return fs.realpathSync(a) === fs.realpathSync(b);

@@ -77,6 +77,12 @@ the refusal names that file. `protect-mcp` replaces a home binding it finds
 in a copy of its entry, so the copy no longer starts, and `mcp-status` names
 each entry these checks stop. No command prints a binding id.
 
+**`mcp-unprotect` deletes a pair only where no entry outside the files it
+restored can be the one bound to it.** It leaves a pair whose binding names an
+entry in a file it did not restore, and names that entry. In a backend shared
+between machines (1password, vault, gcp-sm) it leaves a pair with no binding,
+since an entry on another machine may read it.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more
