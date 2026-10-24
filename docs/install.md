@@ -27,6 +27,21 @@ npm run build && npm test
 node dist/cli.js verify
 ```
 
+## Upgrading
+
+```bash
+npm install -g secretless-ai      # or: brew upgrade opena2a-org/tap/secretless-ai
+secretless-ai --version
+```
+
+If `protect-mcp` protects your MCP servers, run it once after upgrading to 0.24.0 or later:
+
+```bash
+npx secretless-ai protect-mcp
+```
+
+From 0.24.0 the `secretless-mcp` wrapper starts a server only from a config entry that `protect-mcp` has bound to the server's stored secrets. `protect-mcp` binds the entries it protected and lists each one it cannot bind, with what to change. Until it runs, the wrapper does not start a server from an unbound entry, and it prints this command.
+
 ## Verifying what was installed
 
 Every release publishes via npm Trusted Publishing with SLSA v1 provenance. No long-lived `NPM_TOKEN`. GitHub Actions exchanges its OIDC token with npm at publish time.
