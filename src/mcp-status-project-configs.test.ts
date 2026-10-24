@@ -113,7 +113,9 @@ describe('mcp-status over project-level MCP client configs', () => {
     expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     expect(out).toContain('    ! "gh\\u001b[2J": EXPOSED (1 plaintext secret(s))');
     expect(out).toContain('    * "fs\\u001b[2J": clean (no secrets in env)');
-    expect(out).toContain('    ? "db\\u009b2J": runs through the wrapper from a config protect-mcp does not rewrite, so it is never bound and the wrapper does not start it');
+    // A bare secretless-mcp names no file whose version can be read, so no
+    // start clause is computed for it (src/mcp/status-states.test.ts).
+    expect(out).toContain('    ? "db\\u009b2J": runs through a wrapper whose version could not be read\n');
   });
 
   it('names a bare mcp.json by its path alone, as scan does', () => {

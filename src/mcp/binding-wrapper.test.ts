@@ -21,7 +21,11 @@ import { VERBS } from '../argv';
 
 const CLI_PATH = path.resolve(__dirname, '..', '..', 'dist', 'cli.js');
 const WRAPPER_JS = path.resolve(__dirname, '..', '..', 'dist', 'mcp-wrapper.js');
-const WRAPPER_PATH = '/usr/local/bin/secretless-mcp';
+// The wrapper protect-mcp writes into a config: this build's, as the built
+// CLI writes it, so mcp-status reads these entries as on a wrapper that checks
+// its binding (an entry on another build's wrapper gets no start clause:
+// status-states.test.ts).
+const WRAPPER_PATH = WRAPPER_JS;
 const NAME = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
 const VALUE = ['stand', 'in', 'value', String(process.pid)].join('-');
 const FIX =
@@ -270,7 +274,8 @@ describe('mcp-status and the wrapper agree, entry by entry, on whether an entry 
     };
     write(file, config);
     // A project-level config protect-mcp does not rewrite: zeta carries
-    // alpha's binding and command, eta does not carry one.
+    // alpha's binding and command, eta reads alpha's pair and carries no
+    // binding, so the pair's binding names another entry (alpha).
     const { own, child } = split(alpha.args);
     const at = own.indexOf('--binding');
     write(path.join(project, '.cursor', 'mcp.json'), {
@@ -311,7 +316,7 @@ describe('mcp-status and the wrapper agree, entry by entry, on whether an entry 
     expect(status).toContain(`    ? delta: the secrets it reads are bound to the entry for server "alpha" in ${file}, so the wrapper does not start it\n`);
     expect(status).toContain('    ? epsilon: protected, not bound, so the wrapper does not start it\n');
     expect(status).toContain(`    ? zeta: carries the binding of the entry for server "alpha" in ${file}, but its binding also appears in ${zetaFile}, so the wrapper does not start it\n`);
-    expect(status).toContain('    ? eta: runs through the wrapper from a config protect-mcp does not rewrite, so it is never bound and the wrapper does not start it\n');
+    expect(status).toContain(`    ? eta: the secrets it reads are bound to the entry for server "alpha" in ${file}, so the wrapper does not start it\n`);
     expect(status).toContain('  3 protected server(s) are not bound, so the wrapper does not start them.\n');
     expect(status).toContain('  Run `npx secretless-ai protect-mcp` to bind the entries it protected; it names each entry it cannot bind, and why.\n');
     expect(status).toContain('  3 bound server(s) do not start from this directory; each line above says why.\n');
