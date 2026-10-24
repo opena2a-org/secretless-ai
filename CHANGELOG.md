@@ -71,6 +71,18 @@ wrapper and an installed copy do. The rewrite leaves the command of every
 entry discovery reads as wrapped, and discovery reads this build's wrapper at
 its own path.
 
+**`protect-mcp` re-points an entry that runs through another build's wrapper
+to the wrapper of the build that runs it**, so the checks the entry runs are
+the ones `protect-mcp` and `mcp-status` report. In every config it rewrites,
+an entry whose command names a secretless wrapper that is not this build's
+file, compared by real path, has its command set to this build's wrapper in
+the same write as its binding, whether it is bound, left or a copy. Its
+arguments, `env` and key order do not change, so the command it is bound to
+does not change. A bare `secretless-mcp` and a wrapper file that no longer
+exists are re-pointed; a wrapper that reads a version equal to or above this
+build's is left as it is. Each re-pointed entry is listed under its config,
+with a count. Configs `protect-mcp` does not rewrite are left as they are.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more

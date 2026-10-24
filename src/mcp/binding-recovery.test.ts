@@ -24,7 +24,10 @@ import { runProtectMcp } from '../commands/mcp';
 
 const CLI_PATH = path.resolve(__dirname, '..', '..', 'dist', 'cli.js');
 const WRAPPER_JS = path.resolve(__dirname, '..', '..', 'dist', 'mcp-wrapper.js');
-const WRAPPER_PATH = '/usr/local/bin/secretless-mcp';
+// The wrapper protect-mcp writes into a config: this build's, as the built
+// CLI writes it, so its runs read these entries as on its own wrapper (an
+// entry on another build's wrapper is re-pointed: binding-repoint.test.ts).
+const WRAPPER_PATH = WRAPPER_JS;
 const NAME = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
 const VALUE = ['stand', 'in', 'value', String(process.pid)].join('-');
 const ID = /^[0-9a-f]{32}$/;

@@ -14,7 +14,7 @@ import { classifyEnvVars } from './classify';
 import { McpVault, boundEntryName, commandDigest, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId } from './vault';
 import type { McpBinding } from './vault';
 import { moveConfigBackup, readConfigBackup, rewriteServerMaps, type ServerMapSecrets } from './rewrite';
-import { packageVersionAbove } from './wrapper-version';
+import { compareVersions, isVersion, packageVersionAbove, readWrapperVersion } from './wrapper-version';
 import { screenMcpEnvVars } from '../nanomind';
 import { readWrapperArgv, withWrapperBinding, wrapperFlag } from '../argv';
 import { resolveBackendType } from '../backends/config';
@@ -197,6 +197,17 @@ export interface UnmovedMcpServer extends McpServerMapLocation {
   reason: string;
 }
 
+/**
+ * A server that ran through another build's wrapper, re-pointed this run to
+ * the wrapper of the build that runs protect-mcp (see repointsToThisBuild):
+ * only its command changed.
+ */
+export interface RepointedMcpServer extends McpServerMapLocation {
+  client: string;
+  /** Server name as written in the config */
+  server: string;
+}
+
 /** A project-level config protect-mcp leaves as it is (see rewrittenByProtectMcp). */
 export interface ProjectLevelMcpConfig {
   client: string;
@@ -236,6 +247,8 @@ export interface ProtectResult {
   unbound: UnboundMcpServer[];
   /** Servers carrying the binding of another config entry (see CopiedBindingMcpServer). */
   copies: CopiedBindingMcpServer[];
+  /** Servers that ran through another build's wrapper, re-pointed to this build's (see RepointedMcpServer). */
+  repointed: RepointedMcpServer[];
   /**
    * Project-level configs left as they are, parsed or not: nothing in them was
    * checked or protected. `mcp-status` lists their servers.
@@ -262,8 +275,10 @@ export interface ProtectResult {
  *    has its secrets stored under the name its wrapper reads by, or, where
  *    that is not safe, is returned in `unmoved`, unchanged.
  * 4. Rewrites config files to use the secretless-mcp wrapper. A server that
- *    already runs through it keeps its command and args, and the secrets
- *    stored for it are removed from its env. A file with a server that ran
+ *    already runs through it keeps its args, and its command unless that
+ *    names another build's wrapper, which is re-pointed to this build's (see
+ *    repointsToThisBuild); the secrets stored for it are removed from its
+ *    env. A file with a server that ran
  *    through the wrapper before this run keeps the backup an earlier run
  *    wrote (see RewriteOptions.keepBackup).
  *
@@ -336,6 +351,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     rebound: [],
     unbound: [],
     copies: [],
+    repointed: [],
     projectLevel,
   };
 
@@ -381,6 +397,9 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       else rewrittenReaders.set(name, [{ config, server }]);
     }
   }
+  // The version of this build: a binding records it, and an entry on a
+  // wrapper that reads a lower one is re-pointed (see repointsToThisBuild).
+  const version = packageVersionAbove(__dirname);
   const binder: Binder = {
     vault,
     discovered,
@@ -388,7 +407,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     stores,
     backupDir,
     bindings: new Map(),
-    boundBy: packageVersionAbove(__dirname) ?? 'unknown',
+    boundBy: version ?? 'unknown',
     wrapperPath: options.wrapperPath,
     backendType: options.backendType,
   };
@@ -404,6 +423,8 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       const storedEnvKeys: Record<string, string[]> = {};
       // The binding id written into each server's wrapper args this run.
       const bindings: Record<string, string> = {};
+      // The servers on another build's wrapper, re-pointed in this file's write.
+      const repoint: string[] = [];
 
       for (const server of config.servers) {
         // Classify env vars into secrets and non-secrets
@@ -419,6 +440,9 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         if (server.alreadyProtected) {
           const location = { client: config.client, ...mapLocation(config), server: server.name };
           const reads = wrapperReads(config.client, server);
+          // On another build's wrapper: re-pointed to this build's in the
+          // same write as its binding, whatever this run does about that.
+          if (repointsToThisBuild(server.command, options.wrapperPath, version)) repoint.push(server.name);
           // Whether a secret in its env may be stored, and why not.
           let storeReason: string | undefined;
           if (secretKeys.length > 0) {
@@ -581,8 +605,11 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         });
       }
 
-      if (Object.keys(serverSecrets).length > 0 || Object.keys(storedEnvKeys).length > 0 || Object.keys(bindings).length > 0) {
-        maps.push({ ...(config.projectKey === undefined ? {} : { projectKey: config.projectKey }), serverSecrets, storedEnvKeys, bindings });
+      if (
+        Object.keys(serverSecrets).length > 0 || Object.keys(storedEnvKeys).length > 0
+        || Object.keys(bindings).length > 0 || repoint.length > 0
+      ) {
+        maps.push({ ...(config.projectKey === undefined ? {} : { projectKey: config.projectKey }), serverSecrets, storedEnvKeys, bindings, repoint });
       }
     }
 
@@ -602,10 +629,43 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         { keepBackup: rewrittenBefore },
       );
       result.serversProtected += rewriteResult.serversRewritten;
+      for (const moved of rewriteResult.repointed ?? []) {
+        const config = fileConfigs.find((c) => c.projectKey === moved.projectKey);
+        if (config !== undefined) result.repointed.push({ client: config.client, ...mapLocation(config), server: moved.server });
+      }
     }
   }
 
   return result;
+}
+
+/**
+ * Whether protect-mcp re-points a server that runs through a wrapper to this
+ * build's, `wrapperPath`: its command is not this build's wrapper file, and
+ * the wrapper it names does not read a version at or above this build's,
+ * `version`. A bare or relative command is never this build's file, since its
+ * client resolves it, and neither is a path that no longer exists. A path is
+ * this build's file when its real path is. The other wrapper's version is
+ * read as that wrapper reads its own (readWrapperVersion), from the directory
+ * of the real path, and compared by semver: an equal version is this build's
+ * checks at another install path, and a higher one is never replaced. A
+ * wrapper with no version read is re-pointed; where this build reads none,
+ * a wrapper that reads one is left.
+ */
+export function repointsToThisBuild(command: string, wrapperPath: string, version: string | null): boolean {
+  if (command === wrapperPath) return false;
+  if (!path.isAbsolute(command)) return true;
+  let real: string;
+  try {
+    real = fs.realpathSync(command);
+  } catch {
+    return true;
+  }
+  if (sameFile(real, wrapperPath)) return false;
+  const theirs = readWrapperVersion(path.dirname(real));
+  if (!isVersion(theirs)) return true;
+  if (version === null || !isVersion(version)) return false;
+  return (compareVersions(theirs, version) ?? 0) < 0;
 }
 
 /**

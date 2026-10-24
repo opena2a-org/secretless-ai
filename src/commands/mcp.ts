@@ -8,6 +8,7 @@ import type {
   ProtectResult,
   ReboundMcpServer,
   RefusedNameMcpServer,
+  RepointedMcpServer,
   SharedNameMcpServer,
   UnboundMcpServer,
   UnmovedMcpServer,
@@ -230,8 +231,25 @@ function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
   console.log();
 }
 
+/**
+ * The line for an entry protect-mcp re-pointed from another build's wrapper
+ * to this build's. Words pending (product and design roles); the content is
+ * the architecture ruling's: the entry now runs through this version's wrapper.
+ */
+const REPOINTED_LINE = (server: string): string => `    ~ ${listedName(server)}: now runs through this version's wrapper`;
+
+/** The count under the re-pointed entries. Words pending (product and design roles). */
+const REPOINTED_COUNT = (count: number): string => `  ${count} server(s) now run through this version's wrapper.`;
+
+/** The servers protect-mcp re-pointed to this build's wrapper, under their configs, then the count. */
+function printRepointedServers(servers: RepointedMcpServer[]): void {
+  printUnderConfigs(inConfigOrder(servers), (server) => REPOINTED_LINE(server.server));
+  console.log(`${REPOINTED_COUNT(servers.length)}\n`);
+}
+
 /** The binding lists of a protect-mcp run, each only when it has a server. */
 function printBindingLists(result: ProtectResult): void {
+  if (result.repointed.length > 0) printRepointedServers(result.repointed);
   if (result.bound.length > 0 || result.rebound.length > 0) printBoundServers(result.bound, result.rebound);
   if (result.unbound.length > 0) printUnboundServers(result.unbound);
   if (result.copies.length > 0) printCopiedBindings(result.copies);
