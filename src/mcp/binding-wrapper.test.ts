@@ -72,16 +72,16 @@ function stubArgs(sentinel: string): string[] {
   return ['-e', `require('fs').writeFileSync(${JSON.stringify(sentinel)}, JSON.stringify(process.env))`];
 }
 
-/** The built wrapper started with these args, as a client starts an entry. */
-function startWrapper(args: string[], env: Record<string, string> = {}) {
-  return spawnSync(process.execPath, [WRAPPER_JS, ...args], { encoding: 'utf-8', env: childEnv(env) });
+/** The built wrapper started with these args in `cwd`, as a client starts an entry in its project. */
+function startWrapper(args: string[], env: Record<string, string> = {}, cwd = project) {
+  return spawnSync(process.execPath, [WRAPPER_JS, ...args], { cwd, encoding: 'utf-8', env: childEnv(env) });
 }
 
-function runCli(args: string[]): string {
+function runCli(args: string[], cwd = project): string {
   return execFileSync(process.execPath, [CLI_PATH, ...args], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
-    cwd: project,
+    cwd,
     env: childEnv(),
   });
 }
@@ -280,36 +280,62 @@ describe('mcp-status and the wrapper agree, entry by entry, on whether an entry 
       },
     });
 
-    const status = runCli(['mcp-status']);
     const entries: Record<string, { args: string[]; env?: Record<string, string> }> = {
       ...JSON.parse(fs.readFileSync(file, 'utf-8')).mcpServers,
       ...JSON.parse(fs.readFileSync(path.join(project, '.cursor', 'mcp.json'), 'utf-8')).mcpServers,
     };
-    const exits: Record<string, number | null> = {};
-    for (const [name, entry] of Object.entries(entries)) {
-      for (const s of ['alpha', 'beta', 'epsilon']) fs.rmSync(sentinel(s), { force: true });
-      const res = startWrapper(entry.args, entry.env ?? {});
-      exits[name] = res.status;
-      const line = new RegExp(`^ {4}[+?] ${name}: (.*)$`, 'm').exec(status)?.[1];
-      expect(line, `${name} has a line`).toBeDefined();
-      expect(/does not start/.test(line ?? ''), `${name}: "${line}" against exit ${res.status}`).toBe(res.status === 1);
-      expect(fs.existsSync(sentinel('alpha')) || fs.existsSync(sentinel('beta')) || fs.existsSync(sentinel('epsilon'))).toBe(res.status === 0);
-    }
-    expect(exits).toEqual({ alpha: 0, beta: 1, gamma: 0, delta: 1, epsilon: 1, zeta: 0, eta: 1 });
+    // Each entry started in `cwd` against its line in mcp-status run there.
+    const agree = (cwd: string, status: string, names: string[]) => {
+      const exits: Record<string, number | null> = {};
+      for (const name of names) {
+        for (const s of ['alpha', 'beta', 'epsilon']) fs.rmSync(sentinel(s), { force: true });
+        const res = startWrapper(entries[name].args, entries[name].env ?? {}, cwd);
+        exits[name] = res.status;
+        const line = new RegExp(`^ {4}[+?] ${name}: (.*)$`, 'm').exec(status)?.[1];
+        expect(line, `${name} has a line`).toBeDefined();
+        expect(/does not start/.test(line ?? ''), `${name}: "${line}" against exit ${res.status}`).toBe(res.status === 1);
+        expect(fs.existsSync(sentinel('alpha')) || fs.existsSync(sentinel('beta')) || fs.existsSync(sentinel('epsilon'))).toBe(res.status === 0);
+      }
+      return exits;
+    };
 
-    expect(status).toContain('    + alpha: protected and bound\n');
+    // In the project, as a client starts them there: zeta's copy of alpha's
+    // binding in the project's .cursor/mcp.json is visible, so no entry that
+    // carries that binding starts.
+    const status = runCli(['mcp-status']);
+    expect(agree(project, status, Object.keys(entries))).toEqual({ alpha: 1, beta: 1, gamma: 1, delta: 1, epsilon: 1, zeta: 1, eta: 1 });
+    const zetaFile = path.join(fs.realpathSync(project), '.cursor', 'mcp.json');
+    expect(status).toContain(`    ? alpha: protected and bound, but its binding also appears in ${zetaFile}, so the wrapper does not start it\n`);
     expect(status).toContain('    ? beta: protected, but its command or arguments changed since it was bound, so the wrapper does not start it\n');
-    expect(status).toContain(`    ? gamma: carries the binding of the entry for server "alpha" in ${file}, so the wrapper starts it with that entry's secrets\n`);
+    expect(status).toContain(`    ? gamma: carries the binding of the entry for server "alpha" in ${file}, but its binding also appears in ${zetaFile}, so the wrapper does not start it\n`);
     expect(status).toContain(`    ? delta: the secrets it reads are bound to the entry for server "alpha" in ${file}, so the wrapper does not start it\n`);
     expect(status).toContain('    ? epsilon: protected, not bound, so the wrapper does not start it\n');
-    expect(status).toContain(`    ? zeta: carries the binding of the entry for server "alpha" in ${file}, so the wrapper starts it with that entry's secrets\n`);
+    expect(status).toContain(`    ? zeta: carries the binding of the entry for server "alpha" in ${file}, but its binding also appears in ${zetaFile}, so the wrapper does not start it\n`);
     expect(status).toContain('    ? eta: runs through the wrapper from a config protect-mcp does not rewrite, so it is never bound and the wrapper does not start it\n');
     expect(status).toContain('  3 protected server(s) are not bound, so the wrapper does not start them.\n');
     expect(status).toContain('  Run `npx secretless-ai protect-mcp` to bind the entries it protected; it names each entry it cannot bind, and why.\n');
-    expect(status).toContain('  2 server(s) start with secrets bound to another entry. Remove each one unless it should start with those secrets.\n');
+    expect(status).toContain('  3 bound server(s) do not start from this directory; each line above says why.\n');
+    expect(status).toContain(
+      '  Run `npx secretless-ai protect-mcp` to replace each home binding found outside its own entry; a copy of it then no longer starts.\n',
+    );
+    expect(status).not.toContain('start with secrets bound to another entry');
     expect(status).toContain(
       `  1 server(s) run through the wrapper from project-level configs protect-mcp does not rewrite, so they do not start: ${path.join('.cursor', 'mcp.json')}.\n`,
     );
     expect(status).not.toContain(alphaId);
+
+    // In a directory with no project-level config: alpha starts, and so does
+    // its copy gamma in the same home config.
+    const away = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-binding-away-'));
+    try {
+      const awayStatus = runCli(['mcp-status'], away);
+      expect(agree(away, awayStatus, ['alpha', 'beta', 'gamma', 'delta', 'epsilon'])).toEqual({ alpha: 0, beta: 1, gamma: 0, delta: 1, epsilon: 1 });
+      expect(awayStatus).toContain('    + alpha: protected and bound\n');
+      expect(awayStatus).toContain(`    ? gamma: carries the binding of the entry for server "alpha" in ${file}, so the wrapper starts it with that entry's secrets\n`);
+      expect(awayStatus).toContain('  1 server(s) start with secrets bound to another entry. Remove each one unless it should start with those secrets.\n');
+      expect(awayStatus).not.toContain(alphaId);
+    } finally {
+      fs.rmSync(away, { recursive: true, force: true });
+    }
   });
 });

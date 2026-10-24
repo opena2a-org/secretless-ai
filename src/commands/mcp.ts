@@ -12,8 +12,8 @@ import type {
   UnboundMcpServer,
   UnmovedMcpServer,
 } from '../mcp/protect';
-import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
-import type { McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
+import { checkLaunchPlace, discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
+import type { McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
 import { McpVault, boundEntryName, checkLaunch } from '../mcp/vault';
@@ -408,15 +408,16 @@ function wrapperRead(entry: McpServerEntry, vaults: Map<string, McpVault>): Wrap
 }
 
 /**
- * Whether the wrapper starts a wrapped entry, from checkLaunch, the function
- * the wrapper runs before it reads a secret: the verdict, nothing where the
- * wrapper stops before that check, or the store's error where reading the
- * binding failed (the wrapper then starts nothing either).
+ * Whether the wrapper starts a wrapped entry, from checkLaunch and
+ * checkLaunchPlace, the functions the wrapper runs before it reads a secret,
+ * with this process's directory as the start directory: the verdicts, nothing
+ * where the wrapper stops before those checks, or the store's error where
+ * reading the binding failed (the wrapper then starts nothing either).
  */
 async function entryLaunch(
   entry: McpServerEntry,
   vaults: Map<string, McpVault>,
-): Promise<{ verdict?: McpLaunchVerdict; error?: string }> {
+): Promise<{ verdict?: McpLaunchVerdict; place?: McpPlaceVerdict; error?: string }> {
   const reads = wrapperRead(entry, vaults);
   if (!reads?.read.child) return {};
   try {
@@ -427,7 +428,7 @@ async function entryLaunch(
       command: reads.read.child.command,
       args: reads.read.child.args,
     });
-    return { verdict };
+    return verdict.refused === false ? { verdict, place: checkLaunchPlace(verdict.binding) } : { verdict };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
@@ -461,6 +462,9 @@ export async function runMcpStatus(): Promise<number> {
   let otherEntryCount = 0;
   let projectLevelCount = 0;
   const projectLevelFiles = new Set<string>();
+  // Bound entries the wrapper does not start from this directory (see
+  // checkLaunchPlace), by the scope of their binding.
+  const placeRefused = { home: 0, project: 0 };
   const vaults = new Map<string, McpVault>();
 
   for (const config of configs) {
@@ -493,7 +497,14 @@ export async function runMcpStatus(): Promise<number> {
         // function the wrapper runs, so the two never disagree on it.
         const launch = await entryLaunch(server, vaults);
         const verdict = launch.verdict;
-        if (verdict && verdict.refused === false) {
+        const place = launch.place;
+        if (verdict && verdict.refused === false && place && place.refused !== false) {
+          const holder = isBoundEntry(verdict.binding, config, server.name)
+            ? 'protected and bound'
+            : `carries the binding of the entry for ${boundEntryName(verdict.binding)}`;
+          console.log(`    ? ${name}: ${holder}, but ${placeState(place)}, so the wrapper does not start it`);
+          placeRefused[verdict.binding.scope]++;
+        } else if (verdict && verdict.refused === false) {
           if (isBoundEntry(verdict.binding, config, server.name)) {
             console.log(`    + ${name}: protected and bound`);
           } else {
@@ -555,6 +566,20 @@ export async function runMcpStatus(): Promise<number> {
       `  ${otherEntryCount} server(s) start with secrets bound to another entry. Remove each one unless it should start with those secrets.\n`,
     );
   }
+  if (placeRefused.home + placeRefused.project > 0) {
+    console.log(
+      `  ${placeRefused.home + placeRefused.project} bound server(s) do not start from this directory; each line above says why.`,
+    );
+    if (placeRefused.home > 0) {
+      console.log(
+        '  Run `npx secretless-ai protect-mcp` to replace each home binding found outside its own entry; a copy of it then no longer starts.',
+      );
+    }
+    if (placeRefused.project > 0) {
+      console.log('  Remove each copy of a project binding named above; protect-mcp does not replace a project binding.');
+    }
+    console.log();
+  }
   if (projectLevelCount > 0) {
     console.log(
       `  ${projectLevelCount} server(s) run through the wrapper from project-level configs protect-mcp does not rewrite, so they do not start: ${[...projectLevelFiles].map(listedName).join(', ')}.`,
@@ -577,6 +602,22 @@ export async function runMcpStatus(): Promise<number> {
     printUnparsedFix(unparsed.length, 'the servers in them were not checked', 'mcp-status');
   }
   return 0;
+}
+
+/** Why checkLaunchPlace refused an entry, for its mcp-status line: paths only, never the id. */
+function placeState(place: Exclude<McpPlaceVerdict, { refused: false }>): string {
+  switch (place.refused) {
+    case 'outside-project':
+      return `its binding is to the project in ${listedName(place.project)}, and this directory is ${listedName(place.startDir)}`;
+    case 'project-unresolved':
+      return `its binding is to the project in ${listedName(place.project)}, and ${listedName(place.path)} could not be resolved (${place.code})`;
+    case 'start-unresolved':
+      return `this directory could not be resolved (${place.code})`;
+    case 'copy-found':
+      return `its binding also appears in ${listedName(place.file)}`;
+    case 'copy-unchecked':
+      return `${listedName(place.file)} could not be checked for a copy of its binding (${place.why})`;
+  }
 }
 
 /**
