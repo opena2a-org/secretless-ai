@@ -286,7 +286,12 @@ export class McpVault {
   }
 
   /**
-   * Remove all secrets for a specific MCP server, and the pair's binding.
+   * Delete the names stored under a client/server pair, then the pair's
+   * binding, each when present: a binding with no name stored is deleted too.
+   * The order is part of the rule. A delete that stops part way leaves a
+   * binding with no names, which the wrapper refuses and a second call
+   * deletes; it never leaves names without a binding, which protect-mcp reads
+   * as an earlier version's pair and may bind to the one entry that reads it.
    */
   async removeServerSecrets(client: string, server: string): Promise<void> {
     validateName('client', client);

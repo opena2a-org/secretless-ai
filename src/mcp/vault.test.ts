@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { McpVault } from './vault';
+import { McpVault, commandDigest, newBindingId } from './vault';
+import type { McpBinding } from './vault';
+import type { ResolveOptions, WritableSecretBackend } from '../backends/types';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-vault-test-'));
@@ -208,5 +210,86 @@ describe('McpVault', () => {
       await vault.storeServerSecrets('cursor', 'github', { GITHUB_APP_KEY: pem });
       expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ GITHUB_APP_KEY: pem });
     });
+  });
+});
+
+/** A store held in memory; the delete numbered `failDelete` (from 1) throws. */
+class MemoryStore implements WritableSecretBackend {
+  readonly name = 'local';
+  readonly entries = new Map<string, string>();
+  private deletes = 0;
+
+  constructor(private readonly failDelete?: number) {}
+
+  async resolve(at: string, options?: ResolveOptions): Promise<Record<string, string>> {
+    const found: Record<string, string> = {};
+    for (const [key, value] of this.entries) {
+      if (key === at || (!options?.exact && key.startsWith(`${at}/`))) found[key] = value;
+    }
+    return found;
+  }
+
+  async healthCheck() {
+    return { healthy: true, latencyMs: 0 };
+  }
+
+  async store(key: string, value: string): Promise<void> {
+    this.entries.set(key, value);
+  }
+
+  async delete(key: string): Promise<boolean> {
+    this.deletes++;
+    if (this.deletes === this.failDelete) throw new Error('the store refused this delete');
+    return this.entries.delete(key);
+  }
+}
+
+function bindingFor(client: string, server: string): McpBinding {
+  return {
+    schema: 1,
+    id: newBindingId(),
+    scope: 'home',
+    file: path.join(os.tmpdir(), 'secretless-vault-order', 'mcp.json'),
+    client,
+    server,
+    commandDigest: commandDigest(process.execPath, ['-e', 'x']),
+    boundAt: new Date().toISOString(),
+    boundBy: 'test',
+  };
+}
+
+describe('removeServerSecrets deletes the names stored under a pair, then its binding, each when present', () => {
+  let dir: string;
+
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('v1: a binding with no name stored under its pair is deleted', async () => {
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+    await vault.storeBinding('cursor', 'github', bindingFor('cursor', 'github'));
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({});
+
+    await vault.removeServerSecrets('cursor', 'github');
+
+    expect(await vault.getBinding('cursor', 'github')).toBeUndefined();
+  });
+
+  it('v2: a delete that fails after the names leaves the binding, and a second call deletes it', async () => {
+    const memory = new MemoryStore(2);
+    const vault = new McpVault({ backend: memory });
+    const name = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
+    const binding = bindingFor('cursor', 'github');
+    await vault.storeBinding('cursor', 'github', binding);
+    await vault.storeServerSecrets('cursor', 'github', { [name]: ['stand', 'in', 'value'].join('-') });
+
+    await expect(vault.removeServerSecrets('cursor', 'github')).rejects.toThrow('the store refused this delete');
+
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({});
+    expect(await vault.getBinding('cursor', 'github')).toEqual(binding);
+
+    await vault.removeServerSecrets('cursor', 'github');
+
+    expect(await vault.getBinding('cursor', 'github')).toBeUndefined();
+    expect([...memory.entries.keys()]).toEqual([]);
   });
 });
