@@ -83,6 +83,26 @@ exists are re-pointed; a wrapper that reads a version equal to or above this
 build's is left as it is. Each re-pointed entry is listed under its config,
 with a count. Configs `protect-mcp` does not rewrite are left as they are.
 
+**`mcp-status` reports each entry that runs through the wrapper by where its
+pair's binding points, and separately by whether the wrapper starts it from
+the directory `mcp-status` runs in.** The state is read from the binding
+stored for the pair and the entry's place, for every such entry: no binding,
+another entry's place, the entry's own place with no binding id or another
+one, its own place and id with a changed command, or bound. An entry at its
+binding's own place is never named as another entry, and an entry with no
+binding id whose pair is bound elsewhere names that entry. Whether it starts
+comes from the checks the wrapper runs before it starts a server, now one
+function the wrapper and `mcp-status` both call, so a bound entry whose pair
+holds no secret is reported as not started, as the wrapper refuses it. Under
+each entry in a config `protect-mcp` rewrites, a line names what
+`protect-mcp` then does for its binding, taken from `protect-mcp`'s own plan,
+which reads the store and the backups and writes nothing. An entry on a
+wrapper older than the first version that checks bindings, or whose version
+could not be read, is reported as such, with no start verdict, and as
+re-pointed by `protect-mcp` in a config it rewrites. `mcp-status` writes
+nothing, and builds no store where the local store's directory does not
+exist.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more

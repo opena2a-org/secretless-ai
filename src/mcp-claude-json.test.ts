@@ -15,7 +15,11 @@ import { protectMcp } from './mcp/protect';
  */
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
-const WRAPPER_PATH = '/usr/local/bin/secretless-mcp';
+// The wrapper protect-mcp writes into a config: this build's, as the built
+// CLI writes it, so mcp-status reads these entries as on a wrapper that checks
+// its binding (an entry on another build's wrapper gets no start clause:
+// src/mcp/status-states.test.ts).
+const WRAPPER_PATH = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
 
 let home: string;
 let project: string;

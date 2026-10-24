@@ -1,9 +1,19 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { isBoundEntry, protectMcp, sameFile } from '../mcp/protect';
+import {
+  bindingState,
+  planMcpBindings,
+  protectMcp,
+  repointsToThisBuild,
+  sameFile,
+  wrapperBuild,
+  wrapperChecksBinding,
+} from '../mcp/protect';
 import type {
   BoundMcpServer,
+  McpBindingFix,
+  McpBindingState,
   CopiedBindingMcpServer,
   ProtectResult,
   ReboundMcpServer,
@@ -13,12 +23,15 @@ import type {
   UnboundMcpServer,
   UnmovedMcpServer,
 } from '../mcp/protect';
-import { checkLaunchPlace, discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp, thisBuildWrapperPath } from '../mcp/discover';
-import type { McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
+import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp, thisBuildWrapperPath } from '../mcp/discover';
+import type { McpConfigFile, McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
-import { McpVault, boundEntryName, checkLaunch, isPerMachineStore } from '../mcp/vault';
-import type { McpBinding, McpLaunchVerdict } from '../mcp/vault';
+import { McpVault, boundEntryName, isPerMachineStore } from '../mcp/vault';
+import type { McpBinding } from '../mcp/vault';
+import { checkStart } from '../mcp/start-check';
+import type { McpStartVerdict } from '../mcp/start-check';
+import { packageVersionAbove } from '../mcp/wrapper-version';
 import { resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import type { SelectableBackendType } from '../backends/config';
@@ -461,29 +474,157 @@ function wrapperRead(entry: McpServerEntry, vaults: Map<string, McpVault>): Wrap
 }
 
 /**
- * Whether the wrapper starts a wrapped entry, from checkLaunch and
- * checkLaunchPlace, the functions the wrapper runs before it reads a secret,
- * with this process's directory as the start directory: the verdicts, nothing
- * where the wrapper stops before those checks, or the store's error where
- * reading the binding failed (the wrapper then starts nothing either).
+ * What mcp-status reports for a wrapped entry whose wrapper checks its
+ * binding: its state, from the binding stored for the pair it reads, read for
+ * every such entry, and the entry's place (bindingState); and whether the
+ * wrapper starts it, from checkStart, the function the wrapper runs before it
+ * starts a server, with this process's directory as the start directory.
+ * `start` is absent where the wrapper stops before those checks, and `error`
+ * is the store's error where reading it failed (the wrapper then starts
+ * nothing either).
  */
-async function entryLaunch(
+type WrappedStatus = { error: string } | { state: McpBindingState; start?: McpStartVerdict };
+
+async function wrappedStatus(
+  config: McpConfigFile,
   entry: McpServerEntry,
   vaults: Map<string, McpVault>,
-): Promise<{ verdict?: McpLaunchVerdict; place?: McpPlaceVerdict; error?: string }> {
+): Promise<WrappedStatus> {
   const reads = wrapperRead(entry, vaults);
-  if (!reads?.read.child) return {};
+  if (!reads?.read.child) return { state: bindingState(undefined, config, entry) };
   try {
-    const verdict = await checkLaunch(reads.vault, {
-      client: reads.client,
-      server: reads.server,
-      binding: wrapperFlag(reads.read, '--binding'),
-      command: reads.read.child.command,
-      args: reads.read.child.args,
-    });
-    return verdict.refused === false ? { verdict, place: checkLaunchPlace(verdict.binding) } : { verdict };
+    const record = await reads.vault.getBinding(reads.client, reads.server);
+    const start = await checkStart(
+      reads.vault,
+      {
+        client: reads.client,
+        server: reads.server,
+        binding: wrapperFlag(reads.read, '--binding'),
+        command: reads.read.child.command,
+        args: reads.read.child.args,
+      },
+      { startDir: process.cwd() },
+    );
+    return { state: bindingState(record, config, entry), start };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * State (a) in a project-level config protect-mcp does not rewrite: the
+ * fifth state. Whether the entry starts is the clause's, not this state's.
+ */
+const NOT_REWRITTEN_STATE = 'runs through the wrapper from a config protect-mcp does not rewrite, so it is never bound';
+
+/**
+ * State (c): the entry is at the place its pair's binding names, and carries
+ * no binding or another one. It never names that place as another entry.
+ * Words pending (product and design roles); the content is the architecture
+ * ruling's.
+ */
+const STALE_ID_STATE = 'protected, but it does not carry the binding stored for it';
+
+/**
+ * The clause for an entry the wrapper's last check refuses: no secret is
+ * stored under the pair it reads. Words pending (product and
+ * design roles).
+ */
+const EMPTY_PAIR = 'no secret is stored for the pair it reads';
+
+/**
+ * The clause for a copy of another entry whose command or arguments are not
+ * the ones that entry was bound with (B2). Words pending (product and design
+ * roles).
+ */
+const COPY_OTHER_COMMAND = 'its command or arguments are not the ones that entry was bound with';
+
+/**
+ * The end of the line for an entry on another build's wrapper in a config
+ * protect-mcp rewrites, which protect-mcp re-points to this build's. Words
+ * pending (product and design roles); the content is the architecture
+ * ruling's.
+ */
+const REPOINTS = "; protect-mcp re-points it to this version's wrapper";
+
+/**
+ * The line for an entry whose wrapper reads a version below the first that
+ * checks bindings: that wrapper makes none of the checks checkStart runs, so
+ * no start clause is computed. Words pending (product and design roles); the
+ * content is the architecture ruling's.
+ */
+const OLD_WRAPPER_LINE = (server: string, repoints: boolean): string =>
+  `    ? ${listedName(server)}: runs through a wrapper that does not check its binding${repoints ? REPOINTS : ''}`;
+
+/**
+ * The line for an entry whose wrapper's version could not be read: a bare
+ * name, a path that does not exist, or a wrapper that reads none. No start
+ * clause is computed. Words pending (product and design roles).
+ */
+const UNREAD_WRAPPER_LINE = (server: string, repoints: boolean): string =>
+  `    ? ${listedName(server)}: runs through a wrapper whose version could not be read${repoints ? REPOINTS : ''}`;
+
+/** The command each fix line names. */
+const PROTECT_MCP = '`npx secretless-ai protect-mcp`';
+
+/**
+ * The fix lines under an entry in a config protect-mcp rewrites: what
+ * protect-mcp does for its binding, from its own plan (planMcpBindings), so
+ * the line names what it then does. A bound entry has none. Words pending
+ * (product and design roles); the content is the architecture ruling's: bind,
+ * leave with a reason, report a copy.
+ */
+const FIX_BIND = `      ${PROTECT_MCP} binds it.`;
+const FIX_REBIND = `      ${PROTECT_MCP} binds it again with its command as it is now.`;
+const FIX_STALE = `      ${PROTECT_MCP} writes its binding into it again.`;
+const FIX_LEFT = (reason: string): string => `      ${PROTECT_MCP} leaves it not bound: ${reason}`;
+const FIX_COPY = (entry: string): string => `      ${PROTECT_MCP} reports it as a copy of ${entry} and writes nothing for it.`;
+const FIX_REPLACE = (entry: string): string => `      ${PROTECT_MCP} replaces the binding of ${entry}; this entry then no longer starts.`;
+
+/**
+ * The line after the entries when protect-mcp's plan could not be read, so
+ * no fix line is printed. Words pending (product and design roles).
+ */
+const PLAN_UNREAD = (why: string): string =>
+  `  What protect-mcp would do for each entry could not be read (${why}); run ${PROTECT_MCP} to see it.`;
+
+/** The fix line for a plan, or undefined for a bound entry. */
+function fixLine(fix: McpBindingFix): string | undefined {
+  switch (fix.kind) {
+    case 'bound':
+      return undefined;
+    case 'bind':
+      return FIX_BIND;
+    case 'rebind':
+      return FIX_REBIND;
+    case 'stale':
+      return FIX_STALE;
+    case 'left':
+      return FIX_LEFT(fix.reason);
+    case 'copy':
+      return FIX_COPY(boundEntryName(fix.boundTo));
+    case 'replace':
+      return FIX_REPLACE(boundEntryName(fix.boundTo));
+  }
+}
+
+/** What a state says of an entry, before the clause. */
+function stateWords(state: McpBindingState): string {
+  switch (state.state) {
+    case 'unbound':
+      return 'protected, not bound';
+    case 'not-rewritten':
+      return NOT_REWRITTEN_STATE;
+    case 'elsewhere':
+      return state.carriesRecordId
+        ? `carries the binding of the entry for ${boundEntryName(state.binding)}`
+        : `the secrets it reads are bound to the entry for ${boundEntryName(state.binding)}`;
+    case 'stale-id':
+      return STALE_ID_STATE;
+    case 'command-changed':
+      return 'protected, but its command or arguments changed since it was bound';
+    case 'bound':
+      return 'protected and bound';
   }
 }
 
@@ -494,7 +635,8 @@ export async function runMcpStatus(): Promise<number> {
   const backend = effectiveBackendName(resolveBackendType());
   console.log(`  Backend: ${backend}\n`);
 
-  const { configs, unparsed } = discoverMcpConfigsDetailed();
+  const discovery = discoverMcpConfigsDetailed();
+  const { configs, unparsed } = discovery;
 
   if (configs.length === 0 && unparsed.length === 0) {
     printNoConfigFound();
@@ -519,6 +661,21 @@ export async function runMcpStatus(): Promise<number> {
   // checkLaunchPlace), by the scope of their binding.
   const placeRefused = { home: 0, project: 0 };
   const vaults = new Map<string, McpVault>();
+  // Which build of the wrapper an entry runs through, read as protect-mcp's
+  // re-point reads it: a start clause is computed only for a wrapper that
+  // checks its binding.
+  const wrapperPath = getWrapperPath();
+  const version = packageVersionAbove(__dirname);
+  // What protect-mcp does for the binding of each wrapped entry in the
+  // configs it rewrites: the fix each line names. Its plan reads the store
+  // and the backups, and writes nothing.
+  let fixes = new Map<McpServerEntry, McpBindingFix>();
+  let planError: string | undefined;
+  try {
+    fixes = await planMcpBindings({ wrapperPath }, discovery);
+  } catch (err) {
+    planError = err instanceof Error ? err.message.split('\n')[0] : String(err);
+  }
 
   for (const config of configs) {
     console.log(`  ${configLabel(config)}`);
@@ -546,50 +703,60 @@ export async function runMcpStatus(): Promise<number> {
         // below names the part of its entry that was not read.
       } else if (server.alreadyProtected) {
         protectedCount++;
-        // Whether the wrapper starts this entry comes from checkLaunch, the
-        // function the wrapper runs, so the two never disagree on it.
-        const launch = await entryLaunch(server, vaults);
-        const verdict = launch.verdict;
-        const place = launch.place;
-        if (verdict && verdict.refused === false && place && place.refused !== false) {
-          const holder = isBoundEntry(verdict.binding, config, server.name)
-            ? 'protected and bound'
-            : `carries the binding of the entry for ${boundEntryName(verdict.binding)}`;
-          console.log(`    ? ${name}: ${holder}, but ${placeState(place)}, so the wrapper does not start it`);
-          placeRefused[verdict.binding.scope]++;
-        } else if (verdict && verdict.refused === false) {
-          if (isBoundEntry(verdict.binding, config, server.name)) {
-            console.log(`    + ${name}: protected and bound`);
-          } else {
-            console.log(
-              `    ? ${name}: carries the binding of the entry for ${boundEntryName(verdict.binding)}, so the wrapper starts it with that entry's secrets`,
-            );
-            otherEntryCount++;
-          }
-        } else if (!rewrittenByProtectMcp(config)) {
-          console.log(
-            `    ? ${name}: runs through the wrapper from a config protect-mcp does not rewrite, so it is never bound and the wrapper does not start it`,
-          );
+        const rewritten = rewrittenByProtectMcp(config);
+        const notStartedHere = () => {
+          if (rewritten) return;
           projectLevelCount++;
           projectLevelFiles.add(config.projectPath ?? config.filePath);
-        } else if (launch.error !== undefined) {
-          console.log(
-            `    ? ${name}: protected, but its binding could not be read (${escapeForDisplay(launch.error)}), so the wrapper does not start it`,
-          );
-        } else if (verdict?.refused === 'other-binding') {
-          console.log(
-            `    ? ${name}: the secrets it reads are bound to the entry for ${boundEntryName(verdict.binding)}, so the wrapper does not start it`,
-          );
-          notBoundCount++;
-        } else if (verdict?.refused === 'other-command') {
-          console.log(
-            `    ? ${name}: protected, but its command or arguments changed since it was bound, so the wrapper does not start it`,
-          );
-          notBoundCount++;
+        };
+        const theirs = wrapperBuild(server.command, wrapperPath);
+        if (!wrapperChecksBinding(theirs, version)) {
+          // The wrapper this entry runs makes none of the checks checkStart
+          // runs, so no start clause is computed for it.
+          const repoints = rewritten && repointsToThisBuild(server.command, wrapperPath, version);
+          console.log(theirs.build === 'unread' ? UNREAD_WRAPPER_LINE(server.name, repoints) : OLD_WRAPPER_LINE(server.name, repoints));
         } else {
-          console.log(`    ? ${name}: protected, not bound, so the wrapper does not start it`);
-          notBoundCount++;
+          // The state comes from the record and the entry's place; whether the
+          // wrapper starts the entry comes from checkStart, the function the
+          // wrapper runs, so the two never disagree on it.
+          const status = await wrappedStatus(config, server, vaults);
+          if ('error' in status) {
+            console.log(
+              `    ? ${name}: protected, but its binding could not be read (${escapeForDisplay(status.error)}), so the wrapper does not start it`,
+            );
+            notStartedHere();
+          } else {
+            const { state, start } = status;
+            const words = stateWords(state);
+            if (start?.starts) {
+              if (state.state === 'bound') {
+                console.log(`    + ${name}: ${words}`);
+              } else {
+                console.log(`    ? ${name}: ${words}, so the wrapper starts it with that entry's secrets`);
+                otherEntryCount++;
+              }
+            } else if (start !== undefined && 'place' in start) {
+              console.log(`    ? ${name}: ${words}, but ${placeState(start.place)}, so the wrapper does not start it`);
+              placeRefused[start.binding.scope]++;
+            } else if (state.state === 'not-rewritten') {
+              console.log(`    ? ${name}: ${words} and the wrapper does not start it`);
+              notStartedHere();
+            } else {
+              const empty = start !== undefined && 'empty' in start;
+              const copyCommand = state.state === 'elsewhere' && state.carriesRecordId
+                && start !== undefined && 'launch' in start && start.launch.refused === 'other-command';
+              const but = empty ? `, but ${EMPTY_PAIR}` : copyCommand ? `, but ${COPY_OTHER_COMMAND}` : '';
+              console.log(`    ? ${name}: ${words}${but}, so the wrapper does not start it`);
+              // A bound entry with no secret stored is bound: its line says why it does not start.
+              if (rewritten && !(empty && state.state === 'bound')) notBoundCount++;
+              notStartedHere();
+            }
+          }
         }
+        // What protect-mcp does for its binding, in a config it rewrites.
+        const fix = rewritten ? fixes.get(server) : undefined;
+        const fixText = fix === undefined ? undefined : fixLine(fix);
+        if (fixText !== undefined) console.log(fixText);
       } else {
         console.log(`    * ${name}: clean (no secrets in env)`);
       }
@@ -602,6 +769,7 @@ export async function runMcpStatus(): Promise<number> {
   // A config that could not be parsed is never reported as clean or absent:
   // its servers, and any plaintext secrets in them, were not checked.
   printUnparsedConfigs(unparsed, 'not checked');
+  if (planError !== undefined) console.log(`${PLAN_UNREAD(escapeForDisplay(planError))}\n`);
 
   if (exposedCount > 0) {
     console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');

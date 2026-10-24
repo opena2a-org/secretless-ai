@@ -24,13 +24,13 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-import { McpVault, boundEntryName, checkLaunch } from "./mcp/vault";
+import { McpVault, boundEntryName } from "./mcp/vault";
 import type { McpLaunchVerdict } from "./mcp/vault";
 import { resolveBackendType } from "./backends/config";
 import { readWrapperArgv, wrapperFlag } from "./argv";
 import { readWrapperVersion } from "./mcp/wrapper-version";
-import { checkLaunchPlace } from "./mcp/discover";
 import type { McpPlaceVerdict } from "./mcp/discover";
+import { checkStart } from "./mcp/start-check";
 import { listedName } from "./secret-value";
 import { escapeForDisplay } from "./display-safe";
 
@@ -281,23 +281,24 @@ async function main(): Promise<void> {
     // bound with. An entry another file supplies, such as a project's
     // .mcp.json that came with a repository, carries no id this machine's
     // protect-mcp wrote, and a changed command does not match the digest.
-    const verdict = await checkLaunch(vault, {
+    // Then where it was started: a project-level binding only in its
+    // project's directory or below it (S1), and no other project-level config
+    // visible from that directory holds its id (S2). checkStart runs these
+    // checks in this order, and mcp-status runs the same function.
+    const start = await checkStart(vault, {
       client: args.client,
       server: args.server,
       binding: args.binding,
       command: args.childCommand,
       args: args.childArgs,
     });
-    if (verdict.refused !== false) {
-      await refuseLaunch(verdict, args.client, args.server, vault);
+    if ("launch" in start) {
+      await refuseLaunch(start.launch, args.client, args.server, vault);
       return;
     }
-    // Then where it was started: a project-level binding only in its
-    // project's directory or below it (S1), and no other project-level config
-    // visible from that directory holds its id (S2).
-    const place = checkLaunchPlace(verdict.binding);
-    if (place.refused !== false) refusePlace(place, args.client, args.server);
-    secrets = await vault.getServerSecrets(args.client, args.server);
+    if ("place" in start) refusePlace(start.place, args.client, args.server);
+    // An empty pair reaches the refusal below with no secrets.
+    if (start.starts) secrets = start.secrets;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(
