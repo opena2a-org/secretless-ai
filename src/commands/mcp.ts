@@ -12,7 +12,7 @@ import type {
   UnboundMcpServer,
   UnmovedMcpServer,
 } from '../mcp/protect';
-import { checkLaunchPlace, discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp } from '../mcp/discover';
+import { checkLaunchPlace, discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp, thisBuildWrapperPath } from '../mcp/discover';
 import type { McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
@@ -27,7 +27,7 @@ import { EXIT_USAGE, readWrapperArgv, wrapperFlag } from '../argv';
 import type { WrapperArgv } from '../argv';
 
 function getWrapperPath(): string {
-  return path.resolve(__dirname, '..', 'mcp-wrapper.js');
+  return thisBuildWrapperPath();
 }
 
 /**

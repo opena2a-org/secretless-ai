@@ -9,7 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { serverMapKey } from './discover';
+import { runsThroughSecretlessWrapper, serverMapKey } from './discover';
 import { withWrapperBinding } from '../argv';
 
 // ---------------------------------------------------------------------------
@@ -125,16 +125,6 @@ function decryptBackup(data: Buffer, key: Buffer): string {
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
   return decipher.update(ciphertext) + decipher.final('utf-8');
-}
-
-/**
- * Check if a server command indicates it is already wrapped by secretless-mcp.
- */
-function isProtectedCommand(command: string, wrapperPath: string): boolean {
-  if (command === 'secretless-mcp') return true;
-  if (command.endsWith('/secretless-mcp')) return true;
-  if (command === wrapperPath) return true;
-  return false;
 }
 
 /**
@@ -313,8 +303,8 @@ function wrapServers(
       ? (serverDef['args'] as unknown[]).filter((a): a is string => typeof a === 'string')
       : [];
 
-    // Skip if already protected
-    if (isProtectedCommand(command, wrapperPath)) continue;
+    // Skip a server that already runs through a wrapper, as discovery counts it
+    if (runsThroughSecretlessWrapper(command, wrapperPath)) continue;
 
     // Validate server name for defense in depth
     if (!SAFE_NAME.test(serverName)) continue;
