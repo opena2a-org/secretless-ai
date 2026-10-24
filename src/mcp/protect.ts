@@ -9,7 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { discoverMcpConfigsDetailed, rewrittenByProtectMcp, serverMapKey } from './discover';
-import type { McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
+import type { McpConfigDiscovery, McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
 import { McpVault, boundEntryName, commandDigest, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId } from './vault';
 import type { McpBinding } from './vault';
@@ -292,7 +292,14 @@ export interface ProtectResult {
  * @param options - Configuration for the protection run.
  * @returns Summary of what was scanned and protected.
  */
-export async function protectMcp(options: ProtectOptions): Promise<ProtectResult> {
+/** Where a protect-mcp run keeps its store and its backups, and the key its store is built with. */
+interface ProtectPaths {
+  vaultDir: string;
+  backupDir: string;
+  vaultKey?: string;
+}
+
+function protectPaths(options: ProtectOptions): ProtectPaths {
   const home = options.homeDir;
   if (home && !path.isAbsolute(home)) {
     throw new Error(`homeDir must be an absolute path, got: "${home}"`);
@@ -301,9 +308,6 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     home ?? (process.env.HOME ?? process.env.USERPROFILE ?? '/tmp'),
     '.secretless-ai',
   );
-
-  const vaultDir = path.join(dataDir, 'mcp-vault');
-  const backupDir = path.join(dataDir, 'mcp-backups');
 
   // Derive a deterministic vault key from homeDir when provided (testing),
   // otherwise give none, as the wrapper gives none when its args name no
@@ -315,15 +319,48 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     ? `${home}-secretless-mcp-${process.env.USER ?? 'default'}`
     : undefined;
 
-  const vault = new McpVault({
-    storeDir: vaultDir,
-    ...(vaultKey ? { key: vaultKey } : {}),
+  return {
+    vaultDir: path.join(dataDir, 'mcp-vault'),
+    backupDir: path.join(dataDir, 'mcp-backups'),
+    ...(vaultKey === undefined ? {} : { vaultKey }),
+  };
+}
+
+/** The store a protect-mcp run stores in. */
+function protectVault(options: ProtectOptions, paths: ProtectPaths): McpVault {
+  return new McpVault({
+    storeDir: paths.vaultDir,
+    ...(paths.vaultKey ? { key: paths.vaultKey } : {}),
     ...(options.backendType ? { backendType: options.backendType } : {}),
   });
+}
 
-  // 1. Discover all MCP configs. A project-level config other than .mcp.json
-  // is left as it is and returned by name (see rewrittenByProtectMcp).
-  const discovered = discoverMcpConfigsDetailed(home, options.projectDir);
+/**
+ * What a protect-mcp run reads before it writes anything, from what discovery
+ * found: the configs it rewrites, the names protected servers read by, the
+ * stores, and the binder its plans are made with. protectMcp and
+ * planMcpBindings both start from it.
+ */
+interface ProtectSetup {
+  configs: McpConfigFile[];
+  unparsed: UnparsedMcpConfig[];
+  projectLevel: ProjectLevelMcpConfig[];
+  nameHolders: Map<string, McpConfigFile>;
+  readers: Map<string, McpConfigFile[]>;
+  stores: WrapperStores;
+  /** The version of this build: a binding records it, and an entry on a wrapper that reads a lower one is re-pointed. */
+  version: string | null;
+  binder: Binder;
+}
+
+function protectSetup(
+  options: ProtectOptions,
+  discovered: McpConfigDiscovery,
+  vault: Binder['vault'],
+  paths: ProtectPaths,
+): ProtectSetup {
+  // A project-level config other than .mcp.json is left as it is and
+  // returned by name (see rewrittenByProtectMcp).
   const configs = discovered.configs.filter(rewrittenByProtectMcp);
   const unparsed = discovered.unparsed.filter(rewrittenByProtectMcp);
   const projectLevel: ProjectLevelMcpConfig[] = [];
@@ -332,28 +369,6 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       projectLevel.push({ client, filePath, projectPath });
     }
   }
-
-  const result: ProtectResult = {
-    clientsScanned: new Set(configs.map((config) => config.client)).size,
-    secretsFound: 0,
-    serversProtected: 0,
-    servers: [],
-    alreadyProtected: 0,
-    injectionWarnings: [],
-    unparsed,
-    unchecked: configs
-      .filter((config) => config.unchecked.length > 0)
-      .map((config) => ({ client: config.client, ...mapLocation(config), servers: config.unchecked })),
-    sharedName: [],
-    refusedName: [],
-    unmoved: [],
-    bound: [],
-    rebound: [],
-    unbound: [],
-    copies: [],
-    repointed: [],
-    projectLevel,
-  };
 
   // Secrets are stored under the client and server name, and a protected
   // server's wrapper reads them back by that name. So a name belongs to the
@@ -379,7 +394,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
   const stores: WrapperStores = {
     run: resolveBackendType(options.backendType),
     configured: resolveBackendType(),
-    keyed: vaultKey !== undefined,
+    keyed: paths.vaultKey !== undefined,
   };
 
   // The servers that run through the wrapper, by the name they read by, in
@@ -397,19 +412,85 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       else rewrittenReaders.set(name, [{ config, server }]);
     }
   }
-  // The version of this build: a binding records it, and an entry on a
-  // wrapper that reads a lower one is re-pointed (see repointsToThisBuild).
   const version = packageVersionAbove(__dirname);
   const binder: Binder = {
     vault,
     discovered,
     rewrittenReaders,
     stores,
-    backupDir,
+    backupDir: paths.backupDir,
     bindings: new Map(),
     boundBy: version ?? 'unknown',
     wrapperPath: options.wrapperPath,
     backendType: options.backendType,
+  };
+  return { configs, unparsed, projectLevel, nameHolders, readers, stores, version, binder };
+}
+
+/**
+ * Why the secrets in the env of a server that runs through the wrapper,
+ * `secrets`, are left there, or undefined when this run stores them (or
+ * there are none). They are stored under the name its wrapper reads by,
+ * only where unmovedReason gives no reason, and only where storing neither
+ * adds a project-level value to stored secrets (projectStoredReason) nor
+ * replaces a stored value with another one (storedValueReason).
+ */
+async function wrappedStoreReason(
+  setup: ProtectSetup,
+  config: McpConfigFile,
+  server: McpServerEntry,
+  secrets: Record<string, string>,
+): Promise<string | undefined> {
+  const secretKeys = Object.keys(secrets);
+  if (secretKeys.length === 0) return undefined;
+  const readerCount = setup.readers.get(protectedVaultName(config.client, server))?.length ?? 0;
+  const reason = unmovedReason(config.client, server, readerCount, setup.stores);
+  if (reason !== undefined) return reason;
+  // A value from a project-level config is stored only under a name that
+  // holds no stored secret, so it neither adds to nor replaces the secrets
+  // stored under that name.
+  const reads = wrapperReads(config.client, server);
+  const stored = await setup.binder.vault.getServerSecrets(reads.client, reads.server);
+  const projectReason = projectStoredReason(config, stored, reads);
+  if (projectReason !== undefined) return projectReason;
+  // The wrapper gives the server a value stored under an env name in place
+  // of the one in its env, so storing another value under that name would
+  // change the credential the server is given.
+  const differing = secretKeys.filter((key) =>
+    Object.prototype.hasOwnProperty.call(stored, key) && stored[key] !== secrets[key]);
+  return differing.length > 0 ? storedValueReason(differing, reads) : undefined;
+}
+
+export async function protectMcp(options: ProtectOptions): Promise<ProtectResult> {
+  const paths = protectPaths(options);
+  const vault = protectVault(options, paths);
+  const { backupDir } = paths;
+
+  // 1. Discover all MCP configs.
+  const discovered = discoverMcpConfigsDetailed(options.homeDir, options.projectDir);
+  const setup = protectSetup(options, discovered, vault, paths);
+  const { configs, unparsed, projectLevel, nameHolders, readers, version, binder } = setup;
+
+  const result: ProtectResult = {
+    clientsScanned: new Set(configs.map((config) => config.client)).size,
+    secretsFound: 0,
+    serversProtected: 0,
+    servers: [],
+    alreadyProtected: 0,
+    injectionWarnings: [],
+    unparsed,
+    unchecked: configs
+      .filter((config) => config.unchecked.length > 0)
+      .map((config) => ({ client: config.client, ...mapLocation(config), servers: config.unchecked })),
+    sharedName: [],
+    refusedName: [],
+    unmoved: [],
+    bound: [],
+    rebound: [],
+    unbound: [],
+    copies: [],
+    repointed: [],
+    projectLevel,
   };
 
   // 2. For each config: classify, encrypt, rewrite. The server maps of one
@@ -444,24 +525,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
           // same write as its binding, whatever this run does about that.
           if (repointsToThisBuild(server.command, options.wrapperPath, version)) repoint.push(server.name);
           // Whether a secret in its env may be stored, and why not.
-          let storeReason: string | undefined;
-          if (secretKeys.length > 0) {
-            const readerCount = readers.get(protectedVaultName(config.client, server))?.length ?? 0;
-            storeReason = unmovedReason(config.client, server, readerCount, stores);
-            if (storeReason === undefined) {
-              // A value from a project-level config is stored only under a name
-              // that holds no stored secret, so it neither adds to nor replaces
-              // the secrets stored under that name.
-              const stored = await vault.getServerSecrets(reads.client, reads.server);
-              storeReason = projectStoredReason(config, stored, reads);
-              // The wrapper gives the server a value stored under an env name in
-              // place of the one in its env, so storing another value under that
-              // name would change the credential the server is given.
-              const differing = secretKeys.filter((key) =>
-                Object.prototype.hasOwnProperty.call(stored, key) && stored[key] !== classified.secrets[key]);
-              if (storeReason === undefined && differing.length > 0) storeReason = storedValueReason(differing, reads);
-            }
-          }
+          const storeReason = await wrappedStoreReason(setup, config, server, classified.secrets);
 
           // The binding is stored before any secret (see applyBinding), and
           // whether or not a secret in its env is stored.
@@ -640,32 +704,217 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 }
 
 /**
- * Whether protect-mcp re-points a server that runs through a wrapper to this
- * build's, `wrapperPath`: its command is not this build's wrapper file, and
- * the wrapper it names does not read a version at or above this build's,
- * `version`. A bare or relative command is never this build's file, since its
- * client resolves it, and neither is a path that no longer exists. A path is
- * this build's file when its real path is. The other wrapper's version is
- * read as that wrapper reads its own (readWrapperVersion), from the directory
- * of the real path, and compared by semver: an equal version is this build's
- * checks at another install path, and a higher one is never replaced. A
- * wrapper with no version read is re-pointed; where this build reads none,
- * a wrapper that reads one is left.
+ * What protect-mcp does for the binding of a server that runs through the
+ * wrapper, as mcp-status names it under the server's line: nothing (`bound`),
+ * bind it, bind it again with its command (`rebind`), write its binding's id
+ * into it again (`stale`), leave it with why, report it as a copy of the
+ * entry it names, or replace that entry's binding. Names and places only:
+ * never an id, a digest or a value.
  */
-export function repointsToThisBuild(command: string, wrapperPath: string, version: string | null): boolean {
-  if (command === wrapperPath) return false;
-  if (!path.isAbsolute(command)) return true;
+export type McpBindingFix =
+  | { kind: 'bound' }
+  | { kind: 'bind' }
+  | { kind: 'rebind' }
+  | { kind: 'stale' }
+  | { kind: 'left'; reason: string }
+  | { kind: 'copy'; boundTo: McpBoundEntry }
+  | { kind: 'replace'; boundTo: McpBoundEntry };
+
+/**
+ * protect-mcp's plan for the binding of each server that runs through the
+ * wrapper in the configs it rewrites, made as protectMcp makes it (its
+ * setup, its store reasons and bindWrapped, in its order) and carried out by
+ * nothing: the store and the backups are read, and nothing is stored or
+ * written. The plans are made on a copy of what discovery found, with what
+ * an earlier plan of the run changes there as protect-mcp leaves it (see
+ * planned). Where protect-mcp's store would be a local store whose directory
+ * does not exist, none is built, since building one writes into its
+ * directory: the plans are made against a store that holds nothing, as
+ * protect-mcp finds it. Keyed by the entries of `discovered`.
+ */
+export async function planMcpBindings(
+  options: ProtectOptions,
+  discovered: McpConfigDiscovery,
+): Promise<Map<McpServerEntry, McpBindingFix>> {
+  const fixes = new Map<McpServerEntry, McpBindingFix>();
+  const wrapped = (config: McpConfigFile) => rewrittenByProtectMcp(config) && config.servers.some((server) => server.alreadyProtected);
+  if (!discovered.configs.some(wrapped)) return fixes;
+  const paths = protectPaths(options);
+  const vault = resolveBackendType(options.backendType) === 'local' && !fs.existsSync(paths.vaultDir)
+    ? emptyStore(storeName('local', paths.vaultKey !== undefined))
+    : protectVault(options, paths);
+  const run = structuredClone(discovered);
+  const original = new Map<McpServerEntry, McpServerEntry>();
+  run.configs.forEach((config, i) => config.servers.forEach((server, j) => original.set(server, discovered.configs[i].servers[j])));
+  const setup = protectSetup(options, run, vault, paths);
+  for (const [, fileConfigs] of configsByFile(setup.configs)) {
+    for (const config of fileConfigs) {
+      for (const server of config.servers) {
+        if (!server.alreadyProtected) continue;
+        const secrets = classifyEnvVars(server.env).secrets;
+        const storeReason = await wrappedStoreReason(setup, config, server, secrets);
+        const plan = await bindWrapped(setup.binder, config, server, Object.keys(secrets).length > 0 && storeReason === undefined);
+        planned(setup.binder, config, server, plan);
+        const entry = original.get(server);
+        if (entry !== undefined) fixes.set(entry, bindingFix(plan));
+      }
+    }
+  }
+  return fixes;
+}
+
+/**
+ * What a plan changes in the run when protect-mcp carries it out, made in
+ * memory only, so the plans after it are made as protect-mcp makes them: the
+ * binding a bind, rebind or stale plan stores for the pair, and for a
+ * replaced binding the new id, stored for the pair and written into the
+ * bound entry's args (see applyBinding and replaceBinding).
+ */
+function planned(binder: Binder, config: McpConfigFile, server: McpServerEntry, plan: BindingPlan): void {
+  const reads = wrapperReads(config.client, server);
+  const pair = `${reads.client}/${reads.server}`;
+  if (plan.kind === 'bind') binder.bindings.set(pair, newBinding(binder, config, server.name, plan.id, plan.digest));
+  if (plan.kind === 'rebind' || plan.kind === 'stale') binder.bindings.set(pair, { ...plan.binding, commandDigest: plan.digest });
+  if (plan.kind === 'replace') {
+    const id = newBindingId();
+    binder.bindings.set(pair, { ...plan.binding, id });
+    plan.owner.server.args = withWrapperBinding(plan.owner.server.args, id) ?? plan.owner.server.args;
+  }
+}
+
+/** A plan as mcp-status names it: its kind, and the reason or the entry it names. */
+function bindingFix(plan: BindingPlan): McpBindingFix {
+  switch (plan.kind) {
+    case 'bound':
+    case 'bind':
+    case 'rebind':
+    case 'stale':
+      return { kind: plan.kind };
+    case 'left':
+      return { kind: 'left', reason: plan.reason };
+    case 'copy':
+    case 'replace':
+      return { kind: plan.kind, boundTo: boundEntry(plan.binding) };
+  }
+}
+
+/**
+ * A store that holds nothing, for plans made where protect-mcp's local store
+ * does not exist yet. A plan stores nothing, so nothing writes to it.
+ */
+function emptyStore(backendName: string): Binder['vault'] {
+  return {
+    backendName,
+    getBinding: async () => undefined,
+    getServerSecrets: async () => ({}),
+    storeBinding: async () => {
+      throw new Error('a plan stores nothing');
+    },
+  };
+}
+
+/**
+ * Which wrapper the command of a server that runs through one names, as
+ * protect-mcp's re-point and mcp-status both read it: `this` when it is this
+ * build's wrapper file, `wrapperPath`, or its real path is; `version` with the
+ * version the wrapper it names reads, as that wrapper reads its own
+ * (readWrapperVersion), from the directory of the real path; or `unread`. A
+ * bare or relative command is never this build's file, since its client
+ * resolves it, and neither is a path that no longer exists: both are
+ * `unread`, as is a wrapper that reads no version.
+ */
+export type WrapperBuild = { build: 'this' } | { build: 'version'; version: string } | { build: 'unread' };
+
+export function wrapperBuild(command: string, wrapperPath: string): WrapperBuild {
+  if (command === wrapperPath) return { build: 'this' };
+  if (!path.isAbsolute(command)) return { build: 'unread' };
   let real: string;
   try {
     real = fs.realpathSync(command);
   } catch {
-    return true;
+    return { build: 'unread' };
   }
-  if (sameFile(real, wrapperPath)) return false;
-  const theirs = readWrapperVersion(path.dirname(real));
-  if (!isVersion(theirs)) return true;
+  if (sameFile(real, wrapperPath)) return { build: 'this' };
+  const version = readWrapperVersion(path.dirname(real));
+  return isVersion(version) ? { build: 'version', version } : { build: 'unread' };
+}
+
+/**
+ * Whether protect-mcp re-points a server that runs through a wrapper to this
+ * build's, `wrapperPath`: its command is not this build's wrapper file, and
+ * the wrapper it names does not read a version at or above this build's,
+ * `version` (see wrapperBuild). Versions are compared by semver: an equal
+ * version is this build's checks at another install path, and a higher one
+ * is never replaced. A wrapper with no version read is re-pointed; where this
+ * build reads none, a wrapper that reads one is left.
+ */
+export function repointsToThisBuild(command: string, wrapperPath: string, version: string | null): boolean {
+  const theirs = wrapperBuild(command, wrapperPath);
+  if (theirs.build === 'this') return false;
+  if (theirs.build === 'unread') return true;
   if (version === null || !isVersion(version)) return false;
-  return (compareVersions(theirs, version) ?? 0) < 0;
+  return (compareVersions(theirs.version, version) ?? 0) < 0;
+}
+
+/**
+ * The first secretless-ai version whose wrapper checks an entry's binding
+ * before it starts the entry's server: the version the binding is released
+ * in. No release of it exists yet.
+ */
+export const FIRST_BINDING_VERSION = '0.24.0';
+
+/**
+ * Whether the wrapper a server runs through checks its binding, so the
+ * checks this build's wrapper runs (checkStart) say whether it starts: this
+ * build's file, or a wrapper that reads a version at or above
+ * FIRST_BINDING_VERSION or at or above this build's, `version` (an equal
+ * version is this build's checks). Any other wrapper, and one whose version
+ * is not read, makes none of those checks, so mcp-status computes no start
+ * clause for it.
+ */
+export function wrapperChecksBinding(theirs: WrapperBuild, version: string | null): boolean {
+  if (theirs.build === 'this') return true;
+  if (theirs.build === 'unread') return false;
+  if ((compareVersions(theirs.version, FIRST_BINDING_VERSION) ?? -1) >= 0) return true;
+  return version !== null && isVersion(version) && (compareVersions(theirs.version, version) ?? -1) >= 0;
+}
+
+/**
+ * The state of a server that runs through the wrapper, by where the binding
+ * stored for the pair it reads, `record`, points relative to its entry, first
+ * match winning: (a) no record: `unbound` in a config protect-mcp rewrites,
+ * `not-rewritten` in a project-level config it does not; (b) `elsewhere`: the
+ * record's place is not this entry's (isBoundEntry: file by real path,
+ * ~/.claude.json project key, and server name), whatever its --binding holds,
+ * with whether that is the record's id (compared here, never printed); (c)
+ * `stale-id`: at the record's place, with no --binding or another id; (d)
+ * `command-changed`: place and id equal, and the command after its `--` is
+ * not the one the record was bound with; (e) `bound`. Whether the wrapper
+ * starts the entry is not a state: checkStart computes it.
+ */
+export type McpBindingState =
+  | { state: 'unbound' }
+  | { state: 'not-rewritten' }
+  | { state: 'elsewhere'; binding: McpBinding; carriesRecordId: boolean }
+  | { state: 'stale-id'; binding: McpBinding }
+  | { state: 'command-changed'; binding: McpBinding }
+  | { state: 'bound'; binding: McpBinding };
+
+export function bindingState(
+  record: McpBinding | undefined,
+  config: McpServerMapLocation,
+  server: Pick<McpServerEntry, 'name' | 'args'>,
+): McpBindingState {
+  if (record === undefined) return rewrittenByProtectMcp(config) ? { state: 'unbound' } : { state: 'not-rewritten' };
+  const read = readWrapperArgv(server.args);
+  const entryId = wrapperFlag(read, '--binding');
+  const carriesRecordId = isBindingId(entryId) && entryId === record.id;
+  if (!isBoundEntry(record, config, server.name)) return { state: 'elsewhere', binding: record, carriesRecordId };
+  if (!carriesRecordId) return { state: 'stale-id', binding: record };
+  if (read.child === undefined || record.commandDigest !== commandDigest(read.child.command, read.child.args)) {
+    return { state: 'command-changed', binding: record };
+  }
+  return { state: 'bound', binding: record };
 }
 
 /**
@@ -779,9 +1028,13 @@ function storeMismatchReason(server: McpServerEntry, stores: WrapperStores): str
 // Binding (see McpBinding)
 // ---------------------------------------------------------------------------
 
-/** What binding a server needs from this run: its store, what discovery found, and the bindings read so far. */
+/**
+ * What binding a server needs from this run: its store, what discovery found,
+ * and the bindings read so far. A plan's store may hold nothing (see
+ * planMcpBindings).
+ */
 interface Binder {
-  vault: McpVault;
+  vault: Pick<McpVault, 'backendName' | 'getBinding' | 'getServerSecrets' | 'storeBinding'>;
   discovered: { configs: McpConfigFile[]; unparsed: UnparsedMcpConfig[] };
   /** The servers that run through the wrapper in the configs this run rewrites, by the name they read by. */
   rewrittenReaders: Map<string, Array<{ config: McpConfigFile; server: McpServerEntry }>>;

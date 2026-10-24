@@ -18,7 +18,11 @@ import { protectMcp } from './mcp/protect';
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
 const WRAPPER_JS = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
-const WRAPPER_PATH = '/usr/local/bin/secretless-mcp';
+// The wrapper protect-mcp writes into a config: this build's, as the built
+// CLI writes it, so mcp-status reads these entries as on a wrapper that checks
+// its binding (an entry on another build's wrapper gets no start clause:
+// src/mcp/status-states.test.ts).
+const WRAPPER_PATH = WRAPPER_JS;
 
 let home: string;
 let project: string;
@@ -125,6 +129,7 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
       `  cursor (${cursorJson})`,
       '    ! exposed: EXPOSED (1 plaintext secret(s))',
       '    ? wrapped: protected, not bound, so the wrapper does not start it',
+      '      `npx secretless-ai protect-mcp` binds it.',
       '    ? partial: env value API_TOKEN not checked: not a string',
       '',
     ].join('\n'));
