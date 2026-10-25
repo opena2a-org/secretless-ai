@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+**Security: the Claude Code guard hook now joins backslash-newline line continuations before matching, so a read split across lines is refused like its one-line form.**
+
 **`protect-mcp` stores a server's secrets only under a client/server name no
 other protected server reads, never replaces a stored value, and stores a
 value from a project-level config only under a name that holds no stored
