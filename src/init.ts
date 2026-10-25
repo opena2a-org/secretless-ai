@@ -3345,11 +3345,57 @@ except Exception:
   # the first colon, which the key and the blanks before it do not hold, then
   # through the next quote, the one that opens the value, and the closing quote
   # last, so this needs no program beyond grep and head.
+  COMMAND_FORM=text
   if [ -z "$COMMAND" ]; then
+    COMMAND_FORM=json
     COMMAND=$(echo "$INPUT" | grep -oE '"command"[[:space:]]*:[[:space:]]*"([^"\\\\]|\\\\.)*"' | head -1 || true)
     COMMAND=\${COMMAND#*:}
     COMMAND=\${COMMAND#*'"'}
     COMMAND=\${COMMAND%'"'}
+  fi
+  # NOTE ON LINE CONTINUATIONS. bash removes a backslash-newline pair before it
+  # splits a command into words, so \`cat \\\` on one line and a secret path on
+  # the next is the same read as the one-line form. Every arm below matches a
+  # line at a time, and admitted the split form while it refused the one-line
+  # form. So before any arm runs, the hook judges the command with every pair
+  # removed, by running itself on that text, and a deny there is the verdict.
+  # Then it judges the command as written, as before, so the joined text can
+  # only add a denial: a continuation that bash would not join, inside single
+  # quotes or at the end of a comment, could otherwise hide a read that the
+  # text as written shows. Removing the pair inside single quotes, where bash
+  # keeps it, can likewise only refuse more, and that over-approximation is
+  # meant. With python3 the command is text and the pair is a backslash and a
+  # line break. Without it the command is the JSON string, where the pair is
+  # the escapes \`\\\\\` and \`\\n\`; an escape is removed whole, after an even run
+  # of backslashes only, so an escaped backslash followed by the letter n is not
+  # taken for one. If the run on the joined text fails, the command is refused.
+  CONTINUATION_NL='
+'
+  JOINED_INPUT=""
+  if [ "$COMMAND_FORM" = text ]; then
+    case "$COMMAND" in
+      *"\\\\$CONTINUATION_NL"*)
+        JOINED_INPUT=$(printf '%s' "\${COMMAND//\\\\$CONTINUATION_NL/}" | python3 -I -c 'import json,sys
+sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.stdin.buffer.read().decode("utf-8", "surrogateescape")}}))' 2>/dev/null) || JOINED_INPUT="failed"
+        ;;
+    esac
+  else
+    JOINED=$(printf '%s\\n' "$COMMAND" \\
+      | sed -E -e ':join' -e 's/(^|[^\\\\])((\\\\\\\\)*)\\\\\\\\\\\\n/\\1\\2/' -e 't join' 2>/dev/null) || JOINED="$COMMAND"
+    if [ "$JOINED" != "$COMMAND" ]; then
+      JOINED_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$JOINED")
+    fi
+  fi
+  if [ -n "$JOINED_INPUT" ]; then
+    JOINED_VERDICT=""
+    if [ "$JOINED_INPUT" = failed ] \\
+      || ! JOINED_VERDICT=$(printf '%s' "$JOINED_INPUT" | "$BASH" "$0" 2>/dev/null); then
+      JOINED_VERDICT='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command the guard could not judge with its line continuations joined. Safe path: write the command on one line."}}'
+    fi
+    if [ -n "$JOINED_VERDICT" ]; then
+      printf '%s\\n' "$JOINED_VERDICT"
+      exit 0
+    fi
   fi
   if [ -z "$FILE_READ_SCAN" ]; then
     FILE_READ_SCAN="$COMMAND"

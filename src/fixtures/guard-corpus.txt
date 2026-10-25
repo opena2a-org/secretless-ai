@@ -717,6 +717,13 @@ $'\x63at' .env
 $'\x73et'
 c\at .env
 json:"ca\\\nt .env"
+json:"cat \\\n/tmp/x/id_rsa.pem"
+json:"head -c 100 \\\n/tmp/x/server.key"
+json:"cat \\\n.env"
+json:"cat .e\\\nnv"
+json:"# note \\\ncat .env"
+json:"echo one \\\ntwo"
+git config --global http.sslCAInfo /opt/homebrew/etc/ca-certificates/cert.pem
 
 # The secretless data directory, its CLI and git credential helpers.
 ls ~/.secretless-ai

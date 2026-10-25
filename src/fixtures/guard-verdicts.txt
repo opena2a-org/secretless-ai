@@ -690,7 +690,14 @@ deny: blocked command that reads secret files | deny: blocked command that reads
 allow | allow | $'\x63at' .env
 deny: blocked a command that can print the environment, credentials included | allow | $'\x73et'
 allow | allow | c\at .env
-allow | allow | json:"ca\\\nt .env"
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | json:"ca\\\nt .env"
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | json:"cat \\\n/tmp/x/id_rsa.pem"
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | json:"head -c 100 \\\n/tmp/x/server.key"
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | json:"cat \\\n.env"
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | json:"cat .e\\\nnv"
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | json:"# note \\\ncat .env"
+allow | allow | json:"echo one \\\ntwo"
+allow | allow | git config --global http.sslCAInfo /opt/homebrew/etc/ca-certificates/cert.pem
 deny: blocked access to secretless data directory | deny: blocked access to secretless data directory | ls ~/.secretless-ai
 deny: blocked access to secretless data directory | deny: blocked access to secretless data directory | cat ~/.secretless-ai/store.json
 deny: blocked access to secretless data directory | deny: blocked access to secretless data directory | ls ~/.opena2a/secretless-ai

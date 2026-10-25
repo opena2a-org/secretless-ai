@@ -25,6 +25,10 @@ const mustDeny: Array<[string, string]> = [
   ['cat split before the env file', `cat ${BS}${NL}${ENV}`],
   ['the env file name split in two', `cat .e${BS}${NL}nv`],
   ['the verb split in two (corpus row)', `ca${BS}${NL}t ${ENV}`],
+  // A backslash at the end of a comment does not continue it, so bash runs the
+  // read on the next line. Joined, the read would sit inside the comment; the
+  // command as written is judged too, and refuses it.
+  ['a read after a comment that ends in a backslash', `# note ${BS}${NL}cat ${ENV}`],
 ];
 
 const mustAllow: Array<[string, string]> = [
