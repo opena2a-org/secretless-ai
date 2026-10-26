@@ -970,17 +970,22 @@ function placeState(place: Exclude<McpPlaceVerdict, { refused: false }>): string
 
 /**
  * The line for a pair mcp-unprotect leaves because its binding names an entry
- * in a file this run did not restore: that entry's location.
+ * in a file this run did not restore: the stored names it left (`names`,
+ * never a value), then that entry's location. It cites no command. Words: the
+ * product role's C3 ruling (C3-6).
  */
-const LEFT_BOUND_UNRESTORED = (label: string, entry: string): string =>
-  `  ? ${label}: left in the store; it is bound to ${entry}, which this run did not restore.`;
+const LEFT_BOUND_UNRESTORED = (label: string, names: string[], entry: string): string =>
+  `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. They are bound to ${entry}, which this run did not restore.`;
 
 /**
  * The line for a pair with no binding that mcp-unprotect leaves in a store
- * shared between machines.
+ * shared between machines: the stored names it left (`names`, never a
+ * value), then that `backend` is read from other machines as well, so an
+ * entry on one of them may read the pair. It cites no command. Words: the
+ * product role's C3 ruling (C3-6).
  */
-const LEFT_SHARED_UNBOUND = (label: string, backend: string): string =>
-  `  ? ${label}: left in the store; it has no binding, and an entry on another machine may read it from the ${backend} backend.`;
+const LEFT_SHARED_UNBOUND = (label: string, names: string[], backend: string): string =>
+  `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. No binding is stored for them, and the ${backend} backend is read from other machines as well, so an entry there may read them.`;
 
 /**
  * After a file is restored, each pair its wrapped entries read is deleted
@@ -991,7 +996,8 @@ const LEFT_SHARED_UNBOUND = (label: string, backend: string): string =>
  * outside the restored files loses them. In a store shared between machines,
  * a pair with no binding is left: an entry on another machine may read it.
  * Any other pair is left, and its line names the stored names the file does
- * not hold, or the entry its binding names (names and paths only).
+ * not hold, or the stored names it left and why: the entry its binding names,
+ * or the shared store (names and paths only).
  */
 async function clearRestoredPairs(
   reads: Array<{ filePath: string; reads: WrapperRead }>,
@@ -1041,11 +1047,11 @@ async function clearRestoredPairs(
     }
     const binding = found;
     if (binding === undefined && !isPerMachineStore(pair.vault.backendName)) {
-      console.log(LEFT_SHARED_UNBOUND(label, pair.vault.backendName));
+      console.log(LEFT_SHARED_UNBOUND(label, names, pair.vault.backendName));
       continue;
     }
     if (binding !== undefined && !restoredFiles.some((file) => sameFile(file, binding.file))) {
-      console.log(LEFT_BOUND_UNRESTORED(label, boundEntryName(binding)));
+      console.log(LEFT_BOUND_UNRESTORED(label, names, boundEntryName(binding)));
       continue;
     }
     await pair.vault.removeServerSecrets(pair.client, pair.server);
