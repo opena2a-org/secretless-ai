@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
@@ -176,10 +177,16 @@ function fencedBlocks(file: string): { lines: string[]; blocks: Block[] } {
   return { lines, blocks };
 }
 
-/** The first fenced block after the first block that runs `npx secretless-ai <command>`. */
-function sampleAfter(file: string, command: string): string {
+/**
+ * The first fenced block after the first block that runs `npx secretless-ai <command>`, or
+ * after the `occurrence`th such block when a guide runs the command more than once.
+ */
+function sampleAfter(file: string, command: string, occurrence = 1): string {
   const { blocks } = fencedBlocks(file);
-  const at = blocks.findIndex(b => b.body.some(l => l.trim() === `npx secretless-ai ${command}`));
+  let seen = 0;
+  const at = blocks.findIndex(
+    b => b.body.some(l => l.trim() === `npx secretless-ai ${command}`) && ++seen === occurrence,
+  );
   if (at === -1 || at + 1 >= blocks.length) {
     throw new Error(`${file}: no sample block follows \`npx secretless-ai ${command}\``);
   }
@@ -589,6 +596,36 @@ describe('run-broker.md', () => {
       .replace(/^( {2}Uptime: +)\S+$/m, '$15s')
       .replace(/^( {2}Started at: +)\d{4}-\d\d-\d\dT[\d:.]+Z$/m, '$12026-10-11T09:30:00.000Z');
     expect(status).toBe(sampleAfter(BROKER_GUIDE, 'broker status'));
+
+    child.kill('SIGTERM');
+  }, TEST_TIMEOUT_MS);
+
+  itIfBuilt('`broker start` in the Grants section, with the policy and grant files the guide writes', async () => {
+    const home = brokerHome();
+    const configDir = path.join(home, '.secretless-ai');
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    // Both files as the guide shows them, at the default paths it names. The grant file's
+    // placeholder issuer key is replaced by a real Ed25519 public key, 64 hex characters.
+    fs.writeFileSync(
+      path.join(configDir, 'broker-policies.json'),
+      blockAfterText(BROKER_GUIDE, 'Create `~/.secretless-ai/broker-policies.json`:'),
+    );
+    const issuer = crypto.generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }) as { x: string };
+    fs.writeFileSync(
+      path.join(configDir, 'broker-grants.json'),
+      blockAfterText(BROKER_GUIDE, 'Create `~/.secretless-ai/broker-grants.json`:').replace(
+        '<the issuer\'s public key, 64 hex characters>',
+        Buffer.from(issuer.x, 'base64url').toString('hex'),
+      ),
+    );
+    const port = await freePort();
+    const { child, output } = await startUntil(['broker', 'start', '--port', String(port)], home, 'Press Ctrl+C to stop.');
+
+    // The sample is the rows after `AIM:` up to the blank line under them.
+    const lines = output.split('\n');
+    const from = lines.findIndex(l => l.startsWith('  AIM:')) + 1;
+    const rows = lines.slice(from, lines.indexOf('', from)).join('\n');
+    expect(normalize(rows, home)).toBe(sampleAfter(BROKER_GUIDE, 'broker start', 2));
 
     child.kill('SIGTERM');
   }, TEST_TIMEOUT_MS);

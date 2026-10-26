@@ -237,21 +237,9 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
     throw err;
   }
 
-  // Print token file path so callers know where to read the auth token
-  console.log(`Broker auth token: ${config.tokenFile}`);
-  if (grants) {
-    console.log(
-      `Grant file: ${grants.file} ` +
-      `(${countOf(grants.bindingCount, 'binding')}, ${countOf(grants.providerCount, 'provider')})`,
-    );
-    console.log(
-      `Broker assertion public key: ${grants.assertionPublicKeyFile}` +
-      (grants.assertionKeyCreated
-        ? ' (new key: register it with each identity provider in the grant file)'
-        : ''),
-    );
-  }
-
+  // Nothing is printed here: a library caller reads what was loaded from
+  // server.getStatus().routes, and the token file is its own tokenFile or
+  // BROKER_TOKEN_FILE. `broker start` prints them as rows of its screen.
   return server;
 }
 
@@ -325,10 +313,6 @@ function grantDependencies(
       assertionKeyCreated: grants.assertionKeyCreated,
     },
   };
-}
-
-function countOf(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
 export interface SpawnDaemonOptions {

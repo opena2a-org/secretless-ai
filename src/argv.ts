@@ -310,6 +310,7 @@ export const VERBS: Readonly<Record<string, VerbSpec>> = {
       '--port': true,
       '--grant-file': true,
       '--policy-file': true,
+      '--no-resolve': false,
     },
     unknownFlags: 'reject',
   },
