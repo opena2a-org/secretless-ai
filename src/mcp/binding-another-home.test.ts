@@ -6,7 +6,7 @@ import { createBackend } from '../backends/factory';
 import { runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
 import { thisBuildWrapperPath } from './discover';
 import { BindingHomeIdError } from './binding-home-id';
-import { HOME_ID_UNUSABLE } from './protect';
+import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, HOME_ID_UNUSABLE } from './protect';
 import { bindingKey, openHomes, startWrapper } from './binding-homes.test-support';
 import type { HomeName, Homes } from './binding-homes.test-support';
 
@@ -143,6 +143,36 @@ const storedNames = (client: string, server: string): string[] =>
   Object.keys(h().store.all()).filter((key) => key.startsWith(`mcp/${client}/${server}/`));
 
 const hex = (bytes: number) => crypto.randomBytes(bytes).toString('hex');
+
+describe('(J5) the another-machine words carry what the ruling fixes, pending their final words', () => {
+  const reads = { client: 'claude-code', server: 's' };
+
+  it('the reason names the pair, another secretless home on another machine or this one before its ~/.secretless-ai was replaced, that this machine leaves the binding, and a new name with its own values', () => {
+    const reason = ANOTHER_MACHINE_REASON(reads);
+    expect(reason).toContain('claude-code/s');
+    expect(reason).toContain('protect-mcp in another secretless home');
+    expect(reason).toContain('on another machine');
+    expect(reason).toContain('before its ~/.secretless-ai was replaced');
+    expect(reason).toContain('protect-mcp and mcp-unprotect on this machine leave that binding as it is');
+    expect(reason).toContain('under a new name with its own values');
+  });
+
+  it('the clause names the file as a path on that machine, and says this machine leaves the binding', () => {
+    const file = path.join(path.sep, 'elsewhere', '.cursor', 'mcp.json');
+    const clause = ANOTHER_MACHINE_CLAUSE(file);
+    expect(clause).toContain(`${file} is a path there`);
+    expect(clause).toContain('protect-mcp in another secretless home');
+    expect(clause).toContain('protect-mcp and mcp-unprotect on this machine leave that binding as it is');
+  });
+
+  it('neither says the entry no longer exists, nor names a command that deletes a binding', () => {
+    for (const words of [ANOTHER_MACHINE_REASON(reads), ANOTHER_MACHINE_CLAUSE('/f')]) {
+      expect(words).not.toContain('no longer exists');
+      expect(words).not.toContain('mcp-forget');
+      expect(words).not.toMatch(/\bforget\b|\bdelete\b/);
+    }
+  });
+});
 
 describe('(J1) every binding protect-mcp stores names the secretless home that stored it', () => {
   it('a server moved into the store and a wrapped entry bound in place both carry the home\'s id as boundOn', async () => {
