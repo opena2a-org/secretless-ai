@@ -347,6 +347,31 @@ describe('protect-mcp re-points an entry that names another build\'s wrapper to 
     expect(out).toContain(REPOINTED_COUNT(1));
   });
 
+  it('rp8: the re-pointed entries are listed after the entries bound this run and before the ones left not bound', async () => {
+    const old = scratchBuild('secretless-ai-old', lowerThan(THIS_VERSION));
+    const p = dir('p');
+    // Re-pointed and bound: a home entry whose names an earlier version stored.
+    const homeFile = write(path.join(home, '.cursor', 'mcp.json'), { mcpServers: { github: wrappedOn(old, 'cursor', 'github', path.join(scratch, 'rp8-github.json')) } });
+    await storeEarlier('cursor', 'github');
+    // Re-pointed and left not bound: names stored from elsewhere, which
+    // protect-mcp's backup of this .mcp.json does not hold.
+    const projectFile = write(path.join(p, '.mcp.json'), { mcpServers: { linear: wrappedOn(old, 'claude-code', 'linear', path.join(scratch, 'rp8-linear.json')) } });
+    await storeEarlier('claude-code', 'linear');
+
+    const out = runCliIn('rp8', p, ['protect-mcp']);
+    keepIds('rp8', homeFile, projectFile);
+    const bound = out.indexOf('  1 server(s) bound to their config entries.\n');
+    const count = out.indexOf(REPOINTED_COUNT(2));
+    const notBound = out.indexOf('    ? linear: not bound: ');
+    expect(bound, 'the bound group').toBeGreaterThan(-1);
+    for (const server of ['github', 'linear']) {
+      const at = out.indexOf(REPOINTED(server));
+      expect(at, `${server}: re-pointed after the bound group`).toBeGreaterThan(bound);
+      expect(at, `${server}: re-pointed before the count`).toBeLessThan(count);
+    }
+    expect(notBound, 'the not-bound group after the re-pointed count').toBeGreaterThan(count);
+  });
+
   it('no output of these cells carries a binding id', () => {
     const ids = captured.flatMap((entry) => entry.ids);
     expect(ids.length, 'the cells planted ids').toBeGreaterThan(0);

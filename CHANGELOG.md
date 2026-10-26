@@ -143,7 +143,8 @@ arguments, `env` and key order do not change, so the command it is bound to
 does not change. A bare `secretless-mcp` and a wrapper file that no longer
 exists are re-pointed; a wrapper that reads a version equal to or above this
 build's is left as it is. Each re-pointed entry is listed under its config,
-with a count. Configs `protect-mcp` does not rewrite are left as they are.
+with a count, after the entries bound in the run and before the ones left not
+bound. Configs `protect-mcp` does not rewrite are left as they are.
 
 **`mcp-status` reports each entry that runs through the wrapper by where its
 pair's binding points, and separately by whether the wrapper starts it from
