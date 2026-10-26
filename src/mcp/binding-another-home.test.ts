@@ -3,10 +3,12 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createBackend } from '../backends/factory';
-import { LEFT_ANOTHER_MACHINE, runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
+import { LEFT_ANOTHER_MACHINE, LEFT_CHANGED, runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
 import { listedName } from '../secret-value';
 import { thisBuildWrapperPath } from './discover';
-import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, HOME_ID_UNUSABLE } from './protect';
+import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, BINDING_NOT_AS_READ, HOME_ID_UNUSABLE, storeBindingOf } from './protect';
+import { BindingWriteRefusedError, McpVault } from './vault';
+import type { McpBinding } from './vault';
 import { bindingKey, openHomes, sha256, startWrapper } from './binding-homes.test-support';
 import type { HomeName, Homes } from './binding-homes.test-support';
 
@@ -366,6 +368,145 @@ describe('(m) the unwrapped store point: a binding another home stored is not wr
     expect(sha256(recordText('cursor', 's'))).toBe(sha256(text));
     expect(h().store.bindingWrites).toHaveLength(1);
     expect(output).toContain(`    ? s: not protected: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
+  });
+});
+
+describe('(n) the funnel: a binding this home did not store is never written over or deleted', () => {
+  const reads = { client: 'cursor', server: 's' };
+
+  /** A binding of cursor/s, to the home cursor config's entry, as the home whose id is `boundOn` stores it. */
+  const recordFor = (boundOn: string): McpBinding => ({
+    schema: 1,
+    id: hex(16),
+    scope: 'home',
+    file: homeConfig(),
+    client: 'cursor',
+    server: 's',
+    commandDigest: `sha256:${hex(32)}`,
+    boundAt: new Date().toISOString(),
+    boundBy: 'cell',
+    boundOn,
+  });
+
+  /** What storeBindingOf takes: the store double, and the home in HOME with its id. */
+  const binder = () => ({
+    vault: new McpVault({ backend: h().store }),
+    bindings: new Map<string, McpBinding | undefined>(),
+    home: { dir: h().dataDir(), id: h().ids[h().current()] },
+  });
+
+  it('storeBindingOf over a binding another home stored: refused, and nothing is written; over one this home stored: written', async () => {
+    open();
+    const theirs = recordFor(h().ids.B);
+    h().store.put(bindingKey('cursor', 's'), JSON.stringify(theirs));
+
+    const refused = storeBindingOf(binder(), reads, { ...theirs, id: hex(16) }, theirs);
+
+    await expect(refused).rejects.toBeInstanceOf(BindingWriteRefusedError);
+    await expect(refused).rejects.toMatchObject({ why: 'not-owned' });
+    expect(h().store.bindingWrites).toEqual([]);
+    expect(recordText('cursor', 's')).toBe(JSON.stringify(theirs));
+
+    const ours = recordFor(h().ids.A);
+    h().store.put(bindingKey('cursor', 's'), JSON.stringify(ours));
+    const next = { ...ours, id: hex(16) };
+
+    const stored = await storeBindingOf(binder(), reads, next, ours);
+
+    expect(stored).toEqual({ ...next, boundOn: h().ids.A });
+    expect(recordOf('cursor', 's')).toEqual({ ...next, boundOn: h().ids.A });
+    expect(h().store.bindingWrites).toHaveLength(1);
+  });
+
+  it('storeBindingOf where the binding stored is not the one its plan read, or its plan read none: refused, and nothing is written', async () => {
+    open();
+    const ours = recordFor(h().ids.A);
+    h().store.put(bindingKey('cursor', 's'), JSON.stringify(ours));
+
+    const read = { ...ours, commandDigest: `sha256:${hex(32)}` };
+    await expect(storeBindingOf(binder(), reads, recordFor(h().ids.A), read)).rejects.toMatchObject({ why: 'changed' });
+    await expect(storeBindingOf(binder(), reads, recordFor(h().ids.A), undefined)).rejects.toMatchObject({ why: 'changed' });
+
+    expect(h().store.bindingWrites).toEqual([]);
+    expect(recordText('cursor', 's')).toBe(JSON.stringify(ours));
+  });
+
+  it('on a store that is this machine\'s alone, storeBindingOf writes over a binding with another home\'s id', async () => {
+    open('local');
+    const theirs = recordFor(h().ids.B);
+    h().store.put(bindingKey('cursor', 's'), JSON.stringify(theirs));
+    const next = { ...theirs, id: hex(16) };
+
+    await storeBindingOf(binder(), reads, next, theirs);
+
+    expect(recordOf('cursor', 's')).toEqual({ ...next, boundOn: h().ids.A });
+  });
+
+  it('removeOwnedPair over a pair another home bound: refused, and its names and binding stay; over one this home bound: deleted', async () => {
+    open();
+    const vault = new McpVault({ backend: h().store });
+    const theirs = recordFor(h().ids.B);
+    h().store.put(bindingKey('cursor', 's'), JSON.stringify(theirs));
+    h().store.put(`mcp/cursor/s/${NAME}`, VALUE);
+
+    await expect(vault.removeOwnedPair('cursor', 's', theirs, h().ids.A)).rejects.toMatchObject({ why: 'not-owned' });
+    expect(storedNames('cursor', 's')).toEqual([`mcp/cursor/s/${NAME}`]);
+    expect(recordText('cursor', 's')).toBe(JSON.stringify(theirs));
+
+    const ours = recordFor(h().ids.A);
+    h().store.put(bindingKey('cursor', 's'), JSON.stringify(ours));
+    await expect(vault.removeOwnedPair('cursor', 's', theirs, h().ids.A)).rejects.toMatchObject({ why: 'changed' });
+    expect(recordText('cursor', 's')).toBe(JSON.stringify(ours));
+
+    await vault.removeOwnedPair('cursor', 's', ours, h().ids.A);
+
+    expect(storedNames('cursor', 's')).toEqual([]);
+    expect(recordText('cursor', 's')).toBeUndefined();
+  });
+
+  /**
+   * After the first read of the binding of `client/server` in the run that
+   * follows, the store holds `changed` in its place: the binding changes
+   * between the run's read and its write.
+   */
+  function changeAfterFirstRead(client: string, server: string, changed: Record<string, unknown>): void {
+    const store = h().store;
+    const resolve = store.resolve.bind(store);
+    let first = true;
+    vi.spyOn(store, 'resolve').mockImplementation(async (at, options) => {
+      const found = await resolve(at, options);
+      if (first && at === bindingKey(client, server) && options?.exact) {
+        first = false;
+        store.put(bindingKey(client, server), JSON.stringify(changed));
+      }
+      return found;
+    });
+  }
+
+  it('through protect-mcp: a binding that changed after the run read it is not written over, and the line says so', async () => {
+    open();
+    const { entry, record } = await bindInA(homeConfig(), 'cursor');
+    const changed = { ...record, boundAt: new Date(0).toISOString() };
+    changeAfterFirstRead('cursor', 's', changed);
+
+    const output = await setups.c(entry);
+
+    expect(recordText('cursor', 's')).toBe(JSON.stringify(changed));
+    expect(h().store.bindingWrites).toHaveLength(1);
+    expect(output).toContain(`    ? s: not bound: ${BINDING_NOT_AS_READ(new BindingWriteRefusedError('cursor', 's', 'changed'))}`);
+  });
+
+  it('through mcp-unprotect: a pair whose binding changed after the run read it is not deleted, and the line says so', async () => {
+    open();
+    const { record } = await bindInA(projectConfig(), 'claude-code');
+    const changed = { ...record, boundAt: new Date(0).toISOString() };
+    changeAfterFirstRead('claude-code', 's', changed);
+
+    const output = await setups.f();
+
+    expect(storedNames('claude-code', 's')).toEqual([`mcp/claude-code/s/${NAME}`]);
+    expect(recordText('claude-code', 's')).toBe(JSON.stringify(changed));
+    expect(output).toContain(LEFT_CHANGED(listedName('claude-code/s'), [NAME]));
   });
 });
 

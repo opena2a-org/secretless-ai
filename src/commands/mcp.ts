@@ -30,7 +30,7 @@ import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp, 
 import type { McpConfigFile, McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
-import { McpVault, boundEntryName, isPerMachineStore, ownsBinding } from '../mcp/vault';
+import { BindingWriteRefusedError, McpVault, boundEntryName, isPerMachineStore, ownsBinding } from '../mcp/vault';
 import { bindingHomeId } from '../mcp/binding-home-id';
 import type { McpBinding } from '../mcp/vault';
 import { checkStart } from '../mcp/start-check';
@@ -1026,6 +1026,17 @@ export const LEFT_ANOTHER_MACHINE = (label: string, names: string[]): string =>
   `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. They were bound by protect-mcp in another secretless home: on another machine, or on this one before its ~/.secretless-ai was replaced. mcp-unprotect on this machine leaves that binding as it is.`;
 
 /**
+ * The line for a pair mcp-unprotect leaves because its binding, read again
+ * just before the delete, is not the one this run read
+ * (BindingWriteRefusedError): the stored names it left (`names`, never a
+ * value), then that the binding changed after this run read it. It cites no
+ * command. Words pending (product and design roles, cross XC-2); the content
+ * is the architecture ruling's (J3b).
+ */
+export const LEFT_CHANGED = (label: string, names: string[]): string =>
+  `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. The binding stored for them changed after this run read it.`;
+
+/**
  * After a file is restored, each pair its wrapped entries read is deleted
  * from the store, with its binding, only where an entry of that server's name
  * in the restored file holds every name stored under the pair at an equal
@@ -1037,8 +1048,9 @@ export const LEFT_ANOTHER_MACHINE = (label: string, names: string[]): string =>
  * ownsBinding; `homeId` is this home's id, read once, or undefined where it
  * holds none that can be read). Any other pair is left, and its line names
  * the stored names the file does not hold, or the stored names it left and
- * why: the entry its binding names, the shared store, or the other home that
- * bound it (names and paths only).
+ * why: the entry its binding names, the shared store, the other home that
+ * bound it, or that its binding changed after this run read it (names and
+ * paths only).
  */
 async function clearRestoredPairs(
   reads: Array<{ filePath: string; reads: WrapperRead }>,
@@ -1103,7 +1115,15 @@ async function clearRestoredPairs(
       console.log(LEFT_ANOTHER_MACHINE(label, names));
       continue;
     }
-    await pair.vault.removeServerSecrets(pair.client, pair.server);
+    // The binding is read again before the delete, which is made only where
+    // it is still the one read above (see McpVault.removeOwnedPair).
+    try {
+      await pair.vault.removeOwnedPair(pair.client, pair.server, binding, homeId);
+    } catch (err) {
+      if (!(err instanceof BindingWriteRefusedError)) throw err;
+      console.log(err.why === 'not-owned' ? LEFT_ANOTHER_MACHINE(label, names) : LEFT_CHANGED(label, names));
+      continue;
+    }
     console.log(
       `  - Deleted from the store: ${label} (${names.length} name(s); the restored file holds the same values)`,
     );
