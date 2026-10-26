@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { McpVault, commandDigest, newBindingId } from './vault';
+import { McpVault, commandDigest, newBindingId, ownsBinding } from './vault';
 import type { McpBinding } from './vault';
 import type { ResolveOptions, WritableSecretBackend } from '../backends/types';
 
@@ -321,6 +321,34 @@ describe('a binding names the secretless home that stored it (boundOn)', () => {
     for (const boundOn of [undefined, hex(16).toUpperCase(), 7, null]) {
       memory.entries.set('mcp-binding/cursor/github', JSON.stringify(boundOn === undefined ? earlier : { ...earlier, boundOn }));
       expect(await vault.getBinding('cursor', 'github')).toEqual(earlier);
+    }
+  });
+});
+
+describe('ownsBinding: whether a binding is this secretless home\'s to change', () => {
+  const home = newBindingId();
+
+  it('in a store that is this machine\'s alone: every binding, whatever its boundOn and whether this home\'s id is read', () => {
+    for (const store of ['local', 'keychain-macos', 'keychain-linux']) {
+      for (const boundOn of [home, newBindingId(), undefined]) {
+        for (const homeId of [home, undefined]) {
+          expect(ownsBinding(store, { boundOn }, homeId)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('in a store several machines read: only a binding whose boundOn is this home\'s id', () => {
+    for (const store of ['1password', 'vault', 'gcp-sm']) {
+      expect(ownsBinding(store, { boundOn: home }, home)).toBe(true);
+      expect(ownsBinding(store, { boundOn: newBindingId() }, home)).toBe(false);
+      expect(ownsBinding(store, {}, home)).toBe(false);
+      // This home's id could not be read: no binding there is its own.
+      expect(ownsBinding(store, { boundOn: home }, undefined)).toBe(false);
+      expect(ownsBinding(store, {}, undefined)).toBe(false);
+      // An id that is not 32 lowercase hex digits is no home's.
+      expect(ownsBinding(store, { boundOn: home.toUpperCase() }, home.toUpperCase())).toBe(false);
+      expect(ownsBinding(store, { boundOn: '' }, '')).toBe(false);
     }
   });
 });

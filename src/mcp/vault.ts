@@ -197,6 +197,20 @@ export function isPerMachineStore(backendName: string): boolean {
   return PER_MACHINE_BACKENDS.includes(backendName);
 }
 
+/**
+ * Whether a binding is this secretless home's to change: every binding in a
+ * store that is this machine's alone (isPerMachineStore), and, in a store
+ * several machines read, one whose `boundOn` is this home's id, `homeId` (see
+ * binding-home-id.ts). In such a store a binding with no `boundOn`, or
+ * another home's, is not, and neither is any binding while this home's id
+ * cannot be read (`homeId` undefined): protect-mcp and mcp-unprotect leave it
+ * as it is. The wrapper never asks.
+ */
+export function ownsBinding(backendName: string, binding: Pick<McpBinding, 'boundOn'>, homeId: string | undefined): boolean {
+  if (isPerMachineStore(backendName)) return true;
+  return isBindingId(homeId) && binding.boundOn === homeId;
+}
+
 /** Validates client/server names to prevent path traversal. */
 const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
 
