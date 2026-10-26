@@ -211,6 +211,60 @@ export function ownsBinding(backendName: string, binding: Pick<McpBinding, 'boun
   return isBindingId(homeId) && binding.boundOn === homeId;
 }
 
+/** The fields of a binding, every one compared by sameBinding. */
+const BINDING_FIELDS = [
+  'schema', 'id', 'scope', 'file', 'projectKey', 'client', 'server', 'commandDigest', 'boundAt', 'boundBy', 'boundOn',
+] as const satisfies ReadonlyArray<keyof McpBinding>;
+
+/** Whether two bindings are one, field by field, or both are absent. */
+export function sameBinding(a: McpBinding | undefined, b: McpBinding | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return BINDING_FIELDS.every((field) => a[field] === b[field]);
+}
+
+/**
+ * Thrown where a pair's binding would be written over or deleted and the
+ * binding the store holds, read again just before, is not the one the caller
+ * read (`changed`), or is one this secretless home did not store (`not-owned`,
+ * see ownsBinding). Nothing was written or deleted. Its message names the
+ * pair, never a value.
+ */
+export class BindingWriteRefusedError extends Error {
+  constructor(
+    readonly client: string,
+    readonly server: string,
+    readonly why: 'changed' | 'not-owned',
+  ) {
+    super(
+      `The binding stored for ${listedName(`${client}/${server}`)} was left as it is: ${
+        why === 'changed' ? 'it is not the one that was read' : 'this secretless home did not store it'
+      }.`,
+    );
+    this.name = 'BindingWriteRefusedError';
+  }
+}
+
+/**
+ * The binding stored for a pair, read again, when it is `expected`, the one
+ * the caller read, and this secretless home stored it or there is none:
+ * otherwise BindingWriteRefusedError, so nothing writes over or deletes a
+ * binding that changed since it was read or that another home stored. On a
+ * store that is this machine's alone every binding is this home's.
+ */
+export async function expectBinding(
+  vault: Pick<McpVault, 'backendName' | 'getBinding'>,
+  reads: { client: string; server: string },
+  expected: McpBinding | undefined,
+  homeId: string | undefined,
+): Promise<McpBinding | undefined> {
+  const current = await vault.getBinding(reads.client, reads.server);
+  if (!sameBinding(current, expected)) throw new BindingWriteRefusedError(reads.client, reads.server, 'changed');
+  if (current !== undefined && !ownsBinding(vault.backendName, current, homeId)) {
+    throw new BindingWriteRefusedError(reads.client, reads.server, 'not-owned');
+  }
+  return current;
+}
+
 /** Validates client/server names to prevent path traversal. */
 const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
 
@@ -346,6 +400,18 @@ export class McpVault {
     if (Object.prototype.hasOwnProperty.call(binding, bindingKey)) {
       await this.backend.delete(bindingKey);
     }
+  }
+
+  /**
+   * Delete a pair as removeServerSecrets does, only where the binding stored
+   * for it, read again, is `expected`, the one the caller read, and the
+   * secretless home whose id is `homeId` stored it, or no binding is stored
+   * (see expectBinding): otherwise nothing is deleted, and
+   * BindingWriteRefusedError says why.
+   */
+  async removeOwnedPair(client: string, server: string, expected: McpBinding | undefined, homeId: string | undefined): Promise<void> {
+    await expectBinding(this, { client, server }, expected, homeId);
+    await this.removeServerSecrets(client, server);
   }
 
   /**
