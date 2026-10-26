@@ -11,7 +11,7 @@ import * as path from 'path';
 import { checkLaunchPlace, discoverMcpConfigsDetailed, rewrittenByProtectMcp, serverMapKey } from './discover';
 import type { McpConfigDiscovery, McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
-import { McpVault, boundEntryName, commandDigest, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId } from './vault';
+import { McpVault, boundEntryName, commandDigest, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId, ownsBinding } from './vault';
 import type { McpBinding } from './vault';
 import { BindingHomeIdError, ensureBindingHomeId, readBindingHomeId } from './binding-home-id';
 import { moveConfigBackup, readConfigBackup, rewriteServerMaps, type ServerMapSecrets } from './rewrite';
@@ -920,13 +920,26 @@ function unstoredPlan(binder: Binder, plan: BindingPlan): BindingPlan {
 function planned(binder: Binder, config: McpConfigFile, server: McpServerEntry, plan: BindingPlan): void {
   const reads = wrapperReads(config.client, server);
   const pair = `${reads.client}/${reads.server}`;
-  if (plan.kind === 'bind') binder.bindings.set(pair, newBinding(binder, config, server.name, plan.id, plan.digest));
-  if (plan.kind === 'rebind' || plan.kind === 'stale') binder.bindings.set(pair, { ...plan.binding, commandDigest: plan.digest });
+  if (plan.kind === 'bind') binder.bindings.set(pair, { ...newBinding(binder, config, server.name, plan.id, plan.digest), boundOn: planHomeId(binder) });
+  if (plan.kind === 'rebind' || plan.kind === 'stale') {
+    const stores = plan.kind === 'rebind' || plan.binding.commandDigest !== plan.digest;
+    binder.bindings.set(pair, stores ? { ...plan.binding, commandDigest: plan.digest, boundOn: planHomeId(binder) } : plan.binding);
+  }
   if (plan.kind === 'replace') {
     const id = newBindingId();
-    binder.bindings.set(pair, { ...plan.binding, id });
+    binder.bindings.set(pair, { ...plan.binding, id, boundOn: planHomeId(binder) });
     plan.owner.server.args = withWrapperBinding(plan.owner.server.args, id) ?? plan.owner.server.args;
   }
+}
+
+/**
+ * The id a binding a plan stores carries (see planned): this secretless
+ * home's, or, where its file is absent, one held in memory only, as
+ * protect-mcp creates the file before the first binding it stores. A plan
+ * never creates the file.
+ */
+function planHomeId(binder: Binder): string {
+  return (binder.home.id ??= newBindingId());
 }
 
 /** A plan as mcp-status names it: its kind, and the reason or the entry it names. */
@@ -1427,12 +1440,14 @@ async function applyBinding(
 
 /**
  * For a copy of an entry bound in a home config: the plan that replaces the
- * binding, where that entry is in its file as this run read it and its args
- * take an id in place. A project binding is left as it is: its copy is
- * reported, and the wrapper refuses it from a directory where it is visible.
+ * binding, where this secretless home stored it (see ownsBinding), that entry
+ * is in its file as this run read it, and its args take an id in place. A
+ * project binding is left as it is: its copy is reported, and the wrapper
+ * refuses it from a directory where it is visible. So is a binding another
+ * home stored, which this run never gives a new id.
  */
 function replacePlan(binder: Binder, binding: McpBinding): BindingPlan | undefined {
-  if (binding.scope !== 'home') return undefined;
+  if (binding.scope !== 'home' || !ownedHere(binder, binding)) return undefined;
   for (const config of binder.discovered.configs) {
     if (config.projectKey !== binding.projectKey || !sameFile(config.filePath, binding.file)) continue;
     const server = config.servers.find((s) => s.name === binding.server);
@@ -1623,6 +1638,11 @@ export function sameFile(a: string, b: string): boolean {
   }
 }
 
+/** Whether this secretless home stored a binding, in the store this run reads (see ownsBinding). */
+function ownedHere(binder: Pick<Binder, 'vault' | 'home'>, binding: McpBinding): boolean {
+  return ownsBinding(binder.vault.backendName, binding, binder.home.id);
+}
+
 /** Whether one server in the configs this run rewrites runs through the wrapper reading this pair. */
 function soleReader(binder: Binder, reads: { client: string; server: string }): boolean {
   return (binder.rewrittenReaders.get(`${reads.client}/${reads.server}`) ?? []).length === 1;
@@ -1638,22 +1658,24 @@ function otherReaders(
 }
 
 /**
- * Whether the entry a binding names is no longer in its config: its file is
- * one this run read, and the server map there holds no server of that name;
- * or, for a home binding in a store that is this machine's alone, its file
- * does not exist on this machine (a home config's path is fixed by the home
- * directory, so the entry is gone). A file this run did not read, one in
+ * Whether the entry a binding this secretless home stored (see ownsBinding)
+ * names is no longer in its config: its file is one this run read, and the
+ * server map there holds no server of that name; or, for a home binding, its
+ * file does not exist on this machine (a home config's path is fixed by the
+ * home directory, so the entry is gone). A file this run did not read, one in
  * another project directory or one that could not be parsed, may still hold
- * it, and so may a file on another machine where the store is shared.
+ * it. A binding another home stored is never taken over: its entry is on
+ * that home's machine.
  */
 function orphanedBinding(binder: Binder, binding: McpBinding): boolean {
+  if (!ownedHere(binder, binding)) return false;
   const inFile = (config: { filePath: string; projectKey?: string }) => sameFile(config.filePath, binding.file);
   if (binder.discovered.unparsed.some((u) => inFile(u) && (u.projectKey === undefined || u.projectKey === binding.projectKey))) {
     return false;
   }
   const fileConfigs = binder.discovered.configs.filter(inFile);
   if (fileConfigs.length === 0) {
-    return binding.scope === 'home' && isPerMachineStore(binder.vault.backendName) && recordFileState(binding).state === 'absent';
+    return binding.scope === 'home' && recordFileState(binding).state === 'absent';
   }
   const map = fileConfigs.find((config) => config.projectKey === binding.projectKey);
   if (map === undefined) return true;
@@ -1683,12 +1705,12 @@ export function recordFileState(binding: Pick<McpBinding, 'file'>): RecordFileSt
  * Whether a .mcp.json entry carrying a project binding's id, where the
  * binding names another file, is the binding's own entry, moved with its
  * project directory: the file the binding names does not exist on this
- * machine, the store is this machine's alone, the entry is the one entry of
- * the configs this run rewrites that reads the pair, and this machine's
- * backup of the file the binding names holds a server of the binding's name
- * whose env holds every name stored under the pair at an equal value. A copy
- * made while the original exists, and a binding on a store shared between
- * machines, are never taken this way.
+ * machine, this secretless home stored the binding (see ownsBinding), the
+ * entry is the one entry of the configs this run rewrites that reads the
+ * pair, and this machine's backup of the file the binding names holds a
+ * server of the binding's name whose env holds every name stored under the
+ * pair at an equal value. A copy made while the original exists, and a
+ * binding another home stored, are never taken this way.
  */
 async function movedEntry(
   binder: Binder,
@@ -1697,7 +1719,7 @@ async function movedEntry(
   binding: McpBinding,
 ): Promise<boolean> {
   if (scopeOf(config) !== 'project' || binding.scope !== 'project') return false;
-  if (!soleReader(binder, reads) || !isPerMachineStore(binder.vault.backendName)) return false;
+  if (!soleReader(binder, reads) || !ownedHere(binder, binding)) return false;
   if (recordFileState(binding).state !== 'absent') return false;
   const stored = await binder.vault.getServerSecrets(reads.client, reads.server);
   return backupHoldsSecrets(binder.backupDir, binding.file, binding.server, stored);
@@ -1716,20 +1738,33 @@ const FILE_GONE = (file: string): string => `${listedName(file)} no longer exist
  */
 const FILE_NOT_FOUND_HERE = (file: string): string => `${listedName(file)} was not found on this machine.`;
 
+/**
+ * The clause for the file of an entry bound by a binding this secretless home
+ * stored in a store several machines read, absent here: the file this home
+ * bound is gone from this machine. Words pending (product and design roles,
+ * cross XC-2); until then the words are FILE_NOT_FOUND_HERE's, as the product
+ * role fixed them for such a store.
+ */
+const OWNED_FILE_GONE_HERE = (file: string): string => FILE_NOT_FOUND_HERE(file);
+
 /** The clause for a bound entry's file that could not be checked: the error code, and nothing of a missing file. */
 const FILE_UNCHECKED = (file: string, code: string): string => `${listedName(file)} could not be checked (${escapeForDisplay(code)}).`;
 
 /**
  * The sentence a line naming a bound entry carries about the entry's file
- * when it is not present on this machine (see recordFileState), or '' when it
- * is: absent with a store that is this machine's alone, absent with a store
- * shared between machines, or not checked, with the error code.
+ * (see recordFileState), or '' when there is none. For a binding another
+ * secretless home stored (see ownsBinding), ANOTHER_MACHINE_CLAUSE, whatever
+ * the file's state here. For one this home stored, nothing when the file is
+ * present, and when it is not: absent with a store that is this machine's
+ * alone (FILE_GONE), absent with a store several machines read
+ * (OWNED_FILE_GONE_HERE), or not checked, with the error code.
  */
 function boundFileClause(binder: Binder, binding: McpBinding): string {
+  if (!ownedHere(binder, binding)) return ANOTHER_MACHINE_CLAUSE(binding.file);
   const file = recordFileState(binding);
   if (file.state === 'present') return '';
   if (file.state === 'unknown') return FILE_UNCHECKED(binding.file, file.code);
-  return isPerMachineStore(binder.vault.backendName) ? FILE_GONE(binding.file) : FILE_NOT_FOUND_HERE(binding.file);
+  return isPerMachineStore(binder.vault.backendName) ? FILE_GONE(binding.file) : OWNED_FILE_GONE_HERE(binding.file);
 }
 
 /**
