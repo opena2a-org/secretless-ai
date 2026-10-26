@@ -26,6 +26,17 @@ the refusal names that file. `protect-mcp` replaces a home binding it finds
 in a copy of its entry, so the copy no longer starts, and `mcp-status` names
 each entry these checks stop. No command prints a binding id.
 
+**A server bound in a project's `.mcp.json` starts only in the project
+directory it was bound in.** A copy of the project in another directory does
+not start it, and the refusal names the project directory the secrets are
+bound to.
+
+**On a backend several machines read, a stored server name belongs to one
+config entry.** The store holds one record per client and server name, so a
+teammate whose server has that name protects it under another name:
+`protect-mcp` leaves the entry, names the entry the name is bound to, and says
+to rename the server and run `protect-mcp` again.
+
 **`mcp-unprotect` deletes a pair only where no entry outside the files it
 restored can be the one bound to it.** It leaves a pair whose binding names an
 entry in a file it did not restore, and names that entry. In a backend shared
