@@ -151,6 +151,10 @@ const b3 = (entry: string, project: string, started: string) =>
   `secretless-mcp: The secrets stored for ${entry} are bound to the project in ${project}, and this entry was started in ${started}, ${NOT_STARTED}`;
 const b4 = (entry: string, file: string) =>
   `secretless-mcp: The binding of the secrets stored for ${entry} also appears in ${file}, and a bound entry starts only from the config protect-mcp bound it in, ${NOT_STARTED} Remove that copy.`;
+/** B4 for a home binding: protect-mcp run in the directory the entry was started in, then the copy removed. */
+const b4Home = (file: string, started: string) =>
+  `secretless-mcp: The binding of the secrets stored for ${HOME_ENTRY} also appears in ${file}, and a bound entry starts only from the config protect-mcp bound it in, ${NOT_STARTED} `
+  + `Run '${builtCommand('protect-mcp')}' in ${started}: it replaces the binding, so no copy found from there starts. Then remove that copy.`;
 
 /** The run started the server: exit 0 and the sentinel written. */
 function expectStarted(res: ReturnType<typeof startIn>, sentinel: string) {
@@ -211,11 +215,11 @@ describe('T2: a home binding found in a project-level config visible from the st
     const p = dir('p');
     write(path.join(p, '.mcp.json'), { mcpServers: { github: entry } });
     const copy = path.join(real(p), '.mcp.json');
-    expectRefused(startIn('T2a', p, entry.args), sentinel, b4(HOME_ENTRY, copy));
+    expectRefused(startIn('T2a', p, entry.args), sentinel, b4Home(copy, real(p)));
     const status = runCliIn('T2a', p, ['mcp-status']);
     expect(status).toContain(`    ? github: protected and bound, but its binding also appears in ${copy}, so the wrapper does not start it\n`);
     expect(status).toContain(
-      `  Run \`${builtCommand('protect-mcp')}\` to replace each home binding found outside its own entry; a copy of it then no longer starts.\n`,
+      `  Run \`${builtCommand('protect-mcp')}\` in this directory to replace each home binding found in a copy from here; each copy then no longer starts.\n`,
     );
   });
 
@@ -223,14 +227,14 @@ describe('T2: a home binding found in a project-level config visible from the st
     const { entry, sentinel } = await homeRecord('T2b');
     const p = dir('p');
     write(path.join(p, '.cursor', 'mcp.json'), { mcpServers: { github: entry } });
-    expectRefused(startIn('T2b', p, entry.args), sentinel, b4(HOME_ENTRY, path.join(real(p), '.cursor', 'mcp.json')));
+    expectRefused(startIn('T2b', p, entry.args), sentinel, b4Home(path.join(real(p), '.cursor', 'mcp.json'), real(p)));
   });
 
   it('T2c: started two directories below a project whose .mcp.json holds the copy, it exits 1', async () => {
     const { entry, sentinel } = await homeRecord('T2c');
     const p = dir('p');
     write(path.join(p, '.mcp.json'), { mcpServers: { github: entry } });
-    expectRefused(startIn('T2c', dir('p', 'x', 'y'), entry.args), sentinel, b4(HOME_ENTRY, path.join(real(p), '.mcp.json')));
+    expectRefused(startIn('T2c', dir('p', 'x', 'y'), entry.args), sentinel, b4Home(path.join(real(p), '.mcp.json'), real(dir('p', 'x', 'y'))));
   });
 
   it('T2d: the id written with JSON escapes inside a string is found', async () => {
@@ -240,14 +244,14 @@ describe('T2: a home binding found in a project-level config visible from the st
     const text = `{"mcpServers": {"github": {"command": "x", "args": ["--binding", "${escaped}"]}}}`;
     write(path.join(p, '.mcp.json'), text);
     expect(text.includes(id)).toBe(false);
-    expectRefused(startIn('T2d', p, entry.args), sentinel, b4(HOME_ENTRY, path.join(real(p), '.mcp.json')));
+    expectRefused(startIn('T2d', p, entry.args), sentinel, b4Home(path.join(real(p), '.mcp.json'), real(p)));
   });
 
   it('T2e: a .vscode/mcp.json that is not valid JSON and holds the id exits 1', async () => {
     const { entry, sentinel, id } = await homeRecord('T2e');
     const p = dir('p');
     write(path.join(p, '.vscode', 'mcp.json'), `{ "servers": { "github": { "args": ["--binding", "${id}" `);
-    expectRefused(startIn('T2e', p, entry.args), sentinel, b4(HOME_ENTRY, path.join(real(p), '.vscode', 'mcp.json')));
+    expectRefused(startIn('T2e', p, entry.args), sentinel, b4Home(path.join(real(p), '.vscode', 'mcp.json'), real(p)));
   });
 
   it('T2f: the same file without the id: the server starts', async () => {

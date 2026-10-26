@@ -724,7 +724,10 @@ describe('protectMcp — a secret in the env of a server that already runs throu
       server: 'github',
       reason: 'another protected server reads its secrets by the same name, cursor/github',
     }]);
-    expect(result.projectLevel).toEqual([{ client: 'cursor', filePath: projectConfig, projectPath: path.join('.cursor', 'mcp.json') }]);
+    // Read for the id of the home binding this run stored, as the wrapper's check reads it, and not written.
+    expect(result.projectLevel).toEqual([
+      { client: 'cursor', filePath: projectConfig, projectPath: path.join('.cursor', 'mcp.json'), checkedForCopy: true },
+    ]);
     // Bound in place, its secret left in its env.
     expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(boundIn(before, 'github'));
     expect(await vault().getServerSecrets('cursor', 'github')).toEqual({});
