@@ -96,6 +96,8 @@ export interface SharedNameMcpServer extends McpServerMapLocation {
    * whose file is protectedIn's.
    */
   boundTo?: McpBoundEntry;
+  /** When another secretless home stored that binding (see ownsBinding): why the server was left (ANOTHER_MACHINE_REASON). */
+  reason?: string;
 }
 
 /** The config entry a binding names: its server name as written, its file and its ~/.claude.json project key. */
@@ -689,9 +691,12 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         // A name whose secrets are bound to another entry is that entry's,
         // unless that entry is no longer in its config and this server is in
         // a config of the same scope (see orphanedBinding). A binding that
-        // names this entry is its own: it is bound again in place.
+        // names this entry is its own, where this secretless home stored it
+        // (see ownsBinding): it is bound again in place. One another home
+        // stored is that home's, wherever it points, and is left as it is.
         const found = await bindingOf(binder, reads);
-        const existing = found !== undefined && isBoundEntry(found, config, server.name) ? undefined : found;
+        const own = found !== undefined && isBoundEntry(found, config, server.name) && ownedHere(binder, found);
+        const existing = own ? undefined : found;
         if (existing !== undefined && !(orphanedBinding(binder, existing) && scopeOf(config) === existing.scope)) {
           result.sharedName.push({
             client: config.client,
@@ -699,6 +704,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
             server: server.name,
             protectedIn: { filePath: existing.file, ...(existing.projectKey === undefined ? {} : { projectKey: existing.projectKey }) },
             boundTo: boundEntry(existing),
+            ...(ownedHere(binder, existing) ? {} : { reason: ANOTHER_MACHINE_REASON(reads) }),
           });
           continue;
         }
@@ -1285,8 +1291,14 @@ async function bindWrapped(
   if (binding !== undefined) {
     const carriesId = isBindingId(entryId) && entryId === binding.id;
     const here = isBoundEntry(binding, config, server.name);
+    // A binding another secretless home stored (see ownsBinding) is never
+    // written over, given a new id, taken over or written into an entry:
+    // this entry is bound to it only where it carries its id and command,
+    // and is otherwise left with why, or reported as a copy.
+    const owned = ownedHere(binder, binding);
     if (carriesId && here) {
       if (binding.commandDigest === digest) return { kind: 'bound' };
+      if (!owned) return { kind: 'left', reason: ANOTHER_MACHINE_REASON(reads), binding };
       if (scopeOf(config) === 'home') return { kind: 'rebind', binding, digest };
       return { kind: 'left', reason: changedProjectCommandReason(), binding };
     }
@@ -1308,6 +1320,7 @@ async function bindWrapped(
       }
     }
     if (carriesId) return replacePlan(binder, binding) ?? { kind: 'copy', binding };
+    if (!owned) return { kind: 'left', reason: ANOTHER_MACHINE_REASON(reads), binding };
     if (here && binding.scope === 'home') {
       const args = rawServerArgs(config, server.name);
       if (args === undefined || withWrapperBinding(args, binding.id) === undefined) return { kind: 'left', reason: NO_BINDING_ARG };

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ANOTHER_MACHINE_CLAUSE, protectMcp } from './protect';
+import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, protectMcp } from './protect';
 import { McpVault, commandDigest, newBindingId } from './vault';
 import { rewriteConfig } from './rewrite';
 import { createBackend } from '../backends/factory';
@@ -164,7 +164,7 @@ describe('protect-mcp on a shared store', () => {
     boundOn,
   });
 
-  it('e3: a home binding another secretless home stored, whose file is absent here, is not taken over, and the line says another home bound that entry', async () => {
+  it('e3: a home binding another secretless home stored, whose file is absent here, is not taken over, and the line says another home bound the pair', async () => {
     writeHomeId();
     const gone = path.join(home, '.cursor', 'mcp.json');
     await sharedVault().storeBinding('cursor', 'github', homeBinding(gone, newBindingId()));
@@ -176,10 +176,7 @@ describe('protect-mcp on a shared store', () => {
     const { code, output } = await run(() => runProtectMcp([]));
 
     expect(code).toBe(0);
-    expect(output).toContain(
-      `    ? github: not bound: the secrets stored under cursor/github are bound to server "github" in ${gone}. `
-        + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. ${ANOTHER_MACHINE_CLAUSE(gone)}`,
-    );
+    expect(output).toContain(`    ? github: not bound: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 'github' })}`);
     expect(output).not.toContain('no longer exists');
     expect(output).not.toContain('mcp-forget');
     expect(output).not.toContain('took over');
