@@ -172,15 +172,39 @@ function refusePlace(
   verdict: Exclude<McpPlaceVerdict, { refused: false }>,
   client: string,
   server: string,
+  scope: "home" | "project",
 ): never {
   const entry = `client "${listedName(client)}", server "${listedName(server)}"`;
-  process.stderr.write(`secretless-mcp: ${placeRefusal(verdict, entry)}\n`);
+  process.stderr.write(`secretless-mcp: ${placeRefusal(verdict, entry, scope)}\n`);
   process.stderr.write(bindingFix());
   process.exit(1);
 }
 
-/** The line that says why checkLaunchPlace refused a launch. */
-function placeRefusal(verdict: Exclude<McpPlaceVerdict, { refused: false }>, entry: string): string {
+/**
+ * B4's fix for a home binding found in a copy: protect-mcp run in the
+ * directory this entry was started in, which replaces the binding, so no copy
+ * found from there starts; then the copy removed. In this order: removing the
+ * copy first leaves the binding as it was. Words pending (product and design
+ * roles); the content is the security ruling's.
+ */
+const HOME_COPY_FIX = (startDir: string): string =>
+  `Run '${cliCommand("protect-mcp")}' in ${listedName(startDir)}: it replaces the binding, so no copy found from there starts. Then remove that copy.`;
+
+/** The directory this process was started in, resolved as checkLaunchPlace resolves it. */
+function startDirectory(): string {
+  try {
+    return fs.realpathSync(process.cwd());
+  } catch {
+    return process.cwd();
+  }
+}
+
+/** The line that says why checkLaunchPlace refused a launch, for a binding of `scope`. */
+function placeRefusal(
+  verdict: Exclude<McpPlaceVerdict, { refused: false }>,
+  entry: string,
+  scope: "home" | "project",
+): string {
   const notStarted = "so no secret was read. The server was not started.";
   switch (verdict.refused) {
     case "outside-project":
@@ -189,8 +213,11 @@ function placeRefusal(verdict: Exclude<McpPlaceVerdict, { refused: false }>, ent
       return `The secrets stored for ${entry} are bound to the project in ${listedName(verdict.project)}, and ${listedName(verdict.path)} could not be resolved (${verdict.code}), ${notStarted}`;
     case "start-unresolved":
       return `The directory the entry for ${entry} was started in could not be resolved (${verdict.code}), ${notStarted}`;
-    case "copy-found":
-      return `The binding of the secrets stored for ${entry} also appears in ${listedName(verdict.file)}, and a bound entry starts only from the config protect-mcp bound it in, ${notStarted} Remove that copy.`;
+    case "copy-found": {
+      // protect-mcp replaces a home binding; a project binding's copy is removed.
+      const fix = scope === "home" ? HOME_COPY_FIX(startDirectory()) : "Remove that copy.";
+      return `The binding of the secrets stored for ${entry} also appears in ${listedName(verdict.file)}, and a bound entry starts only from the config protect-mcp bound it in, ${notStarted} ${fix}`;
+    }
     case "copy-unchecked":
       return `${listedName(verdict.file)} could not be checked for a copy of the binding of the secrets stored for ${entry} (${verdict.why}), ${notStarted}`;
   }
@@ -302,7 +329,7 @@ async function main(): Promise<void> {
       await refuseLaunch(start.launch, args.client, args.server, vault);
       return;
     }
-    if ("place" in start) refusePlace(start.place, args.client, args.server);
+    if ("place" in start) refusePlace(start.place, args.client, args.server, start.binding.scope);
     // An empty pair reaches the refusal below with no secrets.
     if (start.starts) secrets = start.secrets;
   } catch (err) {

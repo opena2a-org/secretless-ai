@@ -459,11 +459,13 @@ export type McpPlaceVerdict =
  * configs: a client reads an entry from each of those places. The start
  * directory is the process's own, never one an environment variable names
  * (an entry's env can set those). `mcp-status` runs the same function, so the
- * two never disagree on whether an entry starts.
+ * two never disagree on whether an entry starts, and so does `protect-mcp`,
+ * which replaces a home binding this check finds in a copy. `onChecked` is
+ * given each config the check read for the id, nothing else.
  */
 export function checkLaunchPlace(
   binding: { id: string; scope: McpConfigScope; file: string },
-  options: { startDir?: string; home?: string } = {},
+  options: { startDir?: string; home?: string; onChecked?: (file: string) => void } = {},
 ): McpPlaceVerdict {
   let start: string;
   try {
@@ -509,7 +511,7 @@ export function checkLaunchPlace(
   const projectLocations = mcpConfigLocations().filter((location) => location.scope === 'project');
   for (let dir = start; ; dir = path.dirname(dir)) {
     for (const location of projectLocations) {
-      const found = copyOfBinding(path.join(dir, location.relativePath), binding.id, skipped);
+      const found = copyOfBinding(path.join(dir, location.relativePath), binding.id, skipped, options.onChecked);
       if (found !== undefined) return found;
     }
     if (path.dirname(dir) === dir) break;
@@ -523,7 +525,12 @@ export function checkLaunchPlace(
  * reads an entry from it). A file that exists and could not be read, or is
  * larger than the bound, could hold it, so it refuses.
  */
-function copyOfBinding(candidate: string, id: string, skipped: Set<string>): McpPlaceVerdict | undefined {
+function copyOfBinding(
+  candidate: string,
+  id: string,
+  skipped: Set<string>,
+  onChecked?: (file: string) => void,
+): McpPlaceVerdict | undefined {
   const unreadable = (err: unknown): McpPlaceVerdict => ({
     refused: 'copy-unchecked',
     file: candidate,
@@ -554,6 +561,7 @@ function copyOfBinding(candidate: string, id: string, skipped: Set<string>): Mcp
     if (stat.size > BINDING_COPY_READ_LIMIT) return tooLarge;
     const bytes = readUpTo(fd, BINDING_COPY_READ_LIMIT);
     if (bytes === undefined) return tooLarge;
+    onChecked?.(candidate);
     return holdsId(bytes, id) ? { refused: 'copy-found', file: candidate } : undefined;
   } catch (err) {
     return unreadable(err);
@@ -611,6 +619,16 @@ function isAbsent(err: unknown): boolean {
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
+/** An errno code as libuv names one: the only text of an error a could-not line prints (see errorCode). */
+const ERRNO_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
+
+/**
+ * The code a could-not line prints for an error: its `code` where that is a
+ * string of the errno shape, and 'unknown error' otherwise. The field is read
+ * off whatever was thrown, so the printer checks its shape rather than relying
+ * on which calls throw today.
+ */
 function errorCode(err: unknown): string {
-  return (err as NodeJS.ErrnoException).code ?? 'unknown error';
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  return typeof code === 'string' && ERRNO_CODE.test(code) ? code : 'unknown error';
 }

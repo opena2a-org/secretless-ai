@@ -8,7 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { discoverMcpConfigsDetailed, rewrittenByProtectMcp, serverMapKey } from './discover';
+import { checkLaunchPlace, discoverMcpConfigsDetailed, rewrittenByProtectMcp, serverMapKey } from './discover';
 import type { McpConfigDiscovery, McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
 import { McpVault, boundEntryName, commandDigest, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId } from './vault';
@@ -166,8 +166,46 @@ export interface CopiedBindingMcpServer extends McpServerMapLocation {
   boundFile?: string;
   /** protect-mcp replaced that home binding with a new id (see replaceBinding): this entry no longer starts. */
   replaced?: true;
-  /** Why protect-mcp could not replace that home binding: this entry still receives its secrets. */
+  /** Why protect-mcp could not replace that home binding, which is as it was: this entry still receives its secrets. */
   replaceError?: string;
+  /** protect-mcp could not replace that home binding, nor store the old one back (see StoreBackFailure). */
+  storeBackFailed?: StoreBackFailure;
+}
+
+/**
+ * A replacement that stored the new binding, could not write its id into the
+ * bound entry's file, and could not store the old binding back either: the
+ * store holds a binding no entry carries, so neither the bound entry nor a
+ * copy of it starts until protect-mcp runs again where that file can be
+ * written. The file, and the write's error as a line may show it (firstLine).
+ */
+export interface StoreBackFailure {
+  file: string;
+  error: string;
+}
+
+/**
+ * A project-level config, in the directory protect-mcp runs in or in one
+ * above it, in which the check the wrapper runs before it starts an entry
+ * from that directory (checkLaunchPlace) found the id of a home binding whose
+ * entry is in its file, with what protect-mcp did: the binding replaced, or
+ * why not. With `unchecked`, the check could not read the file for the id,
+ * and nothing was replaced. The file is read for the id only: no entry in it
+ * is parsed, and nothing is written into it.
+ */
+export interface BindingCopyFile {
+  /** The file, as the check names it. */
+  file: string;
+  /** The entry the binding names. */
+  boundTo: McpBoundEntry;
+  /** Why the check could not read the file for the id, as it says it (McpPlaceVerdict). */
+  unchecked?: string;
+  /** protect-mcp replaced the binding with a new id (see replaceBinding): a copy of it no longer starts. */
+  replaced?: true;
+  /** Why protect-mcp could not replace the binding, which is as it was. */
+  replaceError?: string;
+  /** protect-mcp could not replace the binding, nor store the old one back (see StoreBackFailure). */
+  storeBackFailed?: StoreBackFailure;
 }
 
 /**
@@ -216,6 +254,8 @@ export interface ProjectLevelMcpConfig {
   filePath: string;
   /** The path from the project directory. */
   projectPath: string;
+  /** This run read it for the id of a home binding (see BindingCopyFile), and wrote nothing into it. */
+  checkedForCopy?: true;
 }
 
 export interface ProtectResult {
@@ -249,6 +289,8 @@ export interface ProtectResult {
   unbound: UnboundMcpServer[];
   /** Servers carrying the binding of another config entry (see CopiedBindingMcpServer). */
   copies: CopiedBindingMcpServer[];
+  /** Project-level configs found from this directory to hold a home binding's id, or not readable for it (see BindingCopyFile). */
+  copyFiles: BindingCopyFile[];
   /** Servers that ran through another build's wrapper, re-pointed to this build's (see RepointedMcpServer). */
   repointed: RepointedMcpServer[];
   /**
@@ -491,9 +533,12 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     rebound: [],
     unbound: [],
     copies: [],
+    copyFiles: [],
     repointed: [],
     projectLevel,
   };
+  // The pairs whose binding this run replaced, or tried to: once per pair in a run.
+  const replacedPairs = new Set<string>();
 
   // 2. For each config: classify, encrypt, rewrite. The server maps of one
   // file, the top level and each project of ~/.claude.json, are rewritten
@@ -538,12 +583,13 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
             result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...(boundFile === '' ? {} : { boundFile }) });
           }
           if (plan.kind === 'replace') {
-            const why = await replaceBinding(binder, plan, reads);
-            result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...(why === undefined ? { replaced: true } : { replaceError: why }) });
+            replacedPairs.add(`${reads.client}/${reads.server}`);
+            const outcome = await replaceBinding(binder, plan, reads);
+            result.copies.push({ ...location, boundTo: boundEntry(plan.binding), ...replaceFields(outcome) });
           }
           const bound = await applyBinding(binder, plan, config, server, bindings, result);
           if (!bound && (plan.kind === 'bind' || plan.kind === 'rebind' || plan.kind === 'stale')) {
-            result.unbound.push({ ...location, reason: bindingNotStoredReason(binder.lastError) });
+            result.unbound.push({ ...location, reason: bindingNotStoredReason(binder.lastError ?? 'unknown error') });
           }
 
           if (secretKeys.length === 0) {
@@ -561,7 +607,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
               ? (plan.binding === undefined
                 ? `this server is not bound to ${pairName(reads)}`
                 : `the secrets stored under ${pairName(reads)} are bound to ${boundEntryName(plan.binding)}`)
-              : bindingNotStoredReason(binder.lastError);
+              : bindingNotStoredReason(binder.lastError ?? 'unknown error');
             result.unmoved.push({ ...location, reason });
             continue;
           }
@@ -647,10 +693,12 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         // The binding is stored before the secrets: a store that refuses it
         // leaves no secret stored without one.
         const id = newBindingId();
+        const digest = commandDigest(server.command, server.args);
         try {
-          await storeBindingOf(binder, reads, newBinding(binder, config, server.name, id, commandDigest(server.command, server.args)));
+          await storeBindingOf(binder, reads, newBinding(binder, config, server.name, id, digest));
         } catch (err) {
-          result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason: bindingNotStoredReason(err) });
+          const line = firstLine(err, bindingValues({ id, commandDigest: digest }, found));
+          result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason: bindingNotStoredReason(line) });
           continue;
         }
         nameHolders.set(name, config);
@@ -702,7 +750,72 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
     }
   }
 
+  // 3. A home binding the wrapper's own check finds in a copy from this
+  // directory, in a project-level config this run does not rewrite or in one
+  // above it, is replaced as a copy in a config it rewrites is (see
+  // replaceFoundBindings).
+  const checked = new Set<string>();
+  await replaceFoundBindings(
+    binder,
+    configs,
+    { startDir: options.projectDir ?? process.cwd(), ...(options.homeDir === undefined ? {} : { home: options.homeDir }) },
+    replacedPairs,
+    result,
+    checked,
+  );
+  for (const config of projectLevel) {
+    if ([...checked].some((file) => sameFile(file, config.filePath))) config.checkedForCopy = true;
+  }
+
   return result;
+}
+
+/**
+ * S3 from the wrapper's own check (S2). For each home binding whose entry is
+ * in its file as this run read it, the check the wrapper runs before it starts
+ * that entry from the directory this run is in: checkLaunchPlace, the function
+ * mcp-status runs through checkStart, with that directory as the start. A
+ * project-level config that holds the binding's id there, in that directory or
+ * in one above it, has the binding replaced (replaceBinding), as a copy in a
+ * config this run rewrites has it: once per pair in a run, however many
+ * configs hold it, and not for a pair this run already replaced or tried to.
+ * A config the check could not read for the id replaces nothing and is named.
+ * These configs are read for the id only, as the check reads them: no entry in
+ * them is parsed and nothing is written into them, and only the record and
+ * the bound entry change. `checked` gets each config the check read.
+ */
+async function replaceFoundBindings(
+  binder: Binder,
+  configs: McpConfigFile[],
+  place: { startDir: string; home?: string },
+  replaced: Set<string>,
+  result: ProtectResult,
+  checked: Set<string>,
+): Promise<void> {
+  for (const config of configs) {
+    if (scopeOf(config) !== 'home') continue;
+    for (const server of config.servers) {
+      if (!server.alreadyProtected) continue;
+      // As bindWrapped reads it: a pair the store refuses, or one its wrapper
+      // reads from another store, is not this run's to replace.
+      const reads = wrapperReads(config.client, server);
+      if (refusedNameReason(reads) !== undefined || storeMismatchReason(server, binder.stores) !== undefined) continue;
+      const pair = `${reads.client}/${reads.server}`;
+      if (replaced.has(pair)) continue;
+      const binding = await bindingOf(binder, reads);
+      if (binding === undefined || binding.scope !== 'home' || !isBoundEntry(binding, config, server.name)) continue;
+      const plan = replacePlan(binder, binding);
+      if (plan === undefined || plan.kind !== 'replace') continue;
+      replaced.add(pair);
+      const verdict = checkLaunchPlace(binding, { ...place, onChecked: (file) => checked.add(file) });
+      if (verdict.refused === 'copy-found') {
+        const outcome = await replaceBinding(binder, plan, reads);
+        result.copyFiles.push({ file: verdict.file, boundTo: boundEntry(binding), ...replaceFields(outcome) });
+      } else if (verdict.refused === 'copy-unchecked') {
+        result.copyFiles.push({ file: verdict.file, boundTo: boundEntry(binding), unchecked: verdict.why });
+      }
+    }
+  }
 }
 
 /**
@@ -1046,8 +1159,8 @@ interface Binder {
   bindings: Map<string, McpBinding | undefined>;
   /** The secretless-ai version this run is, for McpBinding.boundBy. */
   boundBy: string;
-  /** Why the store refused the binding applyBinding last stored. */
-  lastError?: unknown;
+  /** Why the store refused the binding applyBinding last stored: its error as a line may show it (firstLine). */
+  lastError?: string;
   /** The wrapper path and backend this run writes into a config it rewrites. */
   wrapperPath: string;
   backendType?: string;
@@ -1251,7 +1364,9 @@ async function applyBinding(
     } catch {
       // The line this leads to names the store's error.
     }
-    binder.lastError = err;
+    binder.lastError = firstLine(err, plan.kind === 'bind'
+      ? bindingValues({ id: plan.id, commandDigest: plan.digest }, plan.tookOver, plan.movedFrom)
+      : bindingValues(plan.binding, { id: plan.binding.id, commandDigest: plan.digest }));
     return false;
   }
   bindings[server.name] = plan.id;
@@ -1286,23 +1401,38 @@ function replacePlan(binder: Binder, binding: McpBinding): BindingPlan | undefin
 }
 
 /**
+ * What replaceBinding did. Not replaced, two ways: the binding is as it was,
+ * since the store refused the new one (`store-refused`) or the bound entry's
+ * file could not be written and the old binding was stored back
+ * (`stored-back`); or the file could not be written and storing the old
+ * binding back failed too (`not-stored-back`), so the store holds a binding
+ * no entry carries. Each error as a line may show it (firstLine).
+ */
+type ReplaceOutcome =
+  | { kind: 'replaced' }
+  | { kind: 'store-refused'; error: string }
+  | { kind: 'stored-back'; file: string; error: string }
+  | { kind: 'not-stored-back'; file: string; error: string };
+
+/**
  * Replace a home binding a copy of its entry carries: a new id is stored for
  * the pair, with the same entry and command, before it is written into the
  * bound entry's args, so the copy, which keeps the old id, no longer starts.
  * A store that refuses the new binding leaves the entry as it is; a file that
- * cannot be written gets the old binding stored back. Returns why it was not
- * replaced, or undefined.
+ * cannot be written gets the old binding stored back, where the store takes
+ * it (see ReplaceOutcome).
  */
 async function replaceBinding(
   binder: Binder,
   plan: Extract<BindingPlan, { kind: 'replace' }>,
   reads: { client: string; server: string },
-): Promise<string | undefined> {
+): Promise<ReplaceOutcome> {
   const id = newBindingId();
+  const held = bindingValues({ id, commandDigest: plan.binding.commandDigest }, plan.binding);
   try {
     await storeBindingOf(binder, reads, { ...plan.binding, id, boundAt: new Date().toISOString(), boundBy: binder.boundBy });
   } catch (err) {
-    return `the store refused the new binding (${firstLine(err)})`;
+    return { kind: 'store-refused', error: firstLine(err, held) };
   }
   const { config, server } = plan.owner;
   try {
@@ -1316,22 +1446,65 @@ async function replaceBinding(
       { keepBackup: true },
     );
   } catch (err) {
+    const written = { file: config.filePath, error: firstLine(err, held) };
     try {
       await storeBindingOf(binder, reads, plan.binding);
     } catch {
-      // The line this returns says the entry was not written.
+      // The store keeps the new binding, which no entry carries; the line
+      // this leads to says so, and names the file and the write's error.
+      return { kind: 'not-stored-back', ...written };
     }
-    return `${listedName(config.filePath)} could not be written (${firstLine(err)})`;
+    return { kind: 'stored-back', ...written };
   }
   // Later in this run, the bound entry is read as its file now holds it.
   server.args = withWrapperBinding(server.args, id) ?? server.args;
-  return undefined;
+  return { kind: 'replaced' };
 }
 
-/** The first line of an error's message, as a line may show it. */
-function firstLine(err: unknown): string {
+/** A replacement's outcome as the fields of the copy it was made for (see CopiedBindingMcpServer, BindingCopyFile). */
+function replaceFields(outcome: ReplaceOutcome): { replaced?: true; replaceError?: string; storeBackFailed?: StoreBackFailure } {
+  switch (outcome.kind) {
+    case 'replaced':
+      return { replaced: true };
+    case 'store-refused':
+      return { replaceError: `the store refused the new binding (${outcome.error})` };
+    case 'stored-back':
+      return { replaceError: `${listedName(outcome.file)} could not be written (${outcome.error})` };
+    case 'not-stored-back':
+      return { storeBackFailed: { file: outcome.file, error: outcome.error } };
+  }
+}
+
+/**
+ * What a line prints in place of a store's or a write's error message that
+ * could hold the binding (see firstLine). Words pending (product and design
+ * roles); the content is the security ruling's: the store's message was
+ * withheld because it could hold the binding.
+ */
+export const STORE_MESSAGE_WITHHELD = "the store's message was withheld, since it could hold the binding";
+
+/** A run of 32 or more hex characters: a binding id is 32, a command digest 64. */
+const HEX_RUN = /[0-9a-f]{32,}/i;
+
+/**
+ * The first line of an error's message, as a line may show it, or
+ * STORE_MESSAGE_WITHHELD where the message holds any of `held` (the ids and
+ * command digests of the bindings being stored) or a run of 32 or more hex
+ * characters. A detector behind each backend's own control, never the
+ * control: a backend's store error never carries the value it was asked to
+ * store, and a withheld line on a backend's real error is a defect there.
+ */
+function firstLine(err: unknown, held: readonly string[]): string {
   const message = err instanceof Error ? err.message : String(err);
+  if (HEX_RUN.test(message) || held.some((value) => value !== '' && message.includes(value))) {
+    return STORE_MESSAGE_WITHHELD;
+  }
   return escapeForDisplay(message.split('\n')[0]);
+}
+
+/** The ids and command digests of bindings, the values firstLine withholds a message for. */
+function bindingValues(...bindings: Array<Pick<McpBinding, 'id' | 'commandDigest'> | undefined>): string[] {
+  return bindings.flatMap((binding) => (binding === undefined ? [] : [binding.id, binding.commandDigest]));
 }
 
 /** A new binding of the pair a server reads, to that server's entry in `config`. */
@@ -1580,10 +1753,9 @@ function otherIdReason(reads: { client: string; server: string }): string {
   return `its binding does not match the one stored for ${pairName(reads)}. ${ADD_UNDER_NEW_NAME()}`;
 }
 
-/** Why a server's secrets were not stored, or it was not bound: the store refused its binding. */
-function bindingNotStoredReason(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  return `the binding could not be stored (${escapeForDisplay(message.split('\n')[0])}); run \`${cliCommand('protect-mcp')}\` again once the store accepts writes`;
+/** Why a server's secrets were not stored, or it was not bound: the store refused its binding, with the store's error as firstLine gives it. */
+function bindingNotStoredReason(storeError: string): string {
+  return `the binding could not be stored (${storeError}); run \`${cliCommand('protect-mcp')}\` again once the store accepts writes`;
 }
 
 /**

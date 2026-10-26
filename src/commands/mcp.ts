@@ -11,6 +11,7 @@ import {
   wrapperChecksBinding,
 } from '../mcp/protect';
 import type {
+  BindingCopyFile,
   BoundMcpServer,
   McpBindingFix,
   McpBindingState,
@@ -20,6 +21,7 @@ import type {
   RefusedNameMcpServer,
   RepointedMcpServer,
   SharedNameMcpServer,
+  StoreBackFailure,
   UnboundMcpServer,
   UnmovedMcpServer,
 } from '../mcp/protect';
@@ -229,9 +231,24 @@ function printUnboundServers(servers: UnboundMcpServer[]): void {
 }
 
 /**
+ * What a copy's line says when protect-mcp could not replace its home
+ * binding and could not store the old one back (see StoreBackFailure): the
+ * bound entry's file and the write's error, that the store now holds a
+ * binding no entry carries, and that neither the bound entry nor a copy of it
+ * starts until protect-mcp runs again where that file can be written. It
+ * never says the copy receives the secrets. Words pending (product and design
+ * roles); the content is the security ruling's.
+ */
+const STORE_BACK_FAILED = (failed: StoreBackFailure): string =>
+  `The binding could not be replaced: ${listedName(failed.file)} could not be written (${failed.error}), and the old binding could not be stored back, `
+  + 'so the store now holds a binding that no entry carries. '
+  + `Neither that entry nor a copy of it starts until \`${cliCommand('protect-mcp')}\` runs again where ${listedName(failed.file)} can be written.`;
+
+/**
  * The servers that carry the binding of another entry, under their configs:
- * those whose home binding protect-mcp replaced, which no longer start, and
- * the others, which receive that entry's secrets. Then the counts.
+ * those whose home binding protect-mcp replaced, which no longer start, those
+ * whose binding it could neither replace nor store back, which do not start
+ * either, and the others, which receive that entry's secrets. Then the counts.
  */
 function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
   const remove = `Remove this entry; to run the server here as well, add it again under a new name with its values and run \`${cliCommand('protect-mcp')}\`.`;
@@ -239,12 +256,49 @@ function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
     if (server.replaced) {
       return `    ? ${listedName(server.server)}: a copy of a bound entry: it carried the binding of ${boundEntryName(server.boundTo)}; the binding was replaced, and this entry no longer starts. ${remove}`;
     }
+    if (server.storeBackFailed !== undefined) {
+      return `    ? ${listedName(server.server)}: a copy of a bound entry: it carries the binding of ${boundEntryName(server.boundTo)}. ${STORE_BACK_FAILED(server.storeBackFailed)}`;
+    }
     const gone = server.boundFile === undefined ? '' : ` ${server.boundFile}`;
     const failed = server.replaceError === undefined ? '' : ` The binding could not be replaced: ${server.replaceError}.`;
     return `    ? ${listedName(server.server)}: a copy of a bound entry: it carries the binding of ${boundEntryName(server.boundTo)}, so the wrapper gives it that server's secrets.${gone}${failed} ${remove}`;
   });
   const replaced = servers.filter((server) => server.replaced).length;
-  if (servers.length > replaced) console.log(`  ${servers.length - replaced} server(s) are copies of a bound entry and receive its secrets.`);
+  const receiving = servers.filter((server) => !server.replaced && server.storeBackFailed === undefined).length;
+  if (receiving > 0) console.log(`  ${receiving} server(s) are copies of a bound entry and receive its secrets.`);
+  if (replaced > 0) console.log(`  ${replaced} copied binding(s) replaced; those copies no longer start.`);
+  console.log();
+}
+
+/**
+ * What protect-mcp says of a project-level config, found from the directory
+ * it ran in, that holds the id of a home binding whose entry is in its file
+ * (see BindingCopyFile): the binding replaced, or not with why, or the file
+ * not readable for the id. Words pending (product and design roles); the
+ * content is the security ruling's: S3 reaches every copy the wrapper's check
+ * refuses from the directory protect-mcp runs in, and names a file it could
+ * not check as that check does.
+ */
+const COPY_FILE_REPLACED = (entry: string): string =>
+  `holds a copy of the binding of ${entry}; the binding was replaced, so the copy no longer starts. Remove the copy from this file.`;
+const COPY_FILE_NOT_REPLACED = (entry: string, why: string): string =>
+  `holds a copy of the binding of ${entry}, and the binding could not be replaced: ${why}. Neither that entry nor the copy starts from this directory while the copy is here.`;
+const COPY_FILE_UNCHECKED = (entry: string, why: string): string =>
+  `could not be checked for a copy of the binding of ${entry} (${why}), so the binding was not replaced.`;
+
+/** The project-level configs found from this directory to hold a home binding's id, or not readable for it, each under its path. Then the count. */
+function printBindingCopyFiles(files: BindingCopyFile[]): void {
+  for (const found of files) {
+    const entry = boundEntryName(found.boundTo);
+    let said: string;
+    if (found.unchecked !== undefined) said = COPY_FILE_UNCHECKED(entry, found.unchecked);
+    else if (found.replaced) said = COPY_FILE_REPLACED(entry);
+    else if (found.storeBackFailed !== undefined) said = `holds a copy of the binding of ${entry}. ${STORE_BACK_FAILED(found.storeBackFailed)}`;
+    else said = COPY_FILE_NOT_REPLACED(entry, found.replaceError ?? 'unknown error');
+    console.log(`  ${listedName(found.file)}`);
+    console.log(`    ? ${said}`);
+  }
+  const replaced = files.filter((found) => found.replaced).length;
   if (replaced > 0) console.log(`  ${replaced} copied binding(s) replaced; those copies no longer start.`);
   console.log();
 }
@@ -271,7 +325,19 @@ function printBindingLists(result: ProtectResult): void {
   if (result.bound.length > 0 || result.rebound.length > 0) printBoundServers(result.bound, result.rebound);
   if (result.unbound.length > 0) printUnboundServers(result.unbound);
   if (result.copies.length > 0) printCopiedBindings(result.copies);
+  if (result.copyFiles.length > 0) printBindingCopyFiles(result.copyFiles);
 }
+
+/**
+ * The line under a project-level config protect-mcp leaves as it is, where
+ * this run read it for the id of a home binding (see BindingCopyFile): it is
+ * not rewritten, and it was checked for a copy of a binding. Words pending
+ * (product and design roles); the content is the security ruling's.
+ */
+const PROJECT_LEVEL_CHECKED = '    ? not rewritten; checked for a copy of a binding: see mcp-status';
+
+/** The line under a project-level config protect-mcp leaves as it is and did not read. */
+const PROJECT_LEVEL_NOT_CHECKED = '    ? not checked: project-level config: see mcp-status';
 
 /** Entries reordered so the ones under one config label are together, labels in the order first seen. */
 function inConfigOrder<T extends { client: string; filePath: string; projectPath?: string; projectKey?: string }>(entries: T[]): T[] {
@@ -330,7 +396,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
       if (projectLevel.length > 0) {
         for (const config of projectLevel) {
           console.log(`  ${configLabel(config)}`);
-          console.log('    ? not checked: project-level config: see mcp-status');
+          console.log(config.checkedForCopy ? PROJECT_LEVEL_CHECKED : PROJECT_LEVEL_NOT_CHECKED);
           console.log();
         }
         console.log(`  ${projectLevel.length} project-level config(s) were not checked, so no secret in them was encrypted.`);
@@ -414,8 +480,11 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     }
 
     // Only while every server that runs through the wrapper is bound: the
-    // wrapper starts no other.
-    if (result.unbound.length === 0 && !result.copies.some((copy) => copy.replaced)) {
+    // wrapper starts no other. A replaced binding, or one neither replaced
+    // nor stored back, changes which entries start.
+    const startsChanged = result.copies.some((copy) => copy.replaced || copy.storeBackFailed !== undefined)
+      || result.copyFiles.some((found) => found.replaced || found.storeBackFailed !== undefined);
+    if (result.unbound.length === 0 && !startsChanged) {
       console.log('  Protected servers start as before.');
     }
     console.log(`  Run \`${cliCommand('mcp-status')}\` to check status anytime.`);
@@ -573,6 +642,17 @@ const UNREAD_WRAPPER_LINE = (server: string, repoints: boolean): string =>
 const PROTECT_MCP = (): string => `\`${cliCommand('protect-mcp')}\``;
 
 /**
+ * The footer under the entries when a home binding was found in a copy from
+ * this directory (checkLaunchPlace's copy-found), in a config protect-mcp
+ * rewrites or in one it does not: protect-mcp, run in this directory,
+ * replaces each such binding, since it runs the same check from where it
+ * runs. Words pending (product and design roles); the content is the
+ * security ruling's: this footer takes the protect-mcp words.
+ */
+const HOME_COPY_FOOTER = (): string =>
+  `  Run ${PROTECT_MCP()} in this directory to replace each home binding found in a copy from here; each copy then no longer starts.`;
+
+/**
  * The fix lines under an entry in a config protect-mcp rewrites: what
  * protect-mcp does for its binding, from its own plan (planMcpBindings), so
  * the line names what it then does. A bound entry has none. Words pending
@@ -665,6 +745,9 @@ export async function runMcpStatus(): Promise<number> {
   // Bound entries the wrapper does not start from this directory (see
   // checkLaunchPlace), by the scope of their binding.
   const placeRefused = { home: 0, project: 0 };
+  // Of those, the entries of a home binding found in a copy from here, which
+  // protect-mcp run here replaces.
+  let homeCopies = 0;
   const vaults = new Map<string, McpVault>();
   // Which build of the wrapper an entry runs through, read as protect-mcp's
   // re-point reads it: a start clause is computed only for a wrapper that
@@ -743,6 +826,7 @@ export async function runMcpStatus(): Promise<number> {
             } else if (start !== undefined && 'place' in start) {
               console.log(`    ? ${name}: ${words}, but ${placeState(start.place)}, so the wrapper does not start it`);
               placeRefused[start.binding.scope]++;
+              if (start.binding.scope === 'home' && start.place.refused === 'copy-found') homeCopies++;
             } else if (state.state === 'not-rewritten') {
               console.log(`    ? ${name}: ${words} and the wrapper does not start it`);
               notStartedHere();
@@ -796,11 +880,7 @@ export async function runMcpStatus(): Promise<number> {
     console.log(
       `  ${placeRefused.home + placeRefused.project} bound server(s) do not start from this directory; each line above says why.`,
     );
-    if (placeRefused.home > 0) {
-      console.log(
-        `  Run \`${cliCommand('protect-mcp')}\` to replace each home binding found outside its own entry; a copy of it then no longer starts.`,
-      );
-    }
+    if (homeCopies > 0) console.log(HOME_COPY_FOOTER());
     if (placeRefused.project > 0) {
       console.log('  Remove each copy of a project binding named above; protect-mcp does not replace a project binding.');
     }
