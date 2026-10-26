@@ -135,10 +135,12 @@ function printUnderConfigs<T extends { client: string; filePath: string; project
 /**
  * Each server protect-mcp left because a protected server reads its secrets
  * by the same name, under its config and naming the config of that server,
- * then why and what to do.
+ * or with its reason where it has one (a binding another secretless home
+ * stored), then why and what to do.
  */
 function printSharedNameServers(servers: SharedNameMcpServer[]): void {
   printUnderConfigs(servers, (server) => {
+    if (server.reason !== undefined) return `    ? ${listedName(server.server)}: not protected: ${server.reason}`;
     if (server.boundTo !== undefined) {
       const pair = listedName(`${server.client}/${server.server}`);
       return `    ? ${listedName(server.server)}: not protected: the secrets stored under ${pair} are bound to ${boundEntryName(server.boundTo)}`;

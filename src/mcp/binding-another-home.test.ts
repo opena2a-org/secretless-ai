@@ -191,8 +191,28 @@ async function bindInA(file: string, client: string): Promise<{ entry: Entry; re
   return { entry: entryOf(file, 's'), record, text: text! };
 }
 
-/** The setups of cells (b) and (e), run in the home now in HOME after A bound: protect-mcp from D, and what it printed. */
+/** The setups of cells (a) to (e) and (m), run in the home now in HOME after A bound: protect-mcp from D, and what it printed. */
 const setups = {
+  /** (a) the project config's entry at its place, carrying no id. */
+  a: async (entry: Entry) => {
+    setEntry(projectConfig(), 's', { ...entry, args: withoutId(entry.args) });
+    return cli('protect-mcp');
+  },
+  /** (c) R6: the home entry carries A's id, and its child command differs. */
+  c: async (entry: Entry) => {
+    setEntry(homeConfig(), 's', { ...entry, args: withChild(entry.args, [process.execPath, '-e', 'y']) });
+    return cli('protect-mcp');
+  },
+  /** (d) R6a: the home entry at its place, carrying no id. */
+  d: async (entry: Entry) => {
+    setEntry(homeConfig(), 's', { ...entry, args: withoutId(entry.args) });
+    return cli('protect-mcp');
+  },
+  /** (m) the unwrapped store point: the home entry at its place, not wrapped, holding the values stored. */
+  m: async () => {
+    setEntry(homeConfig(), 's', plain(path.join(h().root, 's-started')));
+    return cli('protect-mcp');
+  },
   /** (b) R8: B's D/.mcp.json holds no server s, and a candidate, t, reads the pair. */
   b: async (entry: Entry) => {
     write(projectConfig(), { t: { command: entry.command, args: ['--server', 's', '--client', 'claude-code', '--', process.execPath, '-e', 'x'], env: {} } });
@@ -209,6 +229,124 @@ const setups = {
     return cli('protect-mcp');
   },
 };
+
+describe('(a) a binding another home stored is left as it is', () => {
+  it('A binds server s in D\'s project config; B runs protect-mcp in D, whose entry carries no id: left with the another-machine reason, and the record\'s bytes are equal', async () => {
+    open();
+    const { entry, text } = await bindInA(projectConfig(), 'claude-code');
+    h().use('B');
+
+    const output = await setups.a(entry);
+
+    expect(output).toContain(`    ? s: not bound: ${ANOTHER_MACHINE_REASON({ client: 'claude-code', server: 's' })}`);
+    expect(sha256(recordText('claude-code', 's'))).toBe(sha256(text));
+    expect(h().store.bindingWrites).toHaveLength(1);
+  });
+});
+
+describe('(c) R6: a binding another home stored is not bound again with a changed command', () => {
+  it('B\'s home entry carries A\'s id and its child command differs: no rebind, and commandDigest is unchanged', async () => {
+    open();
+    const { entry, record, text } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+
+    const output = await setups.c(entry);
+
+    expect(recordOf('cursor', 's')!.commandDigest).toBe(record.commandDigest);
+    expect(sha256(recordText('cursor', 's'))).toBe(sha256(text));
+    expect(output).toContain(`    ? s: not bound: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
+  });
+});
+
+describe('(d) R6a: another home\'s id is not written into this home\'s entry', () => {
+  it('B\'s home entry is at the equal path and carries no id: no stale, and the entry\'s bytes are unchanged', async () => {
+    open();
+    const { entry, text } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    setEntry(homeConfig(), 's', { ...entry, args: withoutId(entry.args) });
+    const before = fs.readFileSync(homeConfig(), 'utf-8');
+
+    const output = await cli('protect-mcp');
+
+    expect(fs.readFileSync(homeConfig(), 'utf-8')).toBe(before);
+    expect(sha256(recordText('cursor', 's'))).toBe(sha256(text));
+    expect(output).toContain(`    ? s: not bound: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
+  });
+});
+
+describe('(g) the same setups with A swapped back in act as built: the interlock is what stopped them', () => {
+  it('(c) with A: the binding takes the changed command (re-digest)', async () => {
+    open();
+    const { entry, record } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    h().use('A');
+
+    const output = await setups.c(entry);
+
+    expect(output).toContain('    ~ s: its command or arguments changed since it was bound; bound again');
+    expect(recordOf('cursor', 's')).toMatchObject({ id: record.id, boundOn: h().ids.A });
+    expect(recordOf('cursor', 's')!.commandDigest).not.toBe(record.commandDigest);
+  });
+
+  it('(d) with A: the binding\'s id is written into the entry again', async () => {
+    open();
+    const { entry, record } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    h().use('A');
+
+    const output = await setups.d(entry);
+
+    expect(output).toContain('    ~ s: its binding was out of date; bound again');
+    expect(entryOf(homeConfig(), 's').args).toEqual(entry.args);
+    expect(recordOf('cursor', 's')!.id).toBe(record.id);
+  });
+});
+
+describe('(i) a binding with no boundOn, as an earlier version stored it', () => {
+  /** A's binding of the home entry, stored again without its boundOn. */
+  async function earlierBinding(): Promise<{ entry: Entry; record: Record<string, unknown> }> {
+    const { entry, record } = await bindInA(homeConfig(), 'cursor');
+    const { boundOn: _boundOn, ...earlier } = record;
+    h().store.put(bindingKey('cursor', 's'), JSON.stringify(earlier));
+    return { entry, record: earlier };
+  }
+
+  it('on 1password: no home owns it, the one whose protect-mcp wrote it included, and nothing is written', async () => {
+    open();
+    const { entry } = await earlierBinding();
+    const before = recordText('cursor', 's');
+
+    const output = await setups.c(entry);
+
+    expect(recordText('cursor', 's')).toBe(before);
+    expect(h().store.bindingWrites).toHaveLength(1);
+    expect(output).toContain(`    ? s: not bound: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
+  });
+
+  it('on local: it is this machine\'s, and protect-mcp binds it again, now with this home\'s id', async () => {
+    open('local');
+    const { entry, record } = await earlierBinding();
+
+    const output = await setups.c(entry);
+
+    expect(output).toContain('    ~ s: its command or arguments changed since it was bound; bound again');
+    expect(recordOf('cursor', 's')).toMatchObject({ id: record.id, boundOn: h().ids.A });
+  });
+});
+
+describe('(m) the unwrapped store point: a binding another home stored is not written over', () => {
+  it('B\'s unwrapped entry is at the equal path and holds the values stored: left with the another-machine reason, and the record\'s bytes are unchanged', async () => {
+    open();
+    const { text } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+
+    const output = await setups.m();
+
+    expect(output).toContain(`    ? s: not protected: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
+    expect(sha256(recordText('cursor', 's'))).toBe(sha256(text));
+    expect(h().store.bindingWrites).toHaveLength(1);
+  });
+});
 
 describe('(b) R8: a binding another home stored is not taken over', () => {
   it('B\'s D/.mcp.json holds no server s, and a candidate there reads the pair: no takeover, and the record is unchanged', async () => {
