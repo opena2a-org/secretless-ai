@@ -192,11 +192,11 @@ const MOVED_LINE = (server: string, moved: { directory: string }): string =>
 /**
  * The line for a home entry at its binding's place that carried no id or
  * another one, given its binding's id, and the change when its command or
- * arguments changed since it was bound.
+ * arguments changed since it was bound. Words: the design role's C5 ruling
+ * (T3, T4).
  */
 const OUT_OF_DATE_LINE = (server: string, commandChanged: boolean): string =>
-  `    ~ ${listedName(server)}: its binding was out of date; bound again`
-  + (commandChanged ? '; its command or arguments changed since it was bound' : '');
+  `    ~ ${listedName(server)}: it did not carry the binding stored for it${commandChanged ? ', and its command or arguments changed since it was bound' : ''}; bound again`;
 
 /**
  * The servers protect-mcp bound this run, under their configs: bound in

@@ -561,7 +561,7 @@ describe('X3: an entry at its binding\'s place carrying another id is bound agai
 
     const output = await run('X3-a', () => runProtectMcp([]), dir('setup'));
 
-    expect(output).toContain(`  cursor (${file})\n    ~ github: its binding was out of date; bound again\n`);
+    expect(output).toContain(`  cursor (${file})\n    ~ github: it did not carry the binding stored for it; bound again\n`);
     expect(output.match(/^ {4}~ /gm)).toHaveLength(1);
     expect(idOf(entryOf(file, 'github').args)).toBe(id);
     expect(fs.readFileSync(file, 'utf-8')).toBe(bound);
@@ -581,7 +581,7 @@ describe('X3: an entry at its binding\'s place carrying another id is bound agai
     const output = await run('X3-b', () => runProtectMcp([]), dir('setup'));
 
     expect(output).toContain(
-      `  cursor (${file})\n    ~ github: its binding was out of date; bound again; its command or arguments changed since it was bound\n`,
+      `  cursor (${file})\n    ~ github: it did not carry the binding stored for it, and its command or arguments changed since it was bound; bound again\n`,
     );
     expect(output.match(/^ {4}~ /gm)).toHaveLength(1);
     const entry = entryOf(file, 'github');
@@ -613,7 +613,7 @@ describe('X3: an entry at its binding\'s place carrying another id is bound agai
 
     const output = await run('X3-d', () => runProtectMcp([]), dir('setup'));
 
-    expect(output).toContain(`  cursor (${file})\n    ~ github: its binding was out of date; bound again\n`);
+    expect(output).toContain(`  cursor (${file})\n    ~ github: it did not carry the binding stored for it; bound again\n`);
     expect(idOf(entryOf(file, 'github').args)).toBe(id);
     expect(fs.readFileSync(file, 'utf-8')).toBe(bound);
     expectStarted(startIn('X3-d', dir('elsewhere'), entryOf(file, 'github').args), sentinel);
