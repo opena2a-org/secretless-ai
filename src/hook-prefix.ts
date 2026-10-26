@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { shellHookCommand, shellQuote } from './env';
 import { VERSION } from './commands/utils';
-import { isExactVersion } from './printed-command';
+import { isExactVersion, isFile, isOwnCli, writablePath } from './printed-command';
 
 export interface HookPrefixOptions {
   /** The node binary; defaults to the one running. */
@@ -30,30 +30,6 @@ export interface HookPrefixOptions {
   script?: string;
   /** The version the npx form pins; defaults to this package's. */
   version?: string;
-}
-
-/** A path that a shell line or a git config value carries unchanged. */
-function writablePath(p: string): boolean {
-  return path.isAbsolute(p) && !/[\x00-\x1f\x7f]/.test(p);
-}
-
-function isFile(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/** True when `script` is this package's CLI: a file whose package.json names `secretless-ai`. */
-function isOwnCli(script: string): boolean {
-  if (!isFile(script)) return false;
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(script), '..', 'package.json'), 'utf-8'));
-    return pkg?.name === 'secretless-ai';
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -128,6 +104,11 @@ function pathFormPaths(m: RegExpExecArray | null): { node: string; cli: string }
   return m === null ? null : { node: unquote(m[1]), cli: unquote(m[2]) };
 }
 
+/** The node binary and CLI script of a prefix in the path form, or null for any other prefix. */
+export function pathFormOf(prefix: string): { node: string; cli: string } | null {
+  return pathFormPaths(PATH_FORM.exec(prefix));
+}
+
 /**
  * The file test a hook body puts before a prefix in the path form: when the
  * CLI script is gone, print one line naming it and the command that
@@ -135,7 +116,7 @@ function pathFormPaths(m: RegExpExecArray | null): { node: string; cli: string }
  * for the npx form, which names no file.
  */
 export function targetCheck(prefix: string, what: string, reinstall: string, exitCode: 0 | 1): string {
-  const paths = pathFormPaths(PATH_FORM.exec(prefix));
+  const paths = pathFormOf(prefix);
   if (paths === null) return '';
   const message = `secretless-ai: ${what} not found at ${paths.cli}. Reinstall: ${reinstall}`;
   return `[ -f ${shellQuote(paths.cli)} ] || { printf '%s\\n' ${shellQuote(message)} >&2; exit ${exitCode}; }; `;
