@@ -110,8 +110,11 @@ each entry in a config `protect-mcp` rewrites, a line names what
 `protect-mcp` then does for its binding, taken from `protect-mcp`'s own plan,
 which reads the store and the backups and writes nothing. An entry on a
 wrapper older than the first version that checks bindings, or whose version
-could not be read, is reported as such, with no start verdict, and as
-re-pointed by `protect-mcp` in a config it rewrites. `mcp-status` writes
+could not be read, is reported as protected, with no start verdict, and its
+line says what `protect-mcp` does about it: in a config it rewrites, the
+command that re-points it; in a config it does not rewrite, that it is not
+re-pointed; and where this build cannot read its own version to compare with
+the wrapper's, that it is not re-pointed for that reason. `mcp-status` writes
 nothing, and builds no store where the local store's directory does not
 exist.
 

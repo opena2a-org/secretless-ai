@@ -95,8 +95,8 @@ function startWrapper(args: string[], cwd: string) {
   return spawnSync(process.execPath, [WRAPPER_JS, ...args], { cwd, encoding: 'utf-8', env: childEnv() });
 }
 
-function runCli(args: string[], cwd: string): string {
-  return execFileSync(process.execPath, [CLI_PATH, ...args], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], cwd, env: childEnv() });
+function runCli(args: string[], cwd: string, cli = CLI_PATH): string {
+  return execFileSync(process.execPath, [cli, ...args], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], cwd, env: childEnv() });
 }
 
 const homeConfig = () => path.join(dirs.home, '.cursor', 'mcp.json');
@@ -137,6 +137,19 @@ function scratchWrapper(label: string, version: string): string {
   fs.writeFileSync(file, '// a scratch wrapper: never started\n');
   fs.writeFileSync(path.join(path.dirname(file), 'wrapper-version.json'), JSON.stringify({ version }));
   return file;
+}
+
+/**
+ * A copy of this build whose package.json gives a version that is not one,
+ * so the CLI run from it cannot read its own version: dist/ copied, the
+ * package's node_modules linked. Its cli.js.
+ */
+function unversionedBuild(): string {
+  const root = path.join(dirs.scratch, 'secretless-ai-unversioned');
+  fs.cpSync(path.dirname(CLI_PATH), path.join(root, 'dist'), { recursive: true });
+  write(path.join(root, 'package.json'), { name: 'secretless-ai', version: 'unreleased' });
+  fs.symlinkSync(path.resolve(__dirname, '..', '..', 'node_modules'), path.join(root, 'node_modules'));
+  return path.join(root, 'dist', 'cli.js');
 }
 
 /** The line mcp-status prints for `name`, and the fix line under it, when there is one. */
@@ -311,11 +324,16 @@ describe('mcp-status over every state, from the project and from elsewhere', () 
   });
 
   it('s5: an entry on a wrapper that does not check bindings, or whose version is not read, gets no computed start clause', () => {
-    const repoints = "; protect-mcp re-points it to this version's wrapper";
-    expect(linesOf(inProject, 'mu').line).toBe(`    ? mu: runs through a wrapper that does not check its binding${repoints}`);
-    expect(linesOf(inProject, 'nu').line).toBe(`    ? nu: runs through a wrapper whose version could not be read${repoints}`);
-    // In a config protect-mcp does not rewrite, nothing re-points it.
-    expect(linesOf(inProject, 'xi').line).toBe('    ? xi: runs through a wrapper whose version could not be read');
+    expect(linesOf(inProject, 'mu').line).toBe(
+      `    ? mu: protected, but it runs through a wrapper that does not check its binding; ${PROTECT} re-points it to this version's wrapper`,
+    );
+    expect(linesOf(inProject, 'nu').line).toBe(
+      `    ? nu: protected, but it runs through a wrapper whose version could not be read; ${PROTECT} re-points it to this version's wrapper`,
+    );
+    // In a config protect-mcp does not rewrite, nothing re-points it, and the line says so.
+    expect(linesOf(inProject, 'xi').line).toBe(
+      '    ? xi: protected, but it runs through a wrapper whose version could not be read; protect-mcp does not rewrite this config, so it does not re-point it',
+    );
     for (const name of ['mu', 'nu', 'xi']) {
       expect(linesOf(inProject, name).line).not.toMatch(/starts? it|not bound|bound to/);
     }
@@ -544,4 +562,25 @@ describe('the state function, the start clause, and what mcp-status leaves', () 
     const result = await protect.protectMcp({ projectDir: dirs.project, wrapperPath: WRAPPER_JS });
     expect(result.bound.map((entry) => entry.server)).toEqual(['omega']);
   });
+
+  it('s7: an entry on a wrapper that does not check bindings says why protect-mcp does not re-point it: a config it does not rewrite, or a build that cannot read its own version', () => {
+    const old = scratchWrapper('old', '0.0.1');
+    write(homeConfig(), { mcpServers: { rho: wrapped(old, 'rho') } });
+    write(path.join(dirs.project, '.cursor', 'mcp.json'), { mcpServers: { sigma: wrapped(old, 'sigma') } });
+    const notRewritten = '    ? sigma: protected, but it runs through a wrapper that does not check its binding; protect-mcp does not rewrite this config, so it does not re-point it';
+
+    const status = runCli(['mcp-status'], dirs.project);
+    expect(linesOf(status, 'rho').line).toBe(
+      `    ? rho: protected, but it runs through a wrapper that does not check its binding; ${PROTECT} re-points it to this version's wrapper`,
+    );
+    expect(linesOf(status, 'sigma').line).toBe(notRewritten);
+
+    // The same machine, from a copy of this build whose package.json gives
+    // no version: the version rho's wrapper reads cannot be compared.
+    const unread = runCli(['mcp-status'], dirs.project, unversionedBuild());
+    expect(linesOf(unread, 'rho').line).toBe(
+      "    ? rho: protected, but it runs through a wrapper that does not check its binding; this build's own version could not be read, so protect-mcp does not re-point it",
+    );
+    expect(linesOf(unread, 'sigma').line).toBe(notRewritten);
+  }, 60_000);
 });
