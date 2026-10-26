@@ -154,6 +154,7 @@ describe('protect-mcp on a shared store', () => {
       commandDigest: commandDigest(process.execPath, ['-e', 'x']),
       boundAt: new Date().toISOString(),
       boundBy: 'test',
+      boundOn: newBindingId(),
     });
     await sharedVault().storeServerSecrets('cursor', 'github', { [NAME]: VALUE });
     const settings = write(path.join(home, '.claude', 'settings.json'), { mcpServers: { github: wrappedUnbound('cursor', 'github') } });

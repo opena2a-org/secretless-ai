@@ -1581,15 +1581,17 @@ async function bindingOf(binder: Binder, reads: { client: string; server: string
 }
 
 /**
- * Store a pair's binding. No binding is stored without the secretless home's
- * id: it is created here, where it is absent, before the first binding a run
- * stores, and a run that cannot read or create it stores none
- * (BindingHomeIdError).
+ * Store a pair's binding, with the secretless home's id as its `boundOn`,
+ * and return it as stored. No binding is stored without that id: it is
+ * created here, where it is absent, before the first binding a run stores,
+ * and a run that cannot read or create it stores none (BindingHomeIdError).
  */
-async function storeBindingOf(binder: Binder, reads: { client: string; server: string }, binding: McpBinding): Promise<void> {
+async function storeBindingOf(binder: Binder, reads: { client: string; server: string }, binding: McpBinding): Promise<McpBinding> {
   binder.home.id ??= ensureBindingHomeId(binder.home.dir);
-  await binder.vault.storeBinding(reads.client, reads.server, binding);
-  binder.bindings.set(`${reads.client}/${reads.server}`, binding);
+  const stored: McpBinding = { ...binding, boundOn: binder.home.id };
+  await binder.vault.storeBinding(reads.client, reads.server, stored);
+  binder.bindings.set(`${reads.client}/${reads.server}`, stored);
+  return stored;
 }
 
 /** 'home' for a config in the home directory, 'project' for one in the project directory. */

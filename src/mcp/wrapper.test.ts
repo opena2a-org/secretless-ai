@@ -60,6 +60,7 @@ describe('secretless-mcp wrapper', () => {
       commandDigest: commandDigest(command[0], command.slice(1)),
       boundAt: new Date().toISOString(),
       boundBy: 'test',
+      boundOn: newBindingId(),
     });
     return ['--binding', id];
   }

@@ -424,6 +424,7 @@ describe('T7: protect-mcp binds again a .mcp.json entry whose project directory 
       commandDigest: commandDigest(child[0], child.slice(1)),
       boundAt: new Date().toISOString(),
       boundBy: 'test',
+      boundOn: newBindingId(),
     });
     await store().storeServerSecrets('claude-code', 'github', { [NAME]: VALUE });
     const b = real(dir('b'));
