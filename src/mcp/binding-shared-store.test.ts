@@ -135,10 +135,26 @@ describe('mcp-unprotect on a shared store', () => {
     expect(code).toBe(0);
     expect(JSON.parse(fs.readFileSync(file, 'utf-8')).mcpServers.github).toEqual(plain());
     expect(output).toContain(
-      '  ? claude-code/github: left in the store; it has no binding, and an entry on another machine may read it from the 1password backend.',
+      `  ? claude-code/github: left in the store: ${NAME}. No binding is stored for them, and the 1password backend is read from other machines as well, so an entry there may read them.`,
     );
     expect(output).not.toContain('Deleted from the store');
     expect(await sharedVault().getServerSecrets('claude-code', 'github')).toEqual({ [NAME]: VALUE });
+  });
+
+  it('u4: the line for a pair it leaves names every stored name, sorted', async () => {
+    const other = ['ANOTHER', 'SERVICE', 'API', 'KEY'].join('_');
+    const env = { [NAME]: VALUE, [other]: VALUE };
+    const file = write(path.join(project, '.mcp.json'), { mcpServers: { github: { ...plain(), env } } });
+    rewriteConfig(file, 'claude-code', { github: env }, WRAPPER_PATH, backupDir());
+    await sharedVault().storeServerSecrets('claude-code', 'github', env);
+
+    const { code, output } = await run(() => runMcpUnprotect());
+
+    expect(code).toBe(0);
+    expect(output).toContain(
+      `  ? claude-code/github: left in the store: ${other}, ${NAME}. No binding is stored for them, and the 1password backend is read from other machines as well, so an entry there may read them.`,
+    );
+    expect(await sharedVault().getServerSecrets('claude-code', 'github')).toEqual(env);
   });
 });
 

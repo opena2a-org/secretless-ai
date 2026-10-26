@@ -241,7 +241,7 @@ describe('mcp-unprotect deletes a pair only where its binding names a file it re
 
     expect(out).toContain(`  + Restored: ${bFile}\n`);
     expect(out).toContain(
-      `  ? claude-code/github: left in the store; it is bound to server "github" in ${record!.file}, which this run did not restore.\n`,
+      `  ? claude-code/github: left in the store: ${NAME}. They are bound to server "github" in ${record!.file}, which this run did not restore.\n`,
     );
     expect(out).not.toContain('Deleted from the store');
     expect(await store().getServerSecrets('claude-code', 'github')).toEqual({ [NAME]: VALUE });
