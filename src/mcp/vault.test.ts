@@ -255,6 +255,7 @@ function bindingFor(client: string, server: string): McpBinding {
     commandDigest: commandDigest(process.execPath, ['-e', 'x']),
     boundAt: new Date().toISOString(),
     boundBy: 'test',
+    boundOn: newBindingId(),
   };
 }
 
@@ -291,5 +292,35 @@ describe('removeServerSecrets deletes the names stored under a pair, then its bi
 
     expect(await vault.getBinding('cursor', 'github')).toBeUndefined();
     expect([...memory.entries.keys()]).toEqual([]);
+  });
+});
+
+describe('a binding names the secretless home that stored it (boundOn)', () => {
+  const hex = (bytes: number) => [...Array(bytes)].map(() => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join('');
+
+  it('storeBinding refuses a binding without a boundOn of 32 lowercase hex digits, and stores nothing', async () => {
+    const memory = new MemoryStore();
+    const vault = new McpVault({ backend: memory });
+    const { boundOn: _boundOn, ...earlier } = bindingFor('cursor', 'github');
+    for (const boundOn of [undefined, '', hex(16).toUpperCase(), hex(16).slice(1), `${hex(16)}0`, 42]) {
+      const binding = (boundOn === undefined ? earlier : { ...earlier, boundOn }) as McpBinding;
+      await expect(vault.storeBinding('cursor', 'github', binding)).rejects.toThrow('it names no secretless home');
+    }
+    expect([...memory.entries.keys()]).toEqual([]);
+  });
+
+  it('getBinding reads a well-formed boundOn, and reads a binding without one, or with a malformed one, as it is without the field', async () => {
+    const memory = new MemoryStore();
+    const vault = new McpVault({ backend: memory });
+    const binding = bindingFor('cursor', 'github');
+    await vault.storeBinding('cursor', 'github', binding);
+    expect(await vault.getBinding('cursor', 'github')).toEqual(binding);
+
+    // As an earlier version stored it, or with a boundOn that is not an id: read, never refused.
+    const { boundOn: _boundOn, ...earlier } = binding;
+    for (const boundOn of [undefined, hex(16).toUpperCase(), 7, null]) {
+      memory.entries.set('mcp-binding/cursor/github', JSON.stringify(boundOn === undefined ? earlier : { ...earlier, boundOn }));
+      expect(await vault.getBinding('cursor', 'github')).toEqual(earlier);
+    }
   });
 });

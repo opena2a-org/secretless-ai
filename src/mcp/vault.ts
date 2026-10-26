@@ -57,6 +57,13 @@ export interface McpBinding {
   boundAt: string;
   /** The secretless-ai version that stored it. */
   boundBy: string;
+  /**
+   * The id of the secretless home whose protect-mcp stored it: 32 lowercase
+   * hex digits (see binding-home-id.ts). Every binding this version stores
+   * carries it; one an earlier version stored does not. The wrapper never
+   * reads it, and nothing prints it.
+   */
+  boundOn?: string;
 }
 
 const BINDING_ID = /^[0-9a-f]{32}$/;
@@ -81,7 +88,11 @@ export function commandDigest(command: string, args: readonly string[]): string 
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify([command, ...args]), 'utf8').digest('hex')}`;
 }
 
-/** The binding in `text`, or undefined when it is not a schema-1 binding. */
+/**
+ * The binding in `text`, or undefined when it is not a schema-1 binding. A
+ * `boundOn` that is not 32 lowercase hex digits is left out, and the binding
+ * is read without it: the field never decides whether a binding is read.
+ */
 function parseBinding(text: string): McpBinding | undefined {
   let value: unknown;
   try {
@@ -107,6 +118,7 @@ function parseBinding(text: string): McpBinding | undefined {
     commandDigest: b.commandDigest,
     boundAt: b.boundAt,
     boundBy: b.boundBy,
+    ...(isBindingId(b.boundOn) ? { boundOn: b.boundOn } : {}),
   };
 }
 
@@ -339,14 +351,20 @@ export class McpVault {
   /**
    * Store the binding of a client/server pair, replacing the one stored
    * before. protect-mcp stores it before the pair's secrets, so a store that
-   * refuses it leaves no secret without a binding.
+   * refuses it leaves no secret without a binding. A binding without a
+   * well-formed `boundOn` is refused, so every binding stored names the
+   * secretless home that stored it.
    */
   async storeBinding(client: string, server: string, binding: McpBinding): Promise<void> {
     validateName('client', client);
     validateName('server', server);
     const text = JSON.stringify(binding);
-    if (parseBinding(text) === undefined) {
+    const parsed = parseBinding(text);
+    if (parsed === undefined) {
       throw new Error(`Invalid binding for ${listedName(`${client}/${server}`)}: not a schema-1 binding.`);
+    }
+    if (parsed.boundOn === undefined) {
+      throw new Error(`Invalid binding for ${listedName(`${client}/${server}`)}: it names no secretless home.`);
     }
     await this.backend.store(`${BINDING_PREFIX}/${client}/${server}`, text);
   }

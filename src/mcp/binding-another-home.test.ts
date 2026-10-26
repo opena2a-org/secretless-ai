@@ -144,6 +144,20 @@ const storedNames = (client: string, server: string): string[] =>
 
 const hex = (bytes: number) => crypto.randomBytes(bytes).toString('hex');
 
+describe('(J1) every binding protect-mcp stores names the secretless home that stored it', () => {
+  it('a server moved into the store and a wrapped entry bound in place both carry the home\'s id as boundOn', async () => {
+    open();
+    write(projectConfig(), { s: plain() });
+    write(homeConfig(), { t: wrappedUnbound('cursor', 't') });
+
+    await cli('protect-mcp');
+
+    expect(JSON.parse(recordText('claude-code', 's')!).boundOn).toBe(h().ids.A);
+    expect(JSON.parse(recordText('cursor', 't')!).boundOn).toBe(h().ids.A);
+    expect(h().store.bindingWrites.map((write) => JSON.parse(write.value).boundOn)).toEqual([h().ids.A, h().ids.A]);
+  });
+});
+
 describe('(j) the home id file', () => {
   it('absent: protect-mcp creates it with mode 0600 and 32 hex digits when it stores a binding', async () => {
     open('1password', { withoutId: ['A'] });
@@ -154,7 +168,9 @@ describe('(j) the home id file', () => {
 
     expect(recordText('claude-code', 's')).toBeDefined();
     expect(fs.statSync(h().idFile()).mode & 0o777).toBe(0o600);
-    expect(fs.readFileSync(h().idFile(), 'latin1')).toMatch(/^[0-9a-f]{32}\n?$/);
+    const held = fs.readFileSync(h().idFile(), 'latin1');
+    expect(held).toMatch(/^[0-9a-f]{32}\n?$/);
+    expect(JSON.parse(recordText('claude-code', 's')!).boundOn).toBe(held.trim());
   });
 
   it('malformed: no binding is stored, each entry it would bind is left with the error, and the file is unchanged', async () => {

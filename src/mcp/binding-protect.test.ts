@@ -122,6 +122,8 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
       commandDigest: commandDigest(process.execPath, ['-e', 'x']),
       boundAt: expect.any(String),
       boundBy: expect.any(String),
+      // The secretless home's id, which protect-mcp created before it stored the binding.
+      boundOn: fs.readFileSync(path.join(home, '.secretless-ai', 'binding-home-id'), 'latin1').trim(),
     });
     expect(await store().getServerSecrets('cursor', 'github')).toEqual({ [NAME]: VALUE });
   });

@@ -217,6 +217,7 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
       commandDigest: commandDigest(process.execPath, ['-e', childScript]),
       boundAt: new Date().toISOString(),
       boundBy: 'test',
+      boundOn: newBindingId(),
     });
 
     const out = execFileSync(
