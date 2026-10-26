@@ -628,7 +628,7 @@ const ERRNO_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
  * off whatever was thrown, so the printer checks its shape rather than relying
  * on which calls throw today.
  */
-function errorCode(err: unknown): string {
+export function errorCode(err: unknown): string {
   const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
   return typeof code === 'string' && ERRNO_CODE.test(code) ? code : 'unknown error';
 }
