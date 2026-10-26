@@ -11,7 +11,7 @@ import * as path from 'path';
 import { checkLaunchPlace, discoverMcpConfigsDetailed, rewrittenByProtectMcp, serverMapKey } from './discover';
 import type { McpConfigDiscovery, McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
 import { classifyEnvVars } from './classify';
-import { McpVault, boundEntryName, commandDigest, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId, ownsBinding } from './vault';
+import { BindingWriteRefusedError, McpVault, boundEntryName, commandDigest, expectBinding, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId, ownsBinding } from './vault';
 import type { McpBinding } from './vault';
 import { BindingHomeIdError, ensureBindingHomeId, readBindingHomeId } from './binding-home-id';
 import { moveConfigBackup, readConfigBackup, rewriteServerMaps, type ServerMapSecrets } from './rewrite';
@@ -714,7 +714,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         const id = newBindingId();
         const digest = commandDigest(server.command, server.args);
         try {
-          await storeBindingOf(binder, reads, newBinding(binder, config, server.name, id, digest));
+          await storeBindingOf(binder, reads, newBinding(binder, config, server.name, id, digest), found);
         } catch (err) {
           const reason = notStoredReason(err, bindingValues({ id, commandDigest: digest }, found));
           result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason });
@@ -1408,7 +1408,7 @@ async function applyBinding(
         commandDigest: plan.digest,
         boundAt: new Date().toISOString(),
         boundBy: binder.boundBy,
-      });
+      }, plan.binding);
       result.rebound.push(location);
       return true;
     }
@@ -1422,14 +1422,14 @@ async function applyBinding(
           commandDigest: plan.digest,
           boundAt: new Date().toISOString(),
           boundBy: binder.boundBy,
-        });
+        }, plan.binding);
       }
       bindings[server.name] = plan.binding.id;
       result.rebound.push({ ...location, outOfDate: true, ...(commandChanged ? { commandChanged: true as const } : {}) });
       return true;
     }
     if (plan.movedFrom !== undefined) unmove = moveConfigBackup(plan.movedFrom.file, config.filePath, binder.backupDir);
-    await storeBindingOf(binder, reads, newBinding(binder, config, server.name, plan.id, plan.digest));
+    await storeBindingOf(binder, reads, newBinding(binder, config, server.name, plan.id, plan.digest), plan.movedFrom ?? plan.tookOver);
   } catch (err) {
     try {
       unmove?.();
@@ -1476,8 +1476,11 @@ function replacePlan(binder: Binder, binding: McpBinding): BindingPlan | undefin
  * What replaceBinding did. Not replaced, two ways: the binding is as it was,
  * since the store refused the new one (`store-refused`), the secretless
  * home's id file could not be used so none was stored (`home-id`, with the
- * reason HOME_ID_UNUSABLE gives), or the bound entry's file could not be
- * written and the old binding was stored back (`stored-back`); or the file
+ * reason HOME_ID_UNUSABLE gives), the store's binding, read again, was not
+ * the one the plan read or another home stored it, so none was stored
+ * (`refused`, with the reason BINDING_NOT_AS_READ gives), or the bound
+ * entry's file could not be written and the old binding was stored back
+ * (`stored-back`); or the file
  * could not be written and storing the old binding back failed too
  * (`not-stored-back`), so the store holds a binding no entry carries. Each
  * error as a line may show it (firstLine).
@@ -1486,6 +1489,7 @@ type ReplaceOutcome =
   | { kind: 'replaced' }
   | { kind: 'store-refused'; error: string }
   | { kind: 'home-id'; reason: string }
+  | { kind: 'refused'; reason: string }
   | { kind: 'stored-back'; file: string; error: string }
   | { kind: 'not-stored-back'; file: string; error: string };
 
@@ -1504,10 +1508,12 @@ async function replaceBinding(
 ): Promise<ReplaceOutcome> {
   const id = newBindingId();
   const held = bindingValues({ id, commandDigest: plan.binding.commandDigest }, plan.binding);
+  let stored: McpBinding;
   try {
-    await storeBindingOf(binder, reads, { ...plan.binding, id, boundAt: new Date().toISOString(), boundBy: binder.boundBy });
+    stored = await storeBindingOf(binder, reads, { ...plan.binding, id, boundAt: new Date().toISOString(), boundBy: binder.boundBy }, plan.binding);
   } catch (err) {
     if (err instanceof BindingHomeIdError) return { kind: 'home-id', reason: HOME_ID_UNUSABLE(err) };
+    if (err instanceof BindingWriteRefusedError) return { kind: 'refused', reason: BINDING_NOT_AS_READ(err) };
     return { kind: 'store-refused', error: firstLine(err, held) };
   }
   const { config, server } = plan.owner;
@@ -1524,7 +1530,7 @@ async function replaceBinding(
   } catch (err) {
     const written = { file: config.filePath, error: firstLine(err, held) };
     try {
-      await storeBindingOf(binder, reads, plan.binding);
+      await storeBindingOf(binder, reads, plan.binding, stored);
     } catch {
       // The store keeps the new binding, which no entry carries; the line
       // this leads to says so, and names the file and the write's error.
@@ -1545,6 +1551,7 @@ function replaceFields(outcome: ReplaceOutcome): { replaced?: true; replaceError
     case 'store-refused':
       return { replaceError: `the store refused the new binding (${outcome.error})` };
     case 'home-id':
+    case 'refused':
       return { replaceError: outcome.reason };
     case 'stored-back':
       return { replaceError: `${listedName(outcome.file)} could not be written (${outcome.error})` };
@@ -1610,11 +1617,26 @@ async function bindingOf(binder: Binder, reads: { client: string; server: string
 
 /**
  * Store a pair's binding, with the secretless home's id as its `boundOn`,
- * and return it as stored. No binding is stored without that id: it is
- * created here, where it is absent, before the first binding a run stores,
- * and a run that cannot read or create it stores none (BindingHomeIdError).
+ * and return it as stored. It is the one function that writes a binding.
+ * `expected` is the binding the plan read for the pair, or undefined where it
+ * read none: the store's binding is read again first, and where it is not
+ * `expected`, or is one this home did not store (see ownsBinding), nothing is
+ * written (BindingWriteRefusedError, see expectBinding). The plans give the
+ * reasons for what they leave; this stops a write that goes around them. No
+ * binding is stored without the home's id: it is created here, where it is
+ * absent, before the first binding a run stores, and a run that cannot read
+ * or create it stores none (BindingHomeIdError).
+ *
+ * @internal Exported for the cells that call it over a binding another home
+ * stored.
  */
-async function storeBindingOf(binder: Binder, reads: { client: string; server: string }, binding: McpBinding): Promise<McpBinding> {
+export async function storeBindingOf(
+  binder: Pick<Binder, 'vault' | 'bindings' | 'home'>,
+  reads: { client: string; server: string },
+  binding: McpBinding,
+  expected: McpBinding | undefined,
+): Promise<McpBinding> {
+  await expectBinding(binder.vault, reads, expected, binder.home.id);
   binder.home.id ??= ensureBindingHomeId(binder.home.dir);
   const stored: McpBinding = { ...binding, boundOn: binder.home.id };
   await binder.vault.storeBinding(reads.client, reads.server, stored);
@@ -1931,9 +1953,29 @@ export const HOME_ID_UNUSABLE = (error: BindingHomeIdError): string =>
     ? `${listedName(error.file)} does not hold a secretless home id, so no binding was stored, and protect-mcp does not overwrite it`
     : `${listedName(error.file)} could not be read or created (${error.problem.code}), so no binding was stored`;
 
-/** Why a binding was not stored, from what storing it threw: HOME_ID_UNUSABLE, or the store's error as firstLine gives it. */
+/**
+ * Why a binding was not stored when the store's binding for the pair, read
+ * again just before the write, is not the one this run's plan read, or is one
+ * this secretless home did not store (BindingWriteRefusedError): for one
+ * another home stored, ANOTHER_MACHINE_REASON; for one that changed after it
+ * was read, that nothing was written over it, and that protect-mcp, run
+ * again, plans from what the store then holds. It never names a value. Words
+ * pending (product and design roles, cross XC-2); the content is the
+ * architecture ruling's (J3b).
+ */
+export const BINDING_NOT_AS_READ = (error: BindingWriteRefusedError): string =>
+  error.why === 'not-owned'
+    ? ANOTHER_MACHINE_REASON(error)
+    : `the binding stored for ${pairName(error)} changed after this run read it, so nothing was written over it; run \`${cliCommand('protect-mcp')}\` again`;
+
+/**
+ * Why a binding was not stored, from what storing it threw: HOME_ID_UNUSABLE,
+ * BINDING_NOT_AS_READ, or the store's error as firstLine gives it.
+ */
 function notStoredReason(err: unknown, held: readonly string[]): string {
-  return err instanceof BindingHomeIdError ? HOME_ID_UNUSABLE(err) : bindingNotStoredReason(firstLine(err, held));
+  if (err instanceof BindingHomeIdError) return HOME_ID_UNUSABLE(err);
+  if (err instanceof BindingWriteRefusedError) return BINDING_NOT_AS_READ(err);
+  return bindingNotStoredReason(firstLine(err, held));
 }
 
 /**
