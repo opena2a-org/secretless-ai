@@ -78,6 +78,8 @@ export {
   type PolicyRule, type PolicyConstraints, type PolicyEvaluation,
   type AuditEntry, type AuditVerification, type AgentIdentity,
   type BrokerHealth, type BrokerStatus,
+  type BrokerRoutes, type GrantRouteStatus, type GrantRouteSource,
+  type ResolveRouteStatus, type ResolveOffReason, type PidFileBrokerStatus,
   type ResolverOptions, type DaemonOptions,
   type CredentialEvent, type CredentialEventType, type AlertLevel,
 } from './broker';

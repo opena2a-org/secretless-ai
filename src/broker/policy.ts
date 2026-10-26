@@ -26,6 +26,8 @@ export interface PolicyEvaluation {
 
 export class PolicyEngine {
   private rules: PolicyRule[] = [];
+  /** The file the current rules were loaded from; null before a load, after an absent file, and after `loadRules`. */
+  private loadedFromFile: string | null = null;
   private readonly rateLimiter: RateLimiter;
   private readonly policyFile: string;
 
@@ -66,6 +68,7 @@ export class PolicyEngine {
   async loadPolicies(): Promise<number> {
     if (!fs.existsSync(this.policyFile)) {
       this.rules = [];
+      this.loadedFromFile = null;
       return 0;
     }
 
@@ -162,6 +165,7 @@ export class PolicyEngine {
       }
 
       this.rules = rules.map((r: unknown) => validateRule(r));
+      this.loadedFromFile = this.policyFile;
       return this.rules.length;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -204,6 +208,7 @@ export class PolicyEngine {
    */
   loadRules(rules: PolicyRule[]): void {
     this.rules = rules.map(r => validateRule(r));
+    this.loadedFromFile = null;
   }
 
   /**
@@ -267,6 +272,11 @@ export class PolicyEngine {
       matchedRuleId: '',
       reason: 'No matching allow rule (default deny)',
     };
+  }
+
+  /** The file the current rules were loaded from, or null (absent file, or rules set in memory). */
+  get loadedFrom(): string | null {
+    return this.loadedFromFile;
   }
 
   /** Get the current policy rule count. */

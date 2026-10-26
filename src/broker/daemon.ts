@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as path from 'path';
 import * as os from 'os';
-import type { BrokerConfig, BrokerStatus } from './types';
+import type { BrokerConfig, BrokerStatus, BrokerRoutes, PidFileBrokerStatus, ResolveOffReason } from './types';
 import { BrokerServer, TOKEN_FILE, createAimClient } from './server';
 import { parseJsonRefusingDuplicates } from './strict-json';
 import { AuditLogger } from './audit';
@@ -117,8 +117,17 @@ export interface DaemonOptions {
   aimUrl?: string;
   /** AIM bearer token. Falls back to SECRETLESS_AIM_TOKEN env var if unset. */
   aimToken?: string;
-  /** Policy file path. */
+  /**
+   * Policy file path. A broker that loads one answers `POST /resolve`. A path named here must
+   * exist. Left unset, ~/.secretless-ai/broker-policies.json is loaded when it exists, and
+   * `/resolve` answers 404 when it does not.
+   */
   policyFile?: string;
+  /**
+   * Serve no `POST /resolve`, whatever policy file exists: the broker is built with
+   * `resolver: null` and reads no policy file. Refused together with `policyFile`.
+   */
+  noResolve?: boolean;
   /**
    * Grant file path. A broker that loads one answers `POST /grant`. A path named here must
    * exist. Left unset, ~/.secretless-ai/broker-grants.json is loaded when it exists, and
@@ -145,6 +154,12 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
   const socketPath = options?.socketPath ?? DEFAULT_SOCKET_PATH;
 
   assertSocketPathFits(socketPath);
+  if (options?.noResolve && options.policyFile !== undefined) {
+    throw new TypeError(
+      'startDaemon with noResolve does not accept policyFile: noResolve keeps POST /resolve off, ' +
+      'so the file would not be read. Remove policyFile, or remove noResolve.',
+    );
+  }
 
   fs.mkdirSync(SECRETLESS_DIR, { recursive: true, mode: 0o700 });
 
@@ -158,12 +173,16 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
     fs.unlinkSync(pidFile);
   }
 
+  // Decided before the grant file loads, which can create the assertion key: a refused policy
+  // file leaves no key behind either.
+  const resolve = resolveRoute(options);
+
   const config: BrokerConfig = {
     socketPath,
     httpPort: options?.httpPort ?? DEFAULT_HTTP_PORT,
     aimUrl: options?.aimUrl,
     aimToken: options?.aimToken ?? process.env.SECRETLESS_AIM_TOKEN ?? undefined,
-    policyFile: options?.policyFile ?? DEFAULT_POLICY_FILE,
+    ...('policyFile' in resolve ? { policyFile: resolve.policyFile } : {}),
     auditLog: options?.auditLog ?? DEFAULT_AUDIT_LOG,
     tokenFile: options?.tokenFile ?? TOKEN_FILE,
   };
@@ -172,9 +191,10 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
   // file this build cannot apply stops the start with nothing left behind, for the reason a
   // refused policy file does (see BrokerServer.start).
   const grants = await loadGrants(options?.grantFile);
-  const server = grants
-    ? new BrokerServer(config, grantDependencies(config, grants))
-    : new BrokerServer(config);
+  const server = new BrokerServer(config, {
+    ...(grants ? grantDependencies(config, grants) : {}),
+    ...('off' in resolve ? { resolver: null, resolveOff: resolve.off } : {}),
+  });
 
   // Write PID file before starting (TOCTOU protection via O_EXCL)
   const pidData = JSON.stringify({
@@ -236,6 +256,30 @@ export async function startDaemon(options?: DaemonOptions): Promise<BrokerServer
 }
 
 /**
+ * The policy file a start loads, which turns `POST /resolve` on: the one named, or the default
+ * when it exists. With neither, or with `noResolve`, `/resolve` is off, for the reason returned.
+ *
+ * A named file that is missing is refused, as a named grant file is: otherwise a typo in the
+ * path would start a broker that serves no `/resolve` while the command line names a policy.
+ */
+function resolveRoute(
+  options: DaemonOptions | undefined,
+): { policyFile: string } | { off: ResolveOffReason } {
+  if (options?.noResolve) return { off: 'disabled' };
+  if (options?.policyFile !== undefined) {
+    if (!fs.existsSync(options.policyFile)) {
+      throw new Error(
+        `Policy file ${options.policyFile} does not exist. The broker was not started: a policy ` +
+        `file that was named and cannot be read is not the same as none, and starting without it ` +
+        `would leave /resolve off while the command line says it is on.`,
+      );
+    }
+    return { policyFile: options.policyFile };
+  }
+  return fs.existsSync(DEFAULT_POLICY_FILE) ? { policyFile: DEFAULT_POLICY_FILE } : { off: 'noPolicyFile' };
+}
+
+/**
  * The grant file a start loads: the one named, or the default when it exists.
  *
  * A named file that is missing is refused by `loadGrantConfig`. A missing default is the
@@ -267,7 +311,20 @@ function grantDependencies(
     audit,
     aimClient,
   });
-  return { audit, aimClient, grantResolver };
+  return {
+    audit,
+    aimClient,
+    grantResolver,
+    // The members `/status` reports, picked by name: never the private key path, the verifier,
+    // the policy or the providers.
+    grantSource: {
+      file: grants.file,
+      bindingCount: grants.bindingCount,
+      providerCount: grants.providerCount,
+      assertionPublicKeyFile: grants.assertionPublicKeyFile,
+      assertionKeyCreated: grants.assertionKeyCreated,
+    },
+  };
 }
 
 function countOf(n: number, noun: string): string {
@@ -298,7 +355,7 @@ export interface SpawnDaemonOptions {
  * Rejects if the process exits first or does not answer within `timeoutMs`;
  * on timeout the process is stopped so nothing half-started is left behind.
  */
-export async function spawnDaemon(options?: SpawnDaemonOptions): Promise<BrokerStatus> {
+export async function spawnDaemon(options?: SpawnDaemonOptions): Promise<PidFileBrokerStatus> {
   const cliPath = options?.cliPath ?? path.join(__dirname, '..', 'cli.js');
   const pidFile = options?.pidFile ?? DEFAULT_PID_FILE;
   const timeoutMs = options?.timeoutMs ?? 10_000;
@@ -397,9 +454,10 @@ function cleanupTokenFile(): void {
  * Fast and sync, but `requestCount`, `aimConfigured`, `aimReachable`, and `policyCount`
  * are always returned as zero/false because reading those requires
  * an HTTP call to the live server. Use `getLiveDaemonStatus` when
- * those fields matter.
+ * those fields matter. `grantServed`, `resolveServed` and `routes` are absent: the PID file
+ * does not say which routes the broker serves.
  */
-export function getDaemonStatus(pidFile?: string): BrokerStatus | null {
+export function getDaemonStatus(pidFile?: string): PidFileBrokerStatus | null {
   const file = pidFile ?? DEFAULT_PID_FILE;
   const pidInfo = readPidFile(file);
 
@@ -440,9 +498,15 @@ export function getDaemonStatus(pidFile?: string): BrokerStatus | null {
  * (requestCount, aimConfigured, aimReachable, policyCount). Falls back to the PID-file-only
  * status if the HTTP call fails, so the CLI always prints something useful.
  *
+ * `grantServed`, `resolveServed` and `routes` are copied together, and only when the reply
+ * carries all three in shape; otherwise the result has none of them. A reply from a broker
+ * that predates them (a detached daemon older than this CLI) yields no route table.
+ *
  * Returns null if the daemon is not running at all.
  */
-export async function getLiveDaemonStatus(pidFile?: string): Promise<BrokerStatus | null> {
+export async function getLiveDaemonStatus(
+  pidFile?: string,
+): Promise<BrokerStatus | PidFileBrokerStatus | null> {
   const base = getDaemonStatus(pidFile);
   if (!base) return null;
 
@@ -480,18 +544,37 @@ export async function getLiveDaemonStatus(pidFile?: string): Promise<BrokerStatu
     });
 
     if (live && typeof live === 'object') {
-      return {
+      const merged: PidFileBrokerStatus = {
         ...base,
         requestCount: typeof live.requestCount === 'number' ? live.requestCount : base.requestCount,
         aimConfigured: typeof live.aimConfigured === 'boolean' ? live.aimConfigured : base.aimConfigured,
         aimReachable: typeof live.aimReachable === 'boolean' ? live.aimReachable : base.aimReachable,
         policyCount: typeof live.policyCount === 'number' ? live.policyCount : base.policyCount,
       };
+      // The three live-only members travel together or not at all, and none is defaulted here:
+      // a status without them prints no route rows rather than rows this process invented.
+      if (
+        typeof live.grantServed === 'boolean' &&
+        typeof live.resolveServed === 'boolean' &&
+        isBrokerRoutes(live.routes)
+      ) {
+        return { ...merged, grantServed: live.grantServed, resolveServed: live.resolveServed, routes: live.routes };
+      }
+      return merged;
     }
   } catch {
     // Network/parse failure — fall through to base status
   }
   return base;
+}
+
+/** True when `value` has the shape of `BrokerRoutes`: both routes, each an object with a boolean `served`. */
+function isBrokerRoutes(value: unknown): value is BrokerRoutes {
+  if (!value || typeof value !== 'object') return false;
+  const { grant, resolve } = value as Record<string, unknown>;
+  const isRoute = (route: unknown): boolean =>
+    !!route && typeof route === 'object' && typeof (route as { served?: unknown }).served === 'boolean';
+  return isRoute(grant) && isRoute(resolve);
 }
 
 /** Read the broker auth token from disk. Returns null if absent. */

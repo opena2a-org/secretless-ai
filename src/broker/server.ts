@@ -5,7 +5,7 @@
  * Fallback transport: HTTP on 127.0.0.1:19421 (for Docker/non-Unix clients)
  *
  * Routes:
- *   POST /resolve  — Resolve a credential for an agent (policy-gated)
+ *   POST /resolve  — Resolve a credential for an agent (policy-gated; 404 on a broker built with resolver: null)
  *   POST /grant    — Run an operation under a grant (404 unless a grant resolver is configured)
  *   GET  /health   — Health check
  *   GET  /status   — Extended status with metrics
@@ -19,7 +19,9 @@ import * as crypto from 'crypto';
 import * as net from 'net';
 import * as path from 'path';
 import * as os from 'os';
-import type { BrokerConfig, ResolveRequest, BrokerHealth, BrokerStatus } from './types';
+import type {
+  BrokerConfig, ResolveRequest, BrokerHealth, BrokerStatus, BrokerRoutes, GrantRouteSource, ResolveOffReason,
+} from './types';
 import { PolicyEngine } from './policy';
 import { CredentialResolver } from './resolver';
 import { AuditLogger } from './audit';
@@ -59,8 +61,14 @@ export function createAimClient(config: BrokerConfig, audit: AuditLogger): AimCl
 
 export class BrokerServer {
   private readonly config: BrokerConfig;
-  private readonly policy: PolicyEngine;
-  private readonly resolver: CredentialResolver;
+  /** Null when built with `resolver: null`: no engine, no policy file read. */
+  private readonly policy: PolicyEngine | null;
+  /** Null when built with `resolver: null`: `/resolve` answers 404. */
+  private readonly resolver: CredentialResolver | null;
+  /** Why `/resolve` is off; null while it is served. */
+  private readonly resolveOff: ResolveOffReason | null;
+  /** What the grant resolver was loaded from, as `/status` reports it. */
+  private readonly grantSource: GrantRouteSource | null;
   private readonly audit: AuditLogger;
   private readonly aimClient: AimClient | null;
   /** AAP grant resolver (Exchange mode). Null when AAP authorization is not configured. */
@@ -74,20 +82,32 @@ export class BrokerServer {
   private aimReachable = false;
 
   /**
-   * The policy engine is always built here from `config.policyFile`; `deps`
-   * has no `policy` entry. A caller-supplied engine replaced every allow and
-   * deny decision the broker makes, so an engine whose `evaluate()` always
-   * allowed served every credential while the server still loaded and
-   * reported the operator's policy. A `policy` passed from JavaScript, where
-   * the type does not stop it, is refused rather than ignored.
+   * The policy engine is built here from `config.policyFile`, for a broker that
+   * serves `/resolve`; `deps` has no `policy` entry. A caller-supplied engine
+   * replaced every allow and deny decision the broker makes, so an engine whose
+   * `evaluate()` always allowed served every credential while the server still
+   * loaded and reported the operator's policy. A `policy` passed from
+   * JavaScript, where the type does not stop it, is refused rather than ignored.
+   *
+   * `resolver: null` builds a broker that serves no `/resolve`, in the form
+   * `aimClient: null` builds one with no AIM: no credential resolver and no
+   * policy engine are constructed, no policy file is read, and `/resolve`
+   * answers 404. A dependency that contradicts the one it qualifies is refused
+   * rather than reported: `config.policyFile` or `resolveOff` beside the wrong
+   * `resolver`, and `grantSource` without a `grantResolver`.
    */
   constructor(
     config: BrokerConfig,
     deps?: {
-      resolver?: CredentialResolver;
+      /** The credential resolver. `null` turns `/resolve` off; omitted, the default resolver is built. */
+      resolver?: CredentialResolver | null;
       audit?: AuditLogger;
       aimClient?: AimClient | null;
       grantResolver?: GrantResolver | null;
+      /** Why `resolver` is null, as `/status` reports it. Default 'disabled'. Refused with a resolver. */
+      resolveOff?: ResolveOffReason;
+      /** What `grantResolver` was loaded from, as `/status` reports it. Refused without one. */
+      grantSource?: GrantRouteSource;
     },
   ) {
     if ((deps as Record<string, unknown> | undefined)?.policy !== undefined) {
@@ -96,11 +116,45 @@ export class BrokerServer {
         'from config.policyFile. Set config.policyFile and remove policy from the dependencies.',
       );
     }
+    const resolverOff = deps?.resolver === null;
+    if (resolverOff && config.policyFile !== undefined) {
+      throw new TypeError(
+        'BrokerServer built with resolver: null does not accept config.policyFile: ' +
+        'the broker serves no POST /resolve, so the file would not be read. ' +
+        'Remove config.policyFile, or remove resolver: null.',
+      );
+    }
+    if (!resolverOff && deps?.resolveOff !== undefined) {
+      throw new TypeError(
+        'BrokerServer built with a resolver does not accept resolveOff: ' +
+        'the member describes a broker built with resolver: null, and this one has a resolver. ' +
+        'Remove resolveOff, or pass resolver: null.',
+      );
+    }
+    if (deps?.grantSource !== undefined && !deps.grantResolver) {
+      throw new TypeError(
+        'BrokerServer built without a grantResolver does not accept grantSource: ' +
+        'the member describes a served POST /grant, and this broker serves none. ' +
+        'Remove grantSource, or pass the grantResolver loaded from the same file.',
+      );
+    }
     this.config = config;
-    this.policy = new PolicyEngine({ policyFile: config.policyFile });
-    this.resolver = deps?.resolver ?? new CredentialResolver();
+    this.policy = resolverOff ? null : new PolicyEngine({ policyFile: config.policyFile });
+    this.resolver = deps?.resolver !== undefined ? deps.resolver : new CredentialResolver();
+    this.resolveOff = resolverOff ? (deps?.resolveOff ?? 'disabled') : null;
     this.audit = deps?.audit ?? new AuditLogger(config.auditLog);
     this.grantResolver = deps?.grantResolver ?? null;
+    // Copied member by member: a source with more members (a GrantConfig, which carries the
+    // private key path and the verifier) never reaches /status through a spread.
+    this.grantSource = deps?.grantSource !== undefined
+      ? {
+          file: deps.grantSource.file,
+          bindingCount: deps.grantSource.bindingCount,
+          providerCount: deps.grantSource.providerCount,
+          assertionPublicKeyFile: deps.grantSource.assertionPublicKeyFile,
+          assertionKeyCreated: deps.grantSource.assertionKeyCreated,
+        }
+      : null;
     this.aimClient = deps?.aimClient !== undefined
       ? deps.aimClient
       : createAimClient(config, this.audit);
@@ -132,8 +186,9 @@ export class BrokerServer {
     // and leave the engine at zero rules, so the throw has to reach here.
     // Everything below — including the bearer token write — is downstream, so a
     // refused policy file leaves no socket and no token for a client to
-    // authenticate against.
-    await this.policy.loadPolicies();
+    // authenticate against. A broker built with resolver: null has no engine
+    // and reads no policy file, named or default.
+    if (this.policy) await this.policy.loadPolicies();
 
     // Generate and persist bearer token for caller authentication
     const tokenFile = this.config.tokenFile ?? TOKEN_FILE;
@@ -249,7 +304,19 @@ export class BrokerServer {
       requestCount: this.requestCount,
       aimConfigured: this.aimClient !== null,
       aimReachable: this.aimReachable,
-      policyCount: this.policy.ruleCount,
+      policyCount: this.policy?.ruleCount ?? 0,
+      grantServed: this.grantResolver !== null,
+      resolveServed: this.resolver !== null,
+    };
+  }
+
+  /** The capability routes, from the dependencies this broker was built with. */
+  private getRoutes(): BrokerRoutes {
+    return {
+      grant: this.grantResolver ? { served: true, source: this.grantSource } : { served: false },
+      resolve: this.resolver && this.policy
+        ? { served: true, policyFile: this.policy.loadedFrom }
+        : { served: false, reason: this.resolveOff ?? 'disabled' },
     };
   }
 
@@ -262,6 +329,7 @@ export class BrokerServer {
       startedAt: this.startedAt?.toISOString() ?? '',
       socketPath: this.config.socketPath,
       httpPort: this.config.httpPort,
+      routes: this.getRoutes(),
     };
   }
 
@@ -329,6 +397,14 @@ export class BrokerServer {
 
   /** Handle POST /resolve — the core credential resolution endpoint. */
   private handleResolve(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const policy = this.policy;
+    const resolver = this.resolver;
+    if (!policy || !resolver) {
+      // Built with resolver: null. The answer /grant gives with no grant resolver, before the
+      // body is read: no scan, no policy evaluation, no store and no environment lookup.
+      this.sendJson(res, 404, { error: 'Not found' });
+      return;
+    }
     const startTime = Date.now();
 
     this.readBody(req).then(async (body) => {
@@ -372,7 +448,7 @@ export class BrokerServer {
         : undefined;
 
       // Evaluate policy
-      const evaluation = this.policy.evaluate(
+      const evaluation = policy.evaluate(
         request.agentId,
         request.credentialName,
         agentIdentity,
@@ -396,7 +472,7 @@ export class BrokerServer {
 
       // Resolve the credential
       try {
-        const value = await this.resolver.resolve(request.credentialName);
+        const value = await resolver.resolve(request.credentialName);
         if (value === undefined) {
           this.audit.logEvent(
             'resolve',

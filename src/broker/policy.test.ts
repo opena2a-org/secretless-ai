@@ -397,6 +397,57 @@ describe('PolicyEngine', () => {
   });
 });
 
+describe('PolicyEngine.loadedFrom', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-loaded-from-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const RULE: PolicyRule = {
+    id: 'allow-one',
+    agentSelector: 'agent-*',
+    credentialSelector: 'KEY_*',
+    constraints: {},
+    effect: 'allow',
+  };
+
+  it('is the file of the last load that read one, and null after an absent file or rules set in memory', async () => {
+    const file = path.join(dir, 'policies.json');
+    fs.writeFileSync(file, JSON.stringify({ version: 1, rules: [RULE] }));
+    const engine = new PolicyEngine({ policyFile: file });
+    expect(engine.loadedFrom).toBeNull();
+
+    expect(await engine.loadPolicies()).toBe(1);
+    expect(engine.loadedFrom).toBe(file);
+
+    engine.loadRules([RULE]);
+    expect(engine.loadedFrom).toBeNull();
+
+    expect(await engine.loadPolicies()).toBe(1);
+    fs.rmSync(file);
+    expect(await engine.loadPolicies()).toBe(0);
+    expect(engine.loadedFrom).toBeNull();
+  });
+
+  it('keeps the last good file when a reload is refused, as it keeps the last good rules', async () => {
+    const file = path.join(dir, 'policies.json');
+    fs.writeFileSync(file, JSON.stringify({ version: 1, rules: [RULE] }));
+    const engine = new PolicyEngine({ policyFile: file });
+    await engine.loadPolicies();
+
+    fs.writeFileSync(file, '{');
+    await expect(engine.loadPolicies()).rejects.toThrow('Failed to load policies from');
+
+    expect(engine.ruleCount).toBe(1);
+    expect(engine.loadedFrom).toBe(file);
+  });
+});
+
 describe('matchGlob', () => {
   it('matches exact strings', () => {
     expect(matchGlob('scanner-01', 'scanner-01')).toBe(true);
@@ -886,7 +937,7 @@ describe('no test constructs BrokerServer against the machine policy file', () =
     return out;
   }
 
-  it('every `new BrokerServer(` in a test passes an explicit policyFile', () => {
+  it('every `new BrokerServer(` in a test passes an explicit policyFile, or resolver: null', () => {
     const offenders: string[] = [];
     let constructions = 0;
 
@@ -903,7 +954,9 @@ describe('no test constructs BrokerServer against the machine policy file', () =
         constructions++;
         // The config object is the first argument; scan to the end of the call.
         const window = text.slice(idx, idx + 600);
-        if (!window.includes('policyFile')) {
+        // A broker built with resolver: null builds no policy engine and consults no policy
+        // path, named or default, so it cannot read the machine's policy file.
+        if (!window.includes('policyFile') && !window.includes('resolver: null')) {
           const line = text.slice(0, idx).split('\n').length;
           offenders.push(`${path.relative(SRC, file)}:${line}`);
         }
