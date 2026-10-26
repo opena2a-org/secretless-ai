@@ -7,7 +7,7 @@ import { runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
 import { thisBuildWrapperPath } from './discover';
 import { BindingHomeIdError } from './binding-home-id';
 import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, HOME_ID_UNUSABLE } from './protect';
-import { bindingKey, openHomes, startWrapper } from './binding-homes.test-support';
+import { bindingKey, openHomes, sha256, startWrapper } from './binding-homes.test-support';
 import type { HomeName, Homes } from './binding-homes.test-support';
 
 /**
@@ -143,6 +143,156 @@ const storedNames = (client: string, server: string): string[] =>
   Object.keys(h().store.all()).filter((key) => key.startsWith(`mcp/${client}/${server}/`));
 
 const hex = (bytes: number) => crypto.randomBytes(bytes).toString('hex');
+
+/** A config entry as a file holds it. */
+type Entry = { command: string; args: string[]; env?: Record<string, string> };
+
+/** Put `entry` as server `name` of a config file, leaving its other servers. */
+function setEntry(file: string, name: string, entry: Entry): void {
+  const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  raw.mcpServers[name] = entry;
+  fs.writeFileSync(file, JSON.stringify(raw, null, 2));
+}
+
+/** Wrapper args without the --binding before the wrapper's own `--`: an entry that carries no id. */
+function withoutId(args: readonly string[]): string[] {
+  const end = args.indexOf('--');
+  const at = args.indexOf('--binding');
+  if (at === -1 || (end !== -1 && at > end)) return [...args];
+  return [...args.slice(0, at), ...args.slice(at + 2)];
+}
+
+/** Wrapper args with another command after the wrapper's own `--`. */
+function withChild(args: readonly string[], child: readonly string[]): string[] {
+  return [...args.slice(0, args.indexOf('--') + 1), ...child];
+}
+
+/** The binding stored for a pair, parsed, or undefined. */
+function recordOf(client: string, server: string): Record<string, unknown> | undefined {
+  const text = recordText(client, server);
+  return text === undefined ? undefined : JSON.parse(text);
+}
+
+/**
+ * A binds server `s` in `file` (the project's .mcp.json, client
+ * claude-code, or the home cursor config, client cursor): the server with a
+ * secret in its env, protected by protect-mcp run from D with A in HOME. The
+ * entry it wrote, and the binding as stored, which names that entry and
+ * carries A's id where the store is one several machines read.
+ */
+async function bindInA(file: string, client: string): Promise<{ entry: Entry; record: Record<string, unknown>; text: string }> {
+  h().use('A');
+  write(file, { s: plain(path.join(h().root, 's-started')) });
+  await cli('protect-mcp');
+  const text = recordText(client, 's');
+  expect(text).toBeDefined();
+  const record = JSON.parse(text!);
+  expect(record).toMatchObject({ file, server: 's', boundOn: h().ids.A });
+  return { entry: entryOf(file, 's'), record, text: text! };
+}
+
+/** The setups of cells (b) and (e), run in the home now in HOME after A bound: protect-mcp from D, and what it printed. */
+const setups = {
+  /** (b) R8: B's D/.mcp.json holds no server s, and a candidate, t, reads the pair. */
+  b: async (entry: Entry) => {
+    write(projectConfig(), { t: { command: entry.command, args: ['--server', 's', '--client', 'claude-code', '--', process.execPath, '-e', 'x'], env: {} } });
+    return cli('protect-mcp');
+  },
+  /** (e) S3: a copy of the home entry, carrying A's id, in D/.mcp.json, which protect-mcp rewrites; the home entry is at its place. */
+  e: async (entry: Entry) => {
+    write(projectConfig(), { s: { ...entry } });
+    return cli('protect-mcp');
+  },
+  /** (e) through the S3 trigger: the copy in D/.cursor/mcp.json, which the wrapper's start check reads and protect-mcp does not rewrite. */
+  eS2: async (entry: Entry) => {
+    write(path.join(h().project, '.cursor', 'mcp.json'), { s: { ...entry } });
+    return cli('protect-mcp');
+  },
+};
+
+describe('(b) R8: a binding another home stored is not taken over', () => {
+  it('B\'s D/.mcp.json holds no server s, and a candidate there reads the pair: no takeover, and the record is unchanged', async () => {
+    open();
+    const { entry, text } = await bindInA(projectConfig(), 'claude-code');
+    h().use('B');
+
+    const output = await setups.b(entry);
+
+    expect(sha256(recordText('claude-code', 's'))).toBe(sha256(text));
+    expect(output).not.toContain('took over');
+    expect(h().store.bindingWrites).toHaveLength(1);
+    expect(h().tripped()).toEqual([]);
+  });
+});
+
+describe('(e) S3: a binding another home stored is not replaced', () => {
+  it('B holds a copy carrying A\'s id in D/.mcp.json, and B\'s home entry is at the equal path: no replace, and the record\'s id is unchanged', async () => {
+    open();
+    const { entry, record, text } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+
+    const output = await setups.e(entry);
+
+    expect(recordOf('cursor', 's')!.id).toBe(record.id);
+    expect(sha256(recordText('cursor', 's'))).toBe(sha256(text));
+    expect(entryOf(homeConfig(), 's')).toEqual(entry);
+    expect(output).not.toContain('the binding was replaced');
+    expect(h().store.bindingWrites).toHaveLength(1);
+  });
+
+  it('through the S3 trigger: the copy is in D/.cursor/mcp.json, which the wrapper\'s start check reads and protect-mcp does not rewrite: no replace, and the record\'s id is unchanged', async () => {
+    open();
+    const { entry, record, text } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+
+    const output = await setups.eS2(entry);
+
+    expect(recordOf('cursor', 's')!.id).toBe(record.id);
+    expect(sha256(recordText('cursor', 's'))).toBe(sha256(text));
+    expect(entryOf(homeConfig(), 's')).toEqual(entry);
+    expect(output).not.toContain('the binding was replaced');
+    expect(h().store.bindingWrites).toHaveLength(1);
+  });
+});
+
+describe('(h) on a store that is this machine\'s alone, each acts as built, whatever binding-home-id holds and when it is absent', () => {
+  for (const id of ['B\'s own', 'absent'] as const) {
+    const homeOptions = id === 'absent' ? { withoutId: ['B' as const] } : {};
+
+    it(`(b) with B's id ${id}: the candidate takes the binding over`, async () => {
+      open('local', homeOptions);
+      const { entry } = await bindInA(projectConfig(), 'claude-code');
+      h().use('B');
+
+      const output = await setups.b(entry);
+
+      expect(output).toContain('took over the binding of server "s"');
+      expect(recordOf('claude-code', 's')).toMatchObject({ server: 't', file: projectConfig() });
+    });
+
+    it(`(e) with B's id ${id}: the binding is replaced`, async () => {
+      open('local', homeOptions);
+      const { entry, record } = await bindInA(homeConfig(), 'cursor');
+      h().use('B');
+
+      const output = await setups.e(entry);
+
+      expect(output).toContain('the binding was replaced');
+      expect(recordOf('cursor', 's')!.id).not.toBe(record.id);
+    });
+
+    it(`(e) through the S3 trigger with B's id ${id}: the binding is replaced`, async () => {
+      open('local', homeOptions);
+      const { entry, record } = await bindInA(homeConfig(), 'cursor');
+      h().use('B');
+
+      const output = await setups.eS2(entry);
+
+      expect(output).toContain('the binding was replaced, so the copy no longer starts');
+      expect(recordOf('cursor', 's')!.id).not.toBe(record.id);
+    });
+  }
+});
 
 describe('(J5) the another-machine words carry what the ruling fixes, pending their final words', () => {
   const reads = { client: 'claude-code', server: 's' };

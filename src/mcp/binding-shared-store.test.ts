@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { protectMcp } from './protect';
+import { ANOTHER_MACHINE_CLAUSE, protectMcp } from './protect';
 import { McpVault, commandDigest, newBindingId } from './vault';
 import { rewriteConfig } from './rewrite';
 import { createBackend } from '../backends/factory';
@@ -94,6 +94,14 @@ function write(fullPath: string, content: unknown): string {
 }
 
 const sharedVault = () => new McpVault({ backend: shared });
+/** This secretless home's id file (see binding-home-id.ts). */
+const homeIdFile = () => path.join(home, '.secretless-ai', 'binding-home-id');
+/** Give this secretless home the id `id`, as protect-mcp leaves it once it has stored a binding. */
+function writeHomeId(id = newBindingId()): string {
+  fs.mkdirSync(path.dirname(homeIdFile()), { recursive: true });
+  fs.writeFileSync(homeIdFile(), `${id}\n`, { mode: 0o600 });
+  return id;
+}
 const backupDir = () => path.join(home, '.secretless-ai', 'mcp-backups');
 const plain = () => ({ command: process.execPath, args: ['-e', 'x'], env: { [NAME]: VALUE } });
 
@@ -142,20 +150,24 @@ describe('protect-mcp on a shared store', () => {
     env: {},
   });
 
-  it('e3: a home binding whose file is absent here is not taken over, and the line says only that the file was not found on this machine', async () => {
+  /** A home binding of cursor/github, stored with `boundOn`, naming `file`. */
+  const homeBinding = (file: string, boundOn: string) => ({
+    schema: 1 as const,
+    id: newBindingId(),
+    scope: 'home' as const,
+    file,
+    client: 'cursor',
+    server: 'github',
+    commandDigest: commandDigest(process.execPath, ['-e', 'x']),
+    boundAt: new Date().toISOString(),
+    boundBy: 'test',
+    boundOn,
+  });
+
+  it('e3: a home binding another secretless home stored, whose file is absent here, is not taken over, and the line says another home bound that entry', async () => {
+    writeHomeId();
     const gone = path.join(home, '.cursor', 'mcp.json');
-    await sharedVault().storeBinding('cursor', 'github', {
-      schema: 1,
-      id: newBindingId(),
-      scope: 'home',
-      file: gone,
-      client: 'cursor',
-      server: 'github',
-      commandDigest: commandDigest(process.execPath, ['-e', 'x']),
-      boundAt: new Date().toISOString(),
-      boundBy: 'test',
-      boundOn: newBindingId(),
-    });
+    await sharedVault().storeBinding('cursor', 'github', homeBinding(gone, newBindingId()));
     await sharedVault().storeServerSecrets('cursor', 'github', { [NAME]: VALUE });
     const settings = write(path.join(home, '.claude', 'settings.json'), { mcpServers: { github: wrappedUnbound('cursor', 'github') } });
     const before = fs.readFileSync(settings, 'utf-8');
@@ -166,7 +178,7 @@ describe('protect-mcp on a shared store', () => {
     expect(code).toBe(0);
     expect(output).toContain(
       `    ? github: not bound: the secrets stored under cursor/github are bound to server "github" in ${gone}. `
-        + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. ${gone} was not found on this machine.`,
+        + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. ${ANOTHER_MACHINE_CLAUSE(gone)}`,
     );
     expect(output).not.toContain('no longer exists');
     expect(output).not.toContain('mcp-forget');
@@ -175,12 +187,49 @@ describe('protect-mcp on a shared store', () => {
     expect(await sharedVault().getBinding('cursor', 'github')).toEqual(record);
   });
 
-  it('e3: a .mcp.json entry whose project directory moved is not bound again, though this machine\'s backup holds the stored values', async () => {
+  it('e3: a home binding this secretless home stored, whose file is absent here, is taken over by the one entry of its scope that reads the pair', async () => {
+    const own = writeHomeId();
+    const gone = path.join(home, '.cursor', 'mcp.json');
+    await sharedVault().storeBinding('cursor', 'github', homeBinding(gone, own));
+    await sharedVault().storeServerSecrets('cursor', 'github', { [NAME]: VALUE });
+    const settings = write(path.join(home, '.claude', 'settings.json'), { mcpServers: { github: wrappedUnbound('cursor', 'github') } });
+
+    const { code, output } = await run(() => runProtectMcp([]));
+
+    expect(code).toBe(0);
+    expect(output).toContain(`    + github: bound (took over the binding of server "github", no longer in ${gone})`);
+    expect(await sharedVault().getBinding('cursor', 'github')).toMatchObject({ file: settings, server: 'github', boundOn: own });
+  });
+
+  it('e3: a home binding this secretless home stored, whose file is absent here, read by an entry of the other scope, is left, and the line says the file was not found on this machine', async () => {
+    const own = writeHomeId();
+    const gone = path.join(home, '.cursor', 'mcp.json');
+    await sharedVault().storeBinding('cursor', 'github', homeBinding(gone, own));
+    await sharedVault().storeServerSecrets('cursor', 'github', { [NAME]: VALUE });
+    const file = write(path.join(project, '.mcp.json'), { mcpServers: { github: wrappedUnbound('cursor', 'github') } });
+    const before = fs.readFileSync(file, 'utf-8');
+    const record = await sharedVault().getBinding('cursor', 'github');
+
+    const { code, output } = await run(() => runProtectMcp([]));
+
+    expect(code).toBe(0);
+    expect(output).toContain(
+      `    ? github: not bound: the secrets stored under cursor/github are bound to server "github" in ${gone}. `
+        + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. ${gone} was not found on this machine.`,
+    );
+    expect(output).not.toContain('took over');
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    expect(await sharedVault().getBinding('cursor', 'github')).toEqual(record);
+  });
+
+  it('e3: a .mcp.json entry whose project directory moved, bound by another secretless home, is not bound again, though this machine\'s backup holds the stored values', async () => {
     const a = fs.realpathSync(project);
     const file = write(path.join(a, '.mcp.json'), { mcpServers: { github: plain() } });
     await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
     const record = await sharedVault().getBinding('claude-code', 'github');
     expect(record).toMatchObject({ scope: 'project', file });
+    // This home's id is another one now, as after its ~/.secretless-ai was replaced: the binding is another home's.
+    writeHomeId();
     const a2 = `${a}-moved`;
     fs.renameSync(a, a2);
     const moved = path.join(a2, '.mcp.json');
@@ -189,11 +238,31 @@ describe('protect-mcp on a shared store', () => {
     try {
       const { output } = await run(() => runProtectMcp([]), a2);
 
-      expect(output).toContain(`it carries the binding of server "github" in ${file}, so the wrapper gives it that server's secrets. ${file} was not found on this machine.`);
+      expect(output).toContain(`it carries the binding of server "github" in ${file}, so the wrapper gives it that server's secrets. ${ANOTHER_MACHINE_CLAUSE(file)}`);
       expect(output).not.toContain('bound again');
       expect(output).not.toContain('mcp-forget');
+      expect(output).not.toContain('no longer exists');
       expect(fs.readFileSync(moved, 'utf-8')).toBe(before);
       expect(await sharedVault().getBinding('claude-code', 'github')).toEqual(record);
+    } finally {
+      fs.renameSync(a2, a);
+    }
+  });
+
+  it('e3: a .mcp.json entry whose project directory moved, bound by this secretless home, is bound again where this machine\'s backup holds the stored values', async () => {
+    const a = fs.realpathSync(project);
+    write(path.join(a, '.mcp.json'), { mcpServers: { github: plain() } });
+    await protectMcp({ projectDir: a, wrapperPath: WRAPPER_PATH });
+    const own = fs.readFileSync(homeIdFile(), 'latin1').trim();
+    const a2 = `${a}-moved`;
+    fs.renameSync(a, a2);
+    const moved = path.join(a2, '.mcp.json');
+
+    try {
+      const { output } = await run(() => runProtectMcp([]), a2);
+
+      expect(output).toContain(`    + github: bound again; its project directory moved from ${a}`);
+      expect(await sharedVault().getBinding('claude-code', 'github')).toMatchObject({ scope: 'project', file: moved, boundOn: own });
     } finally {
       fs.renameSync(a2, a);
     }
