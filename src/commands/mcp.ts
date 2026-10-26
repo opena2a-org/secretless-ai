@@ -30,7 +30,8 @@ import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp, 
 import type { McpConfigFile, McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
-import { McpVault, boundEntryName, isPerMachineStore } from '../mcp/vault';
+import { McpVault, boundEntryName, isPerMachineStore, ownsBinding } from '../mcp/vault';
+import { bindingHomeId } from '../mcp/binding-home-id';
 import type { McpBinding } from '../mcp/vault';
 import { checkStart } from '../mcp/start-check';
 import type { McpStartVerdict } from '../mcp/start-check';
@@ -1011,20 +1012,38 @@ const LEFT_SHARED_UNBOUND = (label: string, names: string[], backend: string): s
   `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. No binding is stored for them, and the ${backend} backend is read from other machines as well, so an entry there may read them.`;
 
 /**
+ * The line for a pair mcp-unprotect leaves because protect-mcp in another
+ * secretless home stored its binding (see ownsBinding): the stored names it
+ * left (`names`, never a value), then that the pair was bound by protect-mcp
+ * in another secretless home, on another machine or on this one before its
+ * ~/.secretless-ai was replaced, and that mcp-unprotect on this machine
+ * leaves that binding as it is. It cites no command, never says the bound
+ * entry no longer exists, and names no command that deletes a binding. Words
+ * pending (product and design roles, cross XC-2); the content is the
+ * architecture ruling's (J6).
+ */
+export const LEFT_ANOTHER_MACHINE = (label: string, names: string[]): string =>
+  `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. They were bound by protect-mcp in another secretless home: on another machine, or on this one before its ~/.secretless-ai was replaced. mcp-unprotect on this machine leaves that binding as it is.`;
+
+/**
  * After a file is restored, each pair its wrapped entries read is deleted
  * from the store, with its binding, only where an entry of that server's name
  * in the restored file holds every name stored under the pair at an equal
  * value, and the pair's binding is absent or names an entry in a file this
  * run restored (`restoredFiles`): the file then has them, and no entry
  * outside the restored files loses them. In a store shared between machines,
- * a pair with no binding is left: an entry on another machine may read it.
- * Any other pair is left, and its line names the stored names the file does
- * not hold, or the stored names it left and why: the entry its binding names,
- * or the shared store (names and paths only).
+ * a pair with no binding is left: an entry on another machine may read it,
+ * and so is a pair whose binding this secretless home did not store (see
+ * ownsBinding; `homeId` is this home's id, read once, or undefined where it
+ * holds none that can be read). Any other pair is left, and its line names
+ * the stored names the file does not hold, or the stored names it left and
+ * why: the entry its binding names, the shared store, or the other home that
+ * bound it (names and paths only).
  */
 async function clearRestoredPairs(
   reads: Array<{ filePath: string; reads: WrapperRead }>,
   restoredFiles: readonly string[],
+  homeId: string | undefined,
 ): Promise<void> {
   const restored = discoverMcpConfigsDetailed().configs;
   // A pair is looked at once per store.
@@ -1077,6 +1096,13 @@ async function clearRestoredPairs(
       console.log(LEFT_BOUND_UNRESTORED(label, names, boundEntryName(binding)));
       continue;
     }
+    // A binding another secretless home stored is that home's, though the
+    // file it names is at a path this run restored: on a store several
+    // machines read, that path may be the same one on another machine.
+    if (binding !== undefined && !ownsBinding(pair.vault.backendName, binding, homeId)) {
+      console.log(LEFT_ANOTHER_MACHINE(label, names));
+      continue;
+    }
     await pair.vault.removeServerSecrets(pair.client, pair.server);
     console.log(
       `  - Deleted from the store: ${label} (${names.length} name(s); the restored file holds the same values)`,
@@ -1121,7 +1147,9 @@ export async function runMcpUnprotect(): Promise<number> {
       }
     }
   }
-  await clearRestoredPairs(cleared, restoredFiles);
+  // The secretless home's id is read once and never created here: a pair
+  // whose binding another home stored is left (see clearRestoredPairs).
+  await clearRestoredPairs(cleared, restoredFiles, bindingHomeId(path.join(home, '.secretless-ai')));
   const restored = restoredFiles.length;
 
   // A config that could not be parsed was not looked at, so "no backups"
