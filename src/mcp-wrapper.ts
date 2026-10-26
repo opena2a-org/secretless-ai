@@ -228,7 +228,7 @@ async function main(): Promise<void> {
       );
     }
     process.stderr.write(
-      `secretless-mcp: Run 'npx secretless-ai mcp-status' to list protected servers, or 'npx secretless-ai protect-mcp' to protect this one.\n`,
+      `secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore your MCP configs from their backups, then 'npx secretless-ai protect-mcp' to protect them again. Run 'npx secretless-ai mcp-status' to list the protected servers.\n`,
     );
     process.exit(1);
   }
