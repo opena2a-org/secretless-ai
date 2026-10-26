@@ -122,6 +122,58 @@ export interface BrokerHealth {
   aimReachable: boolean;
   /** Loaded policy rule count. */
   policyCount: number;
+  /** Whether `POST /grant` is served. False: no grant resolver is configured and the route answers 404. */
+  grantServed: boolean;
+  /** Whether `POST /resolve` is served. False: the broker was built with `resolver: null` and the route answers 404. */
+  resolveServed: boolean;
+}
+
+/** Why a broker serves no `POST /resolve`. */
+export type ResolveOffReason =
+  /** The embedder found no policy file to load: none named, and the default is absent. */
+  | 'noPolicyFile'
+  /** The embedder turned the route off, whether or not a policy file exists (the daemon's `--no-resolve`). */
+  | 'disabled';
+
+/** What a served `POST /grant` was loaded from. */
+export interface GrantRouteSource {
+  /** Path of the grant file. */
+  file: string;
+  /** Number of bindings in the file. */
+  bindingCount: number;
+  /** Number of providers in the file. */
+  providerCount: number;
+  /** The public half of the broker's assertion key, for the operator to register with each identity provider. */
+  assertionPublicKeyFile: string;
+  /** True when the start that loaded the file created that key, so no identity provider can trust it yet. */
+  assertionKeyCreated: boolean;
+}
+
+/** `POST /grant` on `/status`. */
+export type GrantRouteStatus =
+  | {
+      served: true;
+      /** Null when the embedder passed a grant resolver without a `grantSource`. */
+      source: GrantRouteSource | null;
+    }
+  | { served: false };
+
+/** `POST /resolve` on `/status`. Its rule count is `policyCount`. */
+export type ResolveRouteStatus =
+  | {
+      served: true;
+      /**
+       * Path of the policy file the rules were loaded from; null when that file was absent at the
+       * last load (0 rules, default deny) or the rules were set in memory.
+       */
+      policyFile: string | null;
+    }
+  | { served: false; reason: ResolveOffReason };
+
+/** The broker's capability routes. `/health` and `/status` are always served and are not listed. */
+export interface BrokerRoutes {
+  grant: GrantRouteStatus;
+  resolve: ResolveRouteStatus;
 }
 
 /** Broker status with extended details. */
@@ -134,4 +186,12 @@ export interface BrokerStatus extends BrokerHealth {
   socketPath: string;
   /** HTTP port the broker is listening on. */
   httpPort: number;
+  /** The capability routes. */
+  routes: BrokerRoutes;
 }
+
+/**
+ * The status `getDaemonStatus` assembles from the PID file alone. The three live-only members
+ * are absent, never defaulted: a status that does not carry them was not read from the broker.
+ */
+export type PidFileBrokerStatus = Omit<BrokerStatus, 'grantServed' | 'resolveServed' | 'routes'>;

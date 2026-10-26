@@ -8,6 +8,12 @@ export type {
   AgentIdentity,
   BrokerHealth,
   BrokerStatus,
+  BrokerRoutes,
+  GrantRouteStatus,
+  GrantRouteSource,
+  ResolveRouteStatus,
+  ResolveOffReason,
+  PidFileBrokerStatus,
 } from './types';
 
 export { PolicyEngine, matchGlob, isWithinTimeWindow, type PolicyEvaluation } from './policy';

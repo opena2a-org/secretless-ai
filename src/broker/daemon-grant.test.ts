@@ -151,12 +151,15 @@ describe('POST /grant on a broker started by startDaemon', () => {
   let server: BrokerServer | undefined;
   const extraServers: http.Server[] = [];
 
-  /** Every path the daemon writes, inside this test's own directory. */
+  /**
+   * Every path the daemon writes, inside this test's own directory. The broker serves grants
+   * only, so it reads no policy file, the default under the HOME of the run included.
+   */
   function daemonOptions(extra: Partial<DaemonOptions> = {}): DaemonOptions {
     return {
       httpPort: 0,
       socketPath: path.join(dir, 'broker.sock'),
-      policyFile: path.join(dir, 'policies.json'),
+      noResolve: true,
       auditLog: path.join(dir, 'audit.log'),
       pidFile: path.join(dir, 'broker.pid'),
       tokenFile: path.join(dir, 'broker.token'),
@@ -381,6 +384,31 @@ describe('POST /grant on a broker started by startDaemon', () => {
     expect(denied.map((e) => e.reason)).toEqual(['AIM reports agent not verified']);
   });
 
+  it('reports on /status what the grant route was loaded from, and never the private key path', async () => {
+    const grantFile = writeGrantFile();
+    server = await startDaemon(daemonOptions({ grantFile }));
+
+    const res = await brokerRequest(path.join(dir, 'broker.sock'), 'GET', '/status', brokerToken());
+
+    expect(res.status).toBe(200);
+    expect(res.json.routes).toEqual({
+      grant: {
+        served: true,
+        source: {
+          file: grantFile,
+          bindingCount: 1,
+          providerCount: 1,
+          assertionPublicKeyFile: `${path.join(dir, 'assertion.key')}.pub.json`,
+          assertionKeyCreated: true,
+        },
+      },
+      resolve: { served: false, reason: 'disabled' },
+    });
+    expect(res.json).toMatchObject({ grantServed: true, resolveServed: false, policyCount: 0 });
+    expect(res.text).not.toContain(`${JSON.stringify(path.join(dir, 'assertion.key'))}`);
+    expect(res.text).not.toContain('assertionKeyFile');
+  });
+
   it('refuses to start when the named grant file does not exist, and leaves nothing running', async () => {
     const missing = path.join(dir, 'no-such-grants.json');
 
@@ -435,11 +463,11 @@ describe('the default grant file', () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
+  /** The policy file is left to its default too, which is absent under this HOME. */
   function options(): DaemonOptions {
     return {
       httpPort: 0,
       socketPath: path.join(home, 'broker.sock'),
-      policyFile: path.join(home, 'policies.json'),
       auditLog: path.join(home, 'audit.log'),
       pidFile: path.join(home, 'broker.pid'),
       tokenFile: path.join(home, 'broker.token'),

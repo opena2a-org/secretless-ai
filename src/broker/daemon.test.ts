@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -7,8 +7,9 @@ import * as http from 'http';
 import * as net from 'net';
 import {
   assertSocketPathFits, getDaemonStatus, getLiveDaemonStatus, isDaemonRunning,
-  socketPathMaxBytes, startDaemon,
+  socketPathMaxBytes, startDaemon, DEFAULT_POLICY_FILE, type DaemonOptions,
 } from './daemon';
+import type { BrokerServer } from './server';
 import { TOKEN_FILE } from './server';
 
 /**
@@ -492,6 +493,195 @@ describe('daemon status reads refuse a duplicated member name', () => {
       expect(fallback!.requestCount).toBe(0);
     } finally {
       await new Promise<void>((resolve) => { statusServer.close(() => resolve()); });
+    }
+  });
+});
+
+describe('getLiveDaemonStatus copies the route members as a set or not at all', () => {
+  const dir = fs.mkdtempSync(path.join(testHome.dir, 'broker-daemon-routes-'));
+  const pidFile = path.join(dir, 'broker.pid');
+  let statusBody = '';
+  let statusServer: http.Server;
+
+  beforeEach(async () => {
+    statusServer = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(statusBody);
+    });
+    await new Promise<void>((resolve) => { statusServer.listen(0, '127.0.0.1', resolve); });
+    const port = (statusServer.address() as { port: number }).port;
+    // The exact shape startDaemon writes.
+    fs.writeFileSync(pidFile, JSON.stringify({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      socketPath: path.join(dir, 'broker.sock'),
+      httpPort: port,
+    }));
+    fs.mkdirSync(path.dirname(TOKEN_FILE), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(TOKEN_FILE, 'test-token', { mode: 0o600 });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => { statusServer.close(() => resolve()); });
+    try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
+    try { fs.unlinkSync(TOKEN_FILE); } catch { /* ignore */ }
+  });
+
+  const LIVE = '"requestCount":3,"aimConfigured":false,"aimReachable":false,"policyCount":7';
+  const ROUTES = {
+    grant: {
+      served: true,
+      source: {
+        file: '/srv/bank/broker-grants.json',
+        bindingCount: 2,
+        providerCount: 1,
+        assertionPublicKeyFile: '/srv/bank/broker-assertion.key.pub.json',
+        assertionKeyCreated: false,
+      },
+    },
+    resolve: { served: false, reason: 'noPolicyFile' },
+  };
+
+  it('makes its fixture directory in the temporary HOME, which afterAll removes', () => {
+    expect(path.dirname(dir)).toBe(testHome.dir);
+  });
+
+  it('copies grantServed, resolveServed and routes from a reply that carries all three', async () => {
+    statusBody = `{${LIVE},"grantServed":true,"resolveServed":false,"routes":${JSON.stringify(ROUTES)}}`;
+
+    const live = await getLiveDaemonStatus(pidFile);
+
+    expect(live).not.toBeNull();
+    expect('routes' in live! ? live.routes : undefined).toEqual(ROUTES);
+    expect(live).toMatchObject({ grantServed: true, resolveServed: false, policyCount: 7, requestCount: 3 });
+  });
+
+  it('carries none of the three for a reply from a broker that predates them', async () => {
+    statusBody = `{${LIVE}}`;
+
+    const live = await getLiveDaemonStatus(pidFile);
+
+    expect(live!.policyCount).toBe(7);
+    for (const key of ['routes', 'grantServed', 'resolveServed']) expect(Object.keys(live!)).not.toContain(key);
+  });
+
+  it('carries none of the three when routes is not in shape, or when one of the booleans is missing', async () => {
+    for (const body of [
+      `{${LIVE},"grantServed":true,"resolveServed":false,"routes":{"grant":{}}}`,
+      `{${LIVE},"grantServed":true,"resolveServed":false,"routes":{"grant":{"served":true},"resolve":{"served":"no"}}}`,
+      `{${LIVE},"resolveServed":false,"routes":${JSON.stringify(ROUTES)}}`,
+    ]) {
+      statusBody = body;
+      const live = await getLiveDaemonStatus(pidFile);
+      expect(live!.policyCount).toBe(7);
+      for (const key of ['routes', 'grantServed', 'resolveServed']) expect(Object.keys(live!)).not.toContain(key);
+    }
+  });
+
+  it('getDaemonStatus, read from the PID file alone, never carries them', () => {
+    const base = getDaemonStatus(pidFile);
+
+    expect(base).not.toBeNull();
+    for (const key of ['routes', 'grantServed', 'resolveServed']) expect(Object.keys(base!)).not.toContain(key);
+  });
+});
+
+/**
+ * Which policy file a start loads, and so whether it serves POST /resolve: the one named, or
+ * ~/.secretless-ai/broker-policies.json when it exists, unless noResolve keeps the route off.
+ */
+describe('startDaemon serves POST /resolve only when it loads a policy file', () => {
+  let dir: string;
+  let server: BrokerServer | undefined;
+
+  function options(extra: Partial<DaemonOptions> = {}): DaemonOptions {
+    return {
+      httpPort: 0,
+      socketPath: path.join(dir, 'broker.sock'),
+      auditLog: path.join(dir, 'audit.log'),
+      pidFile: path.join(dir, 'broker.pid'),
+      tokenFile: path.join(dir, 'broker.token'),
+      ...extra,
+    };
+  }
+
+  function writePolicy(file: string, content?: string): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      content ??
+        JSON.stringify({
+          version: 1,
+          rules: [{ id: 'allow-one', agentSelector: 'agent-*', credentialSelector: 'F8_*', constraints: {}, effect: 'allow' }],
+        }),
+    );
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(testHome.dir, 'broker-daemon-resolve-'));
+    server = undefined;
+  });
+
+  afterEach(async () => {
+    if (server) await server.stop();
+    fs.rmSync(DEFAULT_POLICY_FILE, { force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads the default policy file under the temporary HOME', () => {
+    expect(DEFAULT_POLICY_FILE).toBe(path.join(testHome.dir, '.secretless-ai', 'broker-policies.json'));
+  });
+
+  it('with no policy file, serves no /resolve, for the reason noPolicyFile', async () => {
+    server = await startDaemon(options());
+
+    expect(server.getStatus().routes.resolve).toEqual({ served: false, reason: 'noPolicyFile' });
+    expect(server.getStatus().policyCount).toBe(0);
+  });
+
+  it('with the default policy file, serves /resolve from it', async () => {
+    writePolicy(DEFAULT_POLICY_FILE);
+
+    server = await startDaemon(options());
+
+    expect(server.getStatus().routes.resolve).toEqual({ served: true, policyFile: DEFAULT_POLICY_FILE });
+    expect(server.getStatus().policyCount).toBe(1);
+  });
+
+  it('with noResolve, serves no /resolve and reads no policy file, even a malformed default', async () => {
+    writePolicy(DEFAULT_POLICY_FILE, '{');
+
+    server = await startDaemon(options({ noResolve: true }));
+
+    expect(server.getStatus().routes.resolve).toEqual({ served: false, reason: 'disabled' });
+    expect(server.getStatus().policyCount).toBe(0);
+  });
+
+  it('refuses a named policy file that does not exist, and leaves no PID file, socket or token', async () => {
+    const missing = path.join(dir, 'no-such-policies.json');
+
+    await expect(startDaemon(options({ policyFile: missing }))).rejects.toThrow(
+      `Policy file ${missing} does not exist. The broker was not started`,
+    );
+
+    for (const file of ['broker.pid', 'broker.sock', 'broker.token']) {
+      expect(fs.existsSync(path.join(dir, file))).toBe(false);
+    }
+  });
+
+  it('refuses noResolve together with a named policy file, before anything is written', async () => {
+    const policyFile = path.join(dir, 'policies.json');
+    writePolicy(policyFile);
+
+    await expect(startDaemon(options({ noResolve: true, policyFile }))).rejects.toThrow(
+      new TypeError(
+        'startDaemon with noResolve does not accept policyFile: noResolve keeps POST /resolve off, ' +
+        'so the file would not be read. Remove policyFile, or remove noResolve.',
+      ),
+    );
+
+    for (const file of ['broker.pid', 'broker.sock', 'broker.token', 'audit.log']) {
+      expect(fs.existsSync(path.join(dir, file))).toBe(false);
     }
   });
 });
