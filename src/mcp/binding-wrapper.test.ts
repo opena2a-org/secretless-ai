@@ -324,7 +324,7 @@ describe('mcp-status and the wrapper agree, entry by entry, on whether an entry 
     expect(status).toContain(`  Run \`${builtCommand('protect-mcp')}\` to bind the entries it protected; it names each entry it cannot bind, and why.\n`);
     expect(status).toContain('  3 bound server(s) do not start from this directory; each line above says why.\n');
     expect(status).toContain(
-      `  Run \`${builtCommand('protect-mcp')}\` to replace each home binding found outside its own entry; a copy of it then no longer starts.\n`,
+      `  Run \`${builtCommand('protect-mcp')}\` in this directory to replace each home binding found in a copy from here; each copy then no longer starts.\n`,
     );
     expect(status).not.toContain('start with secrets bound to another entry');
     expect(status).toContain(

@@ -40,6 +40,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [],
     });
@@ -68,6 +69,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [],
     });
@@ -92,6 +94,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [],
     });
@@ -116,6 +119,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [],
     });
@@ -143,6 +147,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [],
     });
@@ -178,6 +183,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [],
     });
@@ -220,6 +226,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [],
     });
@@ -273,6 +280,7 @@ describe('protect-mcp names where it looked, and each project-level config it le
     rebound: [],
     unbound: [],
     copies: [],
+    copyFiles: [],
     repointed: [],
     projectLevel: [],
   };
@@ -301,6 +309,7 @@ describe('protect-mcp names where it looked, and each project-level config it le
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [
         { client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' },
@@ -327,6 +336,7 @@ describe('protect-mcp names where it looked, and each project-level config it le
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [{ client: 'vscode', filePath: '/home/u/proj/.vscode/mcp.json', projectPath: '.vscode/mcp.json' }],
     });
@@ -350,6 +360,7 @@ describe('protect-mcp names where it looked, and each project-level config it le
       rebound: [],
       unbound: [],
       copies: [],
+      copyFiles: [],
       repointed: [],
       projectLevel: [{ client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' }],
     });
@@ -381,6 +392,7 @@ describe('protect-mcp over the server maps of ~/.claude.json (#470)', () => {
     rebound: [],
     unbound: [],
     copies: [],
+    copyFiles: [],
     repointed: [],
     projectLevel: [],
   };
@@ -469,6 +481,7 @@ describe('protect-mcp names each server that runs through the wrapper with secre
     rebound: [],
     unbound: [],
     copies: [],
+    copyFiles: [],
     repointed: [],
     projectLevel: [],
   };
