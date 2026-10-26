@@ -212,7 +212,8 @@ describe('protect-mcp on a shared store', () => {
     expect(code).toBe(0);
     expect(output).toContain(
       `    ? github: not bound: the secrets stored under cursor/github are bound to server "github" in ${gone}. `
-        + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. ${gone} was not found on this machine.`,
+        + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. `
+        + `${gone} was not found on this machine; the 1password backend is read from other machines as well, so that binding may be in use there.`,
     );
     expect(output).not.toContain('took over');
     expect(fs.readFileSync(file, 'utf-8')).toBe(before);

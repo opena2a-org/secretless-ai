@@ -728,7 +728,7 @@ describe('the state of the file a binding names decides the line for an entry bo
       fs.chmodSync(a, 0o700);
     }
 
-    expect(output).toContain(`    ? github: not bound: ${elsewhere(file)} ${file} could not be checked (EACCES).\n`);
+    expect(output).toContain(`    ? github: not bound: ${elsewhere(file)} Whether ${file} exists could not be checked (EACCES).\n`);
     expect(output).not.toContain('no longer exists');
     expect(fs.readFileSync(reader, 'utf-8')).toBe(before);
     expect(await store().getBinding('claude-code', 'github')).toEqual(record);

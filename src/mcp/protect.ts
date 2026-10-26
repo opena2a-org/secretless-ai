@@ -1746,10 +1746,13 @@ const FILE_GONE = (file: string): string => `${listedName(file)} no longer exist
 
 /**
  * The clause for a bound entry's file absent here when the store is shared
- * between machines: the entry may be on another machine, so it states only
- * that the file was not found on this one.
+ * between machines: the entry may be on another machine, so it states that
+ * the file was not found on this one, and that `backend` is read from other
+ * machines as well, so the binding may be in use there. Nothing of the
+ * file's history, and no remedy. Words: the product role's C3 ruling (C3-4).
  */
-const FILE_NOT_FOUND_HERE = (file: string): string => `${listedName(file)} was not found on this machine.`;
+const FILE_NOT_FOUND_HERE = (file: string, backend: string): string =>
+  `${listedName(file)} was not found on this machine; the ${backend} backend is read from other machines as well, so that binding may be in use there.`;
 
 /**
  * The clause for the file of an entry bound by a binding this secretless home
@@ -1758,10 +1761,14 @@ const FILE_NOT_FOUND_HERE = (file: string): string => `${listedName(file)} was n
  * cross XC-2); until then the words are FILE_NOT_FOUND_HERE's, as the product
  * role fixed them for such a store.
  */
-const OWNED_FILE_GONE_HERE = (file: string): string => FILE_NOT_FOUND_HERE(file);
+const OWNED_FILE_GONE_HERE = (file: string, backend: string): string => FILE_NOT_FOUND_HERE(file, backend);
 
-/** The clause for a bound entry's file that could not be checked: the error code, and nothing of a missing file. */
-const FILE_UNCHECKED = (file: string, code: string): string => `${listedName(file)} could not be checked (${escapeForDisplay(code)}).`;
+/**
+ * The clause for a bound entry's file that could not be checked: what was
+ * checked, whether the file exists, then the error code, and nothing of a
+ * missing file. Words: the design role's C3 ruling (C3.3).
+ */
+const FILE_UNCHECKED = (file: string, code: string): string => `Whether ${listedName(file)} exists could not be checked (${escapeForDisplay(code)}).`;
 
 /**
  * The sentence a line naming a bound entry carries about the entry's file
@@ -1777,7 +1784,8 @@ function boundFileClause(binder: Binder, binding: McpBinding): string {
   const file = recordFileState(binding);
   if (file.state === 'present') return '';
   if (file.state === 'unknown') return FILE_UNCHECKED(binding.file, file.code);
-  return isPerMachineStore(binder.vault.backendName) ? FILE_GONE(binding.file) : OWNED_FILE_GONE_HERE(binding.file);
+  const backend = binder.vault.backendName;
+  return isPerMachineStore(backend) ? FILE_GONE(binding.file) : OWNED_FILE_GONE_HERE(binding.file, backend);
 }
 
 /**
