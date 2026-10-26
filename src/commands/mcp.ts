@@ -307,12 +307,12 @@ function printBindingCopyFiles(files: BindingCopyFile[]): void {
 
 /**
  * The line for an entry protect-mcp re-pointed from another build's wrapper
- * to this build's. Words pending (product and design roles); the content is
+ * to this build's. Words: the product role's C3 ruling (C3-1); the content is
  * the architecture ruling's: the entry now runs through this version's wrapper.
  */
 const REPOINTED_LINE = (server: string): string => `    ~ ${listedName(server)}: now runs through this version's wrapper`;
 
-/** The count under the re-pointed entries. Words pending (product and design roles). */
+/** The count under the re-pointed entries. Words: the product role's C3 ruling (C3-1). */
 const REPOINTED_COUNT = (count: number): string => `  ${count} server(s) now run through this version's wrapper.`;
 
 /** The servers protect-mcp re-pointed to this build's wrapper, under their configs, then the count. */
@@ -321,10 +321,15 @@ function printRepointedServers(servers: RepointedMcpServer[]): void {
   console.log(`${REPOINTED_COUNT(servers.length)}\n`);
 }
 
-/** The binding lists of a protect-mcp run, each only when it has a server. */
+/**
+ * The binding lists of a protect-mcp run, each only when it has a server. The
+ * re-pointed servers follow the ones bound this run and come before the ones
+ * left not bound, so what changed is read before what is left (the product
+ * role's C3 ruling, C3-1).
+ */
 function printBindingLists(result: ProtectResult): void {
-  if (result.repointed.length > 0) printRepointedServers(result.repointed);
   if (result.bound.length > 0 || result.rebound.length > 0) printBoundServers(result.bound, result.rebound);
+  if (result.repointed.length > 0) printRepointedServers(result.repointed);
   if (result.unbound.length > 0) printUnboundServers(result.unbound);
   if (result.copies.length > 0) printCopiedBindings(result.copies);
   if (result.copyFiles.length > 0) printBindingCopyFiles(result.copyFiles);
