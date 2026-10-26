@@ -785,7 +785,8 @@ export async function runMcpStatus(): Promise<number> {
   let projectLevelCount = 0;
   const projectLevelFiles = new Set<string>();
   // Bound entries the wrapper does not start from this directory (see
-  // checkLaunchPlace), by the scope of their binding.
+  // checkLaunchPlace), by the scope of their binding; not one whose project
+  // directory or config could not be resolved, which starts from none.
   const placeRefused = { home: 0, project: 0 };
   // Of those, the entries of a home binding found in a copy from here, which
   // protect-mcp run here replaces.
@@ -867,8 +868,13 @@ export async function runMcpStatus(): Promise<number> {
               }
             } else if (start !== undefined && 'place' in start) {
               console.log(`    ? ${name}: ${words}, but ${placeState(start.place)}, so the wrapper does not start it`);
-              placeRefused[start.binding.scope]++;
-              if (start.binding.scope === 'home' && start.place.refused === 'copy-found') homeCopies++;
+              if (start.place.refused === 'project-unresolved') {
+                // It starts from no directory, and is no copy to remove: no place footer counts it.
+                notStartedHere();
+              } else {
+                placeRefused[start.binding.scope]++;
+                if (start.binding.scope === 'home' && start.place.refused === 'copy-found') homeCopies++;
+              }
             } else if (state.state === 'not-rewritten') {
               console.log(`    ? ${name}: ${words} and the wrapper does not start it`);
               notStartedHere();
@@ -952,13 +958,30 @@ export async function runMcpStatus(): Promise<number> {
   return 0;
 }
 
+/**
+ * The clauses for a project binding whose directory or bound config could not
+ * be resolved (checkLaunchPlace's project-unresolved), chosen by the
+ * verdict's own fields: the directory is absent; the directory is there and
+ * the bound config in it is absent; either could not be read, with the code.
+ * Words: the product role's C5 ruling (C5-3).
+ */
+const PROJECT_NOT_HERE = (project: string): string =>
+  `its binding is to the project in ${listedName(project)}, which is not on this machine`;
+const PROJECT_CONFIG_NOT_HERE = (project: string, file: string): string =>
+  `its binding is to the project in ${listedName(project)}, and ${listedName(file)} is not on this machine`;
+const PROJECT_UNREADABLE = (project: string, unread: string, code: string): string =>
+  `its binding is to the project in ${listedName(project)}, and ${listedName(unread)} could not be read (${code})`;
+
 /** Why checkLaunchPlace refused an entry, for its mcp-status line: paths only, never the id. */
 function placeState(place: Exclude<McpPlaceVerdict, { refused: false }>): string {
   switch (place.refused) {
     case 'outside-project':
       return `its binding is to the project in ${listedName(place.project)}, and this directory is ${listedName(place.startDir)}`;
     case 'project-unresolved':
-      return `its binding is to the project in ${listedName(place.project)}, and ${listedName(place.path)} could not be resolved (${place.code})`;
+      if (place.code !== 'ENOENT' && place.code !== 'ENOTDIR') return PROJECT_UNREADABLE(place.project, place.path, place.code);
+      return place.path === place.project
+        ? PROJECT_NOT_HERE(place.project)
+        : PROJECT_CONFIG_NOT_HERE(place.project, place.path);
     case 'start-unresolved':
       return `this directory could not be resolved (${place.code})`;
     case 'copy-found':
