@@ -8,6 +8,7 @@ import { McpVault, commandDigest, newBindingId } from './mcp/vault';
 import { LocalBackend } from './backends/local';
 import { createBackend, effectiveBackendName } from './backends/factory';
 import { runProtectMcp } from './commands/mcp';
+import { sourceCommand } from './mcp/printed-command.test-support';
 
 /**
  * #513: four follow-ups to the protect-mcp fixes of #508.
@@ -324,7 +325,7 @@ describe('protect-mcp goes on past a name the store refuses (#513 item 2)', () =
       '',
       '  1 server(s) were not protected, so their secrets are still in plaintext.',
       '  The store takes only A-Z, a-z, 0-9, - and _ in a server name.',
-      '  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.\n',
+      `  Rename each server listed above, then run \`${sourceCommand('protect-mcp')}\` again.\n`,
     ].join('\n'));
     const servers = JSON.parse(fs.readFileSync(cursorJson, 'utf-8')).mcpServers;
     expect(servers['my.server']).toEqual(refused);

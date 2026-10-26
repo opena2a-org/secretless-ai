@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
 import { McpVault, commandDigest, newBindingId } from './vault';
+import { builtCommand } from './printed-command.test-support';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-wrapper-'));
@@ -173,7 +174,7 @@ describe('secretless-mcp wrapper', () => {
     expect(fs.existsSync(marker)).toBe(false);
     expect(result.stderr).toContain('No secrets are stored for client "bogus-client", server "myserver" in the local backend. The server was not started.');
     expect(result.stderr).toContain('Stored client/server pairs: claude-code/linear, cursor/github');
-    expect(result.stderr).toContain('npx secretless-ai mcp-status');
+    expect(result.stderr).toContain(builtCommand('mcp-status'));
     // Names only: no stored value reaches either stream.
     expect(result.stdout + result.stderr).not.toContain('secret-value');
   });

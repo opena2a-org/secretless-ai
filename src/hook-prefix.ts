@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { shellHookCommand, shellQuote } from './env';
 import { VERSION } from './commands/utils';
+import { isExactVersion } from './printed-command';
 
 export interface HookPrefixOptions {
   /** The node binary; defaults to the one running. */
@@ -60,7 +61,7 @@ function isOwnCli(script: string): boolean {
  * a range, a tag or anything else is refused rather than quoted.
  */
 function exactVersion(version: string): string {
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!isExactVersion(version)) {
     throw new Error(`Refusing to write "${version}" into a hook: not an exact version.`);
   }
   return version;

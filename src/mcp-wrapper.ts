@@ -29,6 +29,7 @@ import type { McpLaunchVerdict } from "./mcp/vault";
 import { resolveBackendType } from "./backends/config";
 import { readWrapperArgv, wrapperFlag } from "./argv";
 import { readWrapperVersion } from "./mcp/wrapper-version";
+import { printedCommand } from "./printed-command";
 import type { McpPlaceVerdict } from "./mcp/discover";
 import { checkStart } from "./mcp/start-check";
 import { listedName } from "./secret-value";
@@ -106,9 +107,14 @@ function parseArgs(argv: string[]): {
 const USAGE =
   "Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]";
 
+/** `command` as the lines below name it: for the build this wrapper copy is (see printed-command.ts). */
+function cliCommand(command: string): string {
+  return printedCommand(command, readWrapperVersion(__dirname));
+}
+
 /** The line every refusal of checkLaunch ends with: what to look at, then what to run. */
-const BINDING_FIX =
-  "secretless-mcp: Run 'npx secretless-ai mcp-status' to see which config entries are bound, then 'npx secretless-ai protect-mcp' to bind the entries it protected.\n";
+const bindingFix = (): string =>
+  `secretless-mcp: Run '${cliCommand("mcp-status")}' to see which config entries are bound, then '${cliCommand("protect-mcp")}' to bind the entries it protected.\n`;
 
 /**
  * Print why checkLaunch refused this launch, then the fix line, and exit 1
@@ -154,7 +160,7 @@ async function refuseLaunch(
       );
       break;
   }
-  process.stderr.write(BINDING_FIX);
+  process.stderr.write(bindingFix());
   process.exit(1);
 }
 
@@ -169,7 +175,7 @@ function refusePlace(
 ): never {
   const entry = `client "${listedName(client)}", server "${listedName(server)}"`;
   process.stderr.write(`secretless-mcp: ${placeRefusal(verdict, entry)}\n`);
-  process.stderr.write(BINDING_FIX);
+  process.stderr.write(bindingFix());
   process.exit(1);
 }
 
@@ -261,7 +267,7 @@ async function main(): Promise<void> {
         `secretless-mcp: Vault directory not found: ${listedName(args.vaultDir)}\n`,
       );
       process.stderr.write(
-        `secretless-mcp: Run 'npx secretless-ai protect-mcp' to set up MCP secret protection.\n`,
+        `secretless-mcp: Run '${cliCommand("protect-mcp")}' to set up MCP secret protection.\n`,
       );
       process.exit(1);
     }
@@ -305,7 +311,7 @@ async function main(): Promise<void> {
       `secretless-mcp: Failed to load secrets for ${listedName([args.client, args.server].join("/"))}: ${escapeForDisplay(msg)}\n`,
     );
     process.stderr.write(
-      `secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`,
+      `secretless-mcp: Run '${cliCommand("mcp-unprotect")}' to restore original configs.\n`,
     );
     process.exit(1);
   }
@@ -333,7 +339,7 @@ async function main(): Promise<void> {
       );
     }
     process.stderr.write(
-      `secretless-mcp: Run 'npx secretless-ai mcp-status' to list protected servers, or 'npx secretless-ai protect-mcp' to protect this one.\n`,
+      `secretless-mcp: Run '${cliCommand("mcp-status")}' to list protected servers, or '${cliCommand("protect-mcp")}' to protect this one.\n`,
     );
     process.exit(1);
   }
@@ -363,7 +369,7 @@ async function main(): Promise<void> {
       `secretless-mcp: Failed to start ${args.childCommand}: ${err.message}\n`,
     );
     process.stderr.write(
-      `secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore original configs.\n`,
+      `secretless-mcp: Run '${cliCommand("mcp-unprotect")}' to restore original configs.\n`,
     );
     process.exit(1);
   });
