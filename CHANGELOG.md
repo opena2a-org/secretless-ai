@@ -39,9 +39,11 @@ to rename the server and run `protect-mcp` again.
 
 **`mcp-unprotect` deletes a pair only where no entry outside the files it
 restored can be the one bound to it.** It leaves a pair whose binding names an
-entry in a file it did not restore, and names that entry. In a backend shared
-between machines (1password, vault, gcp-sm) it leaves a pair with no binding,
-since an entry on another machine may read it.
+entry in a file it did not restore, and names the stored names it left and
+that entry. In a backend shared between machines (1password, vault, gcp-sm) it
+leaves a pair with no binding, since an entry on another machine may read it,
+and names the stored names it left and that the backend is read from other
+machines as well. Neither line names a command.
 
 **`protect-mcp` binds a `.mcp.json` entry to a pair with no name stored only
 when it stores the entry's values from its env.** Its backup of the file is
