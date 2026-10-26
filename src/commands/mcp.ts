@@ -179,12 +179,12 @@ function projectSuffix(entry: { projectKey?: string }): string {
 
 /**
  * The line for a .mcp.json entry bound again after its project directory
- * moved: the directory it was bound in, and the change when its command or
- * arguments changed since.
+ * moved: the directory it was bound in. Such an entry's command and arguments
+ * are the ones it was bound with; one whose command or arguments changed is
+ * left, and listed with why among the entries not bound.
  */
-const MOVED_LINE = (server: string, moved: { directory: string; commandChanged?: true }): string =>
-  `    + ${listedName(server)}: bound again; its project directory moved from ${listedName(moved.directory)}`
-  + (moved.commandChanged ? '; its command or arguments changed since it was bound' : '');
+const MOVED_LINE = (server: string, moved: { directory: string }): string =>
+  `    + ${listedName(server)}: bound again; its project directory moved from ${listedName(moved.directory)}`;
 
 /**
  * The line for a home entry at its binding's place that carried no id or

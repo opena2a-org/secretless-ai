@@ -7,8 +7,11 @@ import { protectMcp } from './protect';
 import * as protectModule from './protect';
 import { McpVault, commandDigest, newBindingId } from './vault';
 import { rewriteConfig } from './rewrite';
+import { checkStart } from './start-check';
+import { createBackend } from '../backends/factory';
 import { runProtectMcp } from '../commands/mcp';
 import { sourceCommand } from './printed-command.test-support';
+import { MemoryStore } from './binding-store-double.test-support';
 
 /**
  * A binding after its entry, its file or its store changed outside
@@ -16,12 +19,21 @@ import { sourceCommand } from './printed-command.test-support';
  * file it restored. protect-mcp binds a pair with no name stored only to the
  * values an entry brings, and binds again a .mcp.json entry whose project
  * directory moved, where this machine's backup of the old file holds the
- * stored values. No output carries a binding id.
+ * stored values and its command and arguments are the ones it was bound
+ * with. No output carries a binding id.
  *
  * The wrapper and the CLI run from the build (`dist/`), started in the
  * directory a client starts them in. Values are assembled at run time and are
- * not credentials.
+ * not credentials. A cell that counts binding writes holds every store this
+ * process builds in memory (useMemoryStore); the others use a local store
+ * under a temporary home.
  */
+
+// Passes through to the real factory, except in a cell that calls useMemoryStore.
+vi.mock('../backends/factory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../backends/factory')>();
+  return { ...actual, createBackend: vi.fn(actual.createBackend) };
+});
 
 const CLI_PATH = path.resolve(__dirname, '..', '..', 'dist', 'cli.js');
 const WRAPPER_JS = path.resolve(__dirname, '..', '..', 'dist', 'mcp-wrapper.js');
@@ -58,6 +70,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Back to the real factory (vi.fn(impl) resets to impl).
+  vi.mocked(createBackend).mockReset();
   for (const [name, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -85,6 +99,18 @@ function dir(...parts: string[]): string {
 const real = (p: string) => fs.realpathSync(p);
 const store = () => new McpVault({ storeDir: path.join(home, '.secretless-ai', 'mcp-vault'), backendType: 'local' });
 const backupDir = () => path.join(home, '.secretless-ai', 'mcp-backups');
+
+/**
+ * From here to the end of the cell, every store this process builds,
+ * protect-mcp's and store()'s, is one in-memory double named `local`: no file
+ * store and no keychain, and each binding write asked for is recorded. A
+ * command started as its own process does not see it.
+ */
+function useMemoryStore(): MemoryStore {
+  const memory = new MemoryStore();
+  vi.mocked(createBackend).mockImplementation(() => memory);
+  return memory;
+}
 
 function childEnv(): NodeJS.ProcessEnv {
   return { PATH: process.env.PATH, HOME: home, SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' };
@@ -418,21 +444,61 @@ describe('T7: protect-mcp binds again a .mcp.json entry whose project directory 
     expect(fs.existsSync(path.join(backupDir(), 'manifest.json'))).toBe(false);
   });
 
-  it('T7g: a moved entry whose command changed is bound again, its line names the change, and the binding takes its command now', async () => {
-    const { a, a2, moved, sentinel } = await movedProject('T7g');
+  it('T7g: a moved entry whose command or arguments changed is left: no store write, no backup moved, its --binding unchanged, and its line ends in the store-again fix', async () => {
+    const memory = useMemoryStore();
+    const { a, a2, file, moved, id } = await movedProject('T7g');
     const config = JSON.parse(fs.readFileSync(moved, 'utf-8'));
     config.mcpServers.github.args = [...config.mcpServers.github.args, 'extra'];
     write(moved, config);
+    const record = await store().getBinding('claude-code', 'github');
+    expect(record!.commandDigest, 'the entry differs from its binding').not.toBe(digestOf(entryOf(moved, 'github').args));
+    const entries = new Map(memory.entries);
+    const writes = memory.bindingWrites.length;
+    const manifest = fs.readFileSync(path.join(backupDir(), 'manifest.json'), 'utf-8');
+    const before = fs.readFileSync(moved, 'utf-8');
 
     const output = await run('T7g', () => runProtectMcp([]), a2);
 
-    expect(output).toContain(
-      `    + github: bound again; its project directory moved from ${a}; its command or arguments changed since it was bound\n`,
-    );
-    const entry = entryOf(moved, 'github');
-    plant('T7g', moved, idOf(entry.args));
-    expect(await store().getBinding('claude-code', 'github')).toMatchObject({ id: idOf(entry.args), file: moved, commandDigest: digestOf(entry.args) });
-    expectStarted(startIn('T7g', a2, entry.args), sentinel);
+    expect(memory.bindingWrites, 'no binding write was asked for').toHaveLength(writes);
+    expect(memory.entries).toEqual(entries);
+    expect(await store().getBinding('claude-code', 'github')).toEqual(record);
+    expect(fs.readFileSync(path.join(backupDir(), 'manifest.json'), 'utf-8')).toBe(manifest);
+    expect(manifestKeys()).toContain(file);
+    expect(manifestKeys()).not.toContain(moved);
+    expect(fs.readFileSync(moved, 'utf-8')).toBe(before);
+    expect(idOf(entryOf(moved, 'github').args)).toBe(id);
+    const storeAgain = `put the server's values in its env, and run \`${sourceCommand('protect-mcp')}\`.`;
+    const lines = output.split('\n').filter((line) => line.includes('github'));
+    expect(lines).toEqual([
+      `    ? github: not bound: its command or arguments changed since it was bound in ${a}, the project directory it moved from, `
+        + `and a moved entry is bound only when its command and arguments are the ones it was bound with. If you made the change, ${storeAgain}`,
+    ]);
+    expect(lines[0].endsWith(storeAgain)).toBe(true);
+    // Both wordings of the moved line begin "bound again".
+    expect(output).not.toContain('bound again');
+    // The wrapper's own check, from the moved directory, still does not start it.
+    const child = entryOf(moved, 'github').args.slice(entryOf(moved, 'github').args.indexOf('--') + 1);
+    const launch = { client: 'claude-code', server: 'github', binding: id, command: child[0], args: child.slice(1) };
+    expect((await checkStart(store(), launch, { startDir: a2, home })).starts).toBe(false);
+  });
+
+  it('T7g control: a moved entry whose command and arguments are the ones it was bound with is bound again with the plain line, through the same store double', async () => {
+    const memory = useMemoryStore();
+    const { a, a2, file, moved, id } = await movedProject('T7g control');
+    const record = await store().getBinding('claude-code', 'github');
+    expect(record!.commandDigest, 'the entry equals its binding').toBe(digestOf(entryOf(moved, 'github').args));
+    const writes = memory.bindingWrites.length;
+
+    const output = await run('T7g control', () => runProtectMcp([]), a2);
+
+    expect(output).toContain(`  claude-code (.mcp.json)\n    + github: bound again; its project directory moved from ${a}\n`);
+    expect(memory.bindingWrites).toHaveLength(writes + 1);
+    const now = idOf(entryOf(moved, 'github').args);
+    plant('T7g control', moved, now);
+    expect(now).not.toBe(id);
+    expect(await store().getBinding('claude-code', 'github')).toMatchObject({ id: now, file: moved, commandDigest: record!.commandDigest });
+    expect(manifestKeys()).toContain(moved);
+    expect(manifestKeys()).not.toContain(file);
   });
 
   it('T7h: where the store refuses the new binding, the backup stays filed under the old path, nothing is written, and the line names the error', async () => {
