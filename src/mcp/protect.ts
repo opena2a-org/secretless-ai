@@ -1819,6 +1819,38 @@ function boundElsewhereReason(reads: { client: string; server: string }, binding
 const ADD_UNDER_NEW_NAME = (): string =>
   `If this entry is yours, add the server again under a new name with its values, remove this entry, and run \`${cliCommand('protect-mcp')}\`.`;
 
+/**
+ * Why protect-mcp leaves an entry whose pair's binding this secretless home
+ * did not store (see ownsBinding), whether or not the file that binding
+ * names exists here. It says four things: the pair's name; that protect-mcp
+ * in another secretless home bound it, on another machine or on this one
+ * before its ~/.secretless-ai was replaced; that protect-mcp and
+ * mcp-unprotect on this machine leave that binding as it is; and how to run
+ * the server here: under another name, with its own values. It never says
+ * the bound entry no longer exists, and names no command that deletes a
+ * binding. Words pending (product and design roles, cross XC-2); the content
+ * is the architecture ruling's (J5).
+ */
+export const ANOTHER_MACHINE_REASON = (reads: { client: string; server: string }): string =>
+  `the secrets stored under ${pairName(reads)} were bound by protect-mcp in another secretless home: on another machine, `
+  + 'or on this one before its ~/.secretless-ai was replaced. protect-mcp and mcp-unprotect on this machine leave that binding as it is. '
+  + `To run this server here, add it again under a new name with its own values and run \`${cliCommand('protect-mcp')}\`.`;
+
+/**
+ * The clause a line naming the entry a binding names ends with when this
+ * secretless home did not store that binding (see boundFileClause), whatever
+ * the state of that entry's file here: protect-mcp in another secretless
+ * home bound that entry, on another machine or on this one before its
+ * ~/.secretless-ai was replaced, and the file is a path there; protect-mcp
+ * and mcp-unprotect on this machine leave that binding as it is. It never
+ * says the file no longer exists, and names no command that deletes a
+ * binding. Words pending (product and design roles, cross XC-2); the content
+ * is the architecture ruling's (J3, J5).
+ */
+export const ANOTHER_MACHINE_CLAUSE = (file: string): string =>
+  'That entry was bound by protect-mcp in another secretless home, on another machine or on this one before its ~/.secretless-ai was replaced, '
+  + `and ${listedName(file)} is a path there. protect-mcp and mcp-unprotect on this machine leave that binding as it is.`;
+
 /** For a .mcp.json entry at its binding's place that carries no id or another one (a home one is bound again). */
 function otherIdReason(reads: { client: string; server: string }): string {
   return `its binding does not match the one stored for ${pairName(reads)}. ${ADD_UNDER_NEW_NAME()}`;
