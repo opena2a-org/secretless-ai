@@ -12,7 +12,7 @@ import type { McpBinding } from './vault';
 import { discoverMcpConfigsDetailed, thisBuildWrapperPath } from './discover';
 import type { McpConfigFile } from './discover';
 import { runMcpStatus } from '../commands/mcp';
-import { builtCommand } from './printed-command.test-support';
+import { builtCommand, sourceCommand } from './printed-command.test-support';
 
 /**
  * mcp-status reports each entry that runs through the wrapper by two things:
@@ -37,6 +37,8 @@ const NAME = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
 const VALUE = ['stand', 'in', 'value', String(process.pid)].join('-');
 const NOT_STARTED = 'so the wrapper does not start it';
 const PROTECT = `\`${builtCommand('protect-mcp')}\``;
+/** The same command in a reason protect-mcp gives when it runs in this process. */
+const PROTECT_HERE = `\`${sourceCommand('protect-mcp')}\``;
 
 interface Dirs {
   home: string;
@@ -265,8 +267,8 @@ describe('mcp-status over every state, from the project and from elsewhere', () 
 
   const copyFile = () => path.join(fs.realpathSync(dirs.project), '.cursor', 'mcp.json');
   const boundTo = (server: string, where: string) => `server "${server}" in ${where}`;
-  const elsewhereReason = () =>
-    `the secrets stored under cursor/alpha are bound to ${boundTo('alpha', file)}. To run this server as well, add it again under a new name with its values and run ${PROTECT}.`;
+  const elsewhereReason = (protect = PROTECT) =>
+    `the secrets stored under cursor/alpha are bound to ${boundTo('alpha', file)}. To run this server as well, add it again under a new name with its values and run ${protect}.`;
 
   it('X2-a: each state reads as its own line, from the record and the entry\'s place', () => {
     expect(linesOf(inProject, 'alpha').line).toBe('    + alpha: protected and bound');
@@ -416,13 +418,14 @@ describe('mcp-status over every state, from the project and from elsewhere', () 
     expect(outcome('omega')).toEqual(nothing);
     expect(outcome('beta')).toEqual({ ...nothing, rebound: ['out-of-date'] });
     expect(outcome('gamma')).toEqual({ ...nothing, rebound: ['command'] });
-    expect(outcome('delta')).toEqual({ ...nothing, unbound: [elsewhereReason()] });
+    expect(outcome('delta')).toEqual({ ...nothing, unbound: [elsewhereReason(PROTECT_HERE)] });
     expect(outcome('epsilon')).toEqual({ ...nothing, bound: 1 });
     expect(outcome('gamma2')).toEqual({ ...nothing, copies: ['replaced alpha'] });
-    expect(outcome('gamma3')).toEqual({ ...nothing, unbound: [elsewhereReason()] });
+    expect(outcome('gamma3')).toEqual({ ...nothing, unbound: [elsewhereReason(PROTECT_HERE)] });
     expect(outcome('kappa-copy')).toEqual({ ...nothing, copies: ['copy of kappa'] });
     for (const name of ['mu', 'nu', 'omicron']) expect(outcome(name), name).toEqual({ ...nothing, bound: 1 });
-    expect(outcome('kappa').unbound).toEqual([expected.kappa?.slice(`      ${PROTECT} leaves it not bound: `.length)]);
+    // The reason mcp-status's fix line names, with its command as protect-mcp in this process prints it.
+    expect(outcome('kappa').unbound).toEqual([expected.kappa?.slice(`      ${PROTECT} leaves it not bound: `.length).split(PROTECT).join(PROTECT_HERE)]);
     // Nothing is planned or written for the config protect-mcp does not rewrite.
     for (const name of ['lambda-copy', 'eta', 'zeta', 'xi']) expect(outcome(name), name).toEqual(nothing);
     expect(fs.readFileSync(cursorProject, 'utf-8')).toBe(configsBefore[cursorProject]);
