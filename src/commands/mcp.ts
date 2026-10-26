@@ -564,19 +564,23 @@ function wrapperRead(entry: McpServerEntry, vaults: Map<string, McpVault>): Wrap
  * starts a server, with this process's directory as the start directory.
  * `start` is absent where the wrapper stops before those checks, and `error`
  * is the store's error where reading it failed (the wrapper then starts
- * nothing either).
+ * nothing either). `owned` is whether this secretless home stored the
+ * binding, or none is stored (see ownsBinding; `homeId` is this home's id,
+ * read once, or undefined where it holds none that can be read).
  */
-type WrappedStatus = { error: string } | { state: McpBindingState; start?: McpStartVerdict };
+type WrappedStatus = { error: string } | { state: McpBindingState; start?: McpStartVerdict; owned: boolean };
 
 async function wrappedStatus(
   config: McpConfigFile,
   entry: McpServerEntry,
   vaults: Map<string, McpVault>,
+  homeId: string | undefined,
 ): Promise<WrappedStatus> {
   const reads = wrapperRead(entry, vaults);
-  if (!reads?.read.child) return { state: bindingState(undefined, config, entry) };
+  if (!reads?.read.child) return { state: bindingState(undefined, config, entry), owned: true };
   try {
     const record = await reads.vault.getBinding(reads.client, reads.server);
+    const owned = record === undefined || ownsBinding(reads.vault.backendName, record, homeId);
     const start = await checkStart(
       reads.vault,
       {
@@ -588,7 +592,7 @@ async function wrappedStatus(
       },
       { startDir: process.cwd() },
     );
-    return { state: bindingState(record, config, entry), start };
+    return { state: bindingState(record, config, entry), start, owned };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
@@ -607,6 +611,24 @@ const NOT_REWRITTEN_STATE = 'runs through the wrapper from a config protect-mcp 
  * ruling's.
  */
 const STALE_ID_STATE = 'protected, but it does not carry the binding stored for it';
+
+/**
+ * The state of a wrapped entry whose pair's binding protect-mcp in another
+ * secretless home stored (see ownsBinding), in place of the state words,
+ * whatever the entry's place and id: it never names the file that binding
+ * names, which is a path on that machine. The launch verdict beside it is
+ * checkStart's, which this does not change: the wrapper never reads which
+ * home stored a binding. Words pending (product and design roles, cross
+ * XC-2); the content is the architecture ruling's (J7).
+ */
+export const ANOTHER_MACHINE_STATE = 'bound by protect-mcp on another machine';
+
+/**
+ * The launch clause for such an entry that the wrapper starts at a place
+ * other than the one its binding names: it starts with the secrets bound
+ * there. Words pending (product and design roles, cross XC-2).
+ */
+export const ANOTHER_MACHINE_STARTS = 'so the wrapper starts it with the secrets bound there';
 
 /**
  * The clause for an entry the wrapper's last check refuses: no secret is
@@ -808,6 +830,9 @@ export async function runMcpStatus(): Promise<number> {
   } catch (err) {
     planError = err instanceof Error ? err.message.split('\n')[0] : String(err);
   }
+  // The secretless home's id, read once and never created here: an entry
+  // whose binding another home stored has its own state (see wrappedStatus).
+  const homeId = bindingHomeId(path.join(os.homedir(), '.secretless-ai'));
 
   for (const config of configs) {
     console.log(`  ${configLabel(config)}`);
@@ -851,20 +876,22 @@ export async function runMcpStatus(): Promise<number> {
           // The state comes from the record and the entry's place; whether the
           // wrapper starts the entry comes from checkStart, the function the
           // wrapper runs, so the two never disagree on it.
-          const status = await wrappedStatus(config, server, vaults);
+          const status = await wrappedStatus(config, server, vaults, homeId);
           if ('error' in status) {
             console.log(
               `    ? ${name}: protected, but its binding could not be read (${escapeForDisplay(status.error)}), so the wrapper does not start it`,
             );
             notStartedHere();
           } else {
-            const { state, start } = status;
-            const words = stateWords(state);
+            const { state, start, owned } = status;
+            // A binding another secretless home stored has its own state, in
+            // place of the state words; the launch verdict is checkStart's.
+            const words = owned ? stateWords(state) : ANOTHER_MACHINE_STATE;
             if (start?.starts) {
               if (state.state === 'bound') {
                 console.log(`    + ${name}: ${words}`);
               } else {
-                console.log(`    ? ${name}: ${words}, so the wrapper starts it with that entry's secrets`);
+                console.log(`    ? ${name}: ${words}, ${owned ? "so the wrapper starts it with that entry's secrets" : ANOTHER_MACHINE_STARTS}`);
                 otherEntryCount++;
               }
             } else if (start !== undefined && 'place' in start) {
@@ -874,14 +901,18 @@ export async function runMcpStatus(): Promise<number> {
                 notStartedHere();
               } else {
                 placeRefused[start.binding.scope]++;
-                if (start.binding.scope === 'home' && start.place.refused === 'copy-found') homeCopies++;
+                // protect-mcp replaces only a home binding this secretless
+                // home stored, so the footer that says it does counts no other.
+                if (owned && start.binding.scope === 'home' && start.place.refused === 'copy-found') homeCopies++;
               }
             } else if (state.state === 'not-rewritten') {
               console.log(`    ? ${name}: ${words} and the wrapper does not start it`);
               notStartedHere();
             } else {
               const empty = start !== undefined && 'empty' in start;
-              const copyCommand = state.state === 'elsewhere' && state.carriesRecordId
+              // The copy clause names the entry the state words name, so a
+              // binding another home stored, whose state names none, has none.
+              const copyCommand = owned && state.state === 'elsewhere' && state.carriesRecordId
                 && start !== undefined && 'launch' in start && start.launch.refused === 'other-command';
               const but = empty ? `, but ${EMPTY_PAIR}` : copyCommand ? `, but ${COPY_OTHER_COMMAND}` : '';
               console.log(`    ? ${name}: ${words}${but}, so the wrapper does not start it`);
