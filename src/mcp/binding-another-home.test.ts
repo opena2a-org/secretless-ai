@@ -3,9 +3,9 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createBackend } from '../backends/factory';
-import { runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
+import { LEFT_ANOTHER_MACHINE, runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
+import { listedName } from '../secret-value';
 import { thisBuildWrapperPath } from './discover';
-import { BindingHomeIdError } from './binding-home-id';
 import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, HOME_ID_UNUSABLE } from './protect';
 import { bindingKey, openHomes, sha256, startWrapper } from './binding-homes.test-support';
 import type { HomeName, Homes } from './binding-homes.test-support';
@@ -177,8 +177,10 @@ function recordOf(client: string, server: string): Record<string, unknown> | und
  * A binds server `s` in `file` (the project's .mcp.json, client
  * claude-code, or the home cursor config, client cursor): the server with a
  * secret in its env, protected by protect-mcp run from D with A in HOME. The
- * entry it wrote, and the binding as stored, which names that entry and
- * carries A's id where the store is one several machines read.
+ * entry it wrote, and the binding as stored, which names that entry. That
+ * the binding carries A's id is cell (J1)'s: the setup asks only that the
+ * binding was stored, so a build that stores none fails a cell on what it
+ * then does.
  */
 async function bindInA(file: string, client: string): Promise<{ entry: Entry; record: Record<string, unknown>; text: string }> {
   h().use('A');
@@ -187,8 +189,21 @@ async function bindInA(file: string, client: string): Promise<{ entry: Entry; re
   const text = recordText(client, 's');
   expect(text).toBeDefined();
   const record = JSON.parse(text!);
-  expect(record).toMatchObject({ file, server: 's', boundOn: h().ids.A });
+  expect(record).toMatchObject({ file, server: 's' });
   return { entry: entryOf(file, 's'), record, text: text! };
+}
+
+/**
+ * Hand the home `to` a copy of the backups of the home now in HOME, and move
+ * it into HOME: the backup of a file at a path both homes share, so the
+ * home `to` restores that file as the other one would.
+ */
+function carryBackupsTo(to: HomeName): void {
+  const held = path.join(h().root, `backups-for-${to}`);
+  fs.cpSync(path.join(h().dataDir(), 'mcp-backups'), held, { recursive: true });
+  h().use(to);
+  fs.rmSync(path.join(h().dataDir(), 'mcp-backups'), { recursive: true, force: true });
+  fs.cpSync(held, path.join(h().dataDir(), 'mcp-backups'), { recursive: true });
 }
 
 /** The setups of cells (a) to (e) and (m), run in the home now in HOME after A bound: protect-mcp from D, and what it printed. */
@@ -228,7 +243,13 @@ const setups = {
     write(path.join(h().project, '.cursor', 'mcp.json'), { s: { ...entry } });
     return cli('protect-mcp');
   },
+  /** (f) R9: mcp-unprotect from D restores D/.mcp.json, which holds the values stored, from the backups of the home now in HOME. */
+  f: async () => cli('mcp-unprotect'),
 };
+
+/** The line mcp-unprotect prints for a pair it deletes, as built. */
+const DELETED = (client: string, server: string, count: number): string =>
+  `  - Deleted from the store: ${listedName(`${client}/${server}`)} (${count} name(s); the restored file holds the same values)`;
 
 describe('(a) a binding another home stored is left as it is', () => {
   it('A binds server s in D\'s project config; B runs protect-mcp in D, whose entry carries no id: left with the another-machine reason, and the record\'s bytes are equal', async () => {
@@ -238,9 +259,9 @@ describe('(a) a binding another home stored is left as it is', () => {
 
     const output = await setups.a(entry);
 
-    expect(output).toContain(`    ? s: not bound: ${ANOTHER_MACHINE_REASON({ client: 'claude-code', server: 's' })}`);
     expect(sha256(recordText('claude-code', 's'))).toBe(sha256(text));
     expect(h().store.bindingWrites).toHaveLength(1);
+    expect(output).toContain(`    ? s: not bound: ${ANOTHER_MACHINE_REASON({ client: 'claude-code', server: 's' })}`);
   });
 });
 
@@ -342,9 +363,9 @@ describe('(m) the unwrapped store point: a binding another home stored is not wr
 
     const output = await setups.m();
 
-    expect(output).toContain(`    ? s: not protected: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
     expect(sha256(recordText('cursor', 's'))).toBe(sha256(text));
     expect(h().store.bindingWrites).toHaveLength(1);
+    expect(output).toContain(`    ? s: not protected: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
   });
 });
 
@@ -393,9 +414,102 @@ describe('(e) S3: a binding another home stored is not replaced', () => {
   });
 });
 
+describe('(f) R9: a pair another home bound is not deleted', () => {
+  it('B\'s mcp-unprotect restores its own D/.mcp.json, which holds the values stored: the pair\'s names and the record are still in the store', async () => {
+    open();
+    const { text } = await bindInA(projectConfig(), 'claude-code');
+    carryBackupsTo('B');
+
+    const output = await setups.f();
+
+    expect(storedNames('claude-code', 's')).toEqual([`mcp/claude-code/s/${NAME}`]);
+    expect(sha256(recordText('claude-code', 's'))).toBe(sha256(text));
+    expect(entryOf(projectConfig(), 's')).toEqual(plain(path.join(h().root, 's-started')));
+    expect(output).toContain(LEFT_ANOTHER_MACHINE(listedName('claude-code/s'), [NAME]));
+    expect(output).not.toContain('Deleted from the store');
+  });
+});
+
+describe('(g) (f) with A swapped back in acts as built: the interlock is what stopped it', () => {
+  it('(f) with A: A\'s mcp-unprotect deletes the pair\'s names and its binding', async () => {
+    open();
+    await bindInA(projectConfig(), 'claude-code');
+    h().use('B');
+    h().use('A');
+
+    const output = await setups.f();
+
+    expect(output).toContain(DELETED('claude-code', 's', 1));
+    expect(storedNames('claude-code', 's')).toEqual([]);
+    expect(recordText('claude-code', 's')).toBeUndefined();
+  });
+});
+
 describe('(h) on a store that is this machine\'s alone, each acts as built, whatever binding-home-id holds and when it is absent', () => {
   for (const id of ['B\'s own', 'absent'] as const) {
     const homeOptions = id === 'absent' ? { withoutId: ['B' as const] } : {};
+
+    it(`(a) with B's id ${id}: the project config's entry is left as built, and the record's bytes are equal`, async () => {
+      open('local', homeOptions);
+      const { entry, text } = await bindInA(projectConfig(), 'claude-code');
+      h().use('B');
+
+      const output = await setups.a(entry);
+
+      expect(sha256(recordText('claude-code', 's'))).toBe(sha256(text));
+      expect(output).toContain('    ? s: not bound: its binding does not match the one stored for claude-code/s.');
+      expect(output).not.toContain(ANOTHER_MACHINE_REASON({ client: 'claude-code', server: 's' }));
+    });
+
+    it(`(c) with B's id ${id}: the binding takes the changed command (re-digest)`, async () => {
+      open('local', homeOptions);
+      const { entry, record } = await bindInA(homeConfig(), 'cursor');
+      h().use('B');
+
+      const output = await setups.c(entry);
+
+      expect(output).toContain('    ~ s: its command or arguments changed since it was bound; bound again');
+      expect(recordOf('cursor', 's')!.id).toBe(record.id);
+      expect(recordOf('cursor', 's')!.commandDigest).not.toBe(record.commandDigest);
+    });
+
+    it(`(d) with B's id ${id}: the binding's id is written into the entry again`, async () => {
+      open('local', homeOptions);
+      const { entry, record } = await bindInA(homeConfig(), 'cursor');
+      h().use('B');
+
+      const output = await setups.d(entry);
+
+      expect(output).toContain('    ~ s: it did not carry the binding stored for it; bound again\n');
+      expect(entryOf(homeConfig(), 's').args).toEqual(entry.args);
+      expect(recordOf('cursor', 's')!.id).toBe(record.id);
+    });
+
+    it(`(f) with B's id ${id}: B's mcp-unprotect deletes the pair's names and its binding`, async () => {
+      open('local', homeOptions);
+      await bindInA(projectConfig(), 'claude-code');
+      carryBackupsTo('B');
+
+      const output = await setups.f();
+
+      expect(output).toContain(DELETED('claude-code', 's', 1));
+      expect(storedNames('claude-code', 's')).toEqual([]);
+      expect(recordText('claude-code', 's')).toBeUndefined();
+    });
+
+    it(`(m) with B's id ${id}: the unwrapped entry is bound again in place, over the binding stored`, async () => {
+      open('local', homeOptions);
+      const { record } = await bindInA(homeConfig(), 'cursor');
+      h().use('B');
+
+      const output = await setups.m();
+
+      expect(h().store.bindingWrites).toHaveLength(2);
+      expect(recordOf('cursor', 's')).toMatchObject({ file: homeConfig(), server: 's' });
+      expect(recordOf('cursor', 's')!.id).not.toBe(record.id);
+      expect(entryOf(homeConfig(), 's').command).toBe(WRAPPER);
+      expect(output).not.toContain(ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' }));
+    });
 
     it(`(b) with B's id ${id}: the candidate takes the binding over`, async () => {
       open('local', homeOptions);
@@ -474,6 +588,15 @@ describe('(J1) every binding protect-mcp stores names the secretless home that s
     expect(JSON.parse(recordText('cursor', 't')!).boundOn).toBe(h().ids.A);
     expect(h().store.bindingWrites.map((write) => JSON.parse(write.value).boundOn)).toEqual([h().ids.A, h().ids.A]);
   });
+
+  it('the bindings the cells\' setup stores, in the project config and in the home cursor config, carry A\'s id', async () => {
+    open();
+    const project = await bindInA(projectConfig(), 'claude-code');
+    const home = await bindInA(homeConfig(), 'cursor');
+
+    expect(project.record.boundOn).toBe(h().ids.A);
+    expect(home.record.boundOn).toBe(h().ids.A);
+  });
 });
 
 describe('(j) the home id file', () => {
@@ -497,6 +620,7 @@ describe('(j) the home id file', () => {
     fs.writeFileSync(h().idFile(), held);
     write(projectConfig(), { s: plain() });
     write(homeConfig(), { t: wrappedUnbound('cursor', 't') });
+    const { BindingHomeIdError } = await import('./binding-home-id.js');
     const reason = HOME_ID_UNUSABLE(new BindingHomeIdError(h().idFile(), { kind: 'malformed' }));
 
     const output = await cli('protect-mcp');
