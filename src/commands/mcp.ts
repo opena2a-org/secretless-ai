@@ -24,6 +24,7 @@ import type {
   StoreBackFailure,
   UnboundMcpServer,
   UnmovedMcpServer,
+  WrapperBuild,
 } from '../mcp/protect';
 import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp, thisBuildWrapperPath } from '../mcp/discover';
 import type { McpConfigFile, McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
@@ -33,7 +34,7 @@ import { McpVault, boundEntryName, isPerMachineStore } from '../mcp/vault';
 import type { McpBinding } from '../mcp/vault';
 import { checkStart } from '../mcp/start-check';
 import type { McpStartVerdict } from '../mcp/start-check';
-import { packageVersionAbove } from '../mcp/wrapper-version';
+import { isVersion, packageVersionAbove } from '../mcp/wrapper-version';
 import { resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import type { SelectableBackendType } from '../backends/config';
@@ -620,33 +621,67 @@ const EMPTY_PAIR = 'no secret is stored for the pair it reads';
  */
 const COPY_OTHER_COMMAND = 'its command or arguments are not the ones that entry was bound with';
 
+/** The command each fix line names, and the end of the line for an entry protect-mcp re-points (REPOINTS). */
+const PROTECT_MCP = (): string => `\`${cliCommand('protect-mcp')}\``;
+
 /**
  * The end of the line for an entry on another build's wrapper in a config
- * protect-mcp rewrites, which protect-mcp re-points to this build's. Words
- * pending (product and design roles); the content is the architecture
- * ruling's.
+ * protect-mcp rewrites, which protect-mcp re-points to this build's: the
+ * command that does it, then what it does. Words: the product role's C3
+ * ruling (C3-2, ending (1)); the content is the architecture ruling's.
  */
-const REPOINTS = "; protect-mcp re-points it to this version's wrapper";
+const REPOINTS = (): string => `; ${PROTECT_MCP()} re-points it to this version's wrapper`;
+
+/**
+ * The end of that line for an entry in a config protect-mcp does not
+ * rewrite, which it therefore does not re-point. Words: the product role's
+ * C3 ruling (C3-2, ending (2)).
+ */
+const NOT_REWRITTEN_NO_REPOINT = '; protect-mcp does not rewrite this config, so it does not re-point it';
+
+/**
+ * The end of that line for an entry in a config protect-mcp rewrites, on a
+ * wrapper that reads a version, where this build's own version could not be
+ * read: the two versions cannot be compared, so protect-mcp does not
+ * re-point it. Words: the product role's C3 ruling (C3-2, ending (3)).
+ */
+const OWN_VERSION_UNREAD_NO_REPOINT = "; this build's own version could not be read, so protect-mcp does not re-point it";
 
 /**
  * The line for an entry whose wrapper reads a version below the first that
- * checks bindings: that wrapper makes none of the checks checkStart runs, so
- * no start clause is computed. Words pending (product and design roles); the
- * content is the architecture ruling's.
+ * checks bindings: the entry is protected, and that wrapper makes none of the
+ * checks checkStart runs, so no start clause is computed. `ending` is what
+ * protect-mcp does about it (see repointEnding). Words: the product role's C3
+ * ruling (C3-2, prefix (a)); the content is the architecture ruling's.
  */
-const OLD_WRAPPER_LINE = (server: string, repoints: boolean): string =>
-  `    ? ${listedName(server)}: runs through a wrapper that does not check its binding${repoints ? REPOINTS : ''}`;
+const OLD_WRAPPER_LINE = (server: string, ending: string): string =>
+  `    ? ${listedName(server)}: protected, but it runs through a wrapper that does not check its binding${ending}`;
 
 /**
  * The line for an entry whose wrapper's version could not be read: a bare
- * name, a path that does not exist, or a wrapper that reads none. No start
- * clause is computed. Words pending (product and design roles).
+ * name, a path that does not exist, or a wrapper that reads none. The entry
+ * is protected, and no start clause is computed. `ending` is what
+ * protect-mcp does about it (see repointEnding). Words: the product role's C3
+ * ruling (C3-2, prefix (b)).
  */
-const UNREAD_WRAPPER_LINE = (server: string, repoints: boolean): string =>
-  `    ? ${listedName(server)}: runs through a wrapper whose version could not be read${repoints ? REPOINTS : ''}`;
+const UNREAD_WRAPPER_LINE = (server: string, ending: string): string =>
+  `    ? ${listedName(server)}: protected, but it runs through a wrapper whose version could not be read${ending}`;
 
-/** The command each fix line names. */
-const PROTECT_MCP = (): string => `\`${cliCommand('protect-mcp')}\``;
+/**
+ * The end of the line for an entry on a wrapper that does not check its
+ * binding, by what protect-mcp does about it: in a config it does not
+ * rewrite, it does not re-point it; in one it rewrites, it re-points it as
+ * repointsToThisBuild decides, and where it does not because this build's
+ * own version could not be read to compare with the version the wrapper
+ * reads, the line says so. Any other case has no end: the line never gives
+ * the not-rewritten reason for an entry in a config protect-mcp rewrites.
+ */
+function repointEnding(rewritten: boolean, theirs: WrapperBuild, command: string, wrapperPath: string, version: string | null): string {
+  if (!rewritten) return NOT_REWRITTEN_NO_REPOINT;
+  if (repointsToThisBuild(command, wrapperPath, version)) return REPOINTS();
+  if (theirs.build === 'version' && (version === null || !isVersion(version))) return OWN_VERSION_UNREAD_NO_REPOINT;
+  return '';
+}
 
 /**
  * The footer under the entries when a home binding was found in a copy from
@@ -808,8 +843,8 @@ export async function runMcpStatus(): Promise<number> {
         if (!wrapperChecksBinding(theirs, version)) {
           // The wrapper this entry runs makes none of the checks checkStart
           // runs, so no start clause is computed for it.
-          const repoints = rewritten && repointsToThisBuild(server.command, wrapperPath, version);
-          console.log(theirs.build === 'unread' ? UNREAD_WRAPPER_LINE(server.name, repoints) : OLD_WRAPPER_LINE(server.name, repoints));
+          const ending = repointEnding(rewritten, theirs, server.command, wrapperPath, version);
+          console.log(theirs.build === 'unread' ? UNREAD_WRAPPER_LINE(server.name, ending) : OLD_WRAPPER_LINE(server.name, ending));
         } else {
           // The state comes from the record and the entry's place; whether the
           // wrapper starts the entry comes from checkStart, the function the
