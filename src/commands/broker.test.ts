@@ -427,7 +427,7 @@ describe('broker start serves POST /resolve only when it loads a policy file (bu
 
   /** A credential name and value set in the broker's environment, which no off route may return. */
   function planted(): { name: string; value: string; env: Record<string, string> } {
-    const name = `F8_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const name = `ROUTE_CHECK_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
     const value = crypto.randomBytes(16).toString('hex');
     return { name, value, env: { [name]: value } };
   }
@@ -576,7 +576,7 @@ describe('broker start serves POST /resolve only when it loads a policy file (bu
   }, TIMEOUT_MS);
 
   it('(h) broker status prints the Grants: and Resolve: rows of the start screen byte for byte, without its notes', async () => {
-    writeDefaultPolicy('F8_*');
+    writeDefaultPolicy('ROUTE_CHECK_*');
     const grantFile = writeGrantFile();
 
     const screen = await brokerStart(['--grant-file', grantFile]);

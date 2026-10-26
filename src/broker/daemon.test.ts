@@ -612,7 +612,7 @@ describe('startDaemon serves POST /resolve only when it loads a policy file', ()
       content ??
         JSON.stringify({
           version: 1,
-          rules: [{ id: 'allow-one', agentSelector: 'agent-*', credentialSelector: 'F8_*', constraints: {}, effect: 'allow' }],
+          rules: [{ id: 'allow-one', agentSelector: 'agent-*', credentialSelector: 'ROUTE_CHECK_*', constraints: {}, effect: 'allow' }],
         }),
     );
   }
