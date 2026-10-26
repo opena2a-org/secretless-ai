@@ -4401,6 +4401,27 @@ tools.
 
 ### Changed
 
+- `broker start` serves `POST /resolve` only when it loads a policy file: the
+  one `--policy-file` names, or `~/.secretless-ai/broker-policies.json` when
+  that file exists. A broker that loads no policy file builds no credential
+  resolver and answers 404 on `/resolve`, where it answered 403 to every
+  request. A `--policy-file` that names a missing file refuses the start,
+  where it started a broker with zero rules. The new `--no-resolve` keeps
+  `/resolve` off when the default policy file exists, and is refused together
+  with `--policy-file`. `broker start` prints a `Grants:` line and a `Resolve:`
+  line in place of `Policy file:`, each saying whether the route is on and what
+  decided it.
+  `broker start` prints the token file, the grant file and the assertion
+  public key as rows of the block under `Broker is running.` (`Token file:`,
+  `Grants:` and `Public key:`), where it printed them as lines above the
+  block.
+
+- `startDaemon` no longer prints the token file, grant file and public key
+  lines. A library caller reads the grant file path, the two counts, the public
+  key path and the new-key flag from `getStatus().routes.grant.source`. The
+  token file path is the caller's `tokenFile`, or, without one, the new
+  `BROKER_TOKEN_FILE` export.
+
 - `PolicyEngine` and `BrokerServer` no longer accept a caller-supplied
   enforcement path. `new PolicyEngine({ rateLimiter })` and
   `new BrokerServer(config, { policy })` now throw a `TypeError`: the engine
@@ -4429,6 +4450,15 @@ tools.
   view throws a `TypeError`, and `instanceof Set` is now false (#148).
 
 ### Added
+
+- `BrokerServer` accepts `resolver: null` and then serves no `POST /resolve`:
+  it builds no credential resolver, reads no policy file, and refuses
+  `config.policyFile` with a `TypeError`. `/health` gains `grantServed` and
+  `resolveServed`; `/status` gains `routes`, one entry per capability route
+  with what turned it on (`source` for `/grant`, `policyFile` for `/resolve`)
+  or why it is off (`reason`: `noPolicyFile` or `disabled`). The dependencies
+  `resolveOff` and `grantSource` carry those facts to the server, and each is
+  refused with a `TypeError` beside a dependency it contradicts.
 
 - `init` installs a PostToolUse hook for Claude Code,
   `.claude/hooks/secretless-output-check.cjs`, wired to Bash. It reads a
