@@ -3,7 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createBackend } from '../backends/factory';
-import { LEFT_ANOTHER_MACHINE, LEFT_CHANGED, runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
+import { ANOTHER_MACHINE_STARTS, ANOTHER_MACHINE_STATE, LEFT_ANOTHER_MACHINE, LEFT_CHANGED, runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
 import { listedName } from '../secret-value';
 import { thisBuildWrapperPath } from './discover';
 import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, BINDING_NOT_AS_READ, HOME_ID_UNUSABLE, storeBindingOf } from './protect';
@@ -51,9 +51,25 @@ afterEach(() => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
+  if (homes !== undefined) madeIds.push(...heldIds(homes));
   homes?.close();
   homes = undefined;
 });
+
+/** The ids the two homes' binding-home-id files hold when a cell ends, those protect-mcp created included (cell (k)). */
+function heldIds(made: Homes): string[] {
+  const held: string[] = [];
+  for (const name of ['A', 'B'] as const) {
+    try {
+      made.use(name);
+      const text = fs.readFileSync(made.idFile(), 'latin1').trim();
+      if (/^[0-9a-f]{32}$/.test(text)) held.push(text);
+    } catch {
+      // This home holds no id file, or the cell left it out of reach.
+    }
+  }
+  return held;
+}
 
 /** The two homes of a cell, with A in HOME, and the store double as the only backend this process builds. */
 function open(backend = '1password', options: { withoutId?: HomeName[] } = {}): Homes {
@@ -779,5 +795,118 @@ describe('(j) the home id file', () => {
     expect(status).toContain(`protect-mcp\` leaves it not bound: ${reason}`);
     expect(fs.readFileSync(h().idFile(), 'latin1')).toBe(held);
     expect(h().tripped()).toEqual([]);
+  });
+});
+
+describe('(J7) mcp-status gives a binding another home stored its own state, beside the launch verdict', () => {
+  it('B\'s home entry carries A\'s id and command at the equal path: that state, and the wrapper starts it', async () => {
+    open();
+    await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+
+    const output = await cli('mcp-status');
+
+    expect(output).toContain(`    + s: ${ANOTHER_MACHINE_STATE}\n`);
+    expect(output).not.toContain('protected and bound');
+  });
+
+  it('its child command differs: that state, the wrapper does not start it, and protect-mcp leaves it with the another-machine reason', async () => {
+    open();
+    const { entry } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    setEntry(homeConfig(), 's', { ...entry, args: withChild(entry.args, [process.execPath, '-e', 'y']) });
+
+    const output = await cli('mcp-status');
+
+    expect(output).toContain(`    ? s: ${ANOTHER_MACHINE_STATE}, so the wrapper does not start it\n`);
+    expect(output).toContain(`protect-mcp\` leaves it not bound: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
+  });
+
+  it('a copy of the home entry in the project config: that state for both entries, and no footer says protect-mcp replaces the binding', async () => {
+    open();
+    const { entry } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    write(projectConfig(), { s: { ...entry } });
+
+    const output = await cli('mcp-status');
+
+    expect(output.split(`    ? s: ${ANOTHER_MACHINE_STATE}, but `)).toHaveLength(3);
+    expect(output).not.toContain('to replace each home binding found in a copy from here');
+  });
+
+  it('a second entry in the home config carrying the same binding: that state, and the wrapper starts it with the secrets bound there', async () => {
+    open();
+    const { entry } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    setEntry(homeConfig(), 's2', { ...entry });
+
+    const output = await cli('mcp-status');
+
+    expect(output).toContain(`    ? s2: ${ANOTHER_MACHINE_STATE}, ${ANOTHER_MACHINE_STARTS}\n`);
+    expect(output).toContain(`    + s: ${ANOTHER_MACHINE_STATE}\n`);
+    expect(output).not.toContain('carries the binding of the entry for');
+  });
+
+  it('(g) with A swapped back in, the same entries have the states as built, and the footer says protect-mcp replaces the binding', async () => {
+    open();
+    const { entry } = await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    h().use('A');
+
+    setEntry(homeConfig(), 's2', { ...entry });
+    const bound = await cli('mcp-status');
+    write(projectConfig(), { s: { ...entry } });
+    const copied = await cli('mcp-status');
+
+    expect(bound).toContain('    + s: protected and bound\n');
+    expect(bound).toContain(`    ? s2: carries the binding of the entry for server "s" in ${homeConfig()}, so the wrapper starts it with that entry's secrets\n`);
+    expect(copied).toContain('to replace each home binding found in a copy from here');
+    for (const output of [bound, copied]) expect(output).not.toContain(ANOTHER_MACHINE_STATE);
+  });
+
+  for (const id of ['B\'s own', 'absent'] as const) {
+    it(`(h) on a store that is this machine's alone, with B's id ${id}: the states as built`, async () => {
+      open('local', id === 'absent' ? { withoutId: ['B'] } : {});
+      await bindInA(homeConfig(), 'cursor');
+      h().use('B');
+
+      const output = await cli('mcp-status');
+
+      expect(output).toContain('    + s: protected and bound\n');
+      expect(output).not.toContain(ANOTHER_MACHINE_STATE);
+    });
+  }
+});
+
+describe('(l) launch is unchanged: the wrapper never reads boundOn or the home id', () => {
+  it('under B, an entry whose id and digest match A\'s binding starts (sentinel present)', async () => {
+    open();
+    const { entry } = await bindInA(projectConfig(), 'claude-code');
+    h().use('B');
+    const sentinel = path.join(h().root, 's-started');
+    expect(fs.existsSync(sentinel)).toBe(false);
+
+    const run = wrapper(entry.args);
+
+    expect(fs.existsSync(sentinel)).toBe(true);
+    expect(run.status).toBe(0);
+    expect(h().tripped()).toEqual([]);
+  });
+});
+
+describe('(k) no output names a secretless home id', () => {
+  it('the wrapper, protect-mcp, mcp-status and mcp-unprotect, in this cell and every cell above it, print no home id', async () => {
+    open();
+    const { entry } = await bindInA(projectConfig(), 'claude-code');
+    h().use('B');
+    wrapper(entry.args);
+    await cli('protect-mcp');
+    await cli('mcp-status');
+    const ids = [...new Set([...madeIds, ...heldIds(h())])];
+
+    expect(ids).toEqual(expect.arrayContaining([h().ids.A, h().ids.B]));
+    expect(outputs.map((output) => output.source)).toEqual(expect.arrayContaining(['wrapper', 'protect-mcp', 'mcp-status']));
+    const named = outputs.flatMap((output) => ids.filter((held) => output.text.includes(held)).map(() => output.source));
+    expect(named).toEqual([]);
   });
 });
