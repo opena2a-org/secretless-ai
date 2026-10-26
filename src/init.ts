@@ -3368,15 +3368,31 @@ except Exception:
   # line break. Without it the command is the JSON string, where the pair is
   # the escapes \`\\\\\` and \`\\n\`; an escape is removed whole, after an even run
   # of backslashes only, so an escaped backslash followed by the letter n is not
-  # taken for one. If the run on the joined text fails, the command is refused.
+  # taken for one. Removing a pair can leave a new one, a backslash before it
+  # and a line break after it, so pairs are removed until none is left: with
+  # python3 in one pass, which drops a line break together with the backslash
+  # the text kept so far ends in, and without it by the sed loop. bash's own
+  # substitution is not used for this: on bash 3.2, the /bin/bash of macOS, one
+  # pass over a few thousand backslashes takes seconds. The run on the joined
+  # text gets the argument --joined-run and does not join again, so the hook
+  # runs itself at most once, however the pairs nest. If the run on the joined
+  # text fails, the command is refused.
   CONTINUATION_NL='
 '
   JOINED_INPUT=""
-  if [ "$COMMAND_FORM" = text ]; then
+  if [ "\${1:-}" = --joined-run ]; then
+    : # this run judges text that is already joined
+  elif [ "$COMMAND_FORM" = text ]; then
     case "$COMMAND" in
       *"\\\\$CONTINUATION_NL"*)
-        JOINED_INPUT=$(printf '%s' "\${COMMAND//\\\\$CONTINUATION_NL/}" | python3 -I -c 'import json,sys
-sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.stdin.buffer.read().decode("utf-8", "surrogateescape")}}))' 2>/dev/null) || JOINED_INPUT="failed"
+        JOINED_INPUT=$(printf '%s' "$COMMAND" | python3 -I -c 'import json,sys
+joined = bytearray()
+for byte in sys.stdin.buffer.read():
+    if byte == 10 and joined and joined[-1] == 92:
+        joined.pop()
+    else:
+        joined.append(byte)
+sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": joined.decode("utf-8", "surrogateescape")}}))' 2>/dev/null) || JOINED_INPUT="failed"
         ;;
     esac
   else
@@ -3389,7 +3405,7 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.
   if [ -n "$JOINED_INPUT" ]; then
     JOINED_VERDICT=""
     if [ "$JOINED_INPUT" = failed ] \\
-      || ! JOINED_VERDICT=$(printf '%s' "$JOINED_INPUT" | "$BASH" "$0" 2>/dev/null); then
+      || ! JOINED_VERDICT=$(printf '%s' "$JOINED_INPUT" | "$BASH" "$0" --joined-run 2>/dev/null); then
       JOINED_VERDICT='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command the guard could not judge with its line continuations joined. Safe path: write the command on one line."}}'
     fi
     if [ -n "$JOINED_VERDICT" ]; then

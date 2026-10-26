@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 **Security: the Claude Code guard hook now joins backslash-newline line continuations before matching, so a read split across lines is refused like its one-line form.**
+The pairs are removed until none is left, so a pair that forms only when an
+inner one is removed is joined too, and the joined text is judged in one more
+run of the hook, however many pairs the command holds.
 
 **`protect-mcp` stores a server's secrets only under a client/server name no
 other protected server reads, never replaces a stored value, and stores a
