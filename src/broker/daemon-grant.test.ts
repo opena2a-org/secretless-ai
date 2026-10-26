@@ -384,6 +384,31 @@ describe('POST /grant on a broker started by startDaemon', () => {
     expect(denied.map((e) => e.reason)).toEqual(['AIM reports agent not verified']);
   });
 
+  it('startDaemon prints nothing on a grant start', async () => {
+    const grantFile = writeGrantFile();
+    const out: string[] = [];
+    const collect = (...a: unknown[]) => { out.push(a.join(' ')); };
+    const spies = [
+      vi.spyOn(console, 'log').mockImplementation(collect),
+      vi.spyOn(console, 'info').mockImplementation(collect),
+      vi.spyOn(console, 'warn').mockImplementation(collect),
+      vi.spyOn(console, 'error').mockImplementation(collect),
+      vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+        out.push(String(chunk));
+        return true;
+      }),
+    ];
+    try {
+      server = await startDaemon(daemonOptions({ grantFile }));
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    expect(out).toEqual([]);
+    // What the lines used to say is on the server the caller holds.
+    expect(server.getStatus().routes.grant).toMatchObject({ served: true, source: { file: grantFile } });
+  });
+
   it('reports on /status what the grant route was loaded from, and never the private key path', async () => {
     const grantFile = writeGrantFile();
     server = await startDaemon(daemonOptions({ grantFile }));

@@ -93,6 +93,18 @@ describe('prepareArgv: a flag never widens scope', () => {
     expect(p.errors[0]).toContain('does not take a value');
   });
 
+  it('`broker start --no-resolve` takes no value, so the token after it stays a flag of its own', () => {
+    const p = prepareArgv('broker', ['broker', 'start', '--no-resolve', '--grant-file', 'grants.json']);
+    expect(p.errors).toEqual([]);
+    expect(p.args).toEqual(['broker', 'start', '--no-resolve', '--grant-file', 'grants.json']);
+    expect(p.values.get('--grant-file')).toBe('grants.json');
+    expect(p.values.has('--no-resolve')).toBe(false);
+
+    const given = prepareArgv('broker', ['broker', 'start', '--no-resolve=yes']);
+    expect(given.errors).toHaveLength(1);
+    expect(given.errors[0]).toContain('does not take a value');
+  });
+
   // An unregistered flag is left WHOLE. If it were split, `bar` would land in
   // the positional list, and for scan or clean a positional is a path — a
   // target the user never typed.

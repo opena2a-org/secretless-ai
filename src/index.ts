@@ -72,7 +72,7 @@ export {
   PolicyEngine, matchGlob, isWithinTimeWindow,
   RateLimiter, AuditLogger, verifyAuditLog, AimClient,
   CredentialResolver, BrokerServer,
-  startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning,
+  startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning, BROKER_TOKEN_FILE,
   CredentialEventEmitter,
   type BrokerConfig, type ResolveRequest, type ResolveResponse,
   type PolicyRule, type PolicyConstraints, type PolicyEvaluation,

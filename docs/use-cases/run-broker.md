@@ -35,14 +35,15 @@ npx secretless-ai broker start
   Secretless Broker
 
   Starting credential broker daemon...
-Broker auth token: /Users/you/.secretless-ai/broker.token
   Broker is running.
 
   PID:          12345
   HTTP port:    19421
   Socket:       /Users/you/.secretless-ai/broker.sock
+  Token file:   /Users/you/.secretless-ai/broker.token
   AIM:          not configured
-  Policy file:  (default)
+  Grants:       off, no grant file
+  Resolve:      off, no policy file
 
   Press Ctrl+C to stop.
 ```
@@ -63,6 +64,8 @@ npx secretless-ai broker status
   HTTP port:    19421
   Socket:       /Users/you/.secretless-ai/broker.sock
   AIM:          not configured
+  Grants:       off, no grant file
+  Resolve:      off, no policy file
   Policies:     0
   Requests:     1
 ```
@@ -208,15 +211,18 @@ Reload by restarting the daemon. Or pass `--policy-file <path>` on start to use 
 | `providers` | Identity providers by id. Each is an OAuth token endpoint that accepts an RFC 8693 token exchange with the broker's assertion as the subject token. `exchange` is the only mode with a provider in this version, and the endpoint must be `https` (`http` is accepted for a loopback address). |
 | `bindings` | One entry per grant. `match` is what the agent's verified credential must carry; `resolve` names the provider, the scope and lifetime of the token, and the `audience` the operation is sent to. A grant with no binding is denied. |
 
-Start the broker. Two lines report what was loaded:
+Start the broker. The `Grants:` and `Public key:` rows report what was loaded:
 
 ```bash
 npx secretless-ai broker start
 ```
 
 ```
-Grant file: /Users/you/.secretless-ai/broker-grants.json (1 binding, 1 provider)
-Broker assertion public key: /Users/you/.secretless-ai/broker-assertion.key.pub.json (new key: register it with each identity provider in the grant file)
+  Grants:       on, grant file /Users/you/.secretless-ai/broker-grants.json (1 binding, 1 provider)
+  Public key:   /Users/you/.secretless-ai/broker-assertion.key.pub.json
+                Register this new key with each provider in the grant file.
+  Resolve:      on, policy file /Users/you/.secretless-ai/broker-policies.json (1 rule)
+                Pass --no-resolve to serve grants only.
 ```
 
 Pass `--grant-file <path>` to load a grant file from another location. A path named on the command line must exist.

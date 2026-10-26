@@ -21,7 +21,7 @@ export { RateLimiter } from './rate-limiter';
 export { AuditLogger, verifyAuditLog, type AuditVerification } from './audit';
 export { AimClient } from './aim-client';
 export { CredentialResolver, type ResolverOptions } from './resolver';
-export { BrokerServer } from './server';
+export { BrokerServer, TOKEN_FILE as BROKER_TOKEN_FILE } from './server';
 export {
   startDaemon,
   stopDaemon,
