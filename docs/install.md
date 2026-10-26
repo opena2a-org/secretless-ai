@@ -40,7 +40,7 @@ If `protect-mcp` protects your MCP servers, run it once after upgrading to 0.24.
 npx secretless-ai protect-mcp
 ```
 
-From 0.24.0 the `secretless-mcp` wrapper starts a server only from a config entry that `protect-mcp` has bound to the server's stored secrets. `protect-mcp` binds the entries it protected and lists each one it cannot bind, with what to change. Until it runs, the wrapper does not start a server from an unbound entry, and it prints this command.
+From 0.24.0 the `secretless-mcp` wrapper starts a server only from a config entry that `protect-mcp` has bound to the server's stored secrets. An entry runs the wrapper build its command names, so this check is made where that build is 0.24.0 or later. `protect-mcp` binds the entries it protected and lists each one it cannot bind, with what to change. In the configs it rewrites, it also moves each entry that runs through an earlier build's wrapper, or one whose version it cannot read, onto its own build's wrapper. Until it runs, the wrapper does not start a server from an unbound entry, and it prints this command. `mcp-status` names each entry that runs through a wrapper that does not check its binding, or one whose version it cannot read.
 
 ## Verifying what was installed
 
