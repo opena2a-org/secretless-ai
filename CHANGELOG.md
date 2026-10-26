@@ -67,9 +67,11 @@ the server again under a new name with its values.
 
 **`protect-mcp` says a bound entry's file no longer exists only when it does
 not.** A file it cannot check, such as one in a directory it cannot search, is
-named with the error code. In a backend shared between machines, a file absent
-here is named as not found on this machine, and no entry takes its binding
-over. In a backend this machine alone uses, a home binding whose config file
+named as one whose existence could not be checked, with the error code. In a
+backend shared between machines, a file absent here is named as not found on
+this machine, with the backend named as read from other machines as well, so
+the binding may be in use there, and no entry takes its binding over. In a
+backend this machine alone uses, a home binding whose config file
 was deleted is taken over by the one home entry that reads its pair. Where a
 binding's entry is gone and several entries read its pair, each is left with
 the line that names the others.
