@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-**Security: the Claude Code guard hook now joins backslash-newline line continuations before matching, so a read split across lines is refused like its one-line form.**
+**Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more
 run of the hook, however many pairs the command holds.
