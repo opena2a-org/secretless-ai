@@ -296,7 +296,7 @@ describe('(g) the same setups with A swapped back in act as built: the interlock
 
     const output = await setups.d(entry);
 
-    expect(output).toContain('    ~ s: its binding was out of date; bound again');
+    expect(output).toContain('    ~ s: it did not carry the binding stored for it; bound again\n');
     expect(entryOf(homeConfig(), 's').args).toEqual(entry.args);
     expect(recordOf('cursor', 's')!.id).toBe(record.id);
   });
