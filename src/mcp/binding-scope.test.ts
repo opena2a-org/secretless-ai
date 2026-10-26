@@ -6,6 +6,7 @@ import * as path from 'path';
 import { protectMcp } from './protect';
 import { McpVault } from './vault';
 import { BINDING_COPY_READ_LIMIT } from './discover';
+import { builtCommand } from './printed-command.test-support';
 
 /**
  * Where a bound entry starts. A project-level binding is honoured only in its
@@ -28,7 +29,7 @@ const WRAPPER_PATH = WRAPPER_JS;
 const NAME = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
 const VALUE = ['stand', 'in', 'value', String(process.pid)].join('-');
 const FIX =
-  "secretless-mcp: Run 'npx secretless-ai mcp-status' to see which config entries are bound, then 'npx secretless-ai protect-mcp' to bind the entries it protected.";
+  `secretless-mcp: Run '${builtCommand('mcp-status')}' to see which config entries are bound, then '${builtCommand('protect-mcp')}' to bind the entries it protected.`;
 const NOT_STARTED = 'so no secret was read. The server was not started.';
 const ID = /^[0-9a-f]{32}$/;
 
@@ -214,7 +215,7 @@ describe('T2: a home binding found in a project-level config visible from the st
     const status = runCliIn('T2a', p, ['mcp-status']);
     expect(status).toContain(`    ? github: protected and bound, but its binding also appears in ${copy}, so the wrapper does not start it\n`);
     expect(status).toContain(
-      '  Run `npx secretless-ai protect-mcp` to replace each home binding found outside its own entry; a copy of it then no longer starts.\n',
+      `  Run \`${builtCommand('protect-mcp')}\` to replace each home binding found outside its own entry; a copy of it then no longer starts.\n`,
     );
   });
 

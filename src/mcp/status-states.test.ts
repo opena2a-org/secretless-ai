@@ -12,6 +12,7 @@ import type { McpBinding } from './vault';
 import { discoverMcpConfigsDetailed, thisBuildWrapperPath } from './discover';
 import type { McpConfigFile } from './discover';
 import { runMcpStatus } from '../commands/mcp';
+import { builtCommand } from './printed-command.test-support';
 
 /**
  * mcp-status reports each entry that runs through the wrapper by two things:
@@ -35,7 +36,7 @@ const THIS_VERSION: string = JSON.parse(fs.readFileSync(path.resolve(__dirname, 
 const NAME = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
 const VALUE = ['stand', 'in', 'value', String(process.pid)].join('-');
 const NOT_STARTED = 'so the wrapper does not start it';
-const PROTECT = '`npx secretless-ai protect-mcp`';
+const PROTECT = `\`${builtCommand('protect-mcp')}\``;
 
 interface Dirs {
   home: string;

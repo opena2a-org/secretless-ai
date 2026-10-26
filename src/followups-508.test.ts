@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { protectMcp } from './mcp/protect';
+import { builtCommand } from './mcp/printed-command.test-support';
 
 /**
  * #508: `mcp-status` listed a server whose command is the secretless-mcp
@@ -129,13 +130,13 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
       `  cursor (${cursorJson})`,
       '    ! exposed: EXPOSED (1 plaintext secret(s))',
       '    ? wrapped: protected, not bound, so the wrapper does not start it',
-      '      `npx secretless-ai protect-mcp` binds it.',
+      `      \`${builtCommand('protect-mcp')}\` binds it.`,
       '    ? partial: env value API_TOKEN not checked: not a string',
       '',
     ].join('\n'));
     expect(out).not.toContain('exposed: protected');
     expect(out).not.toContain('partial: protected');
-    expect(out).toContain('Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.');
+    expect(out).toContain(`Run \`${builtCommand('protect-mcp')}\` to encrypt exposed secrets.`);
   });
 
   it('lists the server as protected once protect-mcp has moved the secret out of its env', async () => {

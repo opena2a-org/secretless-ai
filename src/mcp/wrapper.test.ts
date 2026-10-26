@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
 import { McpVault, commandDigest, newBindingId } from './vault';
+import { builtCommand } from './printed-command.test-support';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-wrapper-'));
@@ -173,11 +174,11 @@ describe('secretless-mcp wrapper', () => {
     expect(fs.existsSync(marker)).toBe(false);
     expect(result.stderr).toContain('No secrets are stored for client "bogus-client", server "myserver" in the local backend. The server was not started.');
     expect(result.stderr).toContain('Stored client/server pairs: claude-code/linear, cursor/github');
-    expect(result.stderr).toContain('npx secretless-ai mcp-status');
+    expect(result.stderr).toContain(builtCommand('mcp-status'));
     // The last line names the way back: the configs come back from their
     // backups, then protect-mcp protects them again.
     expect(result.stderr.trimEnd().split('\n').pop()).toBe(
-      "secretless-mcp: Run 'npx secretless-ai mcp-unprotect' to restore your MCP configs from their backups, then 'npx secretless-ai protect-mcp' to protect them again. Run 'npx secretless-ai mcp-status' to list the protected servers.",
+      `secretless-mcp: Run '${builtCommand('mcp-unprotect')}' to restore your MCP configs from their backups, then '${builtCommand('protect-mcp')}' to protect them again. Run '${builtCommand('mcp-status')}' to list the protected servers.`,
     );
     // Names only: no stored value reaches either stream.
     expect(result.stdout + result.stderr).not.toContain('secret-value');

@@ -8,6 +8,7 @@ import * as protectModule from './protect';
 import { McpVault, commandDigest, newBindingId } from './vault';
 import { rewriteConfig } from './rewrite';
 import { runProtectMcp } from '../commands/mcp';
+import { sourceCommand } from './printed-command.test-support';
 
 /**
  * A binding after its entry, its file or its store changed outside
@@ -226,7 +227,7 @@ describe('mcp-unprotect deletes a pair only where its binding names a file it re
 describe('a pair whose names and binding were deleted is bound again only to the values an entry brings', () => {
   const NOT_IN_BACKUP =
     "the secrets stored under claude-code/github are not in protect-mcp's backup of this file, and a project-level entry is bound only to values protect-mcp stores from its file. "
-    + "If this entry is yours, put the server's values in its env, and run `npx secretless-ai protect-mcp`.";
+    + `If this entry is yours, put the server's values in its env, and run \`${sourceCommand('protect-mcp')}\`.`;
 
   it('m1: a .mcp.json entry given its values again is bound with a new id, its values stored, and it starts', async () => {
     const { a, file, sentinel, id: stale } = await projectRecord('m1');
@@ -291,7 +292,7 @@ describe('a pair whose names and binding were deleted is bound again only to the
 
     const others = (other: string) =>
       `claude-code/github is also read by server "github" in ${other}, and the secrets stored under a name are bound to one entry only. `
-      + 'Keep one of these entries, remove the others, and run `npx secretless-ai protect-mcp`; to run another as well, add it again under a new name with its values.';
+      + `Keep one of these entries, remove the others, and run \`${sourceCommand('protect-mcp')}\`; to run another as well, add it again under a new name with its values.`;
     expect(result.bound).toEqual([]);
     expect(result.unbound).toEqual(expect.arrayContaining([
       { client: 'claude-code', filePath: path.join(a, '.mcp.json'), projectPath: '.mcp.json', server: 'github', reason: others(settings) },
@@ -476,7 +477,7 @@ describe('X3: an entry at its binding\'s place carrying another id is bound agai
 
   const OTHER_ID_PROJECT =
     'its binding does not match the one stored for claude-code/github. '
-    + 'If this entry is yours, add the server again under a new name with its values, remove this entry, and run `npx secretless-ai protect-mcp`.';
+    + `If this entry is yours, add the server again under a new name with its values, remove this entry, and run \`${sourceCommand('protect-mcp')}\`.`;
 
   it('X3-a and X3-f: a home entry whose id was replaced is refused with B1, then bound again with its binding\'s id; nothing else changes, and it starts', async () => {
     const { file, sentinel, id } = await homeRecord('X3-a');
@@ -631,7 +632,7 @@ describe('X3: an entry at its binding\'s place carrying another id is bound agai
 describe('the state of the file a binding names decides the line for an entry bound elsewhere', () => {
   const elsewhere = (file: string) =>
     `the secrets stored under claude-code/github are bound to server "github" in ${file}. `
-    + `To run this server as well, add it again under a new name with its values and run \`npx secretless-ai protect-mcp\`.`;
+    + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`.`;
 
   it('e1: a project binding whose .mcp.json was deleted, with no backup of it, leaves a reader in another .mcp.json with the missing-file clause, and no line names mcp-forget', async () => {
     const { file } = await projectRecord('e1');
