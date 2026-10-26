@@ -1,7 +1,7 @@
 # Secure Enclave availability: reports whether CryptoKit's
 # SecureEnclave.isAvailable reads true on each GitHub-hosted macOS image.
 #
-# One job per runner label. Each job prints exactly one line,
+# One job per runner label. Each job prints exactly one reading line,
 # SecureEnclave.isAvailable=<true|false>. When swift exits non-zero, or prints
 # anything other than true or false, the job fails and prints no such line, so
 # a missing reading is never shown as a value.
@@ -45,6 +45,13 @@ jobs:
       - name: Print SecureEnclave.isAvailable
         shell: bash
         run: |
+          # Machine line, before the reading: what sysctl printed for
+          # hw.optional.arm64 (Apple silicon) and kern.hv_vmm_present (virtual
+          # machine), joined with " | ", with its exit status. A missing oid shows
+          # sysctl's message. The line never fails the step; only the reading can.
+          machine_exit=0
+          machine="$(sysctl -n hw.optional.arm64 kern.hv_vmm_present 2>&1)" || machine_exit=$?
+          echo "sysctl -n hw.optional.arm64 kern.hv_vmm_present: ${machine//$'\n'/ | } (exit $machine_exit)"
           value="$(swift -e 'import CryptoKit; print(SecureEnclave.isAvailable)')"
           case "$value" in
             true | false) echo "SecureEnclave.isAvailable=$value" ;;
