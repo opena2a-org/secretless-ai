@@ -7,6 +7,7 @@ import { installWrapper } from './install-wrapper';
 import { WRAPPER_VERSION_FILE } from './wrapper-version';
 import { runMcpStatus, runProtectMcp } from '../commands/mcp';
 import { VERSION } from '../commands/utils';
+import { pathFormOf } from '../hook-prefix';
 
 /**
  * Every command a wrapper refusal, protect-mcp and mcp-status print names the
@@ -17,11 +18,15 @@ import { VERSION } from '../commands/utils';
  *
  * The CLI runs in this process with HOME set to a scratch directory and the
  * local backend configured; the wrapper runs from a copy installed the way
- * earlier versions installed it, with no package.json above it. Values are
- * assembled at run time and are not credentials.
+ * earlier versions installed it, with no package.json above it. The built CLI
+ * and wrapper under dist/ name their node binary and CLI script, and each
+ * command they print is run as printed. Values are assembled at run time and
+ * are not credentials.
  */
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const CLI_PATH = path.join(ROOT, 'dist', 'cli.js');
+const WRAPPER_JS = path.join(ROOT, 'dist', 'mcp-wrapper.js');
 const CLI_SOURCE = fs.readFileSync(path.join(ROOT, 'src', 'cli.ts'), 'utf-8');
 const NAME = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
 const VALUE = ['stand', 'in', 'value', String(process.pid)].join('-');
@@ -162,5 +167,106 @@ describe('X4-2: every printed command names the exact version of the build that 
       `npx secretless-ai@${VERSION} protect-mcp`,
     ]);
     expect(unread.map((n) => n.command)).toEqual(['npx secretless-ai mcp-status', 'npx secretless-ai protect-mcp']);
+  });
+});
+
+/** A line run by /bin/sh from `cwd`, as a reader runs a printed command; what it printed. */
+function sh(line: string, cwd: string): string {
+  const res = spawnSync('/bin/sh', ['-c', line], {
+    cwd,
+    encoding: 'utf-8',
+    // npm stays off the network and away from the real cache.
+    env: { ...childEnv(), npm_config_offline: 'true', npm_config_update_notifier: 'false', npm_config_cache: path.join(home, '.npm') },
+  });
+  return `${res.stdout}${res.stderr}`;
+}
+
+/** A command of the built CLI run from `cwd`; what it printed. */
+function builtCli(args: string[], cwd: string): string {
+  const res = spawnSync(process.execPath, [CLI_PATH, ...args], { cwd, encoding: 'utf-8', env: childEnv() });
+  expect(res.status, `${args.join(' ')}: ${res.stderr}`).toBe(0);
+  return res.stdout;
+}
+
+/** The node binary and CLI script a printed command names, or null when it is not in the path form. */
+function pathsOf(command: string, verb: string) {
+  return pathFormOf(command.slice(0, -(verb.length + 1)));
+}
+
+describe('a printed command runs the build that printed it, from any directory', () => {
+  it('T1: each command the wrapper, protect-mcp and mcp-status print, run from two directories below a project root that holds another package of this name and version and bin entries under its names, runs this build', () => {
+    const marker = ['planted', 'copy', 'ran'].join(' ');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-planted-'));
+    try {
+      write(path.join(root, 'package.json'), { name: 'planted-project', version: '1.0.0', private: true });
+      const stub = path.join(root, 'node_modules', 'secretless-ai');
+      write(path.join(stub, 'package.json'), { name: 'secretless-ai', version: VERSION, bin: { 'secretless-ai': 'marker.js' } });
+      write(path.join(stub, 'marker.js'), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(marker)});\n`);
+      fs.chmodSync(path.join(stub, 'marker.js'), 0o755);
+      const dotBin = path.join(root, 'node_modules', '.bin');
+      fs.mkdirSync(dotBin, { recursive: true });
+      for (const name of ['secretless-ai', `secretless-ai@${VERSION}`]) {
+        fs.symlinkSync(path.join('..', 'secretless-ai', 'marker.js'), path.join(dotBin, name));
+      }
+      const deep = path.join(root, 'a', 'b');
+      fs.mkdirSync(deep, { recursive: true });
+
+      // mcp-status over an exposed home server, protect-mcp, then the wrapper
+      // for the protected entry with its binding taken out.
+      const cursor = write(path.join(home, '.cursor', 'mcp.json'), { mcpServers: { github: plain() } });
+      const status = builtCli(['mcp-status'], deep);
+      const protect = builtCli(['protect-mcp'], deep);
+      const args: string[] = JSON.parse(fs.readFileSync(cursor, 'utf-8')).mcpServers.github.args;
+      const at = args.indexOf('--binding');
+      expect(at).toBeGreaterThan(-1);
+      const refused = spawnSync(process.execPath, [WRAPPER_JS, ...args.slice(0, at), ...args.slice(at + 2)], {
+        cwd: deep,
+        encoding: 'utf-8',
+        env: childEnv(),
+      });
+      expect(refused.status).toBe(1);
+
+      const printed = { 'mcp-status': commandsIn(status), 'protect-mcp': commandsIn(protect), wrapper: commandsIn(refused.stderr) };
+      expect(printed['mcp-status'].map((n) => n.verb)).toContain('protect-mcp');
+      expect(printed['protect-mcp'].map((n) => n.verb)).toEqual(expect.arrayContaining(['mcp-status', 'mcp-unprotect']));
+      expect(printed.wrapper.map((n) => n.verb)).toEqual(['mcp-status', 'protect-mcp']);
+
+      for (const { command, verb } of Object.values(printed).flat()) {
+        // The line as printed, then its two words with --version.
+        expect(sh(command, deep), command).not.toContain(marker);
+        const paths = pathsOf(command, verb);
+        expect(paths, `${command} names no node binary and CLI script`).not.toBeNull();
+        expect(fs.realpathSync(paths!.node)).toBe(fs.realpathSync(process.execPath));
+        expect(fs.realpathSync(paths!.cli)).toBe(fs.realpathSync(CLI_PATH));
+        const version = sh(`${command.slice(0, -(verb.length + 1))} --version`, deep);
+        expect(version).toContain(`secretless-ai ${VERSION}`);
+        expect(version).not.toContain(marker);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('T4: the built wrapper, started with a stub child, names the cli.js beside it', () => {
+    // The store's directory exists, so the wrapper reaches its binding check.
+    fs.mkdirSync(path.join(home, '.secretless-ai', 'mcp-vault'), { recursive: true });
+    const sentinel = path.join(project, 'started.json');
+    const stub = ['-e', `require('fs').writeFileSync(${JSON.stringify(sentinel)}, '')`];
+
+    const res = spawnSync(process.execPath, [WRAPPER_JS, '--server', 'github', '--client', 'cursor', '--', process.execPath, ...stub], {
+      cwd: project,
+      encoding: 'utf-8',
+      env: childEnv(),
+    });
+
+    expect(res.status).toBe(1);
+    expect(fs.existsSync(sentinel)).toBe(false);
+    const named = commandsIn(res.stderr);
+    expect(named.map((n) => n.verb)).toEqual(['mcp-status', 'protect-mcp']);
+    for (const { command, verb } of named) {
+      const paths = pathsOf(command, verb);
+      expect(paths, `${command} names no node binary and CLI script`).not.toBeNull();
+      expect(fs.realpathSync(paths!.cli)).toBe(fs.realpathSync(path.join(path.dirname(WRAPPER_JS), 'cli.js')));
+    }
   });
 });
