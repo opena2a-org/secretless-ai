@@ -117,10 +117,11 @@ export interface BoundMcpServer extends McpServerMapLocation {
   tookOver?: McpBoundEntry;
   /**
    * For a .mcp.json entry bound again after its project directory moved (see
-   * movedEntry): the directory it was bound in, and whether its command or
-   * arguments changed since.
+   * movedEntry): the directory it was bound in. Its command and arguments are
+   * the ones it was bound with: a moved entry whose command or arguments
+   * changed is left.
    */
-  movedFrom?: { directory: string; commandChanged?: true };
+  movedFrom?: { directory: string };
 }
 
 /**
@@ -1203,10 +1204,11 @@ type BindingPlan =
  * that entry is bound in a home config and is in its file; when that entry is
  * no longer in its config, the one entry of its scope that reads the pair
  * takes it over; a .mcp.json entry carrying its id after its project directory
- * moved is bound again (see movedEntry). At the binding's place with no id or
- * another one: a home entry is given the binding's id, since its file is the
- * operator's and the id's only other copy is in it; a .mcp.json entry is left,
- * since its file comes with the repository.
+ * moved is bound again (see movedEntry) when its command and arguments are the
+ * ones it was bound with, and left when they changed. At the binding's place
+ * with no id or another one: a home entry is given the binding's id, since its
+ * file is the operator's and the id's only other copy is in it; a .mcp.json
+ * entry is left, since its file comes with the repository.
  * No binding stored: bound in place when this is the one entry of the configs
  * this run rewrites that reads the pair, in a home config, or in the
  * project's .mcp.json when this run stores its secrets into an empty pair or
@@ -1237,6 +1239,11 @@ async function bindWrapped(
       return { kind: 'left', reason: changedProjectCommandReason(), binding };
     }
     if (carriesId && (await movedEntry(binder, config, reads, binding))) {
+      // The id and the backup are evidence about the old file, not about the
+      // command now in this one: a moved entry is bound again only to the
+      // command it was bound with, and one whose command changed is left as
+      // it is, as a .mcp.json entry at its own place is.
+      if (binding.commandDigest !== digest) return { kind: 'left', reason: MOVED_COMMAND_CHANGED(path.dirname(binding.file)), binding };
       return placed(config, server, { kind: 'bind', id: newBindingId(), digest, movedFrom: binding });
     }
     if (!here && orphanedBinding(binder, binding)) {
@@ -1374,9 +1381,7 @@ async function applyBinding(
   result.bound.push({
     ...location,
     ...(plan.tookOver === undefined ? {} : { tookOver: boundEntry(plan.tookOver) }),
-    ...(moved === undefined
-      ? {}
-      : { movedFrom: { directory: path.dirname(moved.file), ...(moved.commandDigest === plan.digest ? {} : { commandChanged: true as const }) } }),
+    ...(moved === undefined ? {} : { movedFrom: { directory: path.dirname(moved.file) } }),
   });
   return true;
 }
@@ -1717,6 +1722,18 @@ function changedProjectCommandReason(): string {
   return 'its command or arguments changed since it was bound, and a project-level entry is bound again only when protect-mcp stores its values. '
     + `If you made the change, ${STORE_AGAIN()}`;
 }
+
+/**
+ * Why a .mcp.json entry carrying its binding's id after its project directory
+ * moved (see movedEntry) is left when its command or arguments differ from
+ * the ones it was bound with: the difference and the directory it was bound
+ * in, then the fix. Nothing is stored or moved for it.
+ * Words pending (product and design roles); the content is the security ruling's.
+ */
+const MOVED_COMMAND_CHANGED = (directory: string): string =>
+  `its command or arguments changed since it was bound in ${listedName(directory)}, the project directory it moved from, `
+  + 'and a moved entry is bound only when its command and arguments are the ones it was bound with. '
+  + `If you made the change, ${STORE_AGAIN()}`;
 
 function otherReadersReason(
   reads: { client: string; server: string },
