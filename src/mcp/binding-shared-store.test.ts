@@ -8,6 +8,7 @@ import { rewriteConfig } from './rewrite';
 import { createBackend } from '../backends/factory';
 import type { ResolveOptions, WritableSecretBackend } from '../backends/types';
 import { runMcpUnprotect, runProtectMcp } from '../commands/mcp';
+import { sourceCommand } from './printed-command.test-support';
 
 /**
  * A binding on a store shared between machines (1password, vault, gcp-sm):
@@ -164,7 +165,7 @@ describe('protect-mcp on a shared store', () => {
     expect(code).toBe(0);
     expect(output).toContain(
       `    ? github: not bound: the secrets stored under cursor/github are bound to server "github" in ${gone}. `
-        + `To run this server as well, add it again under a new name with its values and run \`npx secretless-ai protect-mcp\`. ${gone} was not found on this machine.`,
+        + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. ${gone} was not found on this machine.`,
     );
     expect(output).not.toContain('no longer exists');
     expect(output).not.toContain('mcp-forget');

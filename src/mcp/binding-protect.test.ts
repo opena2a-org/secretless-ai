@@ -6,6 +6,7 @@ import { protectMcp } from './protect';
 import { McpVault, commandDigest } from './vault';
 import { rewriteConfig } from './rewrite';
 import { runMcpUnprotect, runProtectMcp } from '../commands/mcp';
+import { sourceCommand } from './printed-command.test-support';
 
 /**
  * protect-mcp binds each pair it stores to the config entry its secrets came
@@ -169,7 +170,7 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
       projectPath: '.mcp.json',
       server: 'github',
       reason: "the secrets stored under claude-code/github are not in protect-mcp's backup of this file, and a project-level entry is bound only to values protect-mcp stores from its file. "
-        + "If this entry is yours, put the server's values in its env, and run `npx secretless-ai protect-mcp`.",
+        + `If this entry is yours, put the server's values in its env, and run \`${sourceCommand('protect-mcp')}\`.`,
     }]);
     expect(await store().getBinding('claude-code', 'github')).toBeUndefined();
     expect(split(servers(file).github.args).id).toBeUndefined();
@@ -184,7 +185,7 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
 
     const reason = (other: string) =>
       `not bound: cursor/github is also read by server "github" in ${other}, and the secrets stored under a name are bound to one entry only. `
-      + 'Keep one of these entries, remove the others, and run `npx secretless-ai protect-mcp`; to run another as well, add it again under a new name with its values.';
+      + `Keep one of these entries, remove the others, and run \`${sourceCommand('protect-mcp')}\`; to run another as well, add it again under a new name with its values.`;
     expect(output).toContain(`  cursor (${cursor})\n    ? github: ${reason(settings)}\n`);
     expect(output).toContain(`  claude-code (${settings})\n    ? github: ${reason(cursor)}\n`);
     expect(output).toContain('  2 server(s) run through the wrapper but are not bound, so the wrapper does not start them. Each line above says what to change.\n');
@@ -220,7 +221,7 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
     expect(await store().getBinding('claude-code', 'db')).toEqual(record);
     expect(left.output).toContain(
       `    ? db: not bound: its command or arguments changed since it was bound, and a project-level entry is bound again only when protect-mcp stores its values. `
-        + "If you made the change, put the server's values in its env, and run `npx secretless-ai protect-mcp`.\n",
+        + `If you made the change, put the server's values in its env, and run \`${sourceCommand('protect-mcp')}\`.\n`,
     );
   });
 
@@ -236,7 +237,7 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
 
     expect(output).toContain(
       `    ? github: a copy of a bound entry: it carried the binding of server "github" in ${file}; the binding was replaced, and this entry no longer starts. `
-        + 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.\n\n'
+        + `Remove this entry; to run the server here as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`.\n\n`
         + '  1 copied binding(s) replaced; those copies no longer start.\n',
     );
     expect(output).not.toContain('Protected servers start as before.');
@@ -261,7 +262,7 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
 
     expect(output).toContain(
       `    ? github: a copy of a bound entry: it carries the binding of server "github" in ${bound}, so the wrapper gives it that server's secrets. `
-        + 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.\n\n'
+        + `Remove this entry; to run the server here as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`.\n\n`
         + '  1 server(s) are copies of a bound entry and receive its secrets.\n',
     );
     expect(fs.readFileSync(copy, 'utf-8')).toBe(copy0);

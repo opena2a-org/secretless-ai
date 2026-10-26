@@ -3,6 +3,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { builtCommand } from './mcp/printed-command.test-support';
 
 /**
  * `mcp-status`, `protect-mcp`, `mcp-unprotect` and `doctor` never print a
@@ -58,7 +59,7 @@ describe('mcp-status over a config it could not parse', () => {
     expect(out).toContain(`cursor (${configPath})`);
     expect(out).toContain('? not checked: not valid JSON (line 4, column 3)');
     expect(out).toContain('1 config(s) could not be parsed, so the servers in them were not checked.');
-    expect(out).toContain('Fix the file(s) above, then run `npx secretless-ai mcp-status` again.');
+    expect(out).toContain(`Fix the file(s) above, then run \`${builtCommand('mcp-status')}\` again.`);
     expect(out).not.toContain('PLAINTEXT');
   });
 
@@ -98,7 +99,7 @@ describe('mcp-status over a server entry with a part it could not read', () => {
     expect(out).toContain('    ? gh: env not checked: not a JSON object');
     expect(out).toContain('1 server(s) have a part that could not be read, so it was not checked for secrets.');
     expect(out).toContain('A server is a JSON object, and its env is a JSON object of string values.');
-    expect(out).toContain('Fix the entries above, then run `npx secretless-ai mcp-status` again.');
+    expect(out).toContain(`Fix the entries above, then run \`${builtCommand('mcp-status')}\` again.`);
     expect(out).not.toContain('PLAINTEXT');
   });
 
@@ -151,7 +152,7 @@ describe('protect-mcp over a config it could not parse', () => {
     expect(out).toContain(`cursor (${configPath})`);
     expect(out).toContain('? not checked: not valid JSON (line 4, column 3)');
     expect(out).toContain('1 config(s) could not be parsed, so the servers in them were not checked.');
-    expect(out).toContain('Fix the file(s) above, then run `npx secretless-ai protect-mcp` again.');
+    expect(out).toContain(`Fix the file(s) above, then run \`${builtCommand('protect-mcp')}\` again.`);
     expect(out).not.toContain('PLAINTEXT');
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(TRAILING_COMMA);
   });
@@ -186,7 +187,7 @@ describe('protect-mcp over a config it could not parse', () => {
     expect(out).toContain(`cursor (${configPath})`);
     expect(out).toContain('    ? gh: env not checked: not a JSON object');
     expect(out).toContain('1 server(s) have a part that could not be read, so it was not checked for secrets.');
-    expect(out).toContain('Fix the entries above, then run `npx secretless-ai protect-mcp` again.');
+    expect(out).toContain(`Fix the entries above, then run \`${builtCommand('protect-mcp')}\` again.`);
     expect(out).not.toContain('PLAINTEXT');
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(ENV_AS_STRING);
   });
@@ -211,7 +212,7 @@ describe('mcp-unprotect over a config it could not parse', () => {
     expect(out).toContain(`cursor (${configPath})`);
     expect(out).toContain('? not restored: not valid JSON (line 4, column 3)');
     expect(out).toContain('1 config(s) could not be parsed, so no backup of them was restored.');
-    expect(out).toContain('Fix the file(s) above, then run `npx secretless-ai mcp-unprotect` again.');
+    expect(out).toContain(`Fix the file(s) above, then run \`${builtCommand('mcp-unprotect')}\` again.`);
     expect(out).not.toContain('PLAINTEXT');
   });
 

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { protectMcp } from './mcp/protect';
+import { builtCommand } from './mcp/printed-command.test-support';
 
 /**
  * Claude Code keeps its user-scope MCP servers at the top level of
@@ -104,7 +105,7 @@ describe('mcp-status over ~/.claude.json', () => {
       ].join('\n'),
     );
     expect(out).not.toContain('/work/empty');
-    expect(out).toContain('Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.');
+    expect(out).toContain(`Run \`${builtCommand('protect-mcp')}\` to encrypt exposed secrets.`);
   });
 
   it('names a project whose server map is not a JSON object as not checked', () => {

@@ -7,6 +7,7 @@ import * as path from 'path';
 import { protectMcp } from './protect';
 import { McpVault } from './vault';
 import { VERBS } from '../argv';
+import { builtCommand } from './printed-command.test-support';
 
 /**
  * The secretless-mcp wrapper reads a pair's secrets only for the config entry
@@ -29,7 +30,7 @@ const WRAPPER_PATH = WRAPPER_JS;
 const NAME = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
 const VALUE = ['stand', 'in', 'value', String(process.pid)].join('-');
 const FIX =
-  "secretless-mcp: Run 'npx secretless-ai mcp-status' to see which config entries are bound, then 'npx secretless-ai protect-mcp' to bind the entries it protected.";
+  `secretless-mcp: Run '${builtCommand('mcp-status')}' to see which config entries are bound, then '${builtCommand('protect-mcp')}' to bind the entries it protected.`;
 const NOT_STARTED = 'so no secret was read. The server was not started.';
 
 let home: string;
@@ -234,14 +235,16 @@ describe('the wrapper starts a server only from the entry protect-mcp bound its 
 });
 
 describe('every command a binding line names is a registered command of the same build', () => {
-  it('the wrapper, protect-mcp and mcp-status name only registered commands', () => {
+  it('the wrapper, protect-mcp and mcp-status name commands only through the renderer, and only registered ones', () => {
     const cli = fs.readFileSync(path.resolve(__dirname, '..', '..', 'dist', 'cli.js'), 'utf-8');
     const named = new Set<string>();
     for (const built of ['mcp-wrapper.js', path.join('mcp', 'protect.js'), path.join('commands', 'mcp.js')]) {
       const text = fs.readFileSync(path.resolve(__dirname, '..', '..', 'dist', built), 'utf-8');
-      for (const match of text.matchAll(/npx secretless-ai ([a-z][a-z-]*)/g)) named.add(match[1]);
+      // A command written out in one of these files would not name this build.
+      expect(text, `${built} writes an npx command itself`).not.toMatch(/npx secretless-ai/);
+      for (const match of text.matchAll(/cliCommand\(\s*["']([a-z][a-z-]*)["']\s*\)/g)) named.add(match[1]);
     }
-    expect([...named].sort()).toEqual(expect.arrayContaining(['mcp-status', 'protect-mcp']));
+    expect([...named].sort()).toEqual(expect.arrayContaining(['mcp-status', 'mcp-unprotect', 'protect-mcp']));
     for (const verb of named) {
       expect(VERBS[verb], `${verb} has no registry row`).toBeDefined();
       expect(cli, `${verb} is not dispatched`).toContain(`case '${verb}':`);
@@ -318,10 +321,10 @@ describe('mcp-status and the wrapper agree, entry by entry, on whether an entry 
     expect(status).toContain(`    ? zeta: carries the binding of the entry for server "alpha" in ${file}, but its binding also appears in ${zetaFile}, so the wrapper does not start it\n`);
     expect(status).toContain(`    ? eta: the secrets it reads are bound to the entry for server "alpha" in ${file}, so the wrapper does not start it\n`);
     expect(status).toContain('  3 protected server(s) are not bound, so the wrapper does not start them.\n');
-    expect(status).toContain('  Run `npx secretless-ai protect-mcp` to bind the entries it protected; it names each entry it cannot bind, and why.\n');
+    expect(status).toContain(`  Run \`${builtCommand('protect-mcp')}\` to bind the entries it protected; it names each entry it cannot bind, and why.\n`);
     expect(status).toContain('  3 bound server(s) do not start from this directory; each line above says why.\n');
     expect(status).toContain(
-      '  Run `npx secretless-ai protect-mcp` to replace each home binding found outside its own entry; a copy of it then no longer starts.\n',
+      `  Run \`${builtCommand('protect-mcp')}\` to replace each home binding found outside its own entry; a copy of it then no longer starts.\n`,
     );
     expect(status).not.toContain('start with secrets bound to another entry');
     expect(status).toContain(

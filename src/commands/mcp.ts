@@ -39,6 +39,8 @@ import { listedName } from '../secret-value';
 import { escapeForDisplay } from '../display-safe';
 import { EXIT_USAGE, readWrapperArgv, wrapperFlag } from '../argv';
 import type { WrapperArgv } from '../argv';
+import { printedCommand } from '../printed-command';
+import { VERSION } from './utils';
 
 function getWrapperPath(): string {
   return thisBuildWrapperPath();
@@ -84,10 +86,13 @@ function printUnparsedConfigs(unparsed: UnparsedMcpConfig[], marker: string): vo
   }
 }
 
+/** `command` as a line names it: for this build (see printed-command.ts). */
+const cliCommand = (command: string): string => printedCommand(command, VERSION);
+
 /** The count of configs printUnparsedConfigs listed, what was not done to them, and the command to run once they are fixed. */
 function printUnparsedFix(count: number, consequence: string, command: string): void {
   console.log(`  ${count} config(s) could not be parsed, so ${consequence}.`);
-  console.log(`  Fix the file(s) above, then run \`npx secretless-ai ${command}\` again.\n`);
+  console.log(`  Fix the file(s) above, then run \`${cliCommand(command)}\` again.\n`);
 }
 
 /**
@@ -104,7 +109,7 @@ function printUncheckedServers(servers: UncheckedMcpServer[]): void {
 function printUncheckedFix(count: number, command: string): void {
   console.log(`  ${count} server(s) have a part that could not be read, so it was not checked for secrets.`);
   console.log('  A server is a JSON object, and its env is a JSON object of string values.');
-  console.log(`  Fix the entries above, then run \`npx secretless-ai ${command}\` again.\n`);
+  console.log(`  Fix the entries above, then run \`${cliCommand(command)}\` again.\n`);
 }
 
 /** One line for each server, under the label of its config, in the order given. */
@@ -141,7 +146,7 @@ function printSharedNameServers(servers: SharedNameMcpServer[]): void {
   });
   console.log(`  ${servers.length} server(s) were not protected, so their secrets are still in plaintext.`);
   console.log('  Secrets are stored under the client and server name, and a protected server reads its secrets by that name.');
-  console.log('  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.\n');
+  console.log(`  Rename each server listed above, then run \`${cliCommand('protect-mcp')}\` again.\n`);
 }
 
 /**
@@ -152,7 +157,7 @@ function printRefusedNameServers(servers: RefusedNameMcpServer[]): void {
   printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: not protected: ${server.reason}`);
   console.log(`  ${servers.length} server(s) were not protected, so their secrets are still in plaintext.`);
   console.log('  The store takes only A-Z, a-z, 0-9, - and _ in a server name.');
-  console.log('  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.\n');
+  console.log(`  Rename each server listed above, then run \`${cliCommand('protect-mcp')}\` again.\n`);
 }
 
 /**
@@ -162,7 +167,7 @@ function printRefusedNameServers(servers: RefusedNameMcpServer[]): void {
 function printUnmovedServers(servers: UnmovedMcpServer[]): void {
   printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: secrets not moved: ${server.reason}`);
   console.log(`  ${servers.length} server(s) have secrets in plaintext in their env that were not encrypted.`);
-  console.log('  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.\n');
+  console.log(`  Move each value out of its file and rotate it, then run \`${cliCommand('mcp-status')}\` again.\n`);
 }
 
 /** `, project <key>` for an entry kept for one project in ~/.claude.json, otherwise nothing. */
@@ -229,7 +234,7 @@ function printUnboundServers(servers: UnboundMcpServer[]): void {
  * the others, which receive that entry's secrets. Then the counts.
  */
 function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
-  const remove = 'Remove this entry; to run the server here as well, add it again under a new name with its values and run `npx secretless-ai protect-mcp`.';
+  const remove = `Remove this entry; to run the server here as well, add it again under a new name with its values and run \`${cliCommand('protect-mcp')}\`.`;
   printUnderConfigs(servers, (server) => {
     if (server.replaced) {
       return `    ? ${listedName(server.server)}: a copy of a bound entry: it carried the binding of ${boundEntryName(server.boundTo)}; the binding was replaced, and this entry no longer starts. ${remove}`;
@@ -330,7 +335,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
         }
         console.log(`  ${projectLevel.length} project-level config(s) were not checked, so no secret in them was encrypted.`);
         console.log("  protect-mcp would write this machine's wrapper path into them, and these files are usually committed.");
-        console.log('  Run `npx secretless-ai mcp-status` to list their servers.\n');
+        console.log(`  Run \`${cliCommand('mcp-status')}\` to list their servers.\n`);
       }
     };
 
@@ -413,8 +418,8 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     if (result.unbound.length === 0 && !result.copies.some((copy) => copy.replaced)) {
       console.log('  Protected servers start as before.');
     }
-    console.log('  Run `npx secretless-ai mcp-status` to check status anytime.');
-    console.log('  Run `npx secretless-ai mcp-unprotect` to restore originals.\n');
+    console.log(`  Run \`${cliCommand('mcp-status')}\` to check status anytime.`);
+    console.log(`  Run \`${cliCommand('mcp-unprotect')}\` to restore originals.\n`);
     return 0;
   } catch (err) {
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -565,7 +570,7 @@ const UNREAD_WRAPPER_LINE = (server: string, repoints: boolean): string =>
   `    ? ${listedName(server)}: runs through a wrapper whose version could not be read${repoints ? REPOINTS : ''}`;
 
 /** The command each fix line names. */
-const PROTECT_MCP = '`npx secretless-ai protect-mcp`';
+const PROTECT_MCP = (): string => `\`${cliCommand('protect-mcp')}\``;
 
 /**
  * The fix lines under an entry in a config protect-mcp rewrites: what
@@ -574,19 +579,19 @@ const PROTECT_MCP = '`npx secretless-ai protect-mcp`';
  * (product and design roles); the content is the architecture ruling's: bind,
  * leave with a reason, report a copy.
  */
-const FIX_BIND = `      ${PROTECT_MCP} binds it.`;
-const FIX_REBIND = `      ${PROTECT_MCP} binds it again with its command as it is now.`;
-const FIX_STALE = `      ${PROTECT_MCP} writes its binding into it again.`;
-const FIX_LEFT = (reason: string): string => `      ${PROTECT_MCP} leaves it not bound: ${reason}`;
-const FIX_COPY = (entry: string): string => `      ${PROTECT_MCP} reports it as a copy of ${entry} and writes nothing for it.`;
-const FIX_REPLACE = (entry: string): string => `      ${PROTECT_MCP} replaces the binding of ${entry}; this entry then no longer starts.`;
+const FIX_BIND = (): string => `      ${PROTECT_MCP()} binds it.`;
+const FIX_REBIND = (): string => `      ${PROTECT_MCP()} binds it again with its command as it is now.`;
+const FIX_STALE = (): string => `      ${PROTECT_MCP()} writes its binding into it again.`;
+const FIX_LEFT = (reason: string): string => `      ${PROTECT_MCP()} leaves it not bound: ${reason}`;
+const FIX_COPY = (entry: string): string => `      ${PROTECT_MCP()} reports it as a copy of ${entry} and writes nothing for it.`;
+const FIX_REPLACE = (entry: string): string => `      ${PROTECT_MCP()} replaces the binding of ${entry}; this entry then no longer starts.`;
 
 /**
  * The line after the entries when protect-mcp's plan could not be read, so
  * no fix line is printed. Words pending (product and design roles).
  */
 const PLAN_UNREAD = (why: string): string =>
-  `  What protect-mcp would do for each entry could not be read (${why}); run ${PROTECT_MCP} to see it.`;
+  `  What protect-mcp would do for each entry could not be read (${why}); run ${PROTECT_MCP()} to see it.`;
 
 /** The fix line for a plan, or undefined for a bound entry. */
 function fixLine(fix: McpBindingFix): string | undefined {
@@ -594,11 +599,11 @@ function fixLine(fix: McpBindingFix): string | undefined {
     case 'bound':
       return undefined;
     case 'bind':
-      return FIX_BIND;
+      return FIX_BIND();
     case 'rebind':
-      return FIX_REBIND;
+      return FIX_REBIND();
     case 'stale':
-      return FIX_STALE;
+      return FIX_STALE();
     case 'left':
       return FIX_LEFT(fix.reason);
     case 'copy':
@@ -772,14 +777,14 @@ export async function runMcpStatus(): Promise<number> {
   if (planError !== undefined) console.log(`${PLAN_UNREAD(escapeForDisplay(planError))}\n`);
 
   if (exposedCount > 0) {
-    console.log('  Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.\n');
+    console.log(`  Run \`${cliCommand('protect-mcp')}\` to encrypt exposed secrets.\n`);
   } else if (protectedCount > 0) {
     console.log(`  All protected servers use the ${backend} backend for secret storage.\n`);
   }
   if (notBoundCount > 0) {
     console.log(`  ${notBoundCount} protected server(s) are not bound, so the wrapper does not start them.`);
     console.log(
-      '  Run `npx secretless-ai protect-mcp` to bind the entries it protected; it names each entry it cannot bind, and why.\n',
+      `  Run \`${cliCommand('protect-mcp')}\` to bind the entries it protected; it names each entry it cannot bind, and why.\n`,
     );
   }
   if (otherEntryCount > 0) {
@@ -793,7 +798,7 @@ export async function runMcpStatus(): Promise<number> {
     );
     if (placeRefused.home > 0) {
       console.log(
-        '  Run `npx secretless-ai protect-mcp` to replace each home binding found outside its own entry; a copy of it then no longer starts.',
+        `  Run \`${cliCommand('protect-mcp')}\` to replace each home binding found outside its own entry; a copy of it then no longer starts.`,
       );
     }
     if (placeRefused.project > 0) {
@@ -806,7 +811,7 @@ export async function runMcpStatus(): Promise<number> {
       `  ${projectLevelCount} server(s) run through the wrapper from project-level configs protect-mcp does not rewrite, so they do not start: ${[...projectLevelFiles].map(listedName).join(', ')}.`,
     );
     console.log(
-      "  protect-mcp binds entries only in home configs and in a project's .mcp.json; to run one of these servers, add it to one of those and run `npx secretless-ai protect-mcp`.\n",
+      `  protect-mcp binds entries only in home configs and in a project's .mcp.json; to run one of these servers, add it to one of those and run \`${cliCommand('protect-mcp')}\`.\n`,
     );
   }
   if (leftExposedCount > 0) {
@@ -814,7 +819,7 @@ export async function runMcpStatus(): Promise<number> {
       `  ${leftExposedCount} exposed server(s) are in project-level configs that protect-mcp does not rewrite: ${[...leftExposedFiles].join(', ')}.`,
     );
     console.log("  protect-mcp would write this machine's wrapper path into them, and these files are usually committed.");
-    console.log('  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.\n');
+    console.log(`  Move each value out of its file and rotate it, then run \`${cliCommand('mcp-status')}\` again.\n`);
   }
   if (uncheckedCount > 0) {
     printUncheckedFix(uncheckedCount, 'mcp-status');

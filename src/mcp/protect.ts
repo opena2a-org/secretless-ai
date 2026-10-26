@@ -22,6 +22,8 @@ import type { SelectableBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import { listedName, quotedName } from '../secret-value';
 import { escapeForDisplay } from '../display-safe';
+import { printedCommand } from '../printed-command';
+import { VERSION } from '../commands/utils';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1532,12 +1534,15 @@ function pairName(reads: { client: string; server: string }): string {
   return listedName(`${reads.client}/${reads.server}`);
 }
 
+/** `command` as a reason names it: for this build (see printed-command.ts). */
+const cliCommand = (command: string): string => printedCommand(command, VERSION);
+
 /** The end of a reason whose fix is to store the server's secrets from its env again. */
-const STORE_AGAIN = 'put the server\'s values in its env, and run `npx secretless-ai protect-mcp`.';
+const STORE_AGAIN = (): string => `put the server's values in its env, and run \`${cliCommand('protect-mcp')}\`.`;
 
 function changedProjectCommandReason(): string {
   return 'its command or arguments changed since it was bound, and a project-level entry is bound again only when protect-mcp stores its values. '
-    + `If you made the change, ${STORE_AGAIN}`;
+    + `If you made the change, ${STORE_AGAIN()}`;
 }
 
 function otherReadersReason(
@@ -1547,19 +1552,19 @@ function otherReadersReason(
   const entries = others.map(({ config, server }) =>
     boundEntryName({ server: server.name, file: config.filePath, ...(config.projectKey === undefined ? {} : { projectKey: config.projectKey }) }));
   return `${pairName(reads)} is also read by ${entries.join('; ')}, and the secrets stored under a name are bound to one entry only. `
-    + 'Keep one of these entries, remove the others, and run `npx secretless-ai protect-mcp`; to run another as well, add it again under a new name with its values.';
+    + `Keep one of these entries, remove the others, and run \`${cliCommand('protect-mcp')}\`; to run another as well, add it again under a new name with its values.`;
 }
 
 function notInBackupReason(reads: { client: string; server: string }): string {
   return `the secrets stored under ${pairName(reads)} are not in protect-mcp's backup of this file, and a project-level entry is bound only to values protect-mcp stores from its file. `
-    + `If this entry is yours, ${STORE_AGAIN}`;
+    + `If this entry is yours, ${STORE_AGAIN()}`;
 }
 
 /** `fileClause`: what boundFileClause says of the bound entry's file, or ''. */
 function boundElsewhereReason(reads: { client: string; server: string }, binding: McpBinding, fileClause: string): string {
   const file = fileClause === '' ? '' : ` ${fileClause}`;
   return `the secrets stored under ${pairName(reads)} are bound to ${boundEntryName(binding)}. `
-    + `To run this server as well, add it again under a new name with its values and run \`npx secretless-ai protect-mcp\`.${file}`;
+    + `To run this server as well, add it again under a new name with its values and run \`${cliCommand('protect-mcp')}\`.${file}`;
 }
 
 /**
@@ -1567,18 +1572,18 @@ function boundElsewhereReason(reads: { client: string; server: string }, binding
  * where storing its values again would not bind it: the pair still holds
  * values, and a project-level value is stored only into an empty pair.
  */
-const ADD_UNDER_NEW_NAME =
-  'If this entry is yours, add the server again under a new name with its values, remove this entry, and run `npx secretless-ai protect-mcp`.';
+const ADD_UNDER_NEW_NAME = (): string =>
+  `If this entry is yours, add the server again under a new name with its values, remove this entry, and run \`${cliCommand('protect-mcp')}\`.`;
 
 /** For a .mcp.json entry at its binding's place that carries no id or another one (a home one is bound again). */
 function otherIdReason(reads: { client: string; server: string }): string {
-  return `its binding does not match the one stored for ${pairName(reads)}. ${ADD_UNDER_NEW_NAME}`;
+  return `its binding does not match the one stored for ${pairName(reads)}. ${ADD_UNDER_NEW_NAME()}`;
 }
 
 /** Why a server's secrets were not stored, or it was not bound: the store refused its binding. */
 function bindingNotStoredReason(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return `the binding could not be stored (${escapeForDisplay(message.split('\n')[0])}); run \`npx secretless-ai protect-mcp\` again once the store accepts writes`;
+  return `the binding could not be stored (${escapeForDisplay(message.split('\n')[0])}); run \`${cliCommand('protect-mcp')}\` again once the store accepts writes`;
 }
 
 /**
