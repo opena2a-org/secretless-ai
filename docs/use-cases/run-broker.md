@@ -93,14 +93,14 @@ HTTP routes:
 |--------|------|---------|
 | `GET` | `/health` | Health check |
 | `GET` | `/status` | Uptime, request count, policy count, AIM state |
-| `POST` | `/resolve` | `{agentId, credentialName}` -> `{value}` or 403 |
+| `POST` | `/resolve` | `{agentId, credentialName}` -> `{value}` or 403. Answers 404 until a policy file is loaded ([Write a policy](#write-a-policy)), and under `--no-resolve` |
 | `POST` | `/grant` | `{agentId, atx, grant, operation}` -> `{result}` or 403. Answers 404 until a grant file is loaded ([Grants](#grants-run-an-operation-without-handing-over-the-credential)) |
 
 Both the HTTP port and a Unix socket at `~/.secretless-ai/broker.sock` accept the same routes. The socket is `0600`, same user only.
 
 ## Write a policy
 
-Default deny. Without a policy, every `/resolve` returns 403.
+Default deny. Without a policy file, `/resolve` is off and answers 404. With one, `/resolve` answers 403 to every request no `allow` rule matches.
 
 Create `~/.secretless-ai/broker-policies.json`:
 
@@ -163,7 +163,7 @@ permission discovery in the resolve path, which is tracked separately. A rule
 naming it is refused rather than silently ignored, so that a policy relying on
 it fails visibly instead of appearing enforced.
 
-Reload by restarting the daemon. Or pass `--policy-file <path>` on start to use a non-default location.
+Reload by restarting the daemon. Or pass `--policy-file <path>` on start to use a non-default location. A path named on the command line must exist.
 
 ## Grants: run an operation without handing over the credential
 
@@ -228,6 +228,8 @@ npx secretless-ai broker start
 Pass `--grant-file <path>` to load a grant file from another location. A path named on the command line must exist.
 
 The first start creates the signing key at `~/.secretless-ai/broker-assertion.key` (Ed25519, mode `0600`) and writes its public half beside it as a JWK. Register that JWK with each identity provider so it accepts assertions signed by this broker. To rotate the key, stop the broker, delete the key file, start again, and register the new public key. The broker refuses to start on a key file that other users can read.
+
+A broker that loads a grant file and no policy file serves grants only: it builds no credential resolver, so `/resolve` answers 404 and no credential is read from the store or the environment. When `~/.secretless-ai/broker-policies.json` exists, pass `--no-resolve` to keep `/resolve` off: `npx secretless-ai broker start --grant-file <path> --no-resolve`. The broker then reads no policy file. `--no-resolve` together with `--policy-file` is refused.
 
 An agent presents its ATX credential, the grant, and the operation. It sends no host and no credential:
 
@@ -368,7 +370,8 @@ The daemon removes the socket, pid file, and auth token on shutdown.
 
 ## Troubleshooting
 
-- **`broker status` shows `Policies: 0` but I have a policy file**: confirm the file is at `~/.secretless-ai/broker-policies.json` or you passed `--policy-file`. Restart the daemon after edits. `broker status` now pulls live values from the running server, so a zero means the daemon really loaded zero rules.
+- **`broker status` shows `Resolve: off, no policy file` but I have a policy file**: the daemon found no file at `~/.secretless-ai/broker-policies.json` when it started, and none was passed with `--policy-file`. Check the path, then restart the daemon. `Resolve: on` with `(0 rules)` means the file loaded and holds no rule. The daemon reads the file at start, so restart it after edits.
+- **`/resolve` answers 404**: the broker loaded no policy file, or was started with `--no-resolve`. The `Resolve:` row of `broker start` or `broker status` says which. To serve `/resolve`, put the policy file at `~/.secretless-ai/broker-policies.json` or pass `--policy-file <path>`, and start without `--no-resolve`.
 - **All `/resolve` calls return 403 "default deny"**: write an `allow` rule that matches your `agentId` and `credentialSelector`. Check the audit log for the exact input.
 - **AIM shows `configured (unreachable)`**: probe the URL yourself: `curl -s -o /dev/null -w "%{http_code}\n" <aim-url>/health`. Common causes: wrong URL, network segmentation, AIM not deployed to that host.
 - **`broker start` reports `Broker socket path ... is <n> bytes long`**: the socket is created at `~/.secretless-ai/broker.sock`, and `broker start` refuses a socket path longer than the limit the Node it runs under listens within: 108 bytes on Linux; on macOS, 253 bytes under a Node whose libuv (`node -p process.versions.uv`) is 1.53.0 or later, as Node 26.12.0 bundles, and 104 bytes under an earlier one. Count the bytes with `printf %s "$HOME/.secretless-ai/broker.sock" | wc -c`. Start the broker with `HOME` set to a directory whose path is at most 226 bytes on macOS under libuv 1.53.0 or later, 77 bytes under an earlier one, or 81 bytes on Linux (the limit less the 27 bytes of `/.secretless-ai/broker.sock`); it then keeps its files in that directory's `.secretless-ai`.

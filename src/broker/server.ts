@@ -5,10 +5,13 @@
  * Fallback transport: HTTP on 127.0.0.1:19421 (for Docker/non-Unix clients)
  *
  * Routes:
- *   POST /resolve  — Resolve a credential for an agent (policy-gated; 404 on a broker built with resolver: null)
+ *   POST /resolve  — Resolve a credential for an agent (policy-gated)
  *   POST /grant    — Run an operation under a grant (404 unless a grant resolver is configured)
  *   GET  /health   — Health check
  *   GET  /status   — Extended status with metrics
+ *
+ * POST /resolve answers 404 on a broker built with `resolver: null`, as /grant does with no
+ * grant resolver; /status reports which of the two routes are served.
  *
  * Never binds to 0.0.0.0. All traffic is localhost-only.
  */
