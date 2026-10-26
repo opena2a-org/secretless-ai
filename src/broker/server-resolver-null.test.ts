@@ -67,12 +67,12 @@ const SOURCE: GrantRouteSource = {
   assertionKeyCreated: false,
 };
 
-function oneRulePolicy(file: string, credentialSelector = 'F8_*'): void {
+function oneRulePolicy(file: string, credentialSelector = 'ROUTE_CHECK_*'): void {
   fs.writeFileSync(
     file,
     JSON.stringify({
       version: 1,
-      rules: [{ id: 'allow-f8', agentSelector: 'agent-*', credentialSelector, constraints: {}, effect: 'allow' }],
+      rules: [{ id: 'allow-route-check', agentSelector: 'agent-*', credentialSelector, constraints: {}, effect: 'allow' }],
     }),
   );
 }
@@ -207,7 +207,7 @@ describe('BrokerServer built with resolver: null', () => {
 
   it('A3: /resolve answers 404, the unknown-route body, and never a value set in the broker environment', async () => {
     // The broker runs in this process, so this is the broker's environment.
-    const name = `F8_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const name = `ROUTE_CHECK_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
     const value = crypto.randomBytes(16).toString('hex');
     process.env[name] = value;
     try {
@@ -235,7 +235,7 @@ describe('BrokerServer built with resolver: null', () => {
   });
 
   it('A3c (control): the same request on a broker with a resolver and an allowing policy returns the value', async () => {
-    const name = `F8_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const name = `ROUTE_CHECK_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
     const value = crypto.randomBytes(16).toString('hex');
     process.env[name] = value;
     try {
@@ -438,7 +438,7 @@ function ask(token, urlPath, body) {
     grant: { status: number; text: string };
     resolved: { status: number; text: string };
   } {
-    const name = `F8_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const name = `ROUTE_CHECK_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
     const value = crypto.randomBytes(16).toString('hex');
     const config: BrokerConfig = {
       socketPath: path.join(work, 'b.sock'),
