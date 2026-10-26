@@ -9,7 +9,7 @@ import { McpVault, commandDigest, newBindingId } from './vault';
 import { rewriteConfig } from './rewrite';
 import { checkStart } from './start-check';
 import { createBackend } from '../backends/factory';
-import { runProtectMcp } from '../commands/mcp';
+import { runMcpStatus, runProtectMcp } from '../commands/mcp';
 import { sourceCommand } from './printed-command.test-support';
 import { MemoryStore } from './binding-store-double.test-support';
 
@@ -521,6 +521,67 @@ describe('T7: protect-mcp binds again a .mcp.json entry whose project directory 
     expect(manifestKeys()).not.toContain(moved);
     expect(fs.readFileSync(moved, 'utf-8')).toBe(before);
     expect(await store().getBinding('claude-code', 'github')).toMatchObject({ id, file });
+  });
+});
+
+describe('mcp-status names a .mcp.json entry whose bound project is not on this machine, and counts it in no place footer', () => {
+  const fixBind = `      \`${sourceCommand('protect-mcp')}\` binds it.`;
+  const notHere = (a: string) => `, but its binding is to the project in ${a}, which is not on this machine, so the wrapper does not start it\n`;
+
+  /** The place footers name a copy to remove, or a directory to start from: neither is this entry's. */
+  function expectNoPlaceFooter(output: string) {
+    expect(output).not.toContain('do not start from this directory');
+    expect(output).not.toContain('Remove each copy of a project binding named above');
+  }
+
+  it('p1: in the moved directory, the line says the project it is bound to is not on this machine, and the fix line beneath it says protect-mcp binds it', async () => {
+    const { a, a2, file } = await movedProject('p1');
+
+    const output = await run('p1', () => runMcpStatus(), a2);
+
+    expect(output).toContain(`    ? github: carries the binding of the entry for server "github" in ${file}${notHere(a)}${fixBind}\n`);
+    expectNoPlaceFooter(output);
+  });
+
+  it('p2: where the project directory is there without its .mcp.json, the line says that file is not on this machine', async () => {
+    const { a, a2, file } = await movedProject('p2');
+    fs.mkdirSync(a);
+
+    const output = await run('p2', () => runMcpStatus(), a2);
+
+    expect(output).toContain(
+      `    ? github: carries the binding of the entry for server "github" in ${file}, but its binding is to the project in ${a}, and ${file} is not on this machine, so the wrapper does not start it\n`,
+    );
+    expectNoPlaceFooter(output);
+  });
+
+  it('p3: where the project directory cannot be searched, the line says its .mcp.json could not be read, with the code', async () => {
+    const { a, a2, file } = await movedProject('p3');
+    fs.mkdirSync(a);
+    fs.chmodSync(a, 0o000);
+    let output: string;
+    try {
+      output = await run('p3', () => runMcpStatus(), a2);
+    } finally {
+      fs.chmodSync(a, 0o700);
+    }
+
+    expect(output).toContain(
+      `    ? github: carries the binding of the entry for server "github" in ${file}, but its binding is to the project in ${a}, and ${file} could not be read (EACCES), so the wrapper does not start it\n`,
+    );
+    expectNoPlaceFooter(output);
+  });
+
+  it('p4: a copy of the entry in a project config protect-mcp does not rewrite is counted with those configs, and in no place footer', async () => {
+    const { a, a2, moved } = await movedProject('p4');
+    const copy = write(path.join(a2, '.cursor', 'mcp.json'), { mcpServers: { github: entryOf(moved, 'github') } });
+    plant('p4', copy, idOf(entryOf(copy, 'github').args));
+
+    const output = await run('p4', () => runMcpStatus(), a2);
+
+    expect(output.split(notHere(a))).toHaveLength(3);
+    expect(output).toContain('  1 server(s) run through the wrapper from project-level configs protect-mcp does not rewrite, so they do not start: ');
+    expectNoPlaceFooter(output);
   });
 });
 
