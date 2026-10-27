@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { protectMcp } from './protect';
+import { commandDigest } from './vault';
 import { createBackend } from '../backends/factory';
 import { GCPSecretManagerBackend } from '../backends/gcp-sm';
 import { fakeSecretManager, type FakeSecretManager } from '../backends/gcp-sm-fake.test-support';
@@ -25,6 +26,8 @@ vi.mock('../backends/factory', async (importOriginal) => {
 
 const PROJECT = 'acme-mcp-census';
 const WRAPPER = '/usr/local/bin/secretless-mcp';
+/** A binding id: 32 lowercase hex digits. */
+const BINDING_ID = /^[0-9a-f]{32}$/;
 
 /** A value built at run time, shaped like no provider's token. */
 function placeholder(label: string): string {
@@ -82,12 +85,33 @@ describe('protectMcp on the gcp-sm backend', () => {
     expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['GITHUB_TOKEN'] }]);
     expect(result.serversProtected).toBe(1);
 
-    // One new secret, named after the whole key and labelled as written by
-    // this tool; the project's own secrets keep the one version they had.
-    expect([...project.secrets.keys()].sort()).toEqual(['DB_PASSWORD', 'STRIPE_KEY', 'mcp--cursor--github--GITHUB__TOKEN']);
+    // Two new secrets, each named after its whole key and labelled as written
+    // by this tool: the server's secret, and the binding protect-mcp stores
+    // beside the pair. The project's own secrets keep the one version they had.
+    expect([...project.secrets.keys()].sort()).toEqual([
+      'DB_PASSWORD', 'STRIPE_KEY', 'mcp--cursor--github--GITHUB__TOKEN', 'mcp_2Dbinding--cursor--github',
+    ]);
     expect(project.secrets.get('mcp--cursor--github--GITHUB__TOKEN')).toEqual({
       labels: { 'secretless-ai': 'store-key' },
       versions: [token],
+    });
+    // The binding is one version holding the entry's binding id, where the
+    // entry is, and the digest of the command it starts.
+    const binding = project.secrets.get('mcp_2Dbinding--cursor--github')!;
+    expect(binding.labels).toEqual({ 'secretless-ai': 'store-key' });
+    expect(binding.versions).toHaveLength(1);
+    const record = JSON.parse(binding.versions[0]);
+    expect(record).toEqual({
+      schema: 1,
+      id: expect.stringMatching(BINDING_ID),
+      scope: 'home',
+      file: configPath,
+      client: 'cursor',
+      server: 'github',
+      commandDigest: commandDigest('npx', ['@github/mcp-server']),
+      boundAt: expect.any(String),
+      boundBy: expect.any(String),
+      boundOn: fs.readFileSync(path.join(dataDir, 'binding-home-id'), 'latin1').trim(),
     });
     expect(project.secrets.get('DB_PASSWORD')!.versions).toEqual([dbPassword]);
     expect(project.secrets.get('STRIPE_KEY')!.versions).toEqual([stripeKey]);
@@ -96,8 +120,11 @@ describe('protectMcp on the gcp-sm backend', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     expect(config.mcpServers.github.command).toBe(WRAPPER);
     expect(config.mcpServers.github.args).toEqual([
-      '--server', 'github', '--client', 'cursor', '--backend', 'gcp-sm', '--', 'npx', '@github/mcp-server',
+      '--server', 'github', '--client', 'cursor', '--backend', 'gcp-sm', '--binding', expect.stringMatching(BINDING_ID),
+      '--', 'npx', '@github/mcp-server',
     ]);
+    // The id the entry carries is the one stored beside the pair.
+    expect(config.mcpServers.github.args[config.mcpServers.github.args.indexOf('--binding') + 1]).toBe(record.id);
     expect(config.mcpServers.github.env ?? {}).not.toHaveProperty('GITHUB_TOKEN');
   });
 });
