@@ -790,7 +790,7 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 }
 
 /**
- * S3 from the wrapper's own check (S2). For each home binding whose entry is
+ * Copies found by the wrapper's own check. For each home binding whose entry is
  * in its file as this run read it, the check the wrapper runs before it starts
  * that entry from the directory this run is in: checkLaunchPlace, the function
  * mcp-status runs through checkStart, with that directory as the start. A
@@ -1562,9 +1562,8 @@ function replaceFields(outcome: ReplaceOutcome): { replaced?: true; replaceError
 
 /**
  * What a line prints in place of a store's or a write's error message that
- * could hold the binding (see firstLine). Words pending (product and design
- * roles); the content is the security ruling's: the store's message was
- * withheld because it could hold the binding.
+ * could hold the binding (see firstLine): the store's message was withheld
+ * because it could hold the binding.
  */
 export const STORE_MESSAGE_WITHHELD = "the store's message was withheld, since it could hold the binding";
 
@@ -1771,7 +1770,7 @@ const FILE_GONE = (file: string): string => `${listedName(file)} no longer exist
  * between machines: the entry may be on another machine, so it states that
  * the file was not found on this one, and that `backend` is read from other
  * machines as well, so the binding may be in use there. Nothing of the
- * file's history, and no remedy. Words: the product role's C3 ruling (C3-4).
+ * file's history, and no remedy.
  */
 const FILE_NOT_FOUND_HERE = (file: string, backend: string): string =>
   `${listedName(file)} was not found on this machine; the ${backend} backend is read from other machines as well, so that binding may be in use there.`;
@@ -1779,16 +1778,15 @@ const FILE_NOT_FOUND_HERE = (file: string, backend: string): string =>
 /**
  * The clause for the file of an entry bound by a binding this secretless home
  * stored in a store several machines read, absent here: the file this home
- * bound is gone from this machine. Words pending (product and design roles,
- * cross XC-2); until then the words are FILE_NOT_FOUND_HERE's, as the product
- * role fixed them for such a store.
+ * bound is gone from this machine. The words are FILE_NOT_FOUND_HERE's, the
+ * clause for such a store.
  */
 const OWNED_FILE_GONE_HERE = (file: string, backend: string): string => FILE_NOT_FOUND_HERE(file, backend);
 
 /**
  * The clause for a bound entry's file that could not be checked: what was
  * checked, whether the file exists, then the error code, and nothing of a
- * missing file. Words: the design role's C3 ruling (C3.3).
+ * missing file.
  */
 const FILE_UNCHECKED = (file: string, code: string): string => `Whether ${listedName(file)} exists could not be checked (${escapeForDisplay(code)}).`;
 
@@ -1860,7 +1858,6 @@ function changedProjectCommandReason(): string {
  * moved (see movedEntry) is left when its command or arguments differ from
  * the ones it was bound with: the difference and the directory it was bound
  * in, then the fix. Nothing is stored or moved for it.
- * Words pending (product and design roles); the content is the security ruling's.
  */
 const MOVED_COMMAND_CHANGED = (directory: string): string =>
   `its command or arguments changed since it was bound in ${listedName(directory)}, the project directory it moved from, `
@@ -1906,8 +1903,7 @@ const ADD_UNDER_NEW_NAME = (): string =>
  * mcp-unprotect on this machine leave that binding as it is; and how to run
  * the server here: under another name, with its own values. It never says
  * the bound entry no longer exists, and names no command that deletes a
- * binding. Words pending (product and design roles, cross XC-2); the content
- * is the architecture ruling's (J5).
+ * binding.
  */
 export const ANOTHER_MACHINE_REASON = (reads: { client: string; server: string }): string =>
   `the secrets stored under ${pairName(reads)} were bound by protect-mcp in another secretless home: on another machine, `
@@ -1922,8 +1918,7 @@ export const ANOTHER_MACHINE_REASON = (reads: { client: string; server: string }
  * ~/.secretless-ai was replaced, and the file is a path there; protect-mcp
  * and mcp-unprotect on this machine leave that binding as it is. It never
  * says the file no longer exists, and names no command that deletes a
- * binding. Words pending (product and design roles, cross XC-2); the content
- * is the architecture ruling's (J3, J5).
+ * binding.
  */
 export const ANOTHER_MACHINE_CLAUSE = (file: string): string =>
   'That entry was bound by protect-mcp in another secretless home, on another machine or on this one before its ~/.secretless-ai was replaced, '
@@ -1943,10 +1938,8 @@ function bindingNotStoredReason(storeError: string): string {
  * Why no binding was stored when the secretless home's id file could not be
  * used (see BindingHomeIdError): the file, and that it holds no id, or the
  * errno code of the read or create that failed. Never what the file holds.
- * Words pending (product and design roles); the content is the architecture
- * ruling's: a run that cannot read or create the id stores no binding, every
- * entry it would bind is left with the error, and the file is never
- * overwritten.
+ * A run that cannot read or create the id stores no binding, every entry it
+ * would bind is left with the error, and the file is never overwritten.
  */
 export const HOME_ID_UNUSABLE = (error: BindingHomeIdError): string =>
   error.problem.kind === 'malformed'
@@ -1959,9 +1952,7 @@ export const HOME_ID_UNUSABLE = (error: BindingHomeIdError): string =>
  * this secretless home did not store (BindingWriteRefusedError): for one
  * another home stored, ANOTHER_MACHINE_REASON; for one that changed after it
  * was read, that nothing was written over it, and that protect-mcp, run
- * again, plans from what the store then holds. It never names a value. Words
- * pending (product and design roles, cross XC-2); the content is the
- * architecture ruling's (J3b).
+ * again, plans from what the store then holds. It never names a value.
  */
 export const BINDING_NOT_AS_READ = (error: BindingWriteRefusedError): string =>
   error.why === 'not-owned'

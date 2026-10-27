@@ -181,11 +181,10 @@ function refusePlace(
 }
 
 /**
- * B4's fix for a home binding found in a copy: protect-mcp run in the
+ * The fix for a home binding found in a copy: protect-mcp run in the
  * directory this entry was started in, which replaces the binding, so no copy
  * found from there starts; then the copy removed. In this order: removing the
- * copy first leaves the binding as it was. Words pending (product and design
- * roles); the content is the security ruling's.
+ * copy first leaves the binding as it was.
  */
 const HOME_COPY_FIX = (startDir: string): string =>
   `Run '${cliCommand("protect-mcp")}' in ${listedName(startDir)}: it replaces the binding, so no copy found from there starts. Then remove that copy.`;
@@ -315,8 +314,8 @@ async function main(): Promise<void> {
     // .mcp.json that came with a repository, carries no id this machine's
     // protect-mcp wrote, and a changed command does not match the digest.
     // Then where it was started: a project-level binding only in its
-    // project's directory or below it (S1), and no other project-level config
-    // visible from that directory holds its id (S2). checkStart runs these
+    // project's directory or below it, and no other project-level config
+    // visible from that directory holds its id. checkStart runs these
     // checks in this order, and mcp-status runs the same function.
     const start = await checkStart(vault, {
       client: args.client,

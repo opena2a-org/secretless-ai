@@ -13,7 +13,7 @@ import { bindingKey, openHomes, sha256, startWrapper } from './binding-homes.tes
 import type { HomeName, Homes } from './binding-homes.test-support';
 
 /**
- * Cells T10: a binding's writer identity (McpBinding.boundOn) on a store
+ * Cells: a binding's writer identity (McpBinding.boundOn) on a store
  * several machines read.
  *
  * Two secretless homes, A and B, are swapped into one HOME path between runs
@@ -196,9 +196,9 @@ function recordOf(client: string, server: string): Record<string, unknown> | und
  * claude-code, or the home cursor config, client cursor): the server with a
  * secret in its env, protected by protect-mcp run from D with A in HOME. The
  * entry it wrote, and the binding as stored, which names that entry. That
- * the binding carries A's id is cell (J1)'s: the setup asks only that the
- * binding was stored, so a build that stores none fails a cell on what it
- * then does.
+ * the binding carries A's id is checked by the boundOn cells below: the setup
+ * asks only that the binding was stored, so a build that stores none fails a
+ * cell on what it then does.
  */
 async function bindInA(file: string, client: string): Promise<{ entry: Entry; record: Record<string, unknown>; text: string }> {
   h().use('A');
@@ -251,12 +251,12 @@ const setups = {
     write(projectConfig(), { t: { command: entry.command, args: ['--server', 's', '--client', 'claude-code', '--', process.execPath, '-e', 'x'], env: {} } });
     return cli('protect-mcp');
   },
-  /** (e) S3: a copy of the home entry, carrying A's id, in D/.mcp.json, which protect-mcp rewrites; the home entry is at its place. */
+  /** (e) a copy of the home entry, carrying A's id, in D/.mcp.json, which protect-mcp rewrites; the home entry is at its place. */
   e: async (entry: Entry) => {
     write(projectConfig(), { s: { ...entry } });
     return cli('protect-mcp');
   },
-  /** (e) through the S3 trigger: the copy in D/.cursor/mcp.json, which the wrapper's start check reads and protect-mcp does not rewrite. */
+  /** (e) found by the wrapper's start check: the copy in D/.cursor/mcp.json, which that check reads and protect-mcp does not rewrite. */
   eS2: async (entry: Entry) => {
     write(path.join(h().project, '.cursor', 'mcp.json'), { s: { ...entry } });
     return cli('protect-mcp');
@@ -541,7 +541,7 @@ describe('(b) R8: a binding another home stored is not taken over', () => {
   });
 });
 
-describe('(e) S3: a binding another home stored is not replaced', () => {
+describe('(e) a home binding another home stored, found in a copy, is not replaced', () => {
   it('B holds a copy carrying A\'s id in D/.mcp.json, and B\'s home entry is at the equal path: no replace, and the record\'s id is unchanged', async () => {
     open();
     const { entry, record, text } = await bindInA(homeConfig(), 'cursor');
@@ -556,7 +556,7 @@ describe('(e) S3: a binding another home stored is not replaced', () => {
     expect(h().store.bindingWrites).toHaveLength(1);
   });
 
-  it('through the S3 trigger: the copy is in D/.cursor/mcp.json, which the wrapper\'s start check reads and protect-mcp does not rewrite: no replace, and the record\'s id is unchanged', async () => {
+  it('found by the wrapper\'s start check: the copy is in D/.cursor/mcp.json, which that check reads and protect-mcp does not rewrite: no replace, and the record\'s id is unchanged', async () => {
     open();
     const { entry, record, text } = await bindInA(homeConfig(), 'cursor');
     h().use('B');
@@ -690,7 +690,7 @@ describe('(h) on a store that is this machine\'s alone, each acts as built, what
       expect(recordOf('cursor', 's')!.id).not.toBe(record.id);
     });
 
-    it(`(e) through the S3 trigger with B's id ${id}: the binding is replaced`, async () => {
+    it(`(e) found by the wrapper's start check, with B's id ${id}: the binding is replaced`, async () => {
       open('local', homeOptions);
       const { entry, record } = await bindInA(homeConfig(), 'cursor');
       h().use('B');
@@ -703,7 +703,7 @@ describe('(h) on a store that is this machine\'s alone, each acts as built, what
   }
 });
 
-describe('(J5) the another-machine words carry what the ruling fixes, pending their final words', () => {
+describe('the reason and the clause for a binding another secretless home stored', () => {
   const reads = { client: 'claude-code', server: 's' };
 
   it('the reason names the pair, another secretless home on another machine or this one before its ~/.secretless-ai was replaced, that this machine leaves the binding, and a new name with its own values', () => {
@@ -733,7 +733,7 @@ describe('(J5) the another-machine words carry what the ruling fixes, pending th
   });
 });
 
-describe('(J1) every binding protect-mcp stores names the secretless home that stored it', () => {
+describe('every binding protect-mcp stores names the secretless home that stored it (boundOn)', () => {
   it('a server moved into the store and a wrapped entry bound in place both carry the home\'s id as boundOn', async () => {
     open();
     write(projectConfig(), { s: plain() });
@@ -798,7 +798,7 @@ describe('(j) the home id file', () => {
   });
 });
 
-describe('(J7) mcp-status gives a binding another home stored its own state, beside the launch verdict', () => {
+describe('mcp-status gives a binding another home stored its own state, beside the launch verdict', () => {
   it('B\'s home entry carries A\'s id and command at the equal path: that state, and the wrapper starts it', async () => {
     open();
     await bindInA(homeConfig(), 'cursor');
