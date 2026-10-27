@@ -2,16 +2,21 @@
 
 ## [Unreleased]
 
-**The broker's grant audit record carries the CGT `jti` and a salted operation
-commitment, and names the agent by its verified ATX DID; its reason field is a
-closed code, and unverified inputs are written in parsed form or as a fixed
-marker with their length.** The commitment is the SHA-256 of a fresh 32-byte
-salt followed by the RFC 8785 bytes of the operation as forwarded. The salt
-goes to the resource with the operation and is never written to the log, and a
-downstream caller that does not declare that it delivers the salt gets none, so
-its records carry no commitment. `src/broker/grant-resolver.audit-record.test.ts`
-and `src/broker/grant-resolver.reason-codes.test.ts` check each member and
-code.
+**The broker's grant audit record, the `grant` event, gains two optional
+members, `cgtJti` and `operationCommitment`, and names the agent by its
+verified ATX DID instead of its AIM agent id. The grant audit record holds a
+closed code from `GRANT_AUDIT_REASONS` (`src/broker/types.ts`) as its reason,
+and holds an unverified agent id, the grant and `cgtJti` only in parsed form or
+as `unparsed:<length>`.** `cgtJti` is the `jti` of the capability grant token
+(CGT) minted to obtain the credential. `operationCommitment` is the SHA-256 of
+a fresh 32-byte salt followed by the RFC 8785 bytes of the operation as
+forwarded. The broker draws the salt only for a downstream caller that
+declares, with `deliversSalt: true`, that it delivers the salt to the resource
+with the operation. The grant audit record never carries the salt. The grant
+audit record carries no `operationCommitment` under a caller that declares no
+delivery, such as the built-in `HttpsDownstreamCaller` the broker daemon uses.
+`src/broker/grant-resolver.audit-record.test.ts` and
+`src/broker/grant-resolver.reason-codes.test.ts` check each member and code.
 
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
