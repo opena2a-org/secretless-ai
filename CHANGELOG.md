@@ -34,8 +34,20 @@ bound to.
 **On a backend several machines read, a stored server name belongs to one
 config entry.** The store holds one record per client and server name, so a
 teammate whose server has that name protects it under another name:
-`protect-mcp` leaves the entry, names the entry the name is bound to, and says
-to rename the server and run `protect-mcp` again.
+`protect-mcp` leaves the entry, says the secrets stored under that name were
+bound by `protect-mcp` in another secretless home, and says to rename the
+server and run `protect-mcp` again. Each binding `protect-mcp` stores names
+the secretless home that stored it, by an id `protect-mcp` keeps for
+`~/.secretless-ai` in its `binding-home-id` file, created before the first
+binding it stores and never overwritten. On such a backend, a binding
+`protect-mcp` in another secretless home stored, or one that names no
+secretless home, is never taken over, bound again after its project directory
+moved, replaced where a copy of its entry carries it, written back into an
+entry, or written over by `protect-mcp`; `mcp-unprotect` leaves its pair, and
+`mcp-status` names an entry on a wrapper that checks its binding, whose pair
+holds such a binding, as bound by `protect-mcp` on another machine, beside
+whether the wrapper starts it. On a backend this machine alone uses (local or
+keychain), every binding counts as this secretless home's.
 
 **`mcp-unprotect` deletes a pair only where no entry outside the files it
 restored can be the one bound to it.** It leaves a pair whose binding names an
@@ -53,12 +65,14 @@ env is left, and its line says to put the values in its env and run
 
 **`protect-mcp` binds again a `.mcp.json` entry whose project directory
 moved.** Run in the new directory, it binds the entry that carries the old
-binding with a new id where the old file no longer exists on this machine, the
-backend is this machine's alone (local or keychain), and this machine's backup
-of the old file holds every value stored for the server. It files that backup
-under the new path first, so `mcp-unprotect` there restores the file, and its
-line names the old directory and any change to the command. A copy of a bound
-entry whose file no longer exists is reported with that fact.
+binding with a new id where the old file no longer exists on this machine,
+this secretless home stored the binding, this machine's backup of the old file
+holds every value stored for the server, and the entry's command and arguments
+are the ones it was bound with; an entry whose command or arguments changed is
+left, and its line says so and names the old directory. It files that
+backup under the new path first, so `mcp-unprotect` there restores the file,
+and its line names the old directory. A copy of a bound entry whose file no
+longer exists is reported with that fact.
 
 **`protect-mcp` writes a home entry's binding back into it when the entry,
 at the place its binding names, carries no binding or another one**, as after a
@@ -70,13 +84,15 @@ the server again under a new name with its values.
 **`protect-mcp` says a bound entry's file no longer exists only when it does
 not.** A file it cannot check, such as one in a directory it cannot search, is
 named as one whose existence could not be checked, with the error code. In a
-backend shared between machines, a file absent here is named as not found on
-this machine, with the backend named as read from other machines as well, so
-the binding may be in use there, and no entry takes its binding over. In a
-backend this machine alone uses, a home binding whose config file
-was deleted is taken over by the one home entry that reads its pair. Where a
-binding's entry is gone and several entries read its pair, each is left with
-the line that names the others.
+backend shared between machines, the file of a binding this secretless home
+stored, absent here, is named as not found on this machine, with the backend
+named as read from other machines as well, so the binding may be in use there.
+A home binding this secretless home stored, whose config file no longer exists
+on this machine, is taken over by the one home entry that reads its pair, on
+any backend; a binding `protect-mcp` in another secretless home stored is never
+taken over. Where the entry of a binding this secretless home stored is gone
+and several entries read its pair, each is left with the line that names the
+others.
 
 **Discovery and `protect-mcp`'s rewrite decide by one function which entries
 run through a secretless wrapper.** An entry runs through one when its command
