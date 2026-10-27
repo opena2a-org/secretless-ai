@@ -265,7 +265,7 @@ Before the call is made, the broker checks, in order:
 2. With `--aim-url`, that AIM does not report the agent as unverified.
 3. The binding's `match` predicates against the verified credential. A version 1.0 credential is denied here: its signature does not cover the capabilities and OASB level that bindings match on.
 
-Every denial is the same `403 {"error":"denied"}`, so an agent learns nothing about the policy from it. The reason is in the audit log as a `grant` event, with the agent's verified DID and the grant: a code that names the check that decided, such as `atx-revoked` or `policy-trust-class-missing` (`GRANT_AUDIT_REASONS` in `src/broker/types.ts` lists every code). Before the credential verifies, the agent id is written only when it is a DID, and a grant only when the grant file names it; anything else is written as `unparsed:<length>`. A request the broker cannot parse gets a 400 that says what is missing.
+Every denial is the same `403 {"error":"denied"}`, so an agent learns nothing about the policy from it. The reason is in the audit log, in the request's `grant` event. The `grant` event holds the reason as a code that names the check that decided, such as `atx-revoked` or `policy-trust-class-missing` (`GRANT_AUDIT_REASONS` in `src/broker/types.ts` lists every code). The `grant` event names the agent by its verified DID once the credential verifies; before that, the `grant` event holds the agent id only when it is a DID. The `grant` event holds the grant only when the grant file names it, and holds `unparsed:<length>` in place of any other agent id or grant. A request the broker cannot parse gets a 400 that says what is missing.
 
 Things to know:
 
