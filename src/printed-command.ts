@@ -7,7 +7,8 @@
  * 1. Its node binary and its CLI script, `cli.js` beside this module, as two
  *    quoted absolute paths, the form the shell hook uses, when that script is
  *    this package's CLI. Run from any directory, the line starts this copy
- *    and consults no project tree.
+ *    and consults no project tree. The quotes are a POSIX shell's, so on
+ *    `win32` the line takes the next form that applies.
  * 2. Its exact version for npx, which starts a copy only when its package id
  *    is that version. Without a version, npx starts the first copy npm finds
  *    (the project's node_modules/.bin, npm's global bin, then any version in
@@ -36,6 +37,8 @@ export interface PrintedCommandOptions {
   pathEnv?: string;
   /** The CLI script; defaults to `cli.js` beside this module. */
   script?: string;
+  /** The platform whose terminal reads the line; defaults to the one running. */
+  platform?: NodeJS.Platform;
 }
 
 /** A path that a shell line or a git config value carries unchanged. */
@@ -77,7 +80,8 @@ export function printedCommand(command: string, version: string, options: Printe
     options.pathEnv ?? process.env.PATH ?? '',
     options.script ?? path.join(__dirname, 'cli.js'),
   );
-  if (writablePath(node) && writablePath(script) && isOwnCli(script)) {
+  const posixShell = (options.platform ?? process.platform) !== 'win32';
+  if (posixShell && writablePath(node) && writablePath(script) && isOwnCli(script)) {
     return `${shellQuote(node)} ${shellQuote(script)} ${command}`;
   }
   if (isExactVersion(version)) return `npx secretless-ai@${version} ${command}`;

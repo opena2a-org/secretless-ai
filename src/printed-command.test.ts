@@ -9,9 +9,10 @@ import { VERSION } from './commands/utils';
 /**
  * The renderer every command the wrapper, protect-mcp and mcp-status print
  * goes through: the node binary and this package's CLI as two quoted paths
- * when the script is this package's CLI, else this build's exact version for
- * npx, else the unversioned form. The surface files write no npx command
- * themselves, and hook-prefix.ts takes its checks from here.
+ * when the script is this package's CLI and the platform is not win32, else
+ * this build's exact version for npx, else the unversioned form. The surface
+ * files write no npx command themselves, and hook-prefix.ts takes its checks
+ * from here.
  */
 
 const ROOT = path.resolve(__dirname, '..');
@@ -95,6 +96,28 @@ describe('the renderer names this build in the first form that applies', () => {
     for (const version of ['unknown', 'latest', '^0.24.0', '0.24', '']) {
       expect(printedCommand('mcp-status', version, { execPath: process.execPath, pathEnv: '', script: foreign })).toBe(
         'npx secretless-ai mcp-status',
+      );
+    }
+  });
+});
+
+describe('on win32 tier (a) is skipped: the line names the npx form', () => {
+  it("platform 'win32' with this package's script gives the pinned npx form", () => {
+    expect(printedCommand('protect-mcp', VERSION, { execPath: process.execPath, pathEnv: '', script: CLI_PATH, platform: 'win32' })).toBe(
+      `npx secretless-ai@${VERSION} protect-mcp`,
+    );
+  });
+
+  it("platform 'win32' with 'unknown' as the version gives the unversioned npx form", () => {
+    expect(printedCommand('protect-mcp', 'unknown', { execPath: process.execPath, pathEnv: '', script: CLI_PATH, platform: 'win32' })).toBe(
+      'npx secretless-ai protect-mcp',
+    );
+  });
+
+  it("platforms 'darwin' and 'linux' with this package's script give the two quoted paths", () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      expect(printedCommand('protect-mcp', VERSION, { execPath: process.execPath, pathEnv: '', script: CLI_PATH, platform }), platform).toBe(
+        `'${process.execPath}' '${CLI_PATH}' protect-mcp`,
       );
     }
   });
