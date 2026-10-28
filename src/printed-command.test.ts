@@ -100,6 +100,21 @@ describe('the renderer names this build in the first form that applies', () => {
   });
 });
 
+describe('a printed command is one line, with every word in full', () => {
+  it('each tier returns one line, with no line break and no ~, equal to its full words', () => {
+    const tiers: Array<[string, string, string]> = [
+      [VERSION, CLI_PATH, `'${process.execPath}' '${CLI_PATH}' protect-mcp`],
+      [VERSION, foreign, `npx secretless-ai@${VERSION} protect-mcp`],
+      ['unknown', foreign, 'npx secretless-ai protect-mcp'],
+    ];
+    for (const [version, script, words] of tiers) {
+      const line = printedCommand('protect-mcp', version, { execPath: process.execPath, pathEnv: '', script });
+      expect(line, words).not.toMatch(/[\r\n~]/);
+      expect(line).toBe(words);
+    }
+  });
+});
+
 describe('one renderer: the surface files name no npx command, and hook-prefix.ts shares its checks', () => {
   it('the wrapper, mcp.ts and protect.ts hold no npx command of either form; the renderer holds the two', () => {
     for (const file of ['mcp-wrapper.ts', path.join('commands', 'mcp.ts'), path.join('mcp', 'protect.ts')]) {
