@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { printedCommand } from './printed-command';
+import { findOnPath } from './env';
 import { VERSION } from './commands/utils';
 
 /**
@@ -47,6 +48,27 @@ describe('the renderer names this build in the first form that applies', () => {
 
     expect(printedCommand('protect-mcp', VERSION, { execPath: process.execPath, pathEnv: '', script: quoted })).toBe(
       `'${process.execPath}' '${quoted.replace(/'/g, "'\\''")}' protect-mcp`,
+    );
+  });
+
+  it('tier (a) names the two paths, not the bare name, when a secretless-ai first on PATH resolves to the same script', () => {
+    // A project install: node_modules/.bin/secretless-ai links to the package's dist/cli.js.
+    const project = path.join(fs.realpathSync(scratch), 'project');
+    const pkg = path.join(project, 'node_modules', 'secretless-ai');
+    const script = path.join(pkg, 'dist', 'cli.js');
+    const bin = path.join(project, 'node_modules', '.bin');
+    const link = path.join(bin, 'secretless-ai');
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, '#!/usr/bin/env node\n');
+    fs.chmodSync(script, 0o755);
+    fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'secretless-ai' }));
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(path.join('..', 'secretless-ai', 'dist', 'cli.js'), link);
+    expect(fs.realpathSync(link)).toBe(script);
+    expect(findOnPath('secretless-ai', bin)).toBe(link);
+
+    expect(printedCommand('protect-mcp', VERSION, { execPath: process.execPath, pathEnv: bin, script })).toBe(
+      `'${process.execPath}' '${script}' protect-mcp`,
     );
   });
 
