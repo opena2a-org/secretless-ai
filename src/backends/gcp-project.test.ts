@@ -176,8 +176,11 @@ describe('createBackend — a manifest-named project bypasses the name-keyed cac
     const urls = stubGcp();
     await resolveIn(repo('org-a/app', 'gcp.projectId: acme-org-a\nDATABASE_URL\n'));
     await resolveIn(repo('org-b/app', 'gcp.projectId: acme-org-b\nDATABASE_URL\n'));
+    // Each read takes the secret's label, then its value, from its own project.
     expect(urls).toEqual([
+      'https://secretmanager.googleapis.com/v1/projects/acme-org-a/secrets/DATABASE_URL',
       'https://secretmanager.googleapis.com/v1/projects/acme-org-a/secrets/DATABASE_URL/versions/latest:access',
+      'https://secretmanager.googleapis.com/v1/projects/acme-org-b/secrets/DATABASE_URL',
       'https://secretmanager.googleapis.com/v1/projects/acme-org-b/secrets/DATABASE_URL/versions/latest:access',
     ]);
   });
@@ -228,8 +231,9 @@ describe('GCPSecretManagerBackend — a manifest-named project is never silent (
       return { ok: false, status: 404, json: async () => ({}) };
     });
     await expect(backend.resolve('secret/DATABASE_URL', { exact: true })).resolves.toEqual({});
+    // One read of the secret's resource finds it absent: no value read, no list.
     expect(urls).toEqual([
-      'https://secretmanager.googleapis.com/v1/projects/acme-org-a/secrets/DATABASE_URL/versions/latest:access',
+      'https://secretmanager.googleapis.com/v1/projects/acme-org-a/secrets/DATABASE_URL',
     ]);
   });
 
