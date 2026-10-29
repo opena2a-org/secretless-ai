@@ -30,7 +30,7 @@ export interface McpServerEntry {
   command: string;
   args: string[];
   env: Record<string, string>;
-  /** true if command is the secretless-mcp binary or the mcp-wrapper.js script */
+  /** true if its command runs through a secretless-mcp wrapper (see runsThroughSecretlessWrapper) */
   alreadyProtected: boolean;
 }
 
@@ -169,19 +169,28 @@ export function serverMapKey(raw: Record<string, unknown>): string | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * Check if a server command indicates it is already wrapped by secretless-mcp.
+ * This build's own wrapper, `mcp-wrapper.js` in the directory above this
+ * module (`dist/` for the built package): the path protect-mcp writes into
+ * the configs it rewrites.
  */
-function isProtectedCommand(command: string): boolean {
+export function thisBuildWrapperPath(): string {
+  return path.resolve(__dirname, '..', 'mcp-wrapper.js');
+}
+
+/**
+ * Whether a server entry's command runs through a secretless-mcp wrapper: the
+ * bare `secretless-mcp`, a path ending `/secretless-mcp`, `wrapperPath` (this
+ * build's wrapper, or the one a rewrite writes), or any path ending
+ * `/mcp-wrapper.js` that contains `secretless`, as another build's wrapper and
+ * an installed copy do. Discovery, protect-mcp's rewrite and its re-point of
+ * an entry to this build's wrapper all decide by this one function.
+ */
+export function runsThroughSecretlessWrapper(command: string, wrapperPath: string = thisBuildWrapperPath()): boolean {
+  if (command === '') return false;
   if (command === 'secretless-mcp') return true;
   if (command.endsWith('/secretless-mcp')) return true;
-
-  // The protect-mcp command rewrites configs to use the full path to mcp-wrapper.js
-  // (e.g., /Users/.../dist/mcp-wrapper.js). Detect that as protected too.
-  const wrapperPath = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
   if (command === wrapperPath) return true;
-  if (command.endsWith('/mcp-wrapper.js') && command.includes('secretless')) return true;
-
-  return false;
+  return command.endsWith('/mcp-wrapper.js') && command.includes('secretless');
 }
 
 /**
@@ -251,7 +260,7 @@ function parseServers(raw: Record<string, unknown>): { servers: McpServerEntry[]
       command,
       args,
       env,
-      alreadyProtected: isProtectedCommand(command),
+      alreadyProtected: runsThroughSecretlessWrapper(command),
     });
   }
 
@@ -411,4 +420,215 @@ function realPathOf(fullPath: string): string {
   } catch {
     return path.resolve(fullPath);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Where a bound entry starts
+// ---------------------------------------------------------------------------
+
+/**
+ * The most bytes of a project-level config read while looking in it for a
+ * copy of a binding. A larger file is not read, and the entry does not start:
+ * whether the file holds a copy could not be told.
+ */
+export const BINDING_COPY_READ_LIMIT = 1024 * 1024;
+
+/**
+ * Whether a bound entry starts in a directory, after checkLaunch has passed
+ * it, and when not, why. Paths only: never the id.
+ */
+export type McpPlaceVerdict =
+  | { refused: false }
+  /** A project binding, started outside its project's directory. */
+  | { refused: 'outside-project'; project: string; startDir: string }
+  /** A project binding whose project directory or config file could not be resolved. */
+  | { refused: 'project-unresolved'; project: string; path: string; code: string }
+  /** The directory the entry was started in could not be resolved. */
+  | { refused: 'start-unresolved'; code: string }
+  /** A project-level config visible from the start directory, other than the bound one, holds the id. */
+  | { refused: 'copy-found'; file: string }
+  /** A project-level config visible from the start directory could not be read for the id. */
+  | { refused: 'copy-unchecked'; file: string; why: string };
+
+/**
+ * The checks the wrapper runs after checkLaunch and before it reads a secret,
+ * in this order. A project binding is honoured only where the start directory
+ * is its project's directory or below it, both resolved. Then no project-level
+ * config visible from the start directory, in it or in any directory above
+ * it, holds the binding's id, other than the bound config and the home
+ * configs: a client reads an entry from each of those places. The start
+ * directory is the process's own, never one an environment variable names
+ * (an entry's env can set those). `mcp-status` runs the same function, so the
+ * two never disagree on whether an entry starts, and so does `protect-mcp`,
+ * which replaces a home binding this check finds in a copy. `onChecked` is
+ * given each config the check read for the id, nothing else.
+ */
+export function checkLaunchPlace(
+  binding: { id: string; scope: McpConfigScope; file: string },
+  options: { startDir?: string; home?: string; onChecked?: (file: string) => void } = {},
+): McpPlaceVerdict {
+  let start: string;
+  try {
+    start = fs.realpathSync(options.startDir ?? process.cwd());
+  } catch (err) {
+    return { refused: 'start-unresolved', code: errorCode(err) };
+  }
+
+  let boundFile = realPathOf(binding.file);
+  if (binding.scope === 'project') {
+    const recorded = path.dirname(path.resolve(binding.file));
+    let project: string;
+    try {
+      project = fs.realpathSync(recorded);
+    } catch (err) {
+      return { refused: 'project-unresolved', project: recorded, path: recorded, code: errorCode(err) };
+    }
+    // The bound config itself: a deleted one leaves the binding no entry to start.
+    const file = path.join(project, path.basename(binding.file));
+    try {
+      boundFile = fs.realpathSync(file);
+    } catch (err) {
+      return { refused: 'project-unresolved', project, path: file, code: errorCode(err) };
+    }
+    const inside = project.endsWith(path.sep) ? project : `${project}${path.sep}`;
+    if (start !== project && !start.startsWith(inside)) {
+      return { refused: 'outside-project', project, startDir: start };
+    }
+  }
+
+  // A home config found from a parent directory is read as the home config it
+  // is, and the bound config holds the id by design.
+  const home = options.home ?? os.homedir();
+  const skipped = new Set<string>([boundFile]);
+  for (const location of mcpConfigLocations()) {
+    if (location.scope !== 'home') continue;
+    try {
+      skipped.add(fs.realpathSync(path.join(home, location.relativePath)));
+    } catch {
+      // Absent: nothing found from a parent directory can be it.
+    }
+  }
+  const projectLocations = mcpConfigLocations().filter((location) => location.scope === 'project');
+  for (let dir = start; ; dir = path.dirname(dir)) {
+    for (const location of projectLocations) {
+      const found = copyOfBinding(path.join(dir, location.relativePath), binding.id, skipped, options.onChecked);
+      if (found !== undefined) return found;
+    }
+    if (path.dirname(dir) === dir) break;
+  }
+  return { refused: false };
+}
+
+/**
+ * Whether one project-level config holds a binding's id: undefined where it
+ * does not, and where it is absent, skipped or not a regular file (no client
+ * reads an entry from it). A file that exists and could not be read, or is
+ * larger than the bound, could hold it, so it refuses.
+ */
+function copyOfBinding(
+  candidate: string,
+  id: string,
+  skipped: Set<string>,
+  onChecked?: (file: string) => void,
+): McpPlaceVerdict | undefined {
+  const unreadable = (err: unknown): McpPlaceVerdict => ({
+    refused: 'copy-unchecked',
+    file: candidate,
+    why: `it could not be read (${errorCode(err)})`,
+  });
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(candidate);
+    if (skipped.has(resolved) || !fs.statSync(resolved).isFile()) return undefined;
+  } catch (err) {
+    return isAbsent(err) ? undefined : unreadable(err);
+  }
+  let fd: number;
+  try {
+    // Not blocking: a file swapped for a FIFO after the stat above does not hang the start.
+    fd = fs.openSync(resolved, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+  } catch (err) {
+    return isAbsent(err) ? undefined : unreadable(err);
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return undefined;
+    const tooLarge: McpPlaceVerdict = {
+      refused: 'copy-unchecked',
+      file: candidate,
+      why: `it is larger than ${BINDING_COPY_READ_LIMIT} bytes`,
+    };
+    if (stat.size > BINDING_COPY_READ_LIMIT) return tooLarge;
+    const bytes = readUpTo(fd, BINDING_COPY_READ_LIMIT);
+    if (bytes === undefined) return tooLarge;
+    onChecked?.(candidate);
+    return holdsId(bytes, id) ? { refused: 'copy-found', file: candidate } : undefined;
+  } catch (err) {
+    return unreadable(err);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** The bytes of an open file, or undefined when it holds more than `limit`. */
+function readUpTo(fd: number, limit: number): Buffer | undefined {
+  const chunks: Buffer[] = [];
+  const chunk = Buffer.alloc(64 * 1024);
+  let total = 0;
+  for (;;) {
+    const read = fs.readSync(fd, chunk, 0, chunk.length, null);
+    if (read === 0) return Buffer.concat(chunks, total);
+    total += read;
+    if (total > limit) return undefined;
+    chunks.push(Buffer.from(chunk.subarray(0, read)));
+  }
+}
+
+/**
+ * Whether a config's bytes hold an id: in any string of the document, keys
+ * included, where it parses as JSON (so an id written with escapes is found),
+ * and anywhere in its bytes where it does not.
+ */
+function holdsId(bytes: Buffer, id: string): boolean {
+  let document: unknown;
+  try {
+    document = JSON.parse(bytes.toString('utf-8'));
+  } catch {
+    return bytes.includes(id);
+  }
+  const pending: unknown[] = [document];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      if (value.includes(id)) return true;
+    } else if (Array.isArray(value)) {
+      for (const item of value) pending.push(item);
+    } else if (value !== null && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) {
+        if (key.includes(id)) return true;
+        pending.push(item);
+      }
+    }
+  }
+  return false;
+}
+
+/** A path that does not exist: it, or a directory on the way to it, is absent. */
+function isAbsent(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/** An errno code as libuv names one: the only text of an error a could-not line prints (see errorCode). */
+const ERRNO_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
+
+/**
+ * The code a could-not line prints for an error: its `code` where that is a
+ * string of the errno shape, and 'unknown error' otherwise. The field is read
+ * off whatever was thrown, so the printer checks its shape rather than relying
+ * on which calls throw today.
+ */
+export function errorCode(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  return typeof code === 'string' && ERRNO_CODE.test(code) ? code : 'unknown error';
 }

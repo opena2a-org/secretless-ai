@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { mcpConfigLocations } from './mcp/discover';
+import { builtCommand } from './mcp/printed-command.test-support';
 
 /**
  * `mcp-status` reads the project-level MCP client configs `scan` and `verify`
@@ -87,12 +88,12 @@ describe('mcp-status over project-level MCP client configs', () => {
 
     const out = runCli(['mcp-status']);
 
-    expect(out).not.toContain('Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.');
+    expect(out).not.toContain(`Run \`${builtCommand('protect-mcp')}\` to encrypt exposed secrets.`);
     expect(out).toContain(
       `2 exposed server(s) are in project-level configs that protect-mcp does not rewrite: ${path.join('.cursor', 'mcp.json')}, ${path.join('.vscode', 'mcp.json')}.`,
     );
     expect(out).toContain("protect-mcp would write this machine's wrapper path into them, and these files are usually committed.");
-    expect(out).toContain('Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.');
+    expect(out).toContain(`Move each value out of its file and rotate it, then run \`${builtCommand('mcp-status')}\` again.`);
   });
 
   it('writes a control character in a server name from a project-level config as an escape, not raw', () => {
@@ -113,7 +114,12 @@ describe('mcp-status over project-level MCP client configs', () => {
     expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     expect(out).toContain('    ! "gh\\u001b[2J": EXPOSED (1 plaintext secret(s))');
     expect(out).toContain('    * "fs\\u001b[2J": clean (no secrets in env)');
-    expect(out).toContain('    + "db\\u009b2J": protected');
+    // A bare secretless-mcp names no file whose version can be read, so no
+    // start clause is computed for it (src/mcp/status-states.test.ts), and
+    // protect-mcp does not rewrite this config.
+    expect(out).toContain(
+      '    ? "db\\u009b2J": protected, but it runs through a wrapper whose version could not be read; protect-mcp does not rewrite this config, so it does not re-point it\n',
+    );
   });
 
   it('names a bare mcp.json by its path alone, as scan does', () => {
@@ -131,7 +137,7 @@ describe('mcp-status over project-level MCP client configs', () => {
 
     expect(out).not.toContain('No MCP configurations found.');
     expect(out).toContain(`  vscode (${path.join('.vscode', 'mcp.json')})\n    ? not checked: not valid JSON (line 4, column 3)`);
-    expect(out).toContain('Fix the file(s) above, then run `npx secretless-ai mcp-status` again.');
+    expect(out).toContain(`Fix the file(s) above, then run \`${builtCommand('mcp-status')}\` again.`);
   });
 
   it('CONTROL: still sends an exposed server in the project .mcp.json to protect-mcp, which rewrites that file', () => {
@@ -140,7 +146,7 @@ describe('mcp-status over project-level MCP client configs', () => {
     const out = runCli(['mcp-status']);
 
     expect(out).toContain('  claude-code (.mcp.json)\n    ! slack: EXPOSED (1 plaintext secret(s))\n');
-    expect(out).toContain('Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.');
+    expect(out).toContain(`Run \`${builtCommand('protect-mcp')}\` to encrypt exposed secrets.`);
     expect(out).not.toContain('protect-mcp does not rewrite');
   });
 
@@ -150,7 +156,7 @@ describe('mcp-status over project-level MCP client configs', () => {
     const out = runCli(['mcp-status']);
 
     expect(out).toContain(`  cursor (${path.join(home, '.cursor', 'mcp.json')})\n    ! slack: EXPOSED (1 plaintext secret(s))\n`);
-    expect(out).toContain('Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.');
+    expect(out).toContain(`Run \`${builtCommand('protect-mcp')}\` to encrypt exposed secrets.`);
   });
 });
 

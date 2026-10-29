@@ -2,6 +2,142 @@
 
 ## [Unreleased]
 
+**The secretless-mcp wrapper starts a server only from the config entry
+`protect-mcp` bound its secrets to, with the command they were bound with.**
+`protect-mcp` stores a binding beside each client/server pair it stores and
+writes its id into the entry's wrapper arguments as `--binding`. Before it
+reads a secret, the wrapper checks that the entry carries a binding, that one
+is stored for the pair, that the two match, and that the command and
+arguments after its `--` are the ones bound. An entry that fails a check exits
+1 with one line that names the check, then the fix, and nothing is started.
+A server protected by an earlier version does not start until `protect-mcp`
+binds it: run `npx secretless-ai protect-mcp` after upgrading. It binds, in a
+home config, the one entry that reads a pair, and in the project's
+`.mcp.json` an entry whose stored secrets its first backup of the file holds,
+and lists the entries it bound, the ones it could not bind with why, and
+copies of a bound entry. `mcp-status` says for each protected entry whether
+the wrapper starts it, from the check the wrapper runs. `mcp-unprotect`
+deletes a pair and its binding from the store only where the restored file
+holds every stored name at an equal value, and names the stored names it left
+otherwise. A project-level entry starts only in its project's directory or
+below it, and no bound entry starts while a project-level config other than
+its own, in its start directory or a directory above it, holds its binding:
+the refusal names that file. `protect-mcp` replaces a home binding it finds
+in a copy of its entry, so the copy no longer starts, and `mcp-status` names
+each entry these checks stop. No command prints a binding id.
+
+**A server bound in a project's `.mcp.json` starts only in the project
+directory it was bound in.** A copy of the project in another directory does
+not start it, and the refusal names the project directory the secrets are
+bound to.
+
+**On a backend several machines read, a stored server name belongs to one
+config entry.** The store holds one record per client and server name, so a
+teammate whose server has that name protects it under another name:
+`protect-mcp` leaves the entry, says the secrets stored under that name were
+bound by `protect-mcp` in another secretless home, and says to rename the
+server and run `protect-mcp` again. Each binding `protect-mcp` stores names
+the secretless home that stored it, by an id `protect-mcp` keeps for
+`~/.secretless-ai` in its `binding-home-id` file, created before the first
+binding it stores and never overwritten. On such a backend, a binding
+`protect-mcp` in another secretless home stored, or one that names no
+secretless home, is never taken over, bound again after its project directory
+moved, replaced where a copy of its entry carries it, written back into an
+entry, or written over by `protect-mcp`; `mcp-unprotect` leaves its pair, and
+`mcp-status` names an entry on a wrapper that checks its binding, whose pair
+holds such a binding, as bound by `protect-mcp` on another machine, beside
+whether the wrapper starts it. On a backend this machine alone uses (local or
+keychain), every binding counts as this secretless home's.
+
+**`mcp-unprotect` deletes a pair only where no entry outside the files it
+restored can be the one bound to it.** It leaves a pair whose binding names an
+entry in a file it did not restore, and names the stored names it left and
+that entry. In a backend shared between machines (1password, vault, gcp-sm) it
+leaves a pair with no binding, since an entry on another machine may read it,
+and names the stored names it left and that the backend is read from other
+machines as well. Neither line names a command.
+
+**`protect-mcp` binds a `.mcp.json` entry to a pair with no name stored only
+when it stores the entry's values from its env.** Its backup of the file is
+evidence only for names stored under the pair, so an entry with no value in its
+env is left, and its line says to put the values in its env and run
+`protect-mcp`.
+
+**`protect-mcp` binds again a `.mcp.json` entry whose project directory
+moved.** Run in the new directory, it binds the entry that carries the old
+binding with a new id where the old file no longer exists on this machine,
+this secretless home stored the binding, this machine's backup of the old file
+holds every value stored for the server, and the entry's command and arguments
+are the ones it was bound with; an entry whose command or arguments changed is
+left, and its line says so and names the old directory. It files that
+backup under the new path first, so `mcp-unprotect` there restores the file,
+and its line names the old directory. A copy of a bound entry whose file no
+longer exists is reported with that fact.
+
+**`protect-mcp` writes a home entry's binding back into it when the entry,
+at the place its binding names, carries no binding or another one**, as after a
+home config is restored from an older copy. Where the entry's command changed,
+the binding takes the command first. A `.mcp.json` entry in that state is left
+unchanged, since its file comes with the repository, and its line says to add
+the server again under a new name with its values.
+
+**`protect-mcp` says a bound entry's file no longer exists only when it does
+not.** A file it cannot check, such as one in a directory it cannot search, is
+named as one whose existence could not be checked, with the error code. In a
+backend shared between machines, the file of a binding this secretless home
+stored, absent here, is named as not found on this machine, with the backend
+named as read from other machines as well, so the binding may be in use there.
+A home binding this secretless home stored, whose config file no longer exists
+on this machine, is taken over by the one home entry that reads its pair, on
+any backend; a binding `protect-mcp` in another secretless home stored is never
+taken over. Where the entry of a binding this secretless home stored is gone
+and several entries read its pair, each is left with the line that names the
+others.
+
+**Discovery and `protect-mcp`'s rewrite decide by one function which entries
+run through a secretless wrapper.** An entry runs through one when its command
+is `secretless-mcp`, a path ending `/secretless-mcp`, this build's wrapper, or
+a path ending `/mcp-wrapper.js` that contains `secretless`, as another build's
+wrapper and an installed copy do. The rewrite leaves the command of every
+entry discovery reads as wrapped, and discovery reads this build's wrapper at
+its own path.
+
+**`protect-mcp` re-points an entry that runs through another build's wrapper
+to the wrapper of the build that runs it**, so the checks the entry runs are
+the ones `protect-mcp` and `mcp-status` report. In every config it rewrites,
+an entry whose command names a secretless wrapper that is not this build's
+file, compared by real path, has its command set to this build's wrapper in
+the same write as its binding, whether it is bound, left or a copy. Its
+arguments, `env` and key order do not change, so the command it is bound to
+does not change. A bare `secretless-mcp` and a wrapper file that no longer
+exists are re-pointed; a wrapper that reads a version equal to or above this
+build's is left as it is. Each re-pointed entry is listed under its config,
+with a count, after the entries bound in the run and before the ones left not
+bound. Configs `protect-mcp` does not rewrite are left as they are.
+
+**`mcp-status` reports each entry that runs through the wrapper by where its
+pair's binding points, and separately by whether the wrapper starts it from
+the directory `mcp-status` runs in.** The state is read from the binding
+stored for the pair and the entry's place, for every such entry: no binding,
+another entry's place, the entry's own place with no binding id or another
+one, its own place and id with a changed command, or bound. An entry at its
+binding's own place is never named as another entry, and an entry with no
+binding id whose pair is bound elsewhere names that entry. Whether it starts
+comes from the checks the wrapper runs before it starts a server, now one
+function the wrapper and `mcp-status` both call, so a bound entry whose pair
+holds no secret is reported as not started, as the wrapper refuses it. Under
+each entry in a config `protect-mcp` rewrites, a line names what
+`protect-mcp` then does for its binding, taken from `protect-mcp`'s own plan,
+which reads the store and the backups and writes nothing. An entry on a
+wrapper older than the first version that checks bindings, or whose version
+could not be read, is reported as protected, with no start verdict, and its
+line says what `protect-mcp` does about it: in a config it rewrites, the
+command that re-points it; in a config it does not rewrite, that it is not
+re-pointed; and where this build cannot read its own version to compare with
+the wrapper's, that it is not re-pointed for that reason. `mcp-status` writes
+nothing, and builds no store where the local store's directory does not
+exist.
+
 **Security: the Claude Code guard hook now also judges a Bash command with every backslash-newline pair removed, and refuses the command when it refuses that text, so `cat \` with `.env` on the next line is refused, as `cat .env` is.**
 The pairs are removed until none is left, so a pair that forms only when an
 inner one is removed is joined too, and the joined text is judged in one more

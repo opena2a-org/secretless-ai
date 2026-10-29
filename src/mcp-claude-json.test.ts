@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { protectMcp } from './mcp/protect';
+import { builtCommand } from './mcp/printed-command.test-support';
 
 /**
  * Claude Code keeps its user-scope MCP servers at the top level of
@@ -15,7 +16,11 @@ import { protectMcp } from './mcp/protect';
  */
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
-const WRAPPER_PATH = '/usr/local/bin/secretless-mcp';
+// The wrapper protect-mcp writes into a config: this build's, as the built
+// CLI writes it, so mcp-status reads these entries as on a wrapper that checks
+// its binding (an entry on another build's wrapper gets no start clause:
+// src/mcp/status-states.test.ts).
+const WRAPPER_PATH = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
 
 let home: string;
 let project: string;
@@ -68,13 +73,12 @@ async function protectInProcess(): Promise<void> {
   process.env.HOME = home;
   delete process.env.USER;
   try {
-    await protectMcp({
-      homeDir: home,
-      dataDir: path.join(home, '.secretless-ai'),
-      projectDir: project,
-      wrapperPath: WRAPPER_PATH,
-      backendType: 'local',
-    });
+    // As the command runs it: no home directory given and the local backend
+    // configured, so its store is the one mcp-status, mcp-unprotect and the
+    // wrapper build from the args it writes.
+    fs.mkdirSync(path.join(home, '.secretless-ai'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.secretless-ai', 'config.json'), JSON.stringify({ backend: 'local' }));
+    await protectMcp({ projectDir: project, wrapperPath: WRAPPER_PATH });
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name];
@@ -101,7 +105,7 @@ describe('mcp-status over ~/.claude.json', () => {
       ].join('\n'),
     );
     expect(out).not.toContain('/work/empty');
-    expect(out).toContain('Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.');
+    expect(out).toContain(`Run \`${builtCommand('protect-mcp')}\` to encrypt exposed secrets.`);
   });
 
   it('names a project whose server map is not a JSON object as not checked', () => {
@@ -131,8 +135,8 @@ describe('protect-mcp, mcp-status and mcp-unprotect over ~/.claude.json', () => 
     expect(protectedFile).not.toContain('not-a-real-token');
 
     const status = runCli(['mcp-status']);
-    expect(status).toContain(`  claude-code (${claudeJson})\n    + github: protected\n`);
-    expect(status).toContain(`  claude-code (${claudeJson}, project /work/app)\n    + slack: protected\n`);
+    expect(status).toContain(`  claude-code (${claudeJson})\n    + github: protected and bound\n`);
+    expect(status).toContain(`  claude-code (${claudeJson}, project /work/app)\n    + slack: protected and bound\n`);
     expect(status).not.toContain('EXPOSED');
 
     const unprotect = runCli(['mcp-unprotect']);

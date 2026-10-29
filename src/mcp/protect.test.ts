@@ -21,6 +21,15 @@ vi.mock('../backends/factory', async (importOriginal) => {
   };
 });
 
+/** A binding id, as protect-mcp writes it into a wrapped entry's args. */
+const BINDING_ID = expect.stringMatching(/^[0-9a-f]{32}$/);
+
+/** Wrapper args with the `--binding <id>` protect-mcp writes before the wrapper's own `--`. */
+function withBinding(args: string[]): unknown[] {
+  const at = args.indexOf('--');
+  return [...args.slice(0, at), '--binding', BINDING_ID, ...args.slice(at)];
+}
+
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-protect-'));
 }
@@ -367,7 +376,7 @@ describe('protectMcp — project-level client configs', () => {
     expect(config).not.toHaveProperty('mcpServers');
     expect(config.servers.slack.type).toBe('stdio');
     expect(config.servers.slack.command).toBe('/usr/local/bin/secretless-mcp');
-    expect(config.servers.slack.args).toEqual(['--server', 'slack', '--client', 'vscode', '--', 'npx', 'slack-mcp']);
+    expect(config.servers.slack.args).toEqual(withBinding(['--server', 'slack', '--client', 'vscode', '--', 'npx', 'slack-mcp']));
     expect(config.servers.slack.env).toEqual({ SLACK_TEAM_ID: 'T0FAKE' });
   });
 
@@ -421,6 +430,8 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
     args: ['--server', name, '--client', 'claude-code', '--', 'npx', 'some-mcp'],
     env: {},
   });
+  /** wrapped(name), bound by protect-mcp: its id in the args before the wrapper's `--`. */
+  const bound = (name: string) => ({ ...wrapped(name), args: withBinding(wrapped(name).args) });
 
   it('protects the user-scope server at the top level and the local-scope server of a project, and backs the file up as it was', async () => {
     fs.writeFileSync(configPath, JSON.stringify({
@@ -446,8 +457,8 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     expect(config.numStartups).toBe(3);
-    expect(config.mcpServers.github).toEqual(wrapped('github'));
-    expect(config.projects['/work/app']).toEqual({ allowedTools: [], mcpServers: { slack: wrapped('slack') } });
+    expect(config.mcpServers.github).toEqual(bound('github'));
+    expect(config.projects['/work/app']).toEqual({ allowedTools: [], mcpServers: { slack: bound('slack') } });
     expect(config.projects['/work/empty']).toEqual({ allowedTools: [], mcpServers: {} });
     expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
     expect(await vault().getServerSecrets('claude-code', 'slack')).toEqual({ SLACK_BOT_TOKEN: 'not-a-real-token-2' });
@@ -471,7 +482,7 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
       { client: 'claude-code', filePath: configPath, projectKey: '/work/app', server: 'github', protectedIn: { filePath: configPath } },
     ]);
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    expect(config.mcpServers.github).toEqual(wrapped('github'));
+    expect(config.mcpServers.github).toEqual(bound('github'));
     expect(config.projects['/work/app'].mcpServers.github).toEqual(server({ GITHUB_TOKEN: 'not-a-real-token-2' }));
     // The stored value is the protected server's, not overwritten by the other's.
     expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
@@ -493,7 +504,10 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
     expect(result.sharedName).toEqual([
       { client: 'claude-code', filePath: configPath, projectKey: '/work/app', server: 'github', protectedIn: { filePath: configPath } },
     ]);
-    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    // The server it protected before is bound in place: only its args change.
+    const expected = JSON.parse(before);
+    expected.mcpServers['github-personal'].args = withBinding(expected.mcpServers['github-personal'].args);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(expected);
   });
 
   it('leaves the server of the same name in the project .mcp.json, read after ~/.claude.json, as it is', async () => {
@@ -628,6 +642,12 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     args: [...wrapperArgs, '--', 'npx', 'some-mcp'],
     env,
   });
+  /** The config text `before`, parsed, with protect-mcp's binding in the args of the entry `name`. */
+  const boundIn = (before: string, name: string) => {
+    const config = JSON.parse(before);
+    config.mcpServers[name].args = withBinding(config.mcpServers[name].args);
+    return config;
+  };
   const writeConfig = (servers: Record<string, unknown>): string => {
     const content = JSON.stringify({ mcpServers: servers });
     fs.writeFileSync(configPath, content);
@@ -648,7 +668,7 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     expect(result.unmoved).toEqual([]);
     // Its command and args are as they were: only the stored value left its env.
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    expect(config.mcpServers['github-personal']).toEqual({ ...server, env: { LOG_LEVEL: 'debug' } });
+    expect(config.mcpServers['github-personal']).toEqual({ ...server, args: withBinding(server.args), env: { LOG_LEVEL: 'debug' } });
     expect(await vault().getServerSecrets('cursor', 'github')).toEqual({
       GITHUB_TOKEN: 'not-a-real-token-1',
       MY_SERVICE_API_KEY: 'FAKE-KEY-1234',
@@ -704,8 +724,12 @@ describe('protectMcp — a secret in the env of a server that already runs throu
       server: 'github',
       reason: 'another protected server reads its secrets by the same name, cursor/github',
     }]);
-    expect(result.projectLevel).toEqual([{ client: 'cursor', filePath: projectConfig, projectPath: path.join('.cursor', 'mcp.json') }]);
-    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    // Read for the id of the home binding this run stored, as the wrapper's check reads it, and not written.
+    expect(result.projectLevel).toEqual([
+      { client: 'cursor', filePath: projectConfig, projectPath: path.join('.cursor', 'mcp.json'), checkedForCopy: true },
+    ]);
+    // Bound in place, its secret left in its env.
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(boundIn(before, 'github'));
     expect(await vault().getServerSecrets('cursor', 'github')).toEqual({});
   });
 
@@ -754,7 +778,10 @@ describe('protectMcp — a secret in the env of a server that already runs throu
       { wrapperArgs: ['--backend', 'local'] },
       { backendType: 'local', wrapperArgs: [] },
     ];
+    const standIn = new McpVault({ backend: new LocalBackend({ storeDir: path.join(dataDir, 'mcp-vault'), key: 'not-a-real-key' }) });
     for (const { backendType, wrapperArgs } of cases) {
+      // Each case starts from the same state: the pair and its binding not stored.
+      await standIn.removeServerSecrets('cursor', 'github');
       writeConfig({
         github: wrapped(['--server', 'github', '--client', 'cursor', ...wrapperArgs], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
       });
@@ -765,7 +792,6 @@ describe('protectMcp — a secret in the env of a server that already runs throu
       expect(result.secretsFound).toBe(1);
       expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers.github.env).toEqual({});
     }
-    const standIn = new McpVault({ backend: new LocalBackend({ storeDir: path.join(dataDir, 'mcp-vault'), key: 'not-a-real-key' }) });
     expect(await standIn.getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
   });
 
@@ -797,7 +823,8 @@ describe('protectMcp — a secret in the env of a server that already runs throu
       server: 'github',
       reason: 'MY_SERVICE_API_KEY is stored under cursor/github with another value, which its wrapper gives the server in place of the one in its env',
     }]);
-    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    // Bound in place, its secrets left in its env.
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(boundIn(before, 'github'));
     expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
   });
 
@@ -828,7 +855,7 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     }
   });
 
-  it('CONTROL: counts a server with no secret in its env as already protected and leaves the file as it is', async () => {
+  it('CONTROL: counts a server with no secret in its env as already protected and changes the file only by binding it', async () => {
     const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { LOG_LEVEL: 'debug' }) });
 
     const result = await protect();
@@ -836,6 +863,6 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     expect(result.alreadyProtected).toBe(1);
     expect(result.secretsFound).toBe(0);
     expect(result.unmoved).toEqual([]);
-    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(boundIn(before, 'github'));
   });
 });

@@ -429,7 +429,7 @@ describe('rewriteServerMaps — the server maps of ~/.claude.json (#470)', () =>
       { projectKey: '/work/other', serverSecrets: { github: { GITHUB_TOKEN: 'not-a-real-token-2' } } },
     ], wrapperPath, backupDir);
 
-    expect(result).toEqual({ serversRewritten: 0, backupPath: null });
+    expect(result).toEqual({ serversRewritten: 0, serversBound: 0, backupPath: null });
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
     expect(fs.existsSync(backupDir)).toBe(false);
   });

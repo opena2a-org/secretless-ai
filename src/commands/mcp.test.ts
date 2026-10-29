@@ -7,6 +7,7 @@ import { protectMcp, type ProtectResult } from '../mcp/protect';
 import { mcpConfigLocations } from '../mcp/discover';
 import { runProtectMcp } from './mcp';
 import { findSecretValueProblem, unstorableMcpSecretError } from '../secret-value';
+import { sourceCommand } from '../mcp/printed-command.test-support';
 
 /** Any C0 control, DEL or C1 control: what must never reach the terminal raw. */
 const RAW_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
@@ -35,6 +36,12 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [],
     });
 
@@ -58,6 +65,12 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [],
     });
 
@@ -77,6 +90,12 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [],
     });
 
@@ -96,6 +115,12 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [],
     });
 
@@ -118,6 +143,12 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [],
     });
 
@@ -126,7 +157,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
     expect(output).toContain('1 secret(s) encrypted across 1 server(s).');
     expect(output).toContain('  windsurf (/home/u/.windsurf/mcp.json)\n    ? not checked: not valid JSON (line 2, column 1)');
     expect(output).toContain('1 config(s) could not be parsed, so the servers in them were not checked.');
-    expect(output).toContain('Fix the file(s) above, then run `npx secretless-ai protect-mcp` again.');
+    expect(output).toContain(`Fix the file(s) above, then run \`${sourceCommand('protect-mcp')}\` again.`);
   });
 
   it('names the part of a server it could not read after the secrets it did encrypt', async () => {
@@ -148,6 +179,12 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [],
     });
 
@@ -185,6 +222,12 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
       sharedName: [],
       refusedName: [],
       unmoved: [],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [],
     });
 
@@ -198,7 +241,7 @@ describe('protect-mcp prints MCP env key names escaped (#229)', () => {
     );
     expect(output).toContain('  vscode (/home/u/.vscode/mcp.json)\n    ? api: env values PORT, FLAGS not checked: not strings');
     expect(output).toContain('3 server(s) have a part that could not be read, so it was not checked for secrets.');
-    expect(output).toContain('Fix the entries above, then run `npx secretless-ai protect-mcp` again.');
+    expect(output).toContain(`Fix the entries above, then run \`${sourceCommand('protect-mcp')}\` again.`);
   });
 
   it('writes a control character in the key of a refused value as an escape on every line', async () => {
@@ -233,6 +276,12 @@ describe('protect-mcp names where it looked, and each project-level config it le
     sharedName: [],
     refusedName: [],
     unmoved: [],
+    bound: [],
+    rebound: [],
+    unbound: [],
+    copies: [],
+    copyFiles: [],
+    repointed: [],
     projectLevel: [],
   };
 
@@ -256,6 +305,12 @@ describe('protect-mcp names where it looked, and each project-level config it le
   it('names each project-level config it left by its path from the project, instead of "No MCP configurations found."', async () => {
     vi.mocked(protectMcp).mockResolvedValue({
       ...nothingFound,
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [
         { client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' },
         { client: 'unknown', filePath: '/home/u/proj/mcp.json', projectPath: 'mcp.json' },
@@ -269,7 +324,7 @@ describe('protect-mcp names where it looked, and each project-level config it le
     expect(output).toContain('\n  mcp.json\n    ? not checked: project-level config: see mcp-status');
     expect(output).toContain('2 project-level config(s) were not checked, so no secret in them was encrypted.');
     expect(output).toContain("protect-mcp would write this machine's wrapper path into them, and these files are usually committed.");
-    expect(output).toContain('Run `npx secretless-ai mcp-status` to list their servers.');
+    expect(output).toContain(`Run \`${sourceCommand('mcp-status')}\` to list their servers.`);
     expect(output).not.toContain('/home/u/proj');
   });
 
@@ -277,6 +332,12 @@ describe('protect-mcp names where it looked, and each project-level config it le
     vi.mocked(protectMcp).mockResolvedValue({
       ...nothingFound,
       clientsScanned: 1,
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [{ client: 'vscode', filePath: '/home/u/proj/.vscode/mcp.json', projectPath: '.vscode/mcp.json' }],
     });
 
@@ -295,6 +356,12 @@ describe('protect-mcp names where it looked, and each project-level config it le
       secretsFound: 1,
       serversProtected: 1,
       servers: [{ client: 'claude-code', server: 'slack', secretKeys: ['SLACK_BOT_TOKEN'] }],
+      bound: [],
+      rebound: [],
+      unbound: [],
+      copies: [],
+      copyFiles: [],
+      repointed: [],
       projectLevel: [{ client: 'cursor', filePath: '/home/u/proj/.cursor/mcp.json', projectPath: '.cursor/mcp.json' }],
     });
 
@@ -321,6 +388,12 @@ describe('protect-mcp over the server maps of ~/.claude.json (#470)', () => {
     sharedName: [],
     refusedName: [],
     unmoved: [],
+    bound: [],
+    rebound: [],
+    unbound: [],
+    copies: [],
+    copyFiles: [],
+    repointed: [],
     projectLevel: [],
   };
   const claudeJson = '/home/u/.claude.json';
@@ -349,7 +422,7 @@ describe('protect-mcp over the server maps of ~/.claude.json (#470)', () => {
       '',
       '  2 server(s) were not protected, so their secrets are still in plaintext.',
       '  Secrets are stored under the client and server name, and a protected server reads its secrets by that name.',
-      '  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.',
+      `  Rename each server listed above, then run \`${sourceCommand('protect-mcp')}\` again.`,
     ].join('\n'));
   });
 
@@ -404,6 +477,12 @@ describe('protect-mcp names each server that runs through the wrapper with secre
     sharedName: [],
     refusedName: [],
     unmoved: [],
+    bound: [],
+    rebound: [],
+    unbound: [],
+    copies: [],
+    copyFiles: [],
+    repointed: [],
     projectLevel: [],
   };
   const cursorJson = '/home/u/.cursor/mcp.json';
@@ -429,7 +508,7 @@ describe('protect-mcp names each server that runs through the wrapper with secre
       '    ? "gh\\u001b[2J": secrets not moved: another protected server reads its secrets by the same name, cursor/github',
       '',
       '  2 server(s) have secrets in plaintext in their env that were not encrypted.',
-      '  Move each value out of its file and rotate it, then run `npx secretless-ai mcp-status` again.',
+      `  Move each value out of its file and rotate it, then run \`${sourceCommand('mcp-status')}\` again.`,
     ].join('\n'));
   });
 

@@ -4,10 +4,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { protectMcp } from './mcp/protect';
-import { McpVault } from './mcp/vault';
+import { McpVault, commandDigest, newBindingId } from './mcp/vault';
 import { LocalBackend } from './backends/local';
 import { createBackend, effectiveBackendName } from './backends/factory';
 import { runProtectMcp } from './commands/mcp';
+import { sourceCommand } from './mcp/printed-command.test-support';
 
 /**
  * #513: four follow-ups to the protect-mcp fixes of #508.
@@ -45,7 +46,10 @@ vi.mock('./backends/factory', async (importOriginal) => {
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
 const WRAPPER_JS = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
-const WRAPPER_PATH = '/usr/local/bin/secretless-mcp';
+// The wrapper protect-mcp writes into a config: this build's, as the built
+// CLI writes it, so its runs read these entries as on its own wrapper (an
+// entry on another build's wrapper is re-pointed: binding-repoint.test.ts).
+const WRAPPER_PATH = WRAPPER_JS;
 const STAND_IN_KEY = 'not-a-real-key-513';
 
 let home: string;
@@ -158,13 +162,13 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
     for (const backendArgs of [[], ['--backend', 'local']]) {
       const res = spawnSync(
         process.execPath,
-        [WRAPPER_JS, '--server', 'github', '--client', 'cursor', ...backendArgs, '--', process.execPath, '-e', childScript],
+        [WRAPPER_JS, '--server', 'github', '--client', 'cursor', ...backendArgs, '--binding', newBindingId(), '--', process.execPath, '-e', childScript],
         { encoding: 'utf-8', env: childEnv() },
       );
 
       // The store is empty, so the wrapper names the one it read and refuses.
       expect(res.status).toBe(1);
-      expect(res.stderr).toContain(`No secrets are stored for client "cursor", server "github" in the ${backend} backend. The server was not started.`);
+      expect(res.stderr).toContain(`No binding for client "cursor", server "github" is stored in the ${backend} backend, so no secret was read. The server was not started.`);
       expect(fs.existsSync(marker)).toBe(false);
     }
   });
@@ -183,7 +187,9 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
 
     expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['MY_SERVICE_API_KEY'] }]);
     const server = JSON.parse(fs.readFileSync(cursorJson, 'utf-8')).mcpServers.github;
-    expect(server.args).toEqual(['--server', 'github', '--client', 'cursor', '--', process.execPath, '-e', childScript]);
+    expect(server.args).toEqual([
+      '--server', 'github', '--client', 'cursor', '--binding', expect.stringMatching(/^[0-9a-f]{32}$/), '--', process.execPath, '-e', childScript,
+    ]);
     const out = execFileSync(process.execPath, [WRAPPER_JS, ...server.args], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -196,13 +202,27 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
     // Where protect-mcp stored `local` with no backend configured before the
     // keychain upgrade (0.12.3): the encrypted file under ~/.secretless-ai/mcp-vault.
     const vaultDir = path.join(home, '.secretless-ai', 'mcp-vault');
-    await new McpVault({ backend: new LocalBackend({ storeDir: vaultDir }) })
-      .storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    const store = new McpVault({ backend: new LocalBackend({ storeDir: vaultDir }) });
+    await store.storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
     const childScript = 'process.stdout.write(String(process.env.MY_SERVICE_API_KEY))';
+    // Bound as protect-mcp binds it, for the command after the wrapper's `--`.
+    const id = newBindingId();
+    await store.storeBinding('cursor', 'github', {
+      schema: 1,
+      id,
+      scope: 'home',
+      file: path.join(home, '.cursor', 'mcp.json'),
+      client: 'cursor',
+      server: 'github',
+      commandDigest: commandDigest(process.execPath, ['-e', childScript]),
+      boundAt: new Date().toISOString(),
+      boundBy: 'test',
+      boundOn: newBindingId(),
+    });
 
     const out = execFileSync(
       process.execPath,
-      [WRAPPER_JS, '--server', 'github', '--client', 'cursor', '--vault-dir', vaultDir, '--', process.execPath, '-e', childScript],
+      [WRAPPER_JS, '--server', 'github', '--client', 'cursor', '--vault-dir', vaultDir, '--binding', id, '--', process.execPath, '-e', childScript],
       { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], env: childEnv() },
     );
 
@@ -222,6 +242,9 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
       expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['MY_SERVICE_API_KEY'] }]);
       expect(JSON.parse(fs.readFileSync(cursorJson, 'utf-8')).mcpServers.github.env).toEqual({});
       expect(await standInStore().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+      // The next run starts from the same state: the pair and its binding
+      // gone from the store, and the server unbound with its secret in its env.
+      await standInStore().removeServerSecrets('cursor', 'github');
       write(path.join('.cursor', 'mcp.json'), {
         mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) },
       });
@@ -303,7 +326,7 @@ describe('protect-mcp goes on past a name the store refuses (#513 item 2)', () =
       '',
       '  1 server(s) were not protected, so their secrets are still in plaintext.',
       '  The store takes only A-Z, a-z, 0-9, - and _ in a server name.',
-      '  Rename each server listed above, then run `npx secretless-ai protect-mcp` again.\n',
+      `  Rename each server listed above, then run \`${sourceCommand('protect-mcp')}\` again.\n`,
     ].join('\n'));
     const servers = JSON.parse(fs.readFileSync(cursorJson, 'utf-8')).mcpServers;
     expect(servers['my.server']).toEqual(refused);

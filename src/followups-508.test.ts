@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { protectMcp } from './mcp/protect';
+import { builtCommand } from './mcp/printed-command.test-support';
 
 /**
  * #508: `mcp-status` listed a server whose command is the secretless-mcp
@@ -18,7 +19,11 @@ import { protectMcp } from './mcp/protect';
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
 const WRAPPER_JS = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
-const WRAPPER_PATH = '/usr/local/bin/secretless-mcp';
+// The wrapper protect-mcp writes into a config: this build's, as the built
+// CLI writes it, so mcp-status reads these entries as on a wrapper that checks
+// its binding (an entry on another build's wrapper gets no start clause:
+// src/mcp/status-states.test.ts).
+const WRAPPER_PATH = WRAPPER_JS;
 
 let home: string;
 let project: string;
@@ -79,6 +84,26 @@ async function protectInProcess(): Promise<Awaited<ReturnType<typeof protectMcp>
   }
 }
 
+/**
+ * protect-mcp in this process as the command runs it: no home directory given
+ * and the local backend configured, so its store is the one mcp-status and the
+ * wrapper build from the args it writes. USER is unset as the spawned CLI has it.
+ */
+async function protectAsTheCommandRunsIt(): Promise<Awaited<ReturnType<typeof protectMcp>>> {
+  const saved = { HOME: process.env.HOME, USER: process.env.USER };
+  process.env.HOME = home;
+  delete process.env.USER;
+  try {
+    write(home, path.join('.secretless-ai', 'config.json'), { backend: 'local' });
+    return await protectMcp({ projectDir: project, wrapperPath: WRAPPER_PATH });
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
 describe('mcp-status classifies the env of a server that runs through the wrapper (#508)', () => {
   it('lists a server whose command is secretless-mcp, with a key in its env, as exposed', () => {
     write(project, 'mcp.json', { mcpServers: { demo: { command: 'secretless-mcp', env: { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' } } } });
@@ -104,13 +129,14 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
     expect(out).toContain([
       `  cursor (${cursorJson})`,
       '    ! exposed: EXPOSED (1 plaintext secret(s))',
-      '    + wrapped: protected',
+      '    ? wrapped: protected, not bound, so the wrapper does not start it',
+      `      \`${builtCommand('protect-mcp')}\` binds it.`,
       '    ? partial: env value API_TOKEN not checked: not a string',
       '',
     ].join('\n'));
     expect(out).not.toContain('exposed: protected');
     expect(out).not.toContain('partial: protected');
-    expect(out).toContain('Run `npx secretless-ai protect-mcp` to encrypt exposed secrets.');
+    expect(out).toContain(`Run \`${builtCommand('protect-mcp')}\` to encrypt exposed secrets.`);
   });
 
   it('lists the server as protected once protect-mcp has moved the secret out of its env', async () => {
@@ -119,13 +145,13 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
     });
     expect(runCli(['mcp-status'])).toContain('    ! github: EXPOSED (1 plaintext secret(s))\n');
 
-    const result = await protectInProcess();
+    const result = await protectAsTheCommandRunsIt();
     expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['MY_SERVICE_API_KEY'] }]);
     expect(fs.readFileSync(cursorJson, 'utf-8')).not.toContain('FAKE-KEY-1234');
 
     const out = runCli(['mcp-status']);
 
-    expect(out).toContain(`  cursor (${cursorJson})\n    + github: protected\n`);
+    expect(out).toContain(`  cursor (${cursorJson})\n    + github: protected and bound\n`);
     expect(out).not.toContain('EXPOSED');
   });
 

@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { McpVault } from './vault';
+import { McpVault, commandDigest, newBindingId, ownsBinding } from './vault';
+import type { McpBinding } from './vault';
+import type { ResolveOptions, WritableSecretBackend } from '../backends/types';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-vault-test-'));
@@ -208,5 +210,145 @@ describe('McpVault', () => {
       await vault.storeServerSecrets('cursor', 'github', { GITHUB_APP_KEY: pem });
       expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ GITHUB_APP_KEY: pem });
     });
+  });
+});
+
+/** A store held in memory; the delete numbered `failDelete` (from 1) throws. */
+class MemoryStore implements WritableSecretBackend {
+  readonly name = 'local';
+  readonly entries = new Map<string, string>();
+  private deletes = 0;
+
+  constructor(private readonly failDelete?: number) {}
+
+  async resolve(at: string, options?: ResolveOptions): Promise<Record<string, string>> {
+    const found: Record<string, string> = {};
+    for (const [key, value] of this.entries) {
+      if (key === at || (!options?.exact && key.startsWith(`${at}/`))) found[key] = value;
+    }
+    return found;
+  }
+
+  async healthCheck() {
+    return { healthy: true, latencyMs: 0 };
+  }
+
+  async store(key: string, value: string): Promise<void> {
+    this.entries.set(key, value);
+  }
+
+  async delete(key: string): Promise<boolean> {
+    this.deletes++;
+    if (this.deletes === this.failDelete) throw new Error('the store refused this delete');
+    return this.entries.delete(key);
+  }
+}
+
+function bindingFor(client: string, server: string): McpBinding {
+  return {
+    schema: 1,
+    id: newBindingId(),
+    scope: 'home',
+    file: path.join(os.tmpdir(), 'secretless-vault-order', 'mcp.json'),
+    client,
+    server,
+    commandDigest: commandDigest(process.execPath, ['-e', 'x']),
+    boundAt: new Date().toISOString(),
+    boundBy: 'test',
+    boundOn: newBindingId(),
+  };
+}
+
+describe('removeServerSecrets deletes the names stored under a pair, then its binding, each when present', () => {
+  let dir: string;
+
+  beforeEach(() => { dir = tmpDir(); });
+  afterEach(() => { cleanup(dir); });
+
+  it('v1: a binding with no name stored under its pair is deleted', async () => {
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+    await vault.storeBinding('cursor', 'github', bindingFor('cursor', 'github'));
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({});
+
+    await vault.removeServerSecrets('cursor', 'github');
+
+    expect(await vault.getBinding('cursor', 'github')).toBeUndefined();
+  });
+
+  it('v2: a delete that fails after the names leaves the binding, and a second call deletes it', async () => {
+    const memory = new MemoryStore(2);
+    const vault = new McpVault({ backend: memory });
+    const name = ['MY', 'SERVICE', 'API', 'KEY'].join('_');
+    const binding = bindingFor('cursor', 'github');
+    await vault.storeBinding('cursor', 'github', binding);
+    await vault.storeServerSecrets('cursor', 'github', { [name]: ['stand', 'in', 'value'].join('-') });
+
+    await expect(vault.removeServerSecrets('cursor', 'github')).rejects.toThrow('the store refused this delete');
+
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({});
+    expect(await vault.getBinding('cursor', 'github')).toEqual(binding);
+
+    await vault.removeServerSecrets('cursor', 'github');
+
+    expect(await vault.getBinding('cursor', 'github')).toBeUndefined();
+    expect([...memory.entries.keys()]).toEqual([]);
+  });
+});
+
+describe('a binding names the secretless home that stored it (boundOn)', () => {
+  const hex = (bytes: number) => [...Array(bytes)].map(() => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join('');
+
+  it('storeBinding refuses a binding without a boundOn of 32 lowercase hex digits, and stores nothing', async () => {
+    const memory = new MemoryStore();
+    const vault = new McpVault({ backend: memory });
+    const { boundOn: _boundOn, ...earlier } = bindingFor('cursor', 'github');
+    for (const boundOn of [undefined, '', hex(16).toUpperCase(), hex(16).slice(1), `${hex(16)}0`, 42]) {
+      const binding = (boundOn === undefined ? earlier : { ...earlier, boundOn }) as McpBinding;
+      await expect(vault.storeBinding('cursor', 'github', binding)).rejects.toThrow('it names no secretless home');
+    }
+    expect([...memory.entries.keys()]).toEqual([]);
+  });
+
+  it('getBinding reads a well-formed boundOn, and reads a binding without one, or with a malformed one, as it is without the field', async () => {
+    const memory = new MemoryStore();
+    const vault = new McpVault({ backend: memory });
+    const binding = bindingFor('cursor', 'github');
+    await vault.storeBinding('cursor', 'github', binding);
+    expect(await vault.getBinding('cursor', 'github')).toEqual(binding);
+
+    // As an earlier version stored it, or with a boundOn that is not an id: read, never refused.
+    const { boundOn: _boundOn, ...earlier } = binding;
+    for (const boundOn of [undefined, hex(16).toUpperCase(), 7, null]) {
+      memory.entries.set('mcp-binding/cursor/github', JSON.stringify(boundOn === undefined ? earlier : { ...earlier, boundOn }));
+      expect(await vault.getBinding('cursor', 'github')).toEqual(earlier);
+    }
+  });
+});
+
+describe('ownsBinding: whether a binding is this secretless home\'s to change', () => {
+  const home = newBindingId();
+
+  it('in a store that is this machine\'s alone: every binding, whatever its boundOn and whether this home\'s id is read', () => {
+    for (const store of ['local', 'keychain-macos', 'keychain-linux']) {
+      for (const boundOn of [home, newBindingId(), undefined]) {
+        for (const homeId of [home, undefined]) {
+          expect(ownsBinding(store, { boundOn }, homeId)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('in a store several machines read: only a binding whose boundOn is this home\'s id', () => {
+    for (const store of ['1password', 'vault', 'gcp-sm']) {
+      expect(ownsBinding(store, { boundOn: home }, home)).toBe(true);
+      expect(ownsBinding(store, { boundOn: newBindingId() }, home)).toBe(false);
+      expect(ownsBinding(store, {}, home)).toBe(false);
+      // This home's id could not be read: no binding there is its own.
+      expect(ownsBinding(store, { boundOn: home }, undefined)).toBe(false);
+      expect(ownsBinding(store, {}, undefined)).toBe(false);
+      // An id that is not 32 lowercase hex digits is no home's.
+      expect(ownsBinding(store, { boundOn: home.toUpperCase() }, home.toUpperCase())).toBe(false);
+      expect(ownsBinding(store, { boundOn: '' }, '')).toBe(false);
+    }
   });
 });

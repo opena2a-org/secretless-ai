@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import { McpVault } from './vault';
+import { McpVault, commandDigest, newBindingId } from './vault';
+import { builtCommand } from './printed-command.test-support';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-wrapper-'));
@@ -42,6 +43,28 @@ describe('secretless-mcp wrapper', () => {
   beforeEach(() => { dir = tmpDir(); });
   afterEach(() => { cleanup(dir); });
 
+  /**
+   * A binding for the pair, stored beside its secrets as protect-mcp stores
+   * it, for the command the wrapper starts after its `--`: the wrapper args
+   * that carry its id.
+   */
+  async function bindPair(vault: McpVault, client: string, server: string, command: string[]): Promise<string[]> {
+    const id = newBindingId();
+    await vault.storeBinding(client, server, {
+      schema: 1,
+      id,
+      scope: 'home',
+      file: path.join(dir, 'mcp.json'),
+      client,
+      server,
+      commandDigest: commandDigest(command[0], command.slice(1)),
+      boundAt: new Date().toISOString(),
+      boundBy: 'test',
+      boundOn: newBindingId(),
+    });
+    return ['--binding', id];
+  }
+
   it('injects secrets as env vars into child process', async () => {
     // Store a secret in the vault
     const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
@@ -53,8 +76,10 @@ describe('secretless-mcp wrapper', () => {
     const scriptPath = path.join(dir, 'echo-env.js');
     fs.writeFileSync(scriptPath, 'console.log(JSON.stringify({ MY_SECRET: process.env.MY_SECRET }));');
 
+    const binding = await bindPair(vault, 'cursor', 'test-server', ['node', scriptPath]);
+
     const result = await runWrapper(
-      ['--server', 'test-server', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
+      ['--server', 'test-server', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', ...binding, '--', 'node', scriptPath],
     );
 
     expect(result.code).toBe(0);
@@ -86,9 +111,10 @@ describe('secretless-mcp wrapper', () => {
 
     const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
     await vault.storeServerSecrets('cursor', 'srv', { SRV_TOKEN: 'srv-value' });
+    const binding = await bindPair(vault, 'cursor', 'srv', ['node', scriptPath]);
 
     const result = await runWrapper(
-      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
+      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', ...binding, '--', 'node', scriptPath],
     );
 
     expect(result.code).toBe(42);
@@ -106,8 +132,10 @@ describe('secretless-mcp wrapper', () => {
       }));
     `);
 
+    const binding = await bindPair(vault, 'cursor', 'srv', ['node', scriptPath]);
+
     const result = await runWrapper(
-      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
+      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', ...binding, '--', 'node', scriptPath],
       { EXISTING_VAR: 'already-here' },
     );
 
@@ -136,23 +164,26 @@ describe('secretless-mcp wrapper', () => {
     const marker = path.join(dir, 'started');
     const scriptPath = path.join(dir, 'server.js');
     fs.writeFileSync(scriptPath, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x');`);
+    // Bound, so the wrapper passes its binding check and reaches the secrets.
+    const binding = await bindPair(vault, 'bogus-client', 'myserver', ['node', scriptPath]);
 
     const result = await runWrapper(
-      ['--server', 'myserver', '--client', 'bogus-client', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath],
+      ['--server', 'myserver', '--client', 'bogus-client', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', ...binding, '--', 'node', scriptPath],
     );
 
     expect(result.code).toBe(1);
     expect(fs.existsSync(marker)).toBe(false);
     expect(result.stderr).toContain('No secrets are stored for client "bogus-client", server "myserver" in the local backend. The server was not started.');
     expect(result.stderr).toContain('Stored client/server pairs: claude-code/linear, cursor/github');
-    expect(result.stderr).toContain('npx secretless-ai mcp-status');
+    expect(result.stderr).toContain(builtCommand('mcp-status'));
     // Names only: no stored value reaches either stream.
     expect(result.stdout + result.stderr).not.toContain('secret-value');
   });
 
   it('says the backend holds no MCP secrets when the vault is empty', async () => {
+    // A well-formed binding, and no binding stored: the vault holds nothing.
     const result = await runWrapper(
-      ['--server', 'myserver', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'echo', 'hi'],
+      ['--server', 'myserver', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--binding', newBindingId(), '--', 'echo', 'hi'],
     );
 
     expect(result.code).toBe(1);
@@ -167,9 +198,10 @@ describe('secretless-mcp wrapper', () => {
     await vault.storeServerSecrets('cursor', 'srv', { SRV_TOKEN: 'srv-value' });
     const scriptPath = path.join(dir, 'argv.js');
     fs.writeFileSync(scriptPath, 'console.log(JSON.stringify(process.argv.slice(2)));');
+    const binding = await bindPair(vault, 'cursor', 'srv', ['node', scriptPath, flag, 'localhost']);
 
     const result = await runWrapper(
-      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', '--', 'node', scriptPath, flag, 'localhost'],
+      ['--server', 'srv', '--client', 'cursor', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', ...binding, '--', 'node', scriptPath, flag, 'localhost'],
     );
 
     expect(result.code).toBe(0);

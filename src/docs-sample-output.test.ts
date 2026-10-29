@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { sourceCommand } from './mcp/printed-command.test-support';
 
 /**
  * The guides promise "expected output so you know it worked" (docs/USE-CASES.md).
@@ -112,7 +113,7 @@ function typeAtHiddenPrompts(): () => void {
   };
 }
 
-import { runProtectMcp } from './commands/mcp';
+import { runMcpStatus, runProtectMcp } from './commands/mcp';
 import { runImport, runSetupCommand } from './commands/env-run';
 import { CREDENTIAL_PATTERNS } from './patterns';
 
@@ -205,6 +206,15 @@ function blockAfterText(file: string, text: string): string {
 // ---------------------------------------------------------------------------
 // Running the commands
 // ---------------------------------------------------------------------------
+
+/**
+ * Output with the commands protect-mcp prints in the unversioned form the
+ * guides show: a printed command names the build that printed it
+ * (src/printed-command.ts), and a guide, written for every build, names none.
+ */
+function unversioned(output: string, verbs: string[]): string {
+  return verbs.reduce((text, verb) => text.split(sourceCommand(verb)).join(`npx secretless-ai ${verb}`), output);
+}
 
 /** What a user sees: no colour, the temporary HOME shown as the doc's, no trailing blanks. */
 function normalize(output: string, home?: string): string {
@@ -468,18 +478,25 @@ describe('secure-mcp-configs.md and docs/commands.md', () => {
 
     const res = await inProcess(() => runProtectMcp([]));
     expect(res.code).toBe(0);
-    const output = normalize(res.output, home);
+    const verbs = ['mcp-status', 'mcp-unprotect'];
+    for (const verb of verbs) expect(res.output).toContain(sourceCommand(verb));
+    const output = normalize(unversioned(res.output, verbs), home);
     expect(output).toBe(sampleAfter(MCP_GUIDE, 'protect-mcp'));
     expect(output).toBe(sampleAfter(COMMANDS_DOC, 'protect-mcp'));
   });
 
-  itIfBuilt('`mcp-status` after `protect-mcp`', async () => {
+  it('`mcp-status` after `protect-mcp`', async () => {
     const { home } = inProcessFixture();
     writeClaudeDesktopConfig(home);
     expect((await inProcess(() => runProtectMcp([]))).code).toBe(0);
 
-    const res = cli(['mcp-status'], { home, cwd: tempDir() });
-    expect(res.status).toBe(0);
+    // mcp-status runs in this process too, so it reads the bindings from the
+    // store protect-mcp wrote: the fixture's store stands in for the local
+    // backend under ~/.secretless-ai, whose directory that backend makes.
+    fs.mkdirSync(path.join(home, '.secretless-ai', 'mcp-vault'), { recursive: true });
+    vi.spyOn(process, 'cwd').mockReturnValue(tempDir());
+    const res = await inProcess(() => runMcpStatus());
+    expect(res.code).toBe(0);
     // `Backend:` names the platform's keychain on macOS (the guide's reader),
     // and `keychain-linux` or `local` on Linux.
     const output = normalize(res.output, home)
