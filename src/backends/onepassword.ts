@@ -25,7 +25,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { WritableSecretBackend, BackendHealth } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
 import { BACKEND_CHILD_TIMEOUT_MS, BACKEND_CHILD_KILL_SIGNAL } from './bounded-child';
 
 const DEFAULT_VAULT = 'Secretless';
@@ -174,13 +174,16 @@ export class OnePasswordBackend implements WritableSecretBackend {
     }
   }
 
-  async resolve(secretPath: string): Promise<Record<string, string>> {
+  async resolve(secretPath: string, options?: ResolveOptions): Promise<Record<string, string>> {
     const vaultId = this.getVaultId();
     if (!vaultId) return {};
 
+    // An item is read by its id, and only the list of item names maps a title
+    // to an id, so an exact read lists names too, then reads the one item
+    // titled `secretPath`.
     const items = this.listItems(vaultId);
     const matching = items.filter(
-      i => i.title === secretPath || i.title.startsWith(secretPath + '/'),
+      i => options?.exact ? i.title === secretPath : (i.title === secretPath || i.title.startsWith(secretPath + '/')),
     );
 
     const results: Record<string, string> = {};

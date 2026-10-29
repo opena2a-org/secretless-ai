@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { WritableSecretBackend, BackendHealth } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
 
 const STORE_FILE = 'secrets.enc';
 const META_FILE = 'secrets.meta.json';
@@ -243,13 +243,14 @@ export class LocalBackend implements WritableSecretBackend {
     }
   }
 
-  async resolve(secretPath: string): Promise<Record<string, string>> {
+  async resolve(secretPath: string, options?: ResolveOptions): Promise<Record<string, string>> {
     const store = this.readStore();
 
-    // Empty prefix returns all secrets; otherwise match exact key or prefix/
+    // An exact read matches its own key alone. Otherwise an empty prefix
+    // returns all secrets, and a prefix matches its key and every key under it.
     const results: Record<string, string> = {};
     for (const [key, value] of Object.entries(store)) {
-      if (!secretPath || key === secretPath || key.startsWith(secretPath + '/')) {
+      if (options?.exact ? key === secretPath : (!secretPath || key === secretPath || key.startsWith(secretPath + '/'))) {
         results[key] = value as string;
       }
     }

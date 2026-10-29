@@ -7,7 +7,7 @@ export interface SecretBackend {
   /** Backend name (e.g., "vault", "aws-sm", "env") */
   readonly name: string;
 
-  /** Resolve one or more secrets by path/name. Returns key-value pairs. */
+  /** Resolve one or more secrets by path/name. Returns key-value pairs. `options.exact` narrows the read to the one entry at `path` (ResolveOptions). */
   resolve(path: string, options?: ResolveOptions): Promise<Record<string, string>>;
 
   /** Check if the backend is available and authenticated */
@@ -18,9 +18,17 @@ export interface SecretBackend {
 export interface ResolveOptions {
   /**
    * The path names one entry, not a prefix: the caller wants that entry or
-   * nothing. The Vault backend then answers a path it does not hold without
-   * listing it as a prefix, and the cache layer passes the option to the
-   * backend it wraps (#375).
+   * nothing. Every backend honors it. `resolve(path, { exact: true })`
+   * returns `{ [path]: value }` when an entry is stored under exactly
+   * `path`, and `{}` otherwise; it reads the value of no other entry. A
+   * backend that addresses an entry by its key sends no list request
+   * (Vault answers a 404 with `{}` and no LIST, #375; gcp-sm reads the one
+   * secret the key is stored under; local and the keychains filter their
+   * index to the key). A backend that finds an entry only through a
+   * listing of names (1Password) lists names and reads one value. The
+   * cache layer serves an exact read only from the entry cached at `path`
+   * and passes the option to the backend it wraps. Without the option the
+   * path is a prefix: the entry at `path` and every entry under `path/`.
    */
   exact?: boolean;
 }
