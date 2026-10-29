@@ -3,9 +3,10 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createBackend } from '../backends/factory';
-import { ANOTHER_MACHINE_STARTS, ANOTHER_MACHINE_STATE, LEFT_ANOTHER_MACHINE, LEFT_CHANGED, runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
+import { ANOTHER_MACHINE_DOES_NOT_START, ANOTHER_MACHINE_STARTS, ANOTHER_MACHINE_STATE, LEFT_ANOTHER_MACHINE, LEFT_CHANGED, runMcpStatus, runMcpUnprotect, runProtectMcp } from '../commands/mcp';
 import { listedName } from '../secret-value';
 import { thisBuildWrapperPath } from './discover';
+import { sourceCommand } from './printed-command.test-support';
 import { ANOTHER_MACHINE_CLAUSE, ANOTHER_MACHINE_REASON, BINDING_NOT_AS_READ, HOME_ID_UNUSABLE, storeBindingOf } from './protect';
 import { BindingWriteRefusedError, McpVault } from './vault';
 import type { McpBinding } from './vault';
@@ -703,29 +704,31 @@ describe('(h) on a store that is this machine\'s alone, each acts as built, what
   }
 });
 
-describe('(J5) the another-machine words carry what the ruling fixes, pending their final words', () => {
+describe('(J5) the another-machine reason and clause say who bound the binding, and that this machine leaves it', () => {
   const reads = { client: 'claude-code', server: 's' };
 
-  it('the reason names the pair, another secretless home on another machine or this one before its ~/.secretless-ai was replaced, that this machine leaves the binding, and a new name with its own values', () => {
+  it('the reason names the pair, protect-mcp on another machine or on this one before ~/.secretless-ai was replaced, that this machine leaves the binding, and a new name with its own values', () => {
     const reason = ANOTHER_MACHINE_REASON(reads);
     expect(reason).toContain('claude-code/s');
-    expect(reason).toContain('protect-mcp in another secretless home');
+    expect(reason).toContain('bound by protect-mcp on another machine, or on this one before ~/.secretless-ai was replaced');
     expect(reason).toContain('on another machine');
-    expect(reason).toContain('before its ~/.secretless-ai was replaced');
+    expect(reason).toContain('before ~/.secretless-ai was replaced');
     expect(reason).toContain('protect-mcp and mcp-unprotect on this machine leave that binding as it is');
     expect(reason).toContain('under a new name with its own values');
   });
 
-  it('the clause names the file as a path on that machine, and says this machine leaves the binding', () => {
-    const file = path.join(path.sep, 'elsewhere', '.cursor', 'mcp.json');
-    const clause = ANOTHER_MACHINE_CLAUSE(file);
-    expect(clause).toContain(`${file} is a path there`);
-    expect(clause).toContain('protect-mcp in another secretless home');
+  it('the clause names no file, says who bound that entry, and says this machine leaves the binding', () => {
+    const clause = ANOTHER_MACHINE_CLAUSE();
+    expect(clause).toBe(
+      'That entry was bound by protect-mcp on another machine, or on this one before ~/.secretless-ai was replaced. '
+        + 'protect-mcp and mcp-unprotect on this machine leave that binding as it is.',
+    );
+    expect(clause).toContain('bound by protect-mcp on another machine, or on this one before ~/.secretless-ai was replaced');
     expect(clause).toContain('protect-mcp and mcp-unprotect on this machine leave that binding as it is');
   });
 
   it('neither says the entry no longer exists, nor names a command that deletes a binding', () => {
-    for (const words of [ANOTHER_MACHINE_REASON(reads), ANOTHER_MACHINE_CLAUSE('/f')]) {
+    for (const words of [ANOTHER_MACHINE_REASON(reads), ANOTHER_MACHINE_CLAUSE()]) {
       expect(words).not.toContain('no longer exists');
       expect(words).not.toContain('mcp-forget');
       expect(words).not.toMatch(/\bforget\b|\bdelete\b/);
@@ -796,6 +799,34 @@ describe('(j) the home id file', () => {
     expect(fs.readFileSync(h().idFile(), 'latin1')).toBe(held);
     expect(h().tripped()).toEqual([]);
   });
+
+  it('(w8) malformed, then unreadable: protect-mcp prints the entry\'s full line, with how to recover', async () => {
+    open();
+    write(homeConfig(), { t: wrappedUnbound('cursor', 't') });
+    const file = listedName(h().idFile());
+    fs.writeFileSync(h().idFile(), 'not an id');
+
+    const malformed = await cli('protect-mcp');
+
+    expect(malformed.split('\n')).toContain(
+      `    ? t: not bound: ${file} does not hold an id protect-mcp wrote, so no binding was stored, and protect-mcp does not overwrite it. `
+        + `If you have a copy of ~/.secretless-ai from before, restore ${file} from it; otherwise remove ${file} and run \`${sourceCommand('protect-mcp')}\` again: `
+        + 'it writes a new id, and protect-mcp and mcp-unprotect on this machine then leave bindings stored with the old id as they are.',
+    );
+
+    // A file that cannot be read: not as root, which reads it anyway.
+    if (process.getuid?.() !== 0) {
+      fs.chmodSync(h().idFile(), 0o000);
+      const unreadable = await cli('protect-mcp');
+
+      expect(unreadable.split('\n')).toContain(
+        `    ? t: not bound: ${file} could not be read or created (EACCES), so no binding was stored. `
+          + `Once ${file} can be read, or created in ~/.secretless-ai, run \`${sourceCommand('protect-mcp')}\` again.`,
+      );
+    }
+    expect(h().store.bindingWrites).toEqual([]);
+    expect(h().tripped()).toEqual([]);
+  });
 });
 
 describe('(J7) mcp-status gives a binding another home stored its own state, beside the launch verdict', () => {
@@ -818,7 +849,7 @@ describe('(J7) mcp-status gives a binding another home stored its own state, bes
 
     const output = await cli('mcp-status');
 
-    expect(output).toContain(`    ? s: ${ANOTHER_MACHINE_STATE}, so the wrapper does not start it\n`);
+    expect(output).toContain(`    ? s: ${ANOTHER_MACHINE_STATE}, ${ANOTHER_MACHINE_DOES_NOT_START}\n`);
     expect(output).toContain(`protect-mcp\` leaves it not bound: ${ANOTHER_MACHINE_REASON({ client: 'cursor', server: 's' })}`);
   });
 
@@ -876,6 +907,43 @@ describe('(J7) mcp-status gives a binding another home stored its own state, bes
       expect(output).not.toContain(ANOTHER_MACHINE_STATE);
     });
   }
+
+  it('(w9) B\'s home id file malformed, then unreadable: one footer after the configs names it, with how to recover; absent: no footer', async () => {
+    open();
+    await bindInA(homeConfig(), 'cursor');
+    h().use('B');
+    const file = listedName(h().idFile());
+    const footers = (output: string) => output.split('\n').filter((line) => line.startsWith(`  ${file} `));
+
+    fs.writeFileSync(h().idFile(), 'not an id');
+    const malformed = await cli('mcp-status');
+
+    expect(malformed).toContain(`    + s: ${ANOTHER_MACHINE_STATE}\n`);
+    expect(footers(malformed)).toEqual([
+      `  ${file} does not hold an id protect-mcp wrote, so each binding in the 1password backend is shown above as stored on another machine or with an earlier ~/.secretless-ai. `
+        + `If you have a copy of ~/.secretless-ai from before, restore ${file} from it; otherwise remove ${file} and run \`${sourceCommand('protect-mcp')}\` again.`,
+    ]);
+
+    // A file that cannot be read: not as root, which reads it anyway.
+    if (process.getuid?.() !== 0) {
+      fs.chmodSync(h().idFile(), 0o000);
+      const unreadable = await cli('mcp-status');
+
+      expect(unreadable).toContain(`    + s: ${ANOTHER_MACHINE_STATE}\n`);
+      expect(footers(unreadable)).toEqual([
+        `  ${file} could not be read (EACCES), so each binding in the 1password backend is shown above as stored on another machine or with an earlier ~/.secretless-ai. `
+          + `Once ${file} can be read, run \`${sourceCommand('mcp-status')}\` again.`,
+      ]);
+    }
+
+    fs.rmSync(h().idFile());
+    const absent = await cli('mcp-status');
+
+    expect(absent).toContain(`    + s: ${ANOTHER_MACHINE_STATE}\n`);
+    expect(footers(absent)).toEqual([]);
+    expect(absent).not.toContain('is shown above as stored on another machine');
+    expect(h().tripped()).toEqual([]);
+  });
 });
 
 describe('(l) launch is unchanged: the wrapper never reads boundOn or the home id', () => {

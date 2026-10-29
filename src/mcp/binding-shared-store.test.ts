@@ -229,7 +229,7 @@ describe('protect-mcp on a shared store', () => {
     expect(output).toContain(
       `    ? github: not bound: the secrets stored under cursor/github are bound to server "github" in ${gone}. `
         + `To run this server as well, add it again under a new name with its values and run \`${sourceCommand('protect-mcp')}\`. `
-        + `${gone} was not found on this machine; the 1password backend is read from other machines as well, so that binding may be in use there.`,
+        + `${gone} was not found on this machine; protect-mcp bound that entry with this ~/.secretless-ai, and the 1password backend is read from other machines as well, so that binding may be in use there.`,
     );
     expect(output).not.toContain('took over');
     expect(fs.readFileSync(file, 'utf-8')).toBe(before);
@@ -252,7 +252,7 @@ describe('protect-mcp on a shared store', () => {
     try {
       const { output } = await run(() => runProtectMcp([]), a2);
 
-      expect(output).toContain(`it carries the binding of server "github" in ${file}, so the wrapper gives it that server's secrets. ${ANOTHER_MACHINE_CLAUSE(file)}`);
+      expect(output).toContain(`it carries the binding of server "github" in ${file}, so the wrapper gives it that server's secrets. ${ANOTHER_MACHINE_CLAUSE()}`);
       expect(output).not.toContain('bound again');
       expect(output).not.toContain('mcp-forget');
       expect(output).not.toContain('no longer exists');
