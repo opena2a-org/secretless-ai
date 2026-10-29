@@ -4415,6 +4415,9 @@ tools.
 
 ### Changed
 
+- `resolve(path, { exact: true })` returns `{ [path]: value }` when an entry
+  is stored under exactly `path`, and `{}` otherwise; it reads the value of no
+  other entry. Every backend honors it.
 - `broker start` serves `POST /resolve` only when it loads a policy file: the
   one `--policy-file` names, or `~/.secretless-ai/broker-policies.json` when
   that file exists. A broker that loads no policy file builds no credential

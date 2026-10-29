@@ -18,7 +18,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { WritableSecretBackend, BackendHealth } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
 import { readKeyIndex } from './key-index';
 import {
   BACKEND_CHILD_TIMEOUT_MS,
@@ -196,10 +196,10 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
     }
   }
 
-  async resolve(secretPath: string): Promise<Record<string, string>> {
+  async resolve(secretPath: string, options?: ResolveOptions): Promise<Record<string, string>> {
     const index = this.readIndex();
     const matchingKeys = index.filter(
-      k => k === secretPath || k.startsWith(secretPath + '/'),
+      k => options?.exact ? k === secretPath : (k === secretPath || k.startsWith(secretPath + '/')),
     );
 
     const results: Record<string, string> = {};

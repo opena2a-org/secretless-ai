@@ -191,6 +191,26 @@ export class CachedBackend implements WritableSecretBackend {
     const cache = this.loadCache();
     const now = Date.now();
 
+    // An exact read names one entry, so it is served only from the entry
+    // cached at `secretPath`, and on a miss the backend is asked for that entry
+    // alone. It reads and writes no prefix marker: a prefix read does not
+    // certify an exact one, and an exact read does not certify a prefix. An
+    // absent entry is not cached, so each miss is one backend read.
+    if (options?.exact) {
+      const entry = Object.prototype.hasOwnProperty.call(cache.entries, secretPath)
+        ? cache.entries[secretPath]
+        : undefined;
+      if (entry && now - entry.cachedAt < this.ttlMs) {
+        return { [secretPath]: entry.value };
+      }
+      const results = await this.inner.resolve(secretPath, options);
+      if (!Object.prototype.hasOwnProperty.call(results, secretPath)) return {};
+      const value = results[secretPath];
+      cache.entries[secretPath] = { value, cachedAt: now, writer: this.writerStamp };
+      this.saveCache(cache);
+      return { [secretPath]: value };
+    }
+
     // Check if ALL matching keys in the cache are still valid.
     // We use a simple strategy: look for keys that match the prefix.
     const cachedResults: Record<string, string> = {};
