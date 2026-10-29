@@ -31,7 +31,8 @@ import type { McpConfigFile, McpPlaceVerdict, McpServerEntry, UncheckedMcpServer
 import { classifyEnvVars } from '../mcp/classify';
 import { restoreConfig } from '../mcp/rewrite';
 import { BindingWriteRefusedError, McpVault, boundEntryName, isPerMachineStore, ownsBinding } from '../mcp/vault';
-import { bindingHomeId } from '../mcp/binding-home-id';
+import { bindingHomeId, readBindingHomeId } from '../mcp/binding-home-id';
+import type { BindingHomeIdError } from '../mcp/binding-home-id';
 import type { McpBinding } from '../mcp/vault';
 import { checkStart } from '../mcp/start-check';
 import type { McpStartVerdict } from '../mcp/start-check';
@@ -566,9 +567,10 @@ function wrapperRead(entry: McpServerEntry, vaults: Map<string, McpVault>): Wrap
  * is the store's error where reading it failed (the wrapper then starts
  * nothing either). `owned` is whether this secretless home stored the
  * binding, or none is stored (see ownsBinding; `homeId` is this home's id,
- * read once, or undefined where it holds none that can be read).
+ * read once, or undefined where it holds none that can be read). `backend`
+ * is the backend of the store the wrapper reads, where it reads one.
  */
-type WrappedStatus = { error: string } | { state: McpBindingState; start?: McpStartVerdict; owned: boolean };
+type WrappedStatus = { error: string } | { state: McpBindingState; start?: McpStartVerdict; owned: boolean; backend?: string };
 
 async function wrappedStatus(
   config: McpConfigFile,
@@ -592,7 +594,7 @@ async function wrappedStatus(
       },
       { startDir: process.cwd() },
     );
-    return { state: bindingState(record, config, entry), start, owned };
+    return { state: bindingState(record, config, entry), start, owned, backend: reads.vault.backendName };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
@@ -618,17 +620,18 @@ const STALE_ID_STATE = 'protected, but it does not carry the binding stored for 
  * whatever the entry's place and id: it never names the file that binding
  * names, which is a path on that machine. The launch verdict beside it is
  * checkStart's, which this does not change: the wrapper never reads which
- * home stored a binding. Words pending (product and design roles, cross
- * XC-2); the content is the architecture ruling's (J7).
+ * home stored a binding.
  */
-export const ANOTHER_MACHINE_STATE = 'bound by protect-mcp on another machine';
+export const ANOTHER_MACHINE_STATE = 'the secrets it reads were bound by protect-mcp on another machine, or on this one before ~/.secretless-ai was replaced';
 
 /**
  * The launch clause for such an entry that the wrapper starts at a place
  * other than the one its binding names: it starts with the secrets bound
- * there. Words pending (product and design roles, cross XC-2).
+ * there.
  */
-export const ANOTHER_MACHINE_STARTS = 'so the wrapper starts it with the secrets bound there';
+export const ANOTHER_MACHINE_STARTS = 'and the wrapper starts it with the secrets stored for that binding';
+/** The verdict clause beside the state above when nothing else is named: the wrapper never reads which machine stored a binding, so the state is not why it does not start. */
+export const ANOTHER_MACHINE_DOES_NOT_START = 'and the wrapper does not start it';
 
 /**
  * The clause for an entry the wrapper's last check refuses: no secret is
@@ -716,6 +719,24 @@ function repointEnding(rewritten: boolean, theirs: WrapperBuild, command: string
  */
 const HOME_COPY_FOOTER = (): string =>
   `  Run ${PROTECT_MCP()} in this directory to replace each home binding found in a copy from here; each copy then no longer starts.`;
+
+/**
+ * The footer after the configs when the secretless home's id file holds no
+ * id or could not be read, and an entry above was printed with
+ * ANOTHER_MACHINE_STATE: while the id cannot be read, no binding in a store
+ * several machines read is this home's (see ownsBinding). `backend` is the
+ * backend of the store the first such entry reads. An absent file gets no
+ * footer: no binding was stored with this ~/.secretless-ai, so that state is
+ * true of each.
+ */
+const HOME_ID_FOOTER = (error: BindingHomeIdError, backend: string): string => {
+  const file = listedName(error.file);
+  return error.problem.kind === 'malformed'
+    ? `${file} does not hold an id protect-mcp wrote, so each binding in the ${backend} backend is shown above as stored on another machine or with an earlier ~/.secretless-ai. `
+      + `If you have a copy of ~/.secretless-ai from before, restore ${file} from it; otherwise remove ${file} and run \`${cliCommand('protect-mcp')}\` again.`
+    : `${file} could not be read (${error.problem.code}), so each binding in the ${backend} backend is shown above as stored on another machine or with an earlier ~/.secretless-ai. `
+      + `Once ${file} can be read, run \`${cliCommand('mcp-status')}\` again.`;
+};
 
 /**
  * The fix lines under an entry in a config protect-mcp rewrites: what
@@ -832,7 +853,12 @@ export async function runMcpStatus(): Promise<number> {
   }
   // The secretless home's id, read once and never created here: an entry
   // whose binding another home stored has its own state (see wrappedStatus).
-  const homeId = bindingHomeId(path.join(os.homedir(), '.secretless-ai'));
+  // A file that could not be used is named once after the configs when an
+  // entry was printed with that state (HOME_ID_FOOTER).
+  const homeIdRead = readBindingHomeId(path.join(os.homedir(), '.secretless-ai'));
+  const homeId = homeIdRead.state === 'present' ? homeIdRead.id : undefined;
+  // The backend of the store the first entry printed with that state reads.
+  let anotherMachineBackend: string | undefined;
 
   for (const config of configs) {
     console.log(`  ${configLabel(config)}`);
@@ -887,6 +913,7 @@ export async function runMcpStatus(): Promise<number> {
             // A binding another secretless home stored has its own state, in
             // place of the state words; the launch verdict is checkStart's.
             const words = owned ? stateWords(state) : ANOTHER_MACHINE_STATE;
+            if (!owned && anotherMachineBackend === undefined) anotherMachineBackend = status.backend;
             if (start?.starts) {
               if (state.state === 'bound') {
                 console.log(`    + ${name}: ${words}`);
@@ -915,7 +942,7 @@ export async function runMcpStatus(): Promise<number> {
               const copyCommand = owned && state.state === 'elsewhere' && state.carriesRecordId
                 && start !== undefined && 'launch' in start && start.launch.refused === 'other-command';
               const but = empty ? `, but ${EMPTY_PAIR}` : copyCommand ? `, but ${COPY_OTHER_COMMAND}` : '';
-              console.log(`    ? ${name}: ${words}${but}, so the wrapper does not start it`);
+              console.log(`    ? ${name}: ${words}${but}, ${!owned && but === '' ? ANOTHER_MACHINE_DOES_NOT_START : 'so the wrapper does not start it'}`);
               // A bound entry with no secret stored is bound: its line says why it does not start.
               if (rewritten && !(empty && state.state === 'bound')) notBoundCount++;
               notStartedHere();
@@ -939,6 +966,9 @@ export async function runMcpStatus(): Promise<number> {
   // its servers, and any plaintext secrets in them, were not checked.
   printUnparsedConfigs(unparsed, 'not checked');
   if (planError !== undefined) console.log(`${PLAN_UNREAD(escapeForDisplay(planError))}\n`);
+  if (homeIdRead.state === 'unusable' && anotherMachineBackend !== undefined) {
+    console.log(`  ${HOME_ID_FOOTER(homeIdRead.error, anotherMachineBackend)}\n`);
+  }
 
   if (exposedCount > 0) {
     console.log(`  Run \`${cliCommand('protect-mcp')}\` to encrypt exposed secrets.\n`);
@@ -1047,22 +1077,18 @@ const LEFT_SHARED_UNBOUND = (label: string, names: string[], backend: string): s
  * secretless home stored its binding (see ownsBinding): the stored names it
  * left (`names`, never a value), then that the pair was bound by protect-mcp
  * in another secretless home, on another machine or on this one before its
- * ~/.secretless-ai was replaced, and that mcp-unprotect on this machine
- * leaves that binding as it is. It cites no command, never says the bound
- * entry no longer exists, and names no command that deletes a binding. Words
- * pending (product and design roles, cross XC-2); the content is the
- * architecture ruling's (J6).
+ * ~/.secretless-ai was replaced. It cites no command, never says the bound
+ * entry no longer exists, and names no command that deletes a binding.
  */
 export const LEFT_ANOTHER_MACHINE = (label: string, names: string[]): string =>
-  `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. They were bound by protect-mcp in another secretless home: on another machine, or on this one before its ~/.secretless-ai was replaced. mcp-unprotect on this machine leaves that binding as it is.`;
+  `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. They were bound by protect-mcp on another machine, or on this one before ~/.secretless-ai was replaced.`;
 
 /**
  * The line for a pair mcp-unprotect leaves because its binding, read again
  * just before the delete, is not the one this run read
  * (BindingWriteRefusedError): the stored names it left (`names`, never a
  * value), then that the binding changed after this run read it. It cites no
- * command. Words pending (product and design roles, cross XC-2); the content
- * is the architecture ruling's (J3b).
+ * command.
  */
 export const LEFT_CHANGED = (label: string, names: string[]): string =>
   `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. The binding stored for them changed after this run read it.`;
