@@ -4416,8 +4416,10 @@ tools.
 ### Changed
 
 - `resolve(path, { exact: true })` returns `{ [path]: value }` when an entry
-  is stored under exactly `path`, and `{}` otherwise; it reads the value of no
-  other entry. Every backend honors it.
+  is stored under exactly `path`, and `{}` otherwise, on every backend. The
+  macOS and Linux keychains, 1Password, Vault and GCP Secret Manager read no
+  other entry's value for it; the local store is one encrypted file and is
+  decrypted whole for any read.
 - `broker start` serves `POST /resolve` only when it loads a policy file: the
   one `--policy-file` names, or `~/.secretless-ai/broker-policies.json` when
   that file exists. A broker that loads no policy file builds no credential

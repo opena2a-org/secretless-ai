@@ -7,7 +7,7 @@ export interface SecretBackend {
   /** Backend name (e.g., "vault", "aws-sm", "env") */
   readonly name: string;
 
-  /** Resolve one or more secrets by path/name. Returns key-value pairs. `options.exact` narrows the read to the one entry at `path` (ResolveOptions). */
+  /** Resolve one or more secrets by path/name. Returns key-value pairs. `options.exact` narrows the result to the one entry at `path` (ResolveOptions). */
   resolve(path: string, options?: ResolveOptions): Promise<Record<string, string>>;
 
   /** Check if the backend is available and authenticated */
@@ -20,15 +20,19 @@ export interface ResolveOptions {
    * The path names one entry, not a prefix: the caller wants that entry or
    * nothing. Every backend honors it. `resolve(path, { exact: true })`
    * returns `{ [path]: value }` when an entry is stored under exactly
-   * `path`, and `{}` otherwise; it reads the value of no other entry. A
-   * backend that addresses an entry by its key sends no list request
-   * (Vault answers a 404 with `{}` and no LIST, #375; gcp-sm reads the one
-   * secret the key is stored under; local and the keychains filter their
-   * index to the key). A backend that finds an entry only through a
-   * listing of names (1Password) lists names and reads one value. The
-   * cache layer serves an exact read only from the entry cached at `path`
-   * and passes the option to the backend it wraps. Without the option the
-   * path is a prefix: the entry at `path` and every entry under `path/`.
+   * `path`, and `{}` otherwise. A backend that addresses an entry by its
+   * key reads that entry alone and sends no list request (Vault answers a
+   * 404 with `{}` and no LIST, #375; gcp-sm reads the one secret the key is
+   * stored under; the keychains filter their index to the key and look up
+   * that entry). A backend that finds an entry only through a listing of
+   * names (1Password) lists names and reads the items carrying that title.
+   * The local store is one encrypted file, decrypted whole for any read, so
+   * there the option narrows the result, not the read. The cache layer
+   * serves an exact read only from the entry cached at `path` and passes
+   * the option to the backend it wraps. Without the option the path is a
+   * prefix: the entry at `path` and every entry under `path/`, except that
+   * Vault answers a path that holds an entry with that entry alone, and
+   * gcp-sm reads a `secret/NAME` path as one entry.
    */
   exact?: boolean;
 }
