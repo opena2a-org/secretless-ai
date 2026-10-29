@@ -38,6 +38,12 @@ describe('GCPSecretManagerBackend', () => {
     it('reads a secret and returns { path: value }', async () => {
       const secretValue = Buffer.from('my-secret-value').toString('base64');
 
+      // The secret's resource first: it carries no store-key label.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ name: `projects/${TEST_PROJECT}/secrets/MY_KEY` }),
+      });
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -50,9 +56,14 @@ describe('GCPSecretManagerBackend', () => {
       const result = await backend.resolve('secret/MY_KEY');
 
       expect(result).toEqual({ 'secret/MY_KEY': 'my-secret-value' });
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
 
-      const [url, opts] = mockFetch.mock.calls[0];
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        `https://secretmanager.googleapis.com/v1/projects/${TEST_PROJECT}/secrets/MY_KEY`
+      );
+      expect(mockFetch.mock.calls[0][1].method).toBe('GET');
+
+      const [url, opts] = mockFetch.mock.calls[1];
       expect(url).toBe(
         `https://secretmanager.googleapis.com/v1/projects/${TEST_PROJECT}/secrets/MY_KEY/versions/latest:access`
       );
@@ -177,6 +188,13 @@ describe('GCPSecretManagerBackend', () => {
         json: async () => ({}),
       });
 
+      // The existing secret's resource -> 200, with no store-key label
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ name: `projects/${TEST_PROJECT}/secrets/existing-key` }),
+      });
+
       // Add version -> 200
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -187,7 +205,12 @@ describe('GCPSecretManagerBackend', () => {
       const backend = createGCPBackend();
       await backend.store('secret/existing-key', 'updated-value');
 
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(mockFetch.mock.calls.map(([url, opts]) => `${opts.method} ${url}`)).toEqual([
+        `POST https://secretmanager.googleapis.com/v1/projects/${TEST_PROJECT}/secrets?secretId=existing-key`,
+        `GET https://secretmanager.googleapis.com/v1/projects/${TEST_PROJECT}/secrets/existing-key`,
+        `POST https://secretmanager.googleapis.com/v1/projects/${TEST_PROJECT}/secrets/existing-key:addVersion`,
+      ]);
     });
 
     it('rejects invalid secret names with dots', async () => {
@@ -218,6 +241,12 @@ describe('GCPSecretManagerBackend', () => {
 
   describe('delete', () => {
     it('deletes a secret', async () => {
+      // The secret's resource first: it carries no store-key label.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ name: `projects/${TEST_PROJECT}/secrets/old-key` }),
+      });
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -228,8 +257,11 @@ describe('GCPSecretManagerBackend', () => {
       const result = await backend.delete('secret/old-key');
       expect(result).toBe(true);
 
-      const [url] = mockFetch.mock.calls[0];
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[0][1].method).toBe('GET');
+      const [url, opts] = mockFetch.mock.calls[1];
       expect(url).toContain('/secrets/old-key');
+      expect(opts.method).toBe('DELETE');
     });
 
     it('returns false for 404', async () => {
@@ -350,7 +382,11 @@ describe('GCPSecretManagerBackend: every request is bounded end to end', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
+  /** The answer to the read of a secret's resource, which carries no store-key label. */
+  const unlabeled = { ok: true, status: 200, json: async () => ({ name: `projects/${TEST_PROJECT}/secrets/MY_KEY` }) };
+
   it('a read the API never answers: throws within 10s, names the host and request, and says what to do', async () => {
+    mockFetch.mockResolvedValueOnce(unlabeled);
     mockFetch.mockImplementationOnce(silentFetch);
     const outcome = createGCPBackend().resolve('secret/MY_KEY').then(() => null, (e: Error) => e);
     await vi.advanceTimersByTimeAsync(10_000);
@@ -365,6 +401,7 @@ describe('GCPSecretManagerBackend: every request is bounded end to end', () => {
   });
 
   it('a read whose body never arrives: the body read is under the same 10s bound', async () => {
+    mockFetch.mockResolvedValueOnce(unlabeled);
     mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: () => new Promise(() => {}) });
     const outcome = createGCPBackend().resolve('secret/MY_KEY').then(() => null, (e: Error) => e);
     await vi.advanceTimersByTimeAsync(10_000);
@@ -567,6 +604,7 @@ describe('encodeStoreKey and decodeStoreKey: one name per key, and back', () => 
   const envs = [
     'GITHUB_TOKEN', 'API_KEY', 'api-key', 'a.b', 'with space', 'x/y', '/', 'ü', '🙂', '_', '-', '--', '__',
     '_2D', 'a--b', '', 'K=V', '\u0000', '\u007f', 'Ω_ω',
+    '﻿', '﻿TOKEN', '﻿﻿', 'TO﻿KEN', 'TOKEN﻿',
   ];
   const keys = clients.flatMap((c) => servers.flatMap((s) => envs.map((e) => `mcp/${c}/${s}/${e}`)));
 
@@ -654,5 +692,178 @@ describe('encodeStoreKey and decodeStoreKey: one name per key, and back', () => 
 
   it('(f) a key that is not well-formed Unicode is refused', () => {
     expect(() => encodeStoreKey('mcp/c/s/\uD800')).toThrow('is not well-formed Unicode');
+  });
+
+  it('a segment that starts with U+FEFF, in any position, decodes back to itself', () => {
+    for (const key of [
+      'mcp/cursor/github/﻿TOKEN',
+      'mcp/cursor/github/﻿',
+      'mcp/cursor/github/﻿﻿TOKEN',
+      'mcp/﻿cursor/github/TOKEN',
+      'mcp/cursor/﻿github/TOKEN',
+      '﻿mcp/cursor/github/TOKEN',
+      'a/﻿/b',
+      'secret/a/﻿b',
+    ]) {
+      const name = encodeStoreKey(key);
+      expect(name, key).toMatch(SECRET_ID);
+      expect(decodeStoreKey(name), key).toBe(key);
+    }
+  });
+});
+
+describe('GCPSecretManagerBackend: a plain key never reaches a secret held for an MCP server', () => {
+  // protect-mcp stores the server key under a name a plain key can also name.
+  const SERVER_KEY = 'mcp/cursor/github/TOKEN';
+  const HELD = 'mcp--cursor--github--TOKEN';
+  const PLAIN_KEYS = [`secret/${HELD}`, HELD];
+
+  let project: FakeSecretManager;
+  let vault: McpVault;
+  let stored: string;
+
+  beforeEach(async () => {
+    project = fakeSecretManager(TEST_PROJECT);
+    mockFetch.mockImplementation(project.fetch);
+    vault = new McpVault({ backend: createGCPBackend() });
+    stored = placeholder('github');
+    await vault.storeServerSecrets('cursor', 'github', { TOKEN: stored });
+    project.requests.length = 0;
+    project.valueReads.length = 0;
+  });
+
+  /** The message `operation` was refused with, or what it settled to when it was not refused. */
+  async function refusal(operation: Promise<unknown>): Promise<string> {
+    try {
+      return `not refused: ${JSON.stringify(await operation)}`;
+    } catch (err) {
+      return (err as Error).message;
+    }
+  }
+
+  /** A refusal in the backend's shape: what was refused and why, a Verify command, a Fix, and no value. */
+  function expectHeld(message: string, key: string, nothing: 'written' | 'deleted' | 'read'): void {
+    expect(message, key).toContain(`the secret ${HELD} in project ${TEST_PROJECT} is held for an MCP server binding, the key '${SERVER_KEY}'`);
+    expect(message, key).toContain(`the plain key '${key}' does not reach it. Nothing was ${nothing}.`);
+    expect(message, key).toContain(`  Verify:  gcloud secrets describe ${HELD} --project ${TEST_PROJECT}`);
+    expect(message, key).toContain('  Fix:     ');
+    expect(message, key).not.toContain(stored);
+  }
+
+  it('the server key is stored under the name the plain keys name, with the store-key label', () => {
+    expect(encodeStoreKey(SERVER_KEY)).toBe(HELD);
+    expect(project.secrets.get(HELD)).toEqual({ labels: STORE_KEY_LABELS, versions: [stored] });
+  });
+
+  it('(a) a plain read by the name a server key is stored under is refused and returns no value', async () => {
+    const backend = createGCPBackend();
+    const reads: Array<[string, { exact: true } | undefined]> = [
+      [`secret/${HELD}`, undefined],
+      [`secret/${HELD}`, { exact: true }],
+      [HELD, { exact: true }],
+    ];
+    const messages: string[] = [];
+    for (const [key, options] of reads) messages.push(await refusal(backend.resolve(key, options)));
+
+    expect({
+      returned: messages.filter((message) => message.startsWith('not refused')),
+      valueReads: project.valueReads,
+    }).toEqual({ returned: [], valueReads: [] });
+    reads.forEach(([key], i) => expectHeld(messages[i], key, 'read'));
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ TOKEN: stored });
+  });
+
+  it('(b) a plain store by that name is refused and adds no version', async () => {
+    const backend = createGCPBackend();
+    const values = PLAIN_KEYS.map(() => placeholder('plain'));
+    const messages: string[] = [];
+    for (const [i, key] of PLAIN_KEYS.entries()) messages.push(await refusal(backend.store(key, values[i])));
+
+    expect({
+      secret: project.secrets.get(HELD),
+      addVersions: project.requests.filter((r) => r.includes(':addVersion')),
+    }).toEqual({ secret: { labels: STORE_KEY_LABELS, versions: [stored] }, addVersions: [] });
+    PLAIN_KEYS.forEach((key, i) => {
+      expectHeld(messages[i], key, 'written');
+      expect(messages[i], key).not.toContain(values[i]);
+    });
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ TOKEN: stored });
+  });
+
+  it('(c) a plain delete by that name is refused and the secret remains', async () => {
+    const backend = createGCPBackend();
+    const messages: string[] = [];
+    for (const key of PLAIN_KEYS) messages.push(await refusal(backend.delete(key)));
+
+    expect({
+      secret: project.secrets.get(HELD),
+      deletes: project.requests.filter((r) => r.startsWith('DELETE ')),
+    }).toEqual({ secret: { labels: STORE_KEY_LABELS, versions: [stored] }, deletes: [] });
+    PLAIN_KEYS.forEach((key, i) => expectHeld(messages[i], key, 'deleted'));
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ TOKEN: stored });
+  });
+
+  it('(d) control: a plain key whose secret carries no label is stored, read and deleted as before', async () => {
+    const backend = createGCPBackend();
+    // The name a server key would have, on a secret without the label.
+    const name = 'mcp--cursor--gitlab--TOKEN';
+    const first = placeholder('first');
+    const second = placeholder('second');
+    project.put(name, first);
+
+    await backend.store(`secret/${name}`, second);
+    expect(project.secrets.get(name)).toEqual({ labels: {}, versions: [first, second] });
+    expect(await backend.resolve(`secret/${name}`)).toEqual({ [`secret/${name}`]: second });
+    expect(await backend.resolve(name, { exact: true })).toEqual({ [name]: second });
+    expect(await backend.delete(`secret/${name}`)).toBe(true);
+    expect(project.secrets.has(name)).toBe(false);
+
+    // An absent plain secret is created by the store.
+    const fresh = placeholder('fresh');
+    await backend.store('NEW_NAME', fresh);
+    expect(project.secrets.get('NEW_NAME')).toEqual({ labels: {}, versions: [fresh] });
+    expect(await backend.resolve('secret/NEW_NAME')).toEqual({ 'secret/NEW_NAME': fresh });
+    expect(await backend.delete('NEW_NAME')).toBe(true);
+    expect(await backend.resolve('secret/NEW_NAME')).toEqual({});
+    expect(await backend.delete('NEW_NAME')).toBe(false);
+  });
+
+  it('(e) an MCP key whose segment starts with U+FEFF decodes back to itself and keeps its server binding', async () => {
+    const key = 'mcp/cursor/github/﻿TOKEN';
+    const name = encodeStoreKey(key);
+    expect(name).toBe('mcp--cursor--github--_EF_BB_BFTOKEN');
+
+    const value = placeholder('bom');
+    const db = placeholder('db');
+    project.put('DB_PASSWORD', db);
+    await vault.storeServerSecrets('cursor', 'github', { '﻿TOKEN': value });
+    const backend = createGCPBackend();
+    const listKeys = (backend as unknown as {
+      listKeys(projectId: string, token: string): Promise<Array<{ key: string; secretName: string }>>;
+    }).listKeys.bind(backend);
+
+    expect({
+      decoded: decodeStoreKey(name),
+      listedAs: (await listKeys(TEST_PROJECT, TEST_TOKEN)).filter((entry) => entry.secretName === name).map((entry) => entry.key),
+      server: await vault.getServerSecrets('cursor', 'github'),
+      plain: await backend.resolve('secret'),
+    }).toEqual({
+      decoded: key,
+      listedAs: [key],
+      server: { TOKEN: stored, '﻿TOKEN': value },
+      plain: { 'secret/DB_PASSWORD': db },
+    });
+  });
+
+  it('(f) control: U+FEFF inside a segment round-trips and keeps its server binding, as before', async () => {
+    const key = 'mcp/cursor/github/TO﻿KEN';
+    const name = encodeStoreKey(key);
+    expect(name).toBe('mcp--cursor--github--TO_EF_BB_BFKEN');
+    expect(decodeStoreKey(name)).toBe(key);
+
+    const value = placeholder('inner');
+    await vault.storeServerSecrets('cursor', 'github', { 'TO﻿KEN': value });
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ TOKEN: stored, 'TO﻿KEN': value });
+    expect(await createGCPBackend().resolve('secret')).toEqual({});
   });
 });

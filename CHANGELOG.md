@@ -4341,6 +4341,11 @@ tools.
   with the same env name never share or overwrite a secret. Servers protected
   on gcp-sm before this release must be protected again: run mcp-unprotect,
   then protect-mcp.
+- gcp-sm: a store, delete or read by a plain key refuses when the secret
+  carries the store-key label, so it never reaches a secret held for an MCP
+  server.
+- gcp-sm: an MCP key whose segment starts with U+FEFF decodes back to itself
+  and keeps its server binding.
 
 ### Fixed
 

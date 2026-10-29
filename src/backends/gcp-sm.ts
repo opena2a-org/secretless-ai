@@ -46,7 +46,9 @@ const PLAIN_KEY_PREFIX = 'secret/';
  * stored under a name derived from the whole key (encodeStoreKey), on a secret
  * created with this label. A secret of such a name without the label was not
  * created by this backend: a read under a key never returns it, and a write or
- * a delete never touches it.
+ * a delete never touches it. A secret with the label is held for an MCP server
+ * binding: a plain key that names it is refused, so a read by a plain key never
+ * returns its value, and a write or a delete by one never touches it.
  */
 const STORE_KEY_LABEL = 'secretless-ai';
 const STORE_KEY_LABEL_VALUE = 'store-key';
@@ -57,7 +59,12 @@ const SEGMENT_SEPARATOR = '--';
 /** The segments encodeSegment writes: letters, digits, `__`, and `_` with two upper-case hex digits. */
 const ENCODED_SEGMENT = /^(?:[A-Za-z0-9]|__|_[0-9A-F]{2})*$/;
 
-const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
+/**
+ * Strict UTF-8 that keeps a U+FEFF at the start of the bytes (ignoreBOM): a
+ * segment that starts with one decodes back to itself, so its key keeps its
+ * binding.
+ */
+const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 function validateSecretName(name: string): void {
   if (!SECRET_NAME_REGEX.test(name)) {
@@ -270,7 +277,9 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
    *
    * - An exact read (`{ exact: true }`), and a read of `secret/NAME`, reads the
    *   one secret the key is stored under (encodeStoreKey) and returns
-   *   `{ [path]: value }`, or `{}` when there is none. It lists nothing.
+   *   `{ [path]: value }`, or `{}` when there is none. It lists nothing. A
+   *   plain key that names a secret held for an MCP server binding is
+   *   refused, and no value is read.
    * - Any other path is a prefix: the project's secret names are listed, and a
    *   value is read only for each secret whose key is the path or lies under
    *   `path/` (every key for ''). A secret's key comes from its name and label
@@ -291,8 +300,13 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     const { projectId, token } = await this.ensureAuth();
 
     if (plainName(key) !== undefined) {
-      // A plain secret is created when absent, and a version is added to it.
-      await this.createSecret(projectId, secretName, token);
+      // A plain secret is created when absent, and a version is added to it. A
+      // secret that already exists gets one only when it does not carry the
+      // store-key label: one held for an MCP server binding is refused.
+      const created = await this.createSecret(projectId, secretName, token);
+      if (!created && await this.storeKeyState(projectId, secretName, token) === 'stored-key') {
+        throw this.heldForServerError(projectId, key, secretName, 'written');
+      }
       await this.addSecretVersion(projectId, secretName, value, token);
       return;
     }
@@ -377,8 +391,9 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     const { projectId, token } = await this.ensureAuth();
 
     // A secret named after a whole key is deleted only when it carries the
-    // store-key label: one secretless-ai did not create is left as it is.
-    if (plainName(key) === undefined && await this.storeKeyState(projectId, secretName, token) !== 'stored-key') {
+    // store-key label: one secretless-ai did not create is left as it is. A
+    // plain key's delete of a secret that carries it is refused.
+    if (!await this.keyReaches(projectId, key, secretName, token, 'deleted')) {
       return false;
     }
 
@@ -727,7 +742,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   /**
    * The one secret `key` is stored under, as `{ [key]: value }`, or `{}` when
    * there is none. A name derived from a whole key is read only on a secret
-   * that carries the store-key label. Nothing is listed.
+   * that carries the store-key label, and a plain key's read of a secret that
+   * carries it is refused. Nothing is listed.
    */
   private async readKey(projectId: string, key: string, token: string): Promise<Record<string, string>> {
     let secretName: string;
@@ -736,7 +752,7 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     } catch {
       return {}; // no secret can be stored under this key
     }
-    if (plainName(key) === undefined && await this.storeKeyState(projectId, secretName, token) !== 'stored-key') {
+    if (!await this.keyReaches(projectId, key, secretName, token, 'read')) {
       return {};
     }
     const value = await this.getSecretValue(projectId, secretName, token);
@@ -786,6 +802,55 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     }
     const body = await response.json() as { labels?: Record<string, string> };
     return body.labels?.[STORE_KEY_LABEL] === STORE_KEY_LABEL_VALUE ? 'stored-key' : 'other';
+  }
+
+  /**
+   * Whether `key` reaches the secret `secretName` it is stored under, from the
+   * secret's label, read before its value is read or it is deleted. A name
+   * derived from a whole key reaches only a secret that carries the store-key
+   * label, and a plain key only one that does not: a plain key that names a
+   * secret held for an MCP server binding is refused. No key reaches an absent
+   * secret.
+   */
+  private async keyReaches(
+    projectId: string,
+    key: string,
+    secretName: string,
+    token: string,
+    refused: 'deleted' | 'read',
+  ): Promise<boolean> {
+    const state = await this.storeKeyState(projectId, secretName, token);
+    if (state === 'absent') return false;
+    if (plainName(key) === undefined) return state === 'stored-key';
+    if (state === 'stored-key') throw this.heldForServerError(projectId, key, secretName, refused);
+    return true;
+  }
+
+  /**
+   * The refusal of a plain key's write, delete or read of a secret held for an
+   * MCP server binding. Names the secret, the key it is held for and the plain
+   * key; never a value.
+   */
+  private heldForServerError(
+    projectId: string,
+    key: string,
+    secretName: string,
+    refused: 'written' | 'deleted' | 'read',
+  ): Error {
+    const serverKey = decodeStoreKey(secretName);
+    const binding = serverKey === undefined
+      ? 'an MCP server binding'
+      : `an MCP server binding, the key '${escapeForDisplay(serverKey)}'`;
+    return new Error(
+      [
+        `GCP Secret Manager: the secret ${secretName} in ${this.projectLabel(projectId)} is held for ${binding}: `
+        + `it carries the ${STORE_KEY_LABEL}=${STORE_KEY_LABEL_VALUE} label, and the plain key '${escapeForDisplay(key)}' `
+        + `does not reach it. Nothing was ${refused}.`,
+        '',
+        `  Verify:  gcloud secrets describe ${secretName} --project ${projectId}`,
+        `  Fix:     use a plain name no MCP server's secret is held under; the server's secret is reached only by its own key`,
+      ].join('\n'),
+    );
   }
 
   /**
