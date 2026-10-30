@@ -247,9 +247,13 @@ const setups = {
     setEntry(homeConfig(), 's', plain(path.join(h().root, 's-started')));
     return cli('protect-mcp');
   },
-  /** (b) R8: B's D/.mcp.json holds no server s, and a candidate, t, reads the pair. */
+  /**
+   * (b) R8: B's D/.mcp.json holds no server s, and a candidate, t, reads the
+   * pair and starts the command s was bound with: a .mcp.json entry takes a
+   * binding over only with that command (binding-protect.test.ts p8b).
+   */
   b: async (entry: Entry) => {
-    write(projectConfig(), { t: { command: entry.command, args: ['--server', 's', '--client', 'claude-code', '--', process.execPath, '-e', 'x'], env: {} } });
+    write(projectConfig(), { t: { command: entry.command, args: withoutId(entry.args), env: {} } });
     return cli('protect-mcp');
   },
   /** (e) S3: a copy of the home entry, carrying A's id, in D/.mcp.json, which protect-mcp rewrites; the home entry is at its place. */
