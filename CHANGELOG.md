@@ -4344,6 +4344,11 @@ tools.
 - gcp-sm: a store, delete or read by a plain key refuses when the secret
   carries the store-key label, so it never reaches a secret held for an MCP
   server.
+- gcp-sm: a plain read, a store to an existing secret and a plain delete first
+  read the secret's labels. That read needs `secretmanager.secrets.get`
+  (Secret Manager Viewer, grantable on the one secret) besides Secret
+  Accessor; a principal with Secret Accessor alone is refused with the Viewer
+  hint, and no value is read.
 - gcp-sm: an MCP key whose segment starts with U+FEFF decodes back to itself
   and keeps its server binding.
 
