@@ -320,9 +320,33 @@ tail -f ~/.secretless-ai/broker-audit.log
 ```
 
 ```json
-{"timestamp":"...","eventType":"resolve","agentId":"scan-01","credentialName":"GITHUB_TOKEN","policyId":"scanner-github-readonly","result":"allowed","reason":"Allowed by rule ...","latencyMs":3,"prevHash":"...","sig":"..."}
-{"timestamp":"...","eventType":"auth","agentId":"unknown","credentialName":"","policyId":"","result":"denied","reason":"Unauthorized access attempt from 127.0.0.1","latencyMs":0,"prevHash":"...","sig":"..."}
+{"timestamp":"...","eventType":"resolve","agentId":"scan-01","credentialName":"GITHUB_TOKEN","policyId":"scanner-github-readonly","result":"allowed","reason":"rule-allow","latencyMs":3,"prevHash":"...","sig":"..."}
+{"timestamp":"...","eventType":"auth","agentId":"unknown","credentialName":"","policyId":"","result":"denied","reason":"auth-refused-http","latencyMs":0,"prevHash":"...","sig":"..."}
 ```
+
+Every record's `reason` is a code from one closed set, `AUDIT_REASONS` in `src/broker/types.ts`: the `grant` codes, then the codes below. No record carries an address, an AIM URL, or a module loader's or store's message, and a record holds an id or a name an agent sent only in the parsed forms this page describes. The detail a code stands for is on your own terminal: the table says where.
+
+A `resolve` record holds the `agentId` as sent only when it is at most 128 bytes and is a DID or a name of letters, digits, `.`, `_`, `~` and `-`. It holds the `credentialName` as sent only when the broker returned a value for it or a rule's `credentialSelector` is exactly that name. Any other value is written as `unparsed:<length>`, its length in bytes: a request for `PROD_DB_PASSWORD` that a `PROD_*` rule denies is recorded as `unparsed:16`. The policy decision, the AIM lookup and the store read use the values as sent, and the 403 body the agent receives still carries the decision as text.
+
+| Code | Written when | Where to look |
+|------|--------------|---------------|
+| `broker-started`, `broker-stopping` | The broker started, or is stopping (`startup`, `shutdown`) | `npx secretless-ai broker status` |
+| `auth-refused-socket`, `auth-refused-http` | A request came without the broker's bearer token, on the Unix socket or the HTTP port (`auth`) | The client must send the token in `~/.secretless-ai/broker.token`; each start writes a new one ([Authenticate to the broker](#authenticate-to-the-broker)) |
+| `aim-unreachable` | AIM did not answer the reachability probe at start (`aim_unreachable`) | `npx secretless-ai broker status` shows AIM as `configured (unreachable)`; check the `--aim-url` value |
+| `aim-unauthorized`, `aim-forbidden` | AIM answered 401 or 403 to the broker (`aim_auth_error`) | The `--aim-token` value |
+| `aim-not-found` | AIM answered 404: it holds no agent by the id the broker looked up (`aim_auth_error`) | The agent's registration in AIM, and the `agentId` the agent sends |
+| `aim-rate-limited`, `aim-client-error` | AIM answered 429, or another 4xx (`aim_auth_error`) | AIM's own log for the request |
+| `scanner-unavailable-resolve`, `scanner-unavailable-grant` | The duplicate-member scanner (`@opena2a/atx-verify`) did not load, and the request was refused with a 503 (`error`) | Run `node -e "import('@opena2a/atx-verify').then(() => console.log('ok'))"` where the broker runs: it prints the loader's message |
+| `rule-allow`, `rule-deny` | The rule named in `policyId` allowed or denied (`resolve`) | That rule in your policy file |
+| `rule-default-deny` | No allow rule matched (`resolve`) | [Write a policy](#write-a-policy) |
+| `rule-outside-time-window` | The rule's `timeWindow` does not hold the broker's local time (`resolve`) | The rule's `timeWindow` |
+| `rule-trust-score-no-identity`, `rule-capability-no-identity` | The rule sets `minTrustScore` or `requireCapability`, and AIM gave no identity for the agent (`resolve`) | The `aim_auth_error` or `aim_unreachable` records beside it, and `npx secretless-ai broker status` |
+| `rule-trust-score-below-minimum` | The agent's AIM trust score is below the rule's `minTrustScore` (`resolve`) | The agent's trust score in AIM |
+| `rule-capability-missing` | The agent's AIM capabilities lack the rule's `requireCapability` (`resolve`) | The agent's capabilities in AIM |
+| `rule-rate-limit-exceeded` | The agent read the name more times in a minute than the rule's `rateLimit` allows (`resolve`) | The rule's `rateLimit` |
+| `credential-not-found` | The policy allowed the request, and the store holds no value for the name; the agent got a 404 (`resolve`) | `npx secretless-ai secret list` lists the names the store holds |
+| `backend-error` | The store failed while reading the name; the agent got a 500 (`resolve`) | `npx secretless-ai secret show <NAME>` reads that name from the same store on your terminal and prints the store's error there. It never prints the value |
+| `credential-requested`, `credential-granted`, `credential-denied`, `credential-expired-after-use`, `credential-expired-unused`, `credential-revoked`, `credential-rotated`, `credential-leak-detected` | An application that embeds `CredentialEventEmitter` emitted the event of that type | That application |
 
 Every line is signed. `sig` is an Ed25519 signature over the line without `sig`, and `prevHash` is the SHA-256 of the line before it in the same file (all zeros for the first line), so changing, inserting, moving or removing a line makes verification fail at the first line it affects. The broker creates the signing key on its first write: `broker-audit.log.key` (readable by you only) and its public half `broker-audit.log.pub`, both beside the log. Verify a log from Node:
 
@@ -372,7 +396,7 @@ The daemon removes the socket, pid file, and auth token on shutdown.
 
 - **`broker status` shows `Resolve: off, no policy file` but I have a policy file**: the daemon found no file at `~/.secretless-ai/broker-policies.json` when it started, and none was passed with `--policy-file`. Check the path, then restart the daemon. `Resolve: on` with `(0 rules)` means the file loaded and holds no rule. The daemon reads the file at start, so restart it after edits.
 - **`/resolve` answers 404**: the broker loaded no policy file, or was started with `--no-resolve`. The `Resolve:` row of `broker start` or `broker status` says which. To serve `/resolve`, put the policy file at `~/.secretless-ai/broker-policies.json` or pass `--policy-file <path>`, and start without `--no-resolve`.
-- **All `/resolve` calls return 403 "default deny"**: write an `allow` rule that matches your `agentId` and `credentialSelector`. Check the audit log for the exact input.
+- **All `/resolve` calls return 403 "default deny"**: write an `allow` rule that matches your `agentId` and `credentialSelector`. The `resolve` record carries `rule-default-deny`. It holds the `agentId` as sent when the id is a name or a DID of at most 128 bytes, and holds `unparsed:<length>` in place of a `credentialName` that no rule's `credentialSelector` names exactly. The exact input is in the agent's configuration and its request.
 - **AIM shows `configured (unreachable)`**: probe the URL yourself: `curl -s -o /dev/null -w "%{http_code}\n" <aim-url>/health`. Common causes: wrong URL, network segmentation, AIM not deployed to that host.
 - **`broker start` reports `Broker socket path ... is <n> bytes long`**: the socket is created at `~/.secretless-ai/broker.sock`, and `broker start` refuses a socket path longer than the limit the Node it runs under listens within: 108 bytes on Linux; on macOS, 253 bytes under a Node whose libuv (`node -p process.versions.uv`) is 1.53.0 or later, as Node 26.12.0 bundles, and 104 bytes under an earlier one. Count the bytes with `printf %s "$HOME/.secretless-ai/broker.sock" | wc -c`. Start the broker with `HOME` set to a directory whose path is at most 226 bytes on macOS under libuv 1.53.0 or later, 77 bytes under an earlier one, or 81 bytes on Linux (the limit less the 27 bytes of `/.secretless-ai/broker.sock`); it then keeps its files in that directory's `.secretless-ai`.
 
