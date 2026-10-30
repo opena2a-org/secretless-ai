@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+**Every broker audit record holds a closed code from `AUDIT_REASONS`
+(`src/broker/types.ts`) as its reason, and the `/resolve` record and the
+credential event record hold an agent id, a credential name and a policy rule
+id only in parsed form or as `unparsed:<length>`.** `AUDIT_REASONS` is the 32
+`GRANT_AUDIT_REASONS` codes, unchanged and in their order, then 31 codes for
+the broker's other records: an AIM 4xx by status, AIM unreachable at start,
+start and stop, a refused bearer token by transport, the duplicate-member
+scanner not loading by endpoint, each `/resolve` policy check, a name the
+broker found no value for, a store that failed, and each credential event
+type. No record carries an AIM URL, an address, a module loader's or a store's
+message, a policy's text or text a caller passed. The `auth` record names the
+Unix socket or the HTTP port in its code and carries no address. A `resolve`
+record holds the `agentId` as sent when it is at most 128 bytes and is a DID or
+a name of letters, digits, `.`, `_`, `~` and `-`, and holds the
+`credentialName` as sent when the broker returned a value for it or a rule's
+`credentialSelector` equals it. The policy decision, the AIM lookup and the
+store read still use both as sent, and the 403 body still carries the decision
+as text. `AuditLogger.logEvent` takes `reason: AuditReason`, and
+`AuditLogger.log` takes a `CodedAuditEntry`, whose `reason` is an
+`AuditReason`. Both write any other value, passed through a cast or from
+JavaScript, as `unparsed:<length>`, and both now return the entry as written.
+Narrowing what a shipped method accepts is a breaking change; on 0.x it rides
+a minor release, not a patch. `AuditEntry.reason` stays `string`, and records
+written before this change still read and verify. `PolicyEvaluation` gains
+`code`, and `PolicyEngine` gains `configures(name)`. `CredentialEventEmitter`
+writes the code of the event's type in place of the caller's `reason`,
+`leakContext` or `trigger`, which its methods still accept. It writes the agent
+id as a `resolve` record does, and writes the secret reference and the policy
+rule id as sent only when a new optional third constructor argument,
+`{ credentialNames, policyRuleIds }`, lists them. It sends AIM the record it
+wrote and nothing else. `AUDIT_REASONS`, `AuditReason`, `CodedAuditEntry`,
+`PolicyEvaluationCode` and `CredentialEventAnchor` are exported.
+`docs/use-cases/run-broker.md` lists every code and where to look for the
+detail it stands for.
+
 **The broker's grant audit record, the `grant` event, gains two optional
 members, `cgtJti` and `operationCommitment`, and names the agent by its
 verified ATX DID instead of its AIM agent id. The grant audit record holds a
