@@ -658,11 +658,13 @@ describe('secret push --to gcp-sm (#235)', () => {
       const sm = project('EXISTING');
       const before = placeholder('existing');
       sm.put('EXISTING', before);
+      // One service account key for both runs; each run builds its own target.
+      const createTarget = gcpTarget();
 
-      const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'EXISTING'], { store, createTarget: gcpTarget() });
+      const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'EXISTING'], { store, createTarget });
       const pushed = printed();
       out.length = 0;
-      const dry = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'EXISTING', '--dry-run'], { store, createTarget: gcpTarget() });
+      const dry = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'EXISTING', '--dry-run'], { store, createTarget });
 
       expect({
         code,
