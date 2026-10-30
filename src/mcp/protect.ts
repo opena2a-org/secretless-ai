@@ -790,10 +790,11 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
 }
 
 /**
- * S3 from the wrapper's own check (S2). For each home binding whose entry is
- * in its file as this run read it, the check the wrapper runs before it starts
- * that entry from the directory this run is in: checkLaunchPlace, the function
- * mcp-status runs through checkStart, with that directory as the start. A
+ * The search for copies of a home binding, from the wrapper's own check. For
+ * each home binding whose entry is in its file as this run read it, the check
+ * the wrapper runs before it starts that entry from the directory this run is
+ * in: checkLaunchPlace, the function mcp-status runs through checkStart, with
+ * that directory as the start. A
  * project-level config that holds the binding's id there, in that directory or
  * in one above it, has the binding replaced (replaceBinding), as a copy in a
  * config this run rewrites has it: once per pair in a run, however many
@@ -1572,9 +1573,8 @@ function replaceFields(outcome: ReplaceOutcome): { replaced?: true; replaceError
 
 /**
  * What a line prints in place of a store's or a write's error message that
- * could hold the binding (see firstLine). Words pending (product and design
- * roles); the content is the security ruling's: the store's message was
- * withheld because it could hold the binding.
+ * could hold the binding (see firstLine): the store's message was withheld
+ * because it could hold the binding.
  */
 export const STORE_MESSAGE_WITHHELD = "the store's message was withheld, since it could hold the binding";
 
@@ -1787,7 +1787,7 @@ const OWNED_FILE_GONE_HERE = (file: string, backend: string): string =>
 /**
  * The clause for a bound entry's file that could not be checked: what was
  * checked, whether the file exists, then the error code, and nothing of a
- * missing file. Words: the design role's C3 ruling (C3.3).
+ * missing file.
  */
 const FILE_UNCHECKED = (file: string, code: string): string => `Whether ${listedName(file)} exists could not be checked (${escapeForDisplay(code)}).`;
 
@@ -1859,7 +1859,6 @@ function changedProjectCommandReason(): string {
  * moved (see movedEntry) is left when its command or arguments differ from
  * the ones it was bound with: the difference and the directory it was bound
  * in, then the fix. Nothing is stored or moved for it.
- * Words pending (product and design roles); the content is the security ruling's.
  */
 const MOVED_COMMAND_CHANGED = (directory: string): string =>
   `its command or arguments changed since it was bound in ${listedName(directory)}, the project directory it moved from, `
