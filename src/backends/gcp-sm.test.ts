@@ -866,4 +866,47 @@ describe('GCPSecretManagerBackend: a plain key never reaches a secret held for a
     expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ TOKEN: stored, 'TO\uFEFFKEN': value });
     expect(await createGCPBackend().resolve('secret')).toEqual({});
   });
+
+  it('(g) a principal that may access versions but not read the secret: the plain read, the store to the existing secret and the delete are refused with the Viewer hint, and no value is read', async () => {
+    // A plain secret, reached by a principal that holds Secret Accessor alone:
+    // the label read (GET of the secret's resource, secretmanager.secrets.get)
+    // is answered 403, and every other request as the project would answer it.
+    const name = 'DB_PASSWORD';
+    const db = placeholder('db');
+    project.put(name, db);
+    const resource = `/v1/projects/${TEST_PROJECT}/secrets/${name}`;
+    const labelReads: string[] = [];
+    mockFetch.mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+      if ((init?.method ?? 'GET') === 'GET' && new URL(url).pathname === resource) {
+        labelReads.push(`GET ${resource}`);
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ error: { code: 403, status: 'PERMISSION_DENIED' } }),
+          text: async () => 'forbidden',
+        };
+      }
+      return project.fetch(url, init);
+    });
+    const backend = createGCPBackend();
+
+    const messages = [
+      await refusal(backend.resolve(`secret/${name}`)),
+      await refusal(backend.resolve(name, { exact: true })),
+      await refusal(backend.store(`secret/${name}`, placeholder('plain'))),
+      await refusal(backend.delete(`secret/${name}`)),
+    ];
+
+    expect({
+      returned: messages.filter((message) => message.startsWith('not refused')),
+      labelReads: labelReads.length,
+      valueReads: project.valueReads,
+      afterTheLabelRead: project.requests.filter((r) => /:access$|:addVersion$|^DELETE /.test(r)),
+      secret: project.secrets.get(name),
+    }).toEqual({ returned: [], labelReads: 4, valueReads: [], afterTheLabelRead: [], secret: { labels: {}, versions: [db] } });
+    for (const message of messages) {
+      expect(message).toContain(`GCP Secret Manager: insufficient IAM permissions on project ${TEST_PROJECT}. Grant 'Secret Manager Viewer' role.`);
+      expect(message).not.toContain(db);
+    }
+  });
 });
