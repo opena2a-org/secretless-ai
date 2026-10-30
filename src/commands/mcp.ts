@@ -194,8 +194,7 @@ const MOVED_LINE = (server: string, moved: { directory: string }): string =>
 /**
  * The line for a home entry at its binding's place that carried no id or
  * another one, given its binding's id, and the change when its command or
- * arguments changed since it was bound. Words: the design role's C5 ruling
- * (T3, T4).
+ * arguments changed since it was bound.
  */
 const OUT_OF_DATE_LINE = (server: string, commandChanged: boolean): string =>
   `    ~ ${listedName(server)}: it did not carry the binding stored for it${commandChanged ? ', and its command or arguments changed since it was bound' : ''}; bound again`;
@@ -241,8 +240,7 @@ function printUnboundServers(servers: UnboundMcpServer[]): void {
  * bound entry's file and the write's error, that the store now holds a
  * binding no entry carries, and that neither the bound entry nor a copy of it
  * starts until protect-mcp runs again where that file can be written. It
- * never says the copy receives the secrets. Words pending (product and design
- * roles); the content is the security ruling's.
+ * never says the copy receives the secrets.
  */
 const STORE_BACK_FAILED = (failed: StoreBackFailure): string =>
   `The binding could not be replaced: ${listedName(failed.file)} could not be written (${failed.error}), and the old binding could not be stored back, `
@@ -279,10 +277,9 @@ function printCopiedBindings(servers: CopiedBindingMcpServer[]): void {
  * What protect-mcp says of a project-level config, found from the directory
  * it ran in, that holds the id of a home binding whose entry is in its file
  * (see BindingCopyFile): the binding replaced, or not with why, or the file
- * not readable for the id. Words pending (product and design roles); the
- * content is the security ruling's: S3 reaches every copy the wrapper's check
- * refuses from the directory protect-mcp runs in, and names a file it could
- * not check as that check does.
+ * not readable for the id. It reaches every copy the wrapper's check refuses
+ * from the directory protect-mcp runs in, and names a file it could not check
+ * as that check does.
  */
 const COPY_FILE_REPLACED = (entry: string): string =>
   `holds a copy of the binding of ${entry}; the binding was replaced, so the copy no longer starts. Remove the copy from this file.`;
@@ -310,12 +307,11 @@ function printBindingCopyFiles(files: BindingCopyFile[]): void {
 
 /**
  * The line for an entry protect-mcp re-pointed from another build's wrapper
- * to this build's. Words: the product role's C3 ruling (C3-1); the content is
- * the architecture ruling's: the entry now runs through this version's wrapper.
+ * to this build's: the entry now runs through this version's wrapper.
  */
 const REPOINTED_LINE = (server: string): string => `    ~ ${listedName(server)}: now runs through this version's wrapper`;
 
-/** The count under the re-pointed entries. Words: the product role's C3 ruling (C3-1). */
+/** The count under the re-pointed entries. */
 const REPOINTED_COUNT = (count: number): string => `  ${count} server(s) now run through this version's wrapper.`;
 
 /** The servers protect-mcp re-pointed to this build's wrapper, under their configs, then the count. */
@@ -327,8 +323,7 @@ function printRepointedServers(servers: RepointedMcpServer[]): void {
 /**
  * The binding lists of a protect-mcp run, each only when it has a server. The
  * re-pointed servers follow the ones bound this run and come before the ones
- * left not bound, so what changed is read before what is left (the product
- * role's C3 ruling, C3-1).
+ * left not bound, so what changed is read before what is left.
  */
 function printBindingLists(result: ProtectResult): void {
   if (result.bound.length > 0 || result.rebound.length > 0) printBoundServers(result.bound, result.rebound);
@@ -341,8 +336,7 @@ function printBindingLists(result: ProtectResult): void {
 /**
  * The line under a project-level config protect-mcp leaves as it is, where
  * this run read it for the id of a home binding (see BindingCopyFile): it is
- * not rewritten, and it was checked for a copy of a binding. Words pending
- * (product and design roles); the content is the security ruling's.
+ * not rewritten, and it was checked for a copy of a binding.
  */
 const PROJECT_LEVEL_CHECKED = '    ? not rewritten; checked for a copy of a binding: see mcp-status';
 
@@ -609,8 +603,6 @@ const NOT_REWRITTEN_STATE = 'runs through the wrapper from a config protect-mcp 
 /**
  * State (c): the entry is at the place its pair's binding names, and carries
  * no binding or another one. It never names that place as another entry.
- * Words pending (product and design roles); the content is the architecture
- * ruling's.
  */
 const STALE_ID_STATE = 'protected, but it does not carry the binding stored for it';
 
@@ -635,15 +627,13 @@ export const ANOTHER_MACHINE_DOES_NOT_START = 'and the wrapper does not start it
 
 /**
  * The clause for an entry the wrapper's last check refuses: no secret is
- * stored under the pair it reads. Words pending (product and
- * design roles).
+ * stored under the pair it reads.
  */
 const EMPTY_PAIR = 'no secret is stored for the pair it reads';
 
 /**
  * The clause for a copy of another entry whose command or arguments are not
- * the ones that entry was bound with (B2). Words pending (product and design
- * roles).
+ * the ones that entry was bound with.
  */
 const COPY_OTHER_COMMAND = 'its command or arguments are not the ones that entry was bound with';
 
@@ -653,15 +643,13 @@ const PROTECT_MCP = (): string => `\`${cliCommand('protect-mcp')}\``;
 /**
  * The end of the line for an entry on another build's wrapper in a config
  * protect-mcp rewrites, which protect-mcp re-points to this build's: the
- * command that does it, then what it does. Words: the product role's C3
- * ruling (C3-2, ending (1)); the content is the architecture ruling's.
+ * command that does it, then what it does.
  */
 const REPOINTS = (): string => `; ${PROTECT_MCP()} re-points it to this version's wrapper`;
 
 /**
  * The end of that line for an entry in a config protect-mcp does not
- * rewrite, which it therefore does not re-point. Words: the product role's
- * C3 ruling (C3-2, ending (2)).
+ * rewrite, which it therefore does not re-point.
  */
 const NOT_REWRITTEN_NO_REPOINT = '; protect-mcp does not rewrite this config, so it does not re-point it';
 
@@ -669,7 +657,7 @@ const NOT_REWRITTEN_NO_REPOINT = '; protect-mcp does not rewrite this config, so
  * The end of that line for an entry in a config protect-mcp rewrites, on a
  * wrapper that reads a version, where this build's own version could not be
  * read: the two versions cannot be compared, so protect-mcp does not
- * re-point it. Words: the product role's C3 ruling (C3-2, ending (3)).
+ * re-point it.
  */
 const OWN_VERSION_UNREAD_NO_REPOINT = "; this build's own version could not be read, so protect-mcp does not re-point it";
 
@@ -677,8 +665,7 @@ const OWN_VERSION_UNREAD_NO_REPOINT = "; this build's own version could not be r
  * The line for an entry whose wrapper reads a version below the first that
  * checks bindings: the entry is protected, and that wrapper makes none of the
  * checks checkStart runs, so no start clause is computed. `ending` is what
- * protect-mcp does about it (see repointEnding). Words: the product role's C3
- * ruling (C3-2, prefix (a)); the content is the architecture ruling's.
+ * protect-mcp does about it (see repointEnding).
  */
 const OLD_WRAPPER_LINE = (server: string, ending: string): string =>
   `    ? ${listedName(server)}: protected, but it runs through a wrapper that does not check its binding${ending}`;
@@ -687,8 +674,7 @@ const OLD_WRAPPER_LINE = (server: string, ending: string): string =>
  * The line for an entry whose wrapper's version could not be read: a bare
  * name, a path that does not exist, or a wrapper that reads none. The entry
  * is protected, and no start clause is computed. `ending` is what
- * protect-mcp does about it (see repointEnding). Words: the product role's C3
- * ruling (C3-2, prefix (b)).
+ * protect-mcp does about it (see repointEnding).
  */
 const UNREAD_WRAPPER_LINE = (server: string, ending: string): string =>
   `    ? ${listedName(server)}: protected, but it runs through a wrapper whose version could not be read${ending}`;
@@ -714,8 +700,7 @@ function repointEnding(rewritten: boolean, theirs: WrapperBuild, command: string
  * this directory (checkLaunchPlace's copy-found), in a config protect-mcp
  * rewrites or in one it does not: protect-mcp, run in this directory,
  * replaces each such binding, since it runs the same check from where it
- * runs. Words pending (product and design roles); the content is the
- * security ruling's: this footer takes the protect-mcp words.
+ * runs. This footer takes the protect-mcp words.
  */
 const HOME_COPY_FOOTER = (): string =>
   `  Run ${PROTECT_MCP()} in this directory to replace each home binding found in a copy from here; each copy then no longer starts.`;
@@ -741,9 +726,8 @@ const HOME_ID_FOOTER = (error: BindingHomeIdError, backend: string): string => {
 /**
  * The fix lines under an entry in a config protect-mcp rewrites: what
  * protect-mcp does for its binding, from its own plan (planMcpBindings), so
- * the line names what it then does. A bound entry has none. Words pending
- * (product and design roles); the content is the architecture ruling's: bind,
- * leave with a reason, report a copy.
+ * the line names what it then does: bind, leave with a reason, report a copy.
+ * A bound entry has none.
  */
 const FIX_BIND = (): string => `      ${PROTECT_MCP()} binds it.`;
 const FIX_REBIND = (): string => `      ${PROTECT_MCP()} binds it again with its command as it is now.`;
@@ -754,7 +738,7 @@ const FIX_REPLACE = (entry: string): string => `      ${PROTECT_MCP()} replaces 
 
 /**
  * The line after the entries when protect-mcp's plan could not be read, so
- * no fix line is printed. Words pending (product and design roles).
+ * no fix line is printed.
  */
 const PLAN_UNREAD = (why: string): string =>
   `  What protect-mcp would do for each entry could not be read (${why}); run ${PROTECT_MCP()} to see it.`;
@@ -1025,7 +1009,6 @@ export async function runMcpStatus(): Promise<number> {
  * be resolved (checkLaunchPlace's project-unresolved), chosen by the
  * verdict's own fields: the directory is absent; the directory is there and
  * the bound config in it is absent; either could not be read, with the code.
- * Words: the product role's C5 ruling (C5-3).
  */
 const PROJECT_NOT_HERE = (project: string): string =>
   `its binding is to the project in ${listedName(project)}, which is not on this machine`;
@@ -1056,8 +1039,7 @@ function placeState(place: Exclude<McpPlaceVerdict, { refused: false }>): string
 /**
  * The line for a pair mcp-unprotect leaves because its binding names an entry
  * in a file this run did not restore: the stored names it left (`names`,
- * never a value), then that entry's location. It cites no command. Words: the
- * product role's C3 ruling (C3-6).
+ * never a value), then that entry's location. It cites no command.
  */
 const LEFT_BOUND_UNRESTORED = (label: string, names: string[], entry: string): string =>
   `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. They are bound to ${entry}, which this run did not restore.`;
@@ -1066,8 +1048,7 @@ const LEFT_BOUND_UNRESTORED = (label: string, names: string[], entry: string): s
  * The line for a pair with no binding that mcp-unprotect leaves in a store
  * shared between machines: the stored names it left (`names`, never a
  * value), then that `backend` is read from other machines as well, so an
- * entry on one of them may read the pair. It cites no command. Words: the
- * product role's C3 ruling (C3-6).
+ * entry on one of them may read the pair. It cites no command.
  */
 const LEFT_SHARED_UNBOUND = (label: string, names: string[], backend: string): string =>
   `  ? ${label}: left in the store: ${names.map(listedName).join(', ')}. No binding is stored for them, and the ${backend} backend is read from other machines as well, so an entry there may read them.`;
