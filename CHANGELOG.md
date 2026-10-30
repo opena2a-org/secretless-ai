@@ -4512,6 +4512,9 @@ tools.
   hint, and no value is read.
 - gcp-sm: an MCP key whose segment starts with U+FEFF decodes back to itself
   and keeps its server binding.
+- gcp-sm: `secret push --to gcp-sm` reads the secret's store-key label before
+  adding a version and refuses a secret held for an MCP server binding, as a
+  plain-key store does.
 
 ### Fixed
 

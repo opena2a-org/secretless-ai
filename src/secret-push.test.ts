@@ -22,7 +22,9 @@ import { AzureKeyVaultTarget } from './backends/azure-kv';
 import type { AzureDeps } from './backends/azure-kv';
 import type { BoundedChildResult } from './backends/bounded-child';
 import { VaultBackend } from './backends/vault';
-import { GCPSecretManagerBackend } from './backends/gcp-sm';
+import { GCPSecretManagerBackend, encodeStoreKey } from './backends/gcp-sm';
+import { fakeSecretManager } from './backends/gcp-sm-fake.test-support';
+import type { FakeSecretManager } from './backends/gcp-sm-fake.test-support';
 import { VaultPushTarget, GcpPushTarget, PUSH_TARGETS } from './secret-push';
 import type { PushTarget, PushTargetType } from './secret-push';
 import { runSecret, runSecretPush } from './commands/secrets';
@@ -536,6 +538,162 @@ describe('secret push --to gcp-sm (#235)', () => {
 
     expect(code).toBe(2);
     expect(fixCommand()).toEqual(['API_KEY', '--to', 'gcp-sm', '--as', 'k'.repeat(255)]);
+  });
+
+  describe('a secret held for an MCP server binding gets no version from a push', () => {
+    // protect-mcp stores an MCP server's key under a name derived from the
+    // whole key, on a secret with the store-key label. `--as` accepts it.
+    const SERVER_KEY = 'mcp/cursor/github/TOKEN';
+    const HELD = encodeStoreKey(SERVER_KEY);
+    const STORE_KEY_LABELS = { 'secretless-ai': 'store-key' };
+    const FIX = "  Fix:     use a plain name no MCP server's secret is held under: run the push again with another --as name";
+    let serverValue: string;
+
+    /** A value built at run time, shaped like no provider's token. */
+    function placeholder(label: string): string {
+      return [label, 'placeholder', crypto.randomBytes(6).toString('hex')].join('-');
+    }
+
+    /**
+     * The project as Secret Manager keeps it (fakeSecretManager): creating an
+     * existing secret is 409, and a secret's resource carries its labels. It
+     * holds the server's secret, with the label. A read of the resource of
+     * `forbidden` is answered 403, as for a principal without
+     * secretmanager.secrets.get.
+     */
+    function project(forbidden?: string): FakeSecretManager {
+      const sm = fakeSecretManager('demo-project');
+      sm.put(HELD, serverValue, STORE_KEY_LABELS);
+      const accessToken = ['FAKE', 'gcp', 'access', crypto.randomBytes(4).toString('hex')].join('-');
+      handler = async (call) => {
+        if (call.url === 'https://oauth2.googleapis.com/token') return json(200, { access_token: accessToken, expires_in: 3600 });
+        if (call.method === 'GET' && forbidden !== undefined && new URL(call.url).pathname === `/v1/projects/demo-project/secrets/${forbidden}`) {
+          return json(403, { error: { code: 403, status: 'PERMISSION_DENIED' } });
+        }
+        const answer = await sm.fetch(call.url, { method: call.method, body: call.body });
+        return new Response(await answer.text(), { status: answer.status, headers: { 'Content-Type': 'application/json' } });
+      };
+      return sm;
+    }
+
+    /** Each request whose URL or body carries `value`, as given or in base64. */
+    function carrying(value: string): string[] {
+      const encoded = Buffer.from(value).toString('base64');
+      return calls
+        .filter((c) => [c.url, c.body ?? ''].some((text) => text.includes(value) || text.includes(encoded)))
+        .map((c) => `${c.method} ${c.url}`);
+    }
+
+    const addVersions = (): string[] => calls.filter((c) => c.url.endsWith(':addVersion')).map((c) => c.url);
+
+    beforeEach(() => {
+      serverValue = placeholder('server');
+    });
+
+    it('(a) --as the name the server key is stored under: refused, the message names the binding, and no request carries the value', async () => {
+      const sm = project();
+      const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', HELD], { store, createTarget: gcpTarget() });
+
+      expect({
+        code,
+        addVersions: addVersions(),
+        carryingTheValue: carrying(VALUES.API_KEY),
+        held: sm.secrets.get(HELD),
+      }).toEqual({ code: 1, addVersions: [], carryingTheValue: [], held: { labels: STORE_KEY_LABELS, versions: [serverValue] } });
+      expect(printed()).toContain(
+        `  GCP Secret Manager refused ${HELD} in project demo-project: the secret is held for an MCP server binding, the key '${SERVER_KEY}', and a push adds no version to it.`,
+      );
+      expect(printed()).toContain('  Nothing was pushed.');
+      expect(printed()).toContain(`  Verify:  gcloud secrets describe ${HELD} --project demo-project`);
+      expect(printed().split('\n')).toContain(FIX);
+      expect(printed()).not.toContain(serverValue);
+      expectNoLeak();
+    });
+
+    it('(b) control: --as names whose secrets exist without the label each get one version, as before', async () => {
+      const sm = project();
+      // The name another server key would have, on a secret without the label.
+      const unlabelled = encodeStoreKey('mcp/cursor/gitlab/TOKEN');
+      const before = [placeholder('existing'), placeholder('unlabelled')];
+      sm.put('EXISTING', before[0]);
+      sm.put(unlabelled, before[1]);
+
+      const code = await runSecretPush(['API_KEY,DB_PASSWORD', '--to', 'gcp-sm', '--as', `EXISTING,${unlabelled}`], { store, createTarget: gcpTarget() });
+
+      expect({
+        code,
+        addVersions: addVersions(),
+        existing: sm.secrets.get('EXISTING'),
+        unlabelled: sm.secrets.get(unlabelled),
+        held: sm.secrets.get(HELD),
+      }).toEqual({
+        code: 0,
+        addVersions: [`${SM}/EXISTING:addVersion`, `${SM}/${unlabelled}:addVersion`],
+        existing: { labels: {}, versions: [before[0], VALUES.API_KEY] },
+        unlabelled: { labels: {}, versions: [before[1], VALUES.DB_PASSWORD] },
+        held: { labels: STORE_KEY_LABELS, versions: [serverValue] },
+      });
+      expectNoLeak();
+    });
+
+    it('(c) control: --as a new name creates the secret without a label and adds one version, as before', async () => {
+      const sm = project();
+      const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'NEW_NAME'], { store, createTarget: gcpTarget() });
+
+      expect({
+        code,
+        creates: calls.filter((c) => c.method === 'POST' && c.url.startsWith(`${SM}?`)).map((c) => [c.url, JSON.parse(c.body ?? '{}')]),
+        addVersions: addVersions(),
+        created: sm.secrets.get('NEW_NAME'),
+      }).toEqual({
+        code: 0,
+        creates: [[`${SM}?secretId=NEW_NAME`, { replication: { automatic: {} } }]],
+        addVersions: [`${SM}/NEW_NAME:addVersion`],
+        created: { labels: {}, versions: [VALUES.API_KEY] },
+      });
+      expectNoLeak();
+    });
+
+    it("(d) a label read answered 403: refused with the Viewer hint and no version added, and a dry run's read gets the same hint", async () => {
+      const sm = project('EXISTING');
+      const before = placeholder('existing');
+      sm.put('EXISTING', before);
+
+      const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'EXISTING'], { store, createTarget: gcpTarget() });
+      const pushed = printed();
+      out.length = 0;
+      const dry = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', 'EXISTING', '--dry-run'], { store, createTarget: gcpTarget() });
+
+      expect({
+        code,
+        dry,
+        addVersions: addVersions(),
+        carryingTheValue: carrying(VALUES.API_KEY),
+        existing: sm.secrets.get('EXISTING'),
+      }).toEqual({ code: 1, dry: 1, addVersions: [], carryingTheValue: [], existing: { labels: {}, versions: [before] } });
+      for (const text of [pushed, printed()]) {
+        expect(text).toContain("  GCP Secret Manager refused EXISTING in project demo-project: insufficient IAM permissions to read its metadata. Grant 'Secret Manager Viewer' role.");
+        expect(text).toContain('  Fix:     gcloud projects add-iam-policy-binding demo-project --member=user:<you> --role=roles/secretmanager.viewer');
+      }
+      expectNoLeak();
+    });
+
+    it('(e) --dry-run against the held name prints the refusal, not "would add a version", and sends only reads', async () => {
+      project();
+      const code = await runSecretPush(['API_KEY', '--to', 'gcp-sm', '--as', HELD, '--dry-run'], { store, createTarget: gcpTarget() });
+      const rows = printed().split('\n').filter((l) => l.includes(' API_KEY ')).map((l) => l.trim().replace(/\s+/g, ' '));
+
+      expect({ code, rows }).toEqual({ code: 1, rows: [`would refuse API_KEY as ${HELD}`] });
+      expect(printed()).not.toContain('would add a version');
+      expect(printed()).toContain(
+        `  GCP Secret Manager refused ${HELD} in project demo-project: the secret is held for an MCP server binding, the key '${SERVER_KEY}', and a push adds no version to it.`,
+      );
+      expect(printed()).toContain('  Nothing was written.');
+      expect(printed().split('\n')).toContain(FIX);
+      expect(calls.filter((c) => c.url.startsWith(SM) && c.method !== 'GET')).toEqual([]);
+      expect(printed()).not.toContain(serverValue);
+      expectNoLeak();
+    });
   });
 });
 
