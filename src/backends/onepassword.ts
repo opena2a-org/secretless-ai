@@ -22,10 +22,11 @@
  */
 
 import { execFileSync } from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLine } from './types';
 import { BACKEND_CHILD_TIMEOUT_MS, BACKEND_CHILD_KILL_SIGNAL } from './bounded-child';
 
 const DEFAULT_VAULT = 'Secretless';
@@ -82,6 +83,24 @@ export class OnePasswordBackend implements WritableSecretBackend {
       throw new Error(`Invalid vault name: "${vault}". Must start with alphanumeric, may contain spaces/hyphens/underscores (max 64 chars).`);
     }
     this.vaultName = vault;
+  }
+
+  /**
+   * The vault this backend reads, and the account `op` reads it as where the
+   * environment names one (OP_ACCOUNT, or a service account token as its
+   * SHA-256), for the value cache's scope (cacheScope). Starts no `op`: an
+   * app-integrated sign-in is read by the app, and asking it could prompt.
+   */
+  describeStore(): StoreScopeLine[] {
+    const serviceAccountToken = process.env.OP_SERVICE_ACCOUNT_TOKEN ?? '';
+    return [
+      ['vault', this.vaultName],
+      ['account', process.env.OP_ACCOUNT ?? ''],
+      [
+        'service-account-token-sha256',
+        serviceAccountToken ? crypto.createHash('sha256').update(serviceAccountToken, 'utf-8').digest('hex') : '',
+      ],
+    ];
   }
 
   /**

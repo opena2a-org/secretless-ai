@@ -49,7 +49,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLine } from './types';
 import { readKeyIndex } from './key-index';
 import { leaksAny, redactValues } from '../redact';
 import {
@@ -472,6 +472,11 @@ export class MacOSKeychainBackend implements WritableSecretBackend {
     // Deliberately from `internals`, never from `config`: config is user data.
     this.securityProgram = internals?.securityProgram ?? SECURITY_PROGRAM;
     this.childTimeoutMs = internals?.childTimeoutMs ?? BACKEND_CHILD_TIMEOUT_MS;
+  }
+
+  /** The store directory whose index this backend keeps, for the value cache's scope (cacheScope). */
+  describeStore(): StoreScopeLine[] {
+    return [['store', path.resolve(path.dirname(this.indexPath))]];
   }
 
   async store(key: string, value: string): Promise<void> {

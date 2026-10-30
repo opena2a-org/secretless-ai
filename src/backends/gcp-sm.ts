@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLine } from './types';
 import { boundedFetch, describeRequest, type BoundedResponse } from './bounded-fetch';
 import { resolveGcpProject } from './gcp-project';
 import type { GcpProjectResolution } from './gcp-project';
@@ -237,6 +237,34 @@ interface ADCCredentials {
   type: string;
 }
 
+/**
+ * Who a gcp-sm backend reads as, for the value cache's scope, from the file
+ * ensureAccessToken would sign with: the service account a key file names,
+ * otherwise the Application Default Credentials' account and their refresh
+ * token as its SHA-256, which tells two logins apart where the file leaves
+ * the account empty. File reads only.
+ */
+function gcpCredentialIdentity(keyPath: string | undefined): StoreScopeLine[] {
+  if (keyPath && fs.existsSync(keyPath)) {
+    try {
+      const key = JSON.parse(fs.readFileSync(keyPath, 'utf-8')) as Partial<ServiceAccountKey>;
+      return [['service-account', String(key.client_email ?? '')]];
+    } catch {
+      return [['service-account-key-unreadable', path.resolve(keyPath)]];
+    }
+  }
+  const adcPath = path.join(os.homedir(), '.config', 'gcloud', 'application_default_credentials.json');
+  try {
+    const adc = JSON.parse(fs.readFileSync(adcPath, 'utf-8')) as Partial<ADCCredentials> & { account?: string };
+    return [
+      ['adc-account', String(adc.account ?? '')],
+      ['adc-refresh-token-sha256', crypto.createHash('sha256').update(String(adc.refresh_token ?? ''), 'utf-8').digest('hex')],
+    ];
+  } catch {
+    return [['credential', 'none']];
+  }
+}
+
 export class GCPSecretManagerBackend implements WritableSecretBackend {
   readonly name = 'gcp-sm';
 
@@ -270,6 +298,24 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     });
     if (resolution.projectId) this.resolution = resolution;
     return resolution;
+  }
+
+  /**
+   * The project this backend reads, where it was named, and the identity of
+   * the credential it reads with, for the value cache's scope (cacheScope).
+   * File reads only; no request is made. A backend that cannot name its
+   * project yet is given a scope no other backend has, so nothing it caches
+   * once a project is named is served to another.
+   */
+  describeStore(): StoreScopeLine[] {
+    const project = this.describeProject();
+    const lines: StoreScopeLine[] = [
+      ['project', project.projectId ?? ''],
+      ['project-source', project.source],
+      ...gcpCredentialIdentity(this.keyFilePath ?? process.env.GOOGLE_APPLICATION_CREDENTIALS),
+    ];
+    if (!project.projectId) lines.push(['unresolved', crypto.randomBytes(16).toString('hex')]);
+    return lines;
   }
 
   /**

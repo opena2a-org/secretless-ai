@@ -8,6 +8,10 @@
  * This eliminates repeated macOS fingerprint / Linux password prompts when
  * multiple tools (npm, git, etc.) read secrets in quick succession.
  *
+ * Every entry is kept under the scope of the backend that read or wrote it
+ * (cacheScope): the store it came from and the identity of the credential it
+ * was read with. A read is served only from entries in its own scope.
+ *
  * Cache file: ~/.secretless-ai/store/.secret-cache
  * Format: AES-256-GCM encrypted JSON with per-entry timestamps.
  */
@@ -15,16 +19,23 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
+import type { SecretBackend, WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLine } from './types';
 
 const CACHE_FILENAME = '.secret-cache';
 const SALT_FILE = '.salt';
+const MARKER_PREFIX = '__resolved__';
 
 interface CacheEntry {
   value: string;
   cachedAt: number; // epoch ms
   /** Writer stamp — see WRITER_STAMP. Absent on entries written before 0.21.4. */
   writer?: string;
+  /**
+   * The scope of the backend that cached this entry (cacheScope). It is served
+   * only to a backend of the same scope. An entry without one was written by a
+   * build that kept no scope, and is a miss.
+   */
+  scope?: string;
   /**
    * On a prefix marker only: how many entries the resolve that wrote this marker
    * actually cached. The marker claims "this prefix is fully resolved"; without
@@ -35,6 +46,40 @@ interface CacheEntry {
 
 interface CacheStore {
   entries: Record<string, CacheEntry>;
+}
+
+/**
+ * The scope a backend's values are cached under: a SHA-256 over a tagged,
+ * newline-joined list of its kind and the lines its `describeStore` gives, the
+ * address, project or store path it reads and the identity of the credential
+ * it reads with.
+ *
+ * The cache is one file per user, shared by every shell. A cached value is one
+ * store's answer to one credential: served to a read made against another
+ * server, project or token, it answers that read without the store that holds
+ * the value deciding whether that credential may have it.
+ *
+ * Computed in memory. The scope is kept only inside the encrypted cache file,
+ * and neither it nor any line it is computed from is logged or printed. Each
+ * value is JSON-quoted, so no value can end its line and start another.
+ */
+export function cacheScope(backend: SecretBackend): string {
+  const lines: StoreScopeLine[] = [['kind', backend.name], ...(backend.describeStore?.() ?? [])];
+  const text = lines.map(([tag, value]) => `${tag}:${JSON.stringify(value)}`).join('\n');
+  return crypto.createHash('sha256').update(text, 'utf-8').digest('hex');
+}
+
+/**
+ * Where the entry for `name` cached in `scope` is kept. Entries are keyed by
+ * scope and name, so two stores that hold one name keep an entry each.
+ */
+function entryKey(scope: string, name: string): string {
+  return `${scope}:${name}`;
+}
+
+/** Where the marker of a prefix read of `prefix` in `scope` is kept. */
+function markerKey(scope: string, prefix: string): string {
+  return entryKey(scope, `${MARKER_PREFIX}${prefix}`);
 }
 
 /**
@@ -130,18 +175,25 @@ export class CachedBackend implements WritableSecretBackend {
    * look correct.
    */
   private readonly writerStamp: string;
+  /**
+   * The scope this backend's reads are served from and its values cached
+   * under. The factory passes cacheScope(inner), computed when it builds the
+   * backend; a caller that passes none gets the same value.
+   */
+  private readonly scope: string;
 
   /** In-memory mirror — avoids decrypting the file on every resolve(). */
   private memCache: CacheStore | null = null;
 
   constructor(
     inner: WritableSecretBackend,
-    options?: { ttlMs?: number; storeDir?: string; writerStamp?: string },
+    options?: { ttlMs?: number; storeDir?: string; writerStamp?: string; scope?: string },
   ) {
     this.inner = inner;
     this.name = `cached(${inner.name})`;
     this.ttlMs = options?.ttlMs ?? 5 * 60 * 1000; // default 5 minutes
     this.writerStamp = options?.writerStamp ?? WRITER_STAMP;
+    this.scope = options?.scope || cacheScope(inner);
 
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
     const storeDir = options?.storeDir ?? defaultCacheDir();
@@ -192,21 +244,20 @@ export class CachedBackend implements WritableSecretBackend {
     const now = Date.now();
 
     // An exact read names one entry, so it is served only from the entry
-    // cached at `secretPath`, and on a miss the backend is asked for that entry
-    // alone. It reads and writes no prefix marker: a prefix read does not
-    // certify an exact one, and an exact read does not certify a prefix. An
-    // absent entry is not cached, so each miss is one backend read.
+    // cached at `secretPath` in this scope, and on a miss the backend is asked
+    // for that entry alone. It reads and writes no prefix marker: a prefix
+    // read does not certify an exact one, and an exact read does not certify a
+    // prefix. An absent entry is not cached, so each miss is one backend read.
     if (options?.exact) {
-      const entry = Object.prototype.hasOwnProperty.call(cache.entries, secretPath)
-        ? cache.entries[secretPath]
-        : undefined;
+      const key = entryKey(this.scope, secretPath);
+      const entry = this.inScope(cache, key);
       if (entry && now - entry.cachedAt < this.ttlMs) {
         return { [secretPath]: entry.value };
       }
       const results = await this.inner.resolve(secretPath, options);
       if (!Object.prototype.hasOwnProperty.call(results, secretPath)) return {};
       const value = results[secretPath];
-      cache.entries[secretPath] = { value, cachedAt: now, writer: this.writerStamp };
+      cache.entries[key] = { value, cachedAt: now, writer: this.writerStamp, scope: this.scope };
       this.saveCache(cache);
       return { [secretPath]: value };
     }
@@ -217,12 +268,15 @@ export class CachedBackend implements WritableSecretBackend {
     let allCached = false;
 
     // We need the index to know which keys match the prefix.
-    // The cache stores full keys, so we can filter by prefix.
+    // The cache stores full keys under this scope, so we can filter by prefix.
+    const inThisScope = entryKey(this.scope, '');
     const matchingCached: [string, CacheEntry][] = [];
     for (const [key, entry] of Object.entries(cache.entries)) {
-      if (key === secretPath || key.startsWith(secretPath + '/')) {
+      if (entry.scope !== this.scope || !key.startsWith(inThisScope)) continue;
+      const name = key.slice(inThisScope.length);
+      if (name === secretPath || name.startsWith(secretPath + '/')) {
         if (now - entry.cachedAt < this.ttlMs) {
-          matchingCached.push([key, entry]);
+          matchingCached.push([name, entry]);
         }
       }
     }
@@ -236,16 +290,16 @@ export class CachedBackend implements WritableSecretBackend {
     // reported "fully resolved" and returned {}. That is the worst shape this
     // class has: `run` would inject NOTHING and still exit 0. Any shortfall is
     // now a miss.
-    const prefixMarker = `__resolved__${secretPath}`;
-    const markerEntry = cache.entries[prefixMarker];
+    const prefixMarker = markerKey(this.scope, secretPath);
+    const markerEntry = this.inScope(cache, prefixMarker);
     if (
       markerEntry &&
       now - markerEntry.cachedAt < this.ttlMs &&
       matchingCached.length === (markerEntry.count ?? -1)
     ) {
       allCached = true;
-      for (const [key, entry] of matchingCached) {
-        cachedResults[key] = entry.value;
+      for (const [name, entry] of matchingCached) {
+        cachedResults[name] = entry.value;
       }
     }
 
@@ -256,10 +310,10 @@ export class CachedBackend implements WritableSecretBackend {
     // Cache miss or expired — resolve from the real backend
     const results = await this.inner.resolve(secretPath, options);
 
-    // Store results in cache
+    // Store results in cache, under this scope
     let cachedCount = 0;
-    for (const [key, value] of Object.entries(results)) {
-      cache.entries[key] = { value, cachedAt: now, writer: this.writerStamp };
+    for (const [name, value] of Object.entries(results)) {
+      cache.entries[entryKey(this.scope, name)] = { value, cachedAt: now, writer: this.writerStamp, scope: this.scope };
       cachedCount++;
     }
     // Mark the prefix as fully resolved
@@ -267,6 +321,7 @@ export class CachedBackend implements WritableSecretBackend {
       value: '',
       cachedAt: now,
       writer: this.writerStamp,
+      scope: this.scope,
       count: cachedCount,
     };
 
@@ -277,11 +332,15 @@ export class CachedBackend implements WritableSecretBackend {
   async store(key: string, value: string): Promise<void> {
     await this.inner.store(key, value);
 
-    // Update cache with new value
+    // Update cache with new value, under this scope
     const cache = this.loadCache();
-    cache.entries[key] = { value, cachedAt: Date.now(), writer: this.writerStamp };
-    // Invalidate prefix markers that cover this key
-    this.invalidatePrefixMarkers(cache, key);
+    this.forget(cache, key);
+    cache.entries[entryKey(this.scope, key)] = {
+      value,
+      cachedAt: Date.now(),
+      writer: this.writerStamp,
+      scope: this.scope,
+    };
     this.saveCache(cache);
   }
 
@@ -290,8 +349,7 @@ export class CachedBackend implements WritableSecretBackend {
 
     // Remove from cache
     const cache = this.loadCache();
-    delete cache.entries[key];
-    this.invalidatePrefixMarkers(cache, key);
+    this.forget(cache, key);
     this.saveCache(cache);
 
     return result;
@@ -313,14 +371,14 @@ export class CachedBackend implements WritableSecretBackend {
     }
   }
 
-  /** Get the number of valid (non-expired) entries in the cache. */
+  /** Get the number of valid (non-expired) entries in the cache, in every scope. */
   getCacheStats(): { entries: number; expired: number } {
     const cache = this.loadCache();
     const now = Date.now();
     let valid = 0;
     let expired = 0;
     for (const [key, entry] of Object.entries(cache.entries)) {
-      if (key.startsWith('__resolved__')) continue;
+      if (entry.scope !== undefined && key.startsWith(markerKey(entry.scope, ''))) continue;
       if (now - entry.cachedAt < this.ttlMs) {
         valid++;
       } else {
@@ -330,13 +388,32 @@ export class CachedBackend implements WritableSecretBackend {
     return { entries: valid, expired };
   }
 
-  private invalidatePrefixMarkers(cache: CacheStore, key: string): void {
-    // Invalidate any prefix marker that covers this key
-    // e.g. if key is "secret/NPM_TOKEN", invalidate "__resolved__secret"
+  /** The entry at `key` when it was cached in this backend's scope. */
+  private inScope(cache: CacheStore, key: string): CacheEntry | undefined {
+    if (!Object.prototype.hasOwnProperty.call(cache.entries, key)) return undefined;
+    const entry = cache.entries[key];
+    return entry.scope === this.scope ? entry : undefined;
+  }
+
+  /**
+   * Remove `key`'s entry, and every prefix marker that covers it, in every
+   * scope the cache holds. Two scopes can name one store (two tokens on one
+   * Vault server), so after a write or a delete in one of them no scope keeps
+   * serving the value from before it; the cost is one read in each.
+   */
+  private forget(cache: CacheStore, key: string): void {
+    const scopes = new Set<string>();
+    for (const entry of Object.values(cache.entries)) {
+      if (entry.scope !== undefined) scopes.add(entry.scope);
+    }
+    // e.g. if key is "secret/NPM_TOKEN", the markers of "secret" and of
+    // "secret/NPM_TOKEN" are removed
     const parts = key.split('/');
-    for (let i = 0; i < parts.length; i++) {
-      const prefix = parts.slice(0, i + 1).join('/');
-      delete cache.entries[`__resolved__${prefix}`];
+    for (const scope of scopes) {
+      delete cache.entries[entryKey(scope, key)];
+      for (let i = 0; i < parts.length; i++) {
+        delete cache.entries[markerKey(scope, parts.slice(0, i + 1).join('/'))];
+      }
     }
   }
 
@@ -353,16 +430,23 @@ export class CachedBackend implements WritableSecretBackend {
       const decrypted = this.decrypt(encrypted);
       this.memCache = JSON.parse(decrypted) as CacheStore;
 
-      // Evict on load: too old, or not written by this build.
+      // Evict on load: too old, not written by this build, or kept under no
+      // scope (or under a key that is not its scope's).
       //
-      // Both checks live here, at the single point every read and write goes
+      // These checks live here, at the single point every read and write goes
       // through, so no caller can consult a stale entry by taking a different
       // route. Markers are entries too and are dropped by the same rule — a
       // marker that outlived its entries is the fail-open described in
-      // resolve().
+      // resolve(). An entry of another scope is kept: it is that scope's, and
+      // resolve() serves only its own.
       const now = Date.now();
       for (const [key, entry] of Object.entries(this.memCache.entries)) {
-        if (now - entry.cachedAt >= this.ttlMs || entry.writer !== this.writerStamp) {
+        if (
+          now - entry.cachedAt >= this.ttlMs ||
+          entry.writer !== this.writerStamp ||
+          typeof entry.scope !== 'string' ||
+          !key.startsWith(entryKey(entry.scope, ''))
+        ) {
           delete this.memCache.entries[key];
         }
       }

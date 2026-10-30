@@ -12,7 +12,19 @@ export interface SecretBackend {
 
   /** Check if the backend is available and authenticated */
   healthCheck(): Promise<BackendHealth>;
+
+  /**
+   * The store this backend reads and the identity of the credential it reads
+   * it with, as tagged lines, for the value cache's scope (`cacheScope` in
+   * cache.ts). A credential is given as its SHA-256, never as itself. File
+   * and environment reads only: no request, no prompt. Never logged or
+   * printed. A backend without it is scoped by its kind alone.
+   */
+  describeStore?(): StoreScopeLine[];
 }
+
+/** One tagged line a backend names for the value cache's scope. */
+export type StoreScopeLine = readonly [tag: string, value: string];
 
 /** How `resolve` is to read its path. */
 export interface ResolveOptions {

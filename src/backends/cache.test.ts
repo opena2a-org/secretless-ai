@@ -489,3 +489,133 @@ describe('clearCacheFile default location', () => {
     expect(fs.existsSync(legacyFile)).toBe(false);
   });
 });
+
+/**
+ * Every entry and every prefix marker is kept under the scope of the backend
+ * that read or wrote it: the store it came from and the credential it was
+ * read with. A read is served only from its own scope. The scope is passed
+ * here as the factory passes it (factory.test.ts builds it from real
+ * backends).
+ */
+describe('CachedBackend store scope', () => {
+  const SCOPE_A = 'scope-of-store-a';
+  const SCOPE_B = 'scope-of-store-b';
+  let dir: string;
+
+  beforeEach(() => {
+    dir = tmpDir();
+  });
+
+  afterEach(() => {
+    cleanup(dir);
+  });
+
+  function inScope(inner: WritableSecretBackend, scope: string, writerStamp?: string): CachedBackend {
+    return new CachedBackend(inner, { ttlMs: 60_000, storeDir: dir, scope, writerStamp });
+  }
+
+  it('(c) a value stored in one scope is a miss for an exact read in another', async () => {
+    await inScope(createMockBackend({}), SCOPE_A).store('secret/X', 'stored-in-a');
+
+    const innerB = createMockBackend({ 'secret/X': 'held-by-b' });
+    expect(await inScope(innerB, SCOPE_B).resolve('secret/X', { exact: true })).toEqual({
+      'secret/X': 'held-by-b',
+    });
+    expect(innerB.resolveCalls).toBe(1);
+  });
+
+  it('(d) a prefix read in one scope is a miss for an exact read of a child, and for a prefix read, in another', async () => {
+    await inScope(createMockBackend({ 'secret/X': 'held-by-a' }), SCOPE_A).resolve('secret');
+
+    const innerB = createMockBackend({ 'secret/X': 'held-by-b' });
+    const readerB = inScope(innerB, SCOPE_B);
+    expect(await readerB.resolve('secret/X', { exact: true })).toEqual({ 'secret/X': 'held-by-b' });
+    expect(innerB.resolveCalls).toBe(1);
+
+    expect(await inScope(innerB, SCOPE_B).resolve('secret')).toEqual({ 'secret/X': 'held-by-b' });
+    expect(innerB.resolveCalls).toBe(2);
+  });
+
+  it('(e) CONTROL: within one scope, what an exact read, a prefix read and a store cached is served with no backend call', async () => {
+    const secrets = { 'secret/X': 'held-x', 'secret/Y': 'held-y' };
+    await inScope(createMockBackend(secrets), SCOPE_A).resolve('secret/X', { exact: true });
+    await inScope(createMockBackend(secrets), SCOPE_A).resolve('secret');
+
+    const prefixReader = createMockBackend(secrets);
+    expect(await inScope(prefixReader, SCOPE_A).resolve('secret')).toEqual({
+      'secret/X': 'held-x',
+      'secret/Y': 'held-y',
+    });
+    expect(prefixReader.resolveCalls).toBe(0);
+
+    await inScope(createMockBackend(secrets), SCOPE_A).store('secret/Z', 'stored-z');
+
+    const inner = createMockBackend(secrets);
+    const reader = inScope(inner, SCOPE_A);
+    expect(await reader.resolve('secret/X', { exact: true })).toEqual({ 'secret/X': 'held-x' });
+    expect(await reader.resolve('secret/Y', { exact: true })).toEqual({ 'secret/Y': 'held-y' });
+    expect(await reader.resolve('secret/Z', { exact: true })).toEqual({ 'secret/Z': 'stored-z' });
+    expect(inner.resolveCalls).toBe(0);
+  });
+
+  it('(g) an entry and a marker written without a scope are a miss', async () => {
+    // The shape a build that kept no scope wrote, under this build's stamp, so
+    // the writer check alone does not drop it.
+    const stamp = '0.23.1+cccccccc';
+    writeCacheFile(dir, {
+      entries: {
+        'secret/X': { value: 'cached-without-a-scope', cachedAt: Date.now(), writer: stamp },
+        '__resolved__secret': { value: '', cachedAt: Date.now(), writer: stamp, count: 1 },
+      },
+    });
+
+    const inner = createMockBackend({ 'secret/X': 'held' });
+    const cached = inScope(inner, SCOPE_A, stamp);
+    expect(await cached.resolve('secret/X', { exact: true })).toEqual({ 'secret/X': 'held' });
+    expect(inner.resolveCalls).toBe(1);
+    expect(await cached.resolve('secret')).toEqual({ 'secret/X': 'held' });
+    expect(inner.resolveCalls).toBe(2);
+  });
+
+  it('a store or a delete in one scope clears the name in every scope, so none serves a value its store may no longer hold', async () => {
+    const innerA = createMockBackend({ 'secret/X': 'held-by-a' });
+    await inScope(innerA, SCOPE_A).resolve('secret/X', { exact: true });
+    await inScope(createMockBackend({}), SCOPE_B).store('secret/X', 'stored-in-b');
+    await inScope(innerA, SCOPE_A).resolve('secret/X', { exact: true });
+    expect(innerA.resolveCalls).toBe(2);
+
+    await inScope(createMockBackend({}), SCOPE_B).delete('secret/X');
+    await inScope(innerA, SCOPE_A).resolve('secret/X', { exact: true });
+    expect(innerA.resolveCalls).toBe(3);
+  });
+
+  it('keeps the value each scope read under one name, so two scopes do not displace each other', async () => {
+    await inScope(createMockBackend({ 'secret/X': 'held-by-a' }), SCOPE_A).resolve('secret/X', { exact: true });
+    await inScope(createMockBackend({ 'secret/X': 'held-by-b' }), SCOPE_B).resolve('secret/X', { exact: true });
+
+    const innerA = createMockBackend({});
+    const innerB = createMockBackend({});
+    expect(await inScope(innerA, SCOPE_A).resolve('secret/X', { exact: true })).toEqual({ 'secret/X': 'held-by-a' });
+    expect(await inScope(innerB, SCOPE_B).resolve('secret/X', { exact: true })).toEqual({ 'secret/X': 'held-by-b' });
+    expect(innerA.resolveCalls + innerB.resolveCalls).toBe(0);
+  });
+
+  it('a backend built without a scope is scoped by what it names: its kind and its store', async () => {
+    const named = (store: string): WritableSecretBackend & { resolveCalls: number } =>
+      Object.assign(createMockBackend({ 'secret/X': `held-in-${store}` }), {
+        describeStore: () => [['store', store] as const],
+      });
+
+    await new CachedBackend(named('one'), { ttlMs: 60_000, storeDir: dir }).resolve('secret/X', { exact: true });
+
+    const sameStore = named('one');
+    await new CachedBackend(sameStore, { ttlMs: 60_000, storeDir: dir }).resolve('secret/X', { exact: true });
+    expect(sameStore.resolveCalls).toBe(0);
+
+    const otherStore = named('two');
+    expect(
+      await new CachedBackend(otherStore, { ttlMs: 60_000, storeDir: dir }).resolve('secret/X', { exact: true }),
+    ).toEqual({ 'secret/X': 'held-in-two' });
+    expect(otherStore.resolveCalls).toBe(1);
+  });
+});
