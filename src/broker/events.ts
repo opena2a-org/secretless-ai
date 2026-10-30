@@ -2,8 +2,8 @@
  * Structured credential events — typed audit trail for AIM integration.
  *
  * Extends the existing audit logger with strongly-typed credential lifecycle
- * events. These events can be emitted to AIM's audit endpoint for centralized
- * visibility into credential usage across all agents.
+ * events. The record each event writes can also be sent to AIM's audit
+ * endpoint for centralized visibility into credential usage across all agents.
  *
  * Event types follow the credential lifecycle:
  *   requested -> granted | denied
@@ -14,6 +14,8 @@
 import * as http from 'http';
 import * as https from 'https';
 import { AuditLogger } from './audit';
+import { parsedAgentId, unparsed } from './parsed-form';
+import type { AuditEntry, AuditReason } from './types';
 
 /** Credential event types covering the full lifecycle. */
 export type CredentialEventType =
@@ -56,18 +58,64 @@ export interface CredentialEvent {
   version: 1;
 }
 
+/** The names an emitter's records may write as sent. */
+export interface CredentialEventAnchor {
+  /** Secret references written as sent. */
+  credentialNames?: Iterable<string>;
+  /** Policy rule ids written as sent. */
+  policyRuleIds?: Iterable<string>;
+}
+
+/** The record's code for each event type but `credential.expired`, which is coded by use. */
+const EVENT_CODES: Record<Exclude<CredentialEventType, 'credential.expired'>, AuditReason> = {
+  'credential.requested': 'credential-requested',
+  'credential.granted': 'credential-granted',
+  'credential.denied': 'credential-denied',
+  'credential.revoked': 'credential-revoked',
+  'credential.rotated': 'credential-rotated',
+  'credential.leak_detected': 'credential-leak-detected',
+};
+
+/** The reason `emitExpired` sets for a credential that was used before it expired. */
+const EXPIRED_AFTER_USE = 'TTL expired after use';
+
+/** The record's code for an event: by its type, and for an expiry by whether it was used. */
+function eventCode(event: CredentialEvent): AuditReason {
+  if (event.type === 'credential.expired') {
+    return event.reason === EXPIRED_AFTER_USE ? 'credential-expired-after-use' : 'credential-expired-unused';
+  }
+  return EVENT_CODES[event.type];
+}
+
 /**
- * Credential event emitter — writes structured events to audit log
- * and optionally forwards them to AIM.
+ * Credential event emitter — writes a signed audit record for each event,
+ * and optionally sends that record to AIM.
  */
 export class CredentialEventEmitter {
   private readonly auditLogger: AuditLogger;
   private readonly aimAuditUrl: string | null;
   private readonly aimAuthHeader: string | null;
+  private readonly credentialNames: ReadonlySet<string>;
+  private readonly policyRuleIds: ReadonlySet<string>;
 
-  constructor(auditLogger: AuditLogger, aimAuditUrl?: string) {
+  /**
+   * Each event's record carries the code of its type, never the caller's reason, leak context or
+   * trigger. Its agent id is written as sent only when it is at most 128 bytes and parses as a DID
+   * or as an agent name. Its secret reference is written as sent only when `anchor.credentialNames`
+   * lists it, and its policy rule id only when `anchor.policyRuleIds` lists it. Any other value is
+   * written as the marker `unparsed:<length>`, its length in UTF-8 bytes; an absent policy rule id
+   * is written empty. With no anchor, every secret reference and every policy rule id is a marker.
+   *
+   * @param auditLogger The signed audit log each event is written to.
+   * @param aimAuditUrl AIM's audit endpoint. When set, the record written for each event, and
+   *   nothing else, is posted there.
+   * @param anchor The secret references and policy rule ids the records may write as sent.
+   */
+  constructor(auditLogger: AuditLogger, aimAuditUrl?: string, anchor?: CredentialEventAnchor) {
     this.auditLogger = auditLogger;
     this.aimAuditUrl = aimAuditUrl ?? null;
+    this.credentialNames = new Set(anchor?.credentialNames ?? []);
+    this.policyRuleIds = new Set(anchor?.policyRuleIds ?? []);
     // Read AIM API key from environment for authenticated event forwarding
     const aimApiKey = process.env.AIM_API_KEY;
     this.aimAuthHeader = aimApiKey ? `Bearer ${aimApiKey}` : null;
@@ -207,42 +255,43 @@ export class CredentialEventEmitter {
   }
 
   /**
-   * Core emit: write to local audit log + forward to AIM.
+   * Core emit: write the event's record to the local audit log, then send that record to AIM.
    */
   private emit(event: CredentialEvent): void {
-    // Write to local audit log (always)
-    this.auditLogger.logEvent(
-      event.type,
-      event.agentId,
-      event.secretRef,
-      event.policyRuleId ?? '',
-      event.type.includes('denied') || event.type.includes('revoked') || event.type.includes('leak')
-        ? 'denied'
-        : 'allowed',
-      event.reason ?? '',
-      0,
-    );
+    // The written forms, computed once before the chain write: the code of the event type, and
+    // each member as sent only in parsed form, otherwise the marker.
+    const agentId = parsedAgentId(event.agentId);
+    const credentialName = this.credentialNames.has(event.secretRef) ? event.secretRef : unparsed(event.secretRef);
+    const ruleId = event.policyRuleId;
+    const policyId = ruleId === undefined || ruleId === '' ? '' : this.policyRuleIds.has(ruleId) ? ruleId : unparsed(ruleId);
+    const result = event.type.includes('denied') || event.type.includes('revoked') || event.type.includes('leak')
+      ? 'denied'
+      : 'allowed';
+    const reason = eventCode(event);
 
-    // Forward to AIM (best-effort, fire-and-forget)
-    if (this.aimAuditUrl) {
-      this.forwardToAim(event).catch(() => {
+    // Write to local audit log (always)
+    const written = this.auditLogger.logEvent(event.type, agentId, credentialName, policyId, result, reason, 0);
+
+    // Send the written record to AIM, and nothing else (best-effort, fire-and-forget)
+    if (this.aimAuditUrl && written) {
+      this.forwardToAim(written).catch(() => {
         // Silently ignore AIM forwarding failures
       });
     }
   }
 
   /**
-   * Forward an event to AIM's audit endpoint.
+   * Send a written record to AIM's audit endpoint.
    * Non-blocking, fire-and-forget. Failure is never visible to the caller.
    */
-  private forwardToAim(event: CredentialEvent): Promise<void> {
+  private forwardToAim(record: AuditEntry): Promise<void> {
     return new Promise((resolve) => {
       if (!this.aimAuditUrl) { resolve(); return; }
 
       try {
         const url = new URL(this.aimAuditUrl);
         const transport = url.protocol === 'https:' ? https : http;
-        const body = JSON.stringify(event);
+        const body = JSON.stringify(record);
 
         const headers: Record<string, string | number> = {
           'Content-Type': 'application/json',

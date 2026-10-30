@@ -163,7 +163,7 @@ describe('POST /resolve withholds when the duplicate-member scanner will not loa
       const res = await post(socketPath, token, '{"agentId":"agent-a","credentialName":"TEST_KEY"}');
       expect(res.status).toBe(503);
       expect(res.json.value).toBeUndefined();
-      expect(fs.readFileSync(auditLog, 'utf-8')).toMatch(/failed to load/);
+      expect(fs.readFileSync(auditLog, 'utf-8')).toMatch(/"reason":"scanner-unavailable-resolve"/);
     } finally {
       await server.stop();
     }

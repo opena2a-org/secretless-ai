@@ -340,8 +340,10 @@ describe('grant record: a salted commitment to the operation', () => {
 
   it('T5: verifyAuditLog passes over one file holding records written before and after the change', async () => {
     const logger = new AuditLogger(logPath);
-    // Records in the shape earlier versions wrote, through the logger's own entry points.
-    logger.logEvent('startup', 'broker', '', '', 'allowed', 'Broker started', 0);
+    // Records in the shape earlier versions wrote, through the logger's own entry points. The
+    // logger takes codes only now; records whose reasons are free text are verified in
+    // audit.reason-closure.test.ts.
+    logger.logEvent('startup', 'broker', '', '', 'allowed', 'broker-started', 0);
     logger.log({
       timestamp: new Date().toISOString(),
       eventType: 'grant',
@@ -349,7 +351,7 @@ describe('grant record: a salted commitment to the operation', () => {
       credentialName: GRANT,
       policyId: GRANT,
       result: 'allowed',
-      reason: 'resolved grant://payments via exchange',
+      reason: 'resolved-exchange',
       latencyMs: 4,
     });
     // A record written now, after them in the same file.

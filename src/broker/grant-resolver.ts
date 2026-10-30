@@ -43,7 +43,8 @@ import {
 import type { AuditLogger } from './audit';
 import type { AimClient } from './aim-client';
 import { canonicalizeJson } from './jcs';
-import { GRANT_AUDIT_REASONS, type AuditEntry, type GrantAuditReason } from './types';
+import { GRANT_AUDIT_REASONS, type CodedAuditEntry, type GrantAuditReason } from './types';
+import { DID, unparsed } from './parsed-form';
 import { parseGrantRef } from '../grant';
 
 export interface GrantResolverDeps {
@@ -77,12 +78,6 @@ const DENIED: GrantResolveOutcome = { ok: false, denial: { code: 'denied' } };
 /** Bytes of salt drawn for each committed operation (256 bits). */
 const SALT_BYTES = 32;
 
-/** A DID Core idchar: ALPHA / DIGIT / "." / "-" / "_" / pct-encoded. */
-const ID_CHAR = '(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})';
-
-/** A DID, by the W3C DID Core syntax: `did:` method-name `:` method-specific-id. */
-const DID = new RegExp(`^did:[a-z0-9]+:(?:${ID_CHAR}*:)*${ID_CHAR}+$`);
-
 /** A CGT `jti`: 16 random bytes, lowercase hex (AAP §8.1). */
 const JTI = /^[0-9a-f]{32}$/;
 
@@ -106,14 +101,6 @@ const RESOLVED: Record<CpiMode, GrantAuditReason> = {
   assume: 'resolved-assume',
   exchange: 'resolved-exchange',
 };
-
-/**
- * What the record writes for an input it will not write as given: a fixed marker and the input's
- * length in UTF-8 bytes (0 for a value that is not a string).
- */
-function unparsed(value: unknown): string {
-  return `unparsed:${typeof value === 'string' ? Buffer.byteLength(value, 'utf-8') : 0}`;
-}
 
 /** The agent-supplied id when it parses as a DID; otherwise the marker. */
 function parsedDid(value: unknown): string {
@@ -165,7 +152,7 @@ export class GrantResolver {
     let cgtJti: string | undefined;
     let committed: string | undefined;
     const audit = (result: 'allowed' | 'denied', reason: GrantAuditReason, policyId = '') => {
-      const entry: AuditEntry = {
+      const entry: CodedAuditEntry = {
         timestamp: new Date().toISOString(),
         eventType: 'grant',
         agentId: recordedAgent,

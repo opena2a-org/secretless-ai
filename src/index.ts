@@ -73,15 +73,15 @@ export {
   RateLimiter, AuditLogger, verifyAuditLog, AimClient,
   CredentialResolver, BrokerServer,
   startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning, BROKER_TOKEN_FILE,
-  CredentialEventEmitter,
+  CredentialEventEmitter, AUDIT_REASONS,
   type BrokerConfig, type ResolveRequest, type ResolveResponse,
-  type PolicyRule, type PolicyConstraints, type PolicyEvaluation,
-  type AuditEntry, type AuditVerification, type AgentIdentity,
+  type PolicyRule, type PolicyConstraints, type PolicyEvaluation, type PolicyEvaluationCode,
+  type AuditEntry, type AuditReason, type CodedAuditEntry, type AuditVerification, type AgentIdentity,
   type BrokerHealth, type BrokerStatus,
   type BrokerRoutes, type GrantRouteStatus, type GrantRouteSource,
   type ResolveRouteStatus, type ResolveOffReason, type PidFileBrokerStatus,
   type ResolverOptions, type DaemonOptions,
-  type CredentialEvent, type CredentialEventType, type AlertLevel,
+  type CredentialEvent, type CredentialEventAnchor, type CredentialEventType, type AlertLevel,
 } from './broker';
 
 // Phantom references (secret:// URI scheme)

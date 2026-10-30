@@ -23,13 +23,15 @@ import * as net from 'net';
 import * as path from 'path';
 import * as os from 'os';
 import type {
-  BrokerConfig, ResolveRequest, BrokerHealth, BrokerStatus, BrokerRoutes, GrantRouteSource, ResolveOffReason,
+  AuditReason, BrokerConfig, ResolveRequest, BrokerHealth, BrokerStatus, BrokerRoutes, GrantRouteSource,
+  ResolveOffReason,
 } from './types';
 import { PolicyEngine } from './policy';
 import { CredentialResolver } from './resolver';
 import { AuditLogger } from './audit';
 import { AimClient } from './aim-client';
 import { parseJsonRefusingDuplicates } from './strict-json';
+import { parsedAgentId, unparsed } from './parsed-form';
 import type { GrantResolver, GrantResolveInput } from './grant-resolver';
 
 /** Default path to the broker authentication token file. */
@@ -38,24 +40,39 @@ export const TOKEN_FILE = path.join(os.homedir(), '.secretless-ai', 'broker.toke
 /** Maximum request body size (64 KB — credential names should be tiny). */
 const MAX_BODY_SIZE = 64 * 1024;
 
+/** The listener a request came in on. */
+type Transport = 'socket' | 'http';
+
+/** The record's code for a 4xx from AIM, by status. */
+function aimClientErrorCode(status: number): AuditReason {
+  switch (status) {
+    case 401: return 'aim-unauthorized';
+    case 403: return 'aim-forbidden';
+    case 404: return 'aim-not-found';
+    case 429: return 'aim-rate-limited';
+    default: return 'aim-client-error';
+  }
+}
+
 /**
  * The AIM client for a broker configured by `config`, or null when it names no AIM URL.
  *
- * A 4xx from AIM is written to `audit`. The daemon calls this too, so that a grant resolver
- * and the server it is handed to ask one client and write to one log.
+ * A 4xx from AIM is written to `audit` as a code by status. The request URL is not written: a
+ * lookup URL carries the agent id the caller sent. The daemon calls this too, so that a grant
+ * resolver and the server it is handed to ask one client and write to one log.
  */
 export function createAimClient(config: BrokerConfig, audit: AuditLogger): AimClient | null {
   if (!config.aimUrl) return null;
   return new AimClient(config.aimUrl, {
     authToken: config.aimToken,
-    onAuthError: ({ url, status }) => {
+    onAuthError: ({ status }) => {
       audit.logEvent(
         'aim_auth_error',
         'broker',
         '',
         '',
         'denied',
-        `AIM returned ${status} for ${url}`,
+        aimClientErrorCode(status),
         0,
       );
     },
@@ -213,12 +230,13 @@ export class BrokerServer {
       fs.unlinkSync(this.config.socketPath);
     }
 
-    const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
-      this.handleRequest(req, res);
+    // Each listener names its transport, so a refused request is recorded by transport.
+    const handler = (transport: Transport) => (req: http.IncomingMessage, res: http.ServerResponse) => {
+      this.handleRequest(req, res, transport);
     };
 
     // Start Unix socket server
-    this.socketServer = http.createServer(handler);
+    this.socketServer = http.createServer(handler('socket'));
     await new Promise<void>((resolve, reject) => {
       this.socketServer!.on('error', reject);
       this.socketServer!.listen(this.config.socketPath, () => {
@@ -229,7 +247,7 @@ export class BrokerServer {
     });
 
     // Start HTTP server (localhost only)
-    this.httpServer = http.createServer(handler);
+    this.httpServer = http.createServer(handler('http'));
     await new Promise<void>((resolve, reject) => {
       this.httpServer!.on('error', reject);
       this.httpServer!.listen(this.config.httpPort, '127.0.0.1', () => {
@@ -252,20 +270,20 @@ export class BrokerServer {
           '',
           '',
           'denied',
-          'AIM configured but did not respond to reachability probe',
+          'aim-unreachable',
           0,
         );
       }
     }
 
-    this.audit.logEvent('startup', 'broker', '', '', 'allowed', 'Broker started', 0);
+    this.audit.logEvent('startup', 'broker', '', '', 'allowed', 'broker-started', 0);
   }
 
   /**
    * Stop the broker server gracefully.
    */
   async stop(): Promise<void> {
-    this.audit.logEvent('shutdown', 'broker', '', '', 'allowed', 'Broker stopping', 0);
+    this.audit.logEvent('shutdown', 'broker', '', '', 'allowed', 'broker-stopping', 0);
 
     const closeServer = (server: http.Server | null): Promise<void> => {
       return new Promise((resolve) => {
@@ -337,19 +355,20 @@ export class BrokerServer {
   }
 
   /** Route incoming HTTP requests. */
-  private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private handleRequest(req: http.IncomingMessage, res: http.ServerResponse, transport: Transport): void {
     this.requestCount++;
 
     // Authenticate caller via bearer token (defense in depth: applies to both HTTP and Unix socket)
     if (!this.verifyAuth(req)) {
-      const remoteAddr = req.socket?.remoteAddress ?? 'unknown';
+      // Recorded by transport, with no address: the HTTP listener binds 127.0.0.1 only, so the
+      // address is a loopback address, or absent on the socket, and names nobody.
       this.audit.logEvent(
         'auth',
         'unknown',
         '',
         '',
         'denied',
-        `Unauthorized access attempt from ${remoteAddr}`,
+        transport === 'socket' ? 'auth-refused-socket' : 'auth-refused-http',
         0,
       );
       this.sendJson(res, 401, { error: 'Unauthorized' });
@@ -417,12 +436,10 @@ export class BrokerServer {
       const scanned = await parseJsonRefusingDuplicates(body);
       if (!scanned.ok) {
         if (scanned.reason === 'scanner-unavailable') {
-          this.audit.logEvent(
-            'error', 'broker', '', '', 'denied',
-            `Duplicate-member scanner (@opena2a/atx-verify) failed to load; every resolve request is ` +
-            `refused until it resolves: ${scanned.detail}`,
-            0,
-          );
+          // The code names the failed module load. The loader's message is written nowhere: it
+          // carries paths from the operator's machine, and the import line in the broker docs
+          // reproduces it on the operator's own terminal.
+          this.audit.logEvent('error', 'broker', '', '', 'denied', 'scanner-unavailable-resolve', 0);
           this.sendJson(res, 503, {
             error: 'Credential resolution is unavailable on this broker (see the broker audit log)',
           });
@@ -445,6 +462,15 @@ export class BrokerServer {
         return;
       }
 
+      // The record writes the agent id as sent only when it parses as a DID or an agent name of
+      // at most 128 bytes, and the credential name as sent only when a rule's selector names it
+      // exactly or the resolver returns a value for it; anything else is `unparsed:<length>`.
+      // The AIM lookup, the policy decision and the resolution use both as sent.
+      const recordedAgent = parsedAgentId(request.agentId);
+      let recordedName = policy.configures(request.credentialName)
+        ? request.credentialName
+        : unparsed(request.credentialName);
+
       // Fetch agent identity from AIM (if configured)
       const agentIdentity = this.aimClient
         ? await this.aimClient.getAgentIdentity(request.agentId)
@@ -462,11 +488,11 @@ export class BrokerServer {
       if (!evaluation.allowed) {
         this.audit.logEvent(
           'resolve',
-          request.agentId,
-          request.credentialName,
+          recordedAgent,
+          recordedName,
           evaluation.matchedRuleId,
           'denied',
-          evaluation.reason,
+          evaluation.code,
           latencyMs,
         );
         this.sendJson(res, 403, { error: 'Access denied', reason: evaluation.reason });
@@ -479,37 +505,40 @@ export class BrokerServer {
         if (value === undefined) {
           this.audit.logEvent(
             'resolve',
-            request.agentId,
-            request.credentialName,
+            recordedAgent,
+            recordedName,
             evaluation.matchedRuleId,
             'denied',
-            'Credential not found',
+            'credential-not-found',
             Date.now() - startTime,
           );
           this.sendJson(res, 404, { error: 'Credential not found' });
           return;
         }
 
+        // The resolver returned a value for the name, so the name is one it resolves.
+        recordedName = request.credentialName;
         this.audit.logEvent(
           'resolve',
-          request.agentId,
-          request.credentialName,
+          recordedAgent,
+          recordedName,
           evaluation.matchedRuleId,
           'allowed',
-          evaluation.reason,
+          evaluation.code,
           Date.now() - startTime,
         );
 
         this.sendJson(res, 200, { value });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Resolution failed';
+      } catch {
+        // The backend's message is written nowhere: nothing closes what a backend puts in it, and
+        // a backend that echoes its input could put a credential value there.
         this.audit.logEvent(
           'resolve',
-          request.agentId,
-          request.credentialName,
+          recordedAgent,
+          recordedName,
           evaluation.matchedRuleId,
           'denied',
-          `Resolution error: ${message}`,
+          'backend-error',
           Date.now() - startTime,
         );
         this.sendJson(res, 500, { error: 'Internal error' });
@@ -553,13 +582,10 @@ export class BrokerServer {
       let firstDuplicateMember: (text: string) => string | null;
       try {
         ({ firstDuplicateMember } = await import('@opena2a/atx-verify'));
-      } catch (err) {
-        this.audit.logEvent(
-          'error', 'broker', '', '', 'denied',
-          `Duplicate-member scanner (@opena2a/atx-verify) failed to load; every grant request is ` +
-          `refused until it resolves: ${err instanceof Error ? err.message : String(err)}`,
-          0,
-        );
+      } catch {
+        // As on /resolve: the code names the failed module load, and the loader's message is
+        // written nowhere.
+        this.audit.logEvent('error', 'broker', '', '', 'denied', 'scanner-unavailable-grant', 0);
         this.sendJson(res, 503, {
           error: 'Credential authorization is unavailable on this broker (see the broker audit log)',
         });
