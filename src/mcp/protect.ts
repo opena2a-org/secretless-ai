@@ -1261,12 +1261,14 @@ type BindingPlan =
  * an entry carrying its id, reported as a copy, and the binding replaced where
  * that entry is bound in a home config and is in its file; when that entry is
  * no longer in its config, the one entry of its scope that reads the pair
- * takes it over; a .mcp.json entry carrying its id after its project directory
- * moved is bound again (see movedEntry) when its command and arguments are the
- * ones it was bound with, and left when they changed. At the binding's place
- * with no id or another one: a home entry is given the binding's id, since its
- * file is the operator's and the id's only other copy is in it; a .mcp.json
- * entry is left, since its file comes with the repository.
+ * takes it over, a .mcp.json entry only with the command and arguments the
+ * pair was bound with; a .mcp.json entry carrying its id after its project
+ * directory moved is bound again (see movedEntry) when its command and
+ * arguments are the ones it was bound with, and left when they changed. At the
+ * binding's place with no id or another one: a home entry is given the
+ * binding's id, since its file is the operator's and the id's only other copy
+ * is in it; a .mcp.json entry is left, since its file comes with the
+ * repository.
  * No binding stored: bound in place when this is the one entry of the configs
  * this run rewrites that reads the pair, in a home config, or in the
  * project's .mcp.json when this run stores its secrets into an empty pair or
@@ -1312,10 +1314,18 @@ async function bindWrapped(
     }
     if (!here && orphanedBinding(binder, binding)) {
       // The binding's entry is gone: the one entry that reads the pair, of
-      // its scope, takes it over, and where several read it none does.
+      // its scope, takes it over, and where several read it none does. A
+      // .mcp.json entry takes it over only with the command and arguments
+      // the pair was bound with, as a moved entry is bound again only to
+      // them: its file comes with the repository, so its name is no evidence
+      // that the stored secrets are its own, and one with another command is
+      // left, as a .mcp.json entry at its own place whose command changed is.
       const others = otherReaders(binder, reads, server);
       if (others.length > 0) return { kind: 'left', reason: otherReadersReason(reads, others), binding };
       if (scopeOf(config) === binding.scope) {
+        if (binding.scope === 'project' && binding.commandDigest !== digest) {
+          return { kind: 'left', reason: changedProjectCommandReason(), binding };
+        }
         return placed(config, server, { kind: 'bind', id: newBindingId(), digest, tookOver: binding });
       }
     }

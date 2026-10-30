@@ -329,6 +329,38 @@ describe('protect-mcp binds each pair it stores to the entry the secrets came fr
     expect(await store().getBinding('cursor', 'github')).toEqual(taken);
     expect(fs.readFileSync(mcp, 'utf-8')).toBe(mcp0);
   });
+
+  it('p8b: a .mcp.json entry takes over the binding of the entry gone from its file only with the command the pair was bound with; one with another command is left and the binding kept', async () => {
+    const file = write(projectConfig(), { mcpServers: { github: plain() } });
+    await protect();
+    const old = await store().getBinding('claude-code', 'github');
+    expect(old).toMatchObject({ scope: 'project', file, server: 'github' });
+    // The bound entry replaced in the repository's file by one with another
+    // name that reads the same pair and starts another command.
+    write(file, { mcpServers: { gh: wrappedUnbound('claude-code', 'github', [process.execPath, '-e', 'y']) } });
+    const before = fs.readFileSync(file, 'utf-8');
+
+    const left = await run(() => runProtectMcp([]));
+
+    expect(left.output).toContain(
+      `    ? gh: not bound: its command or arguments changed since it was bound, and a project-level entry is bound again only when protect-mcp stores its values. `
+        + `If you made the change, put the server's values in its env, and run \`${sourceCommand('protect-mcp')}\`.\n`,
+    );
+    expect(left.output).not.toContain('took over');
+    expect(await store().getBinding('claude-code', 'github')).toEqual(old);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+
+    // The same entry with the command and arguments the pair was bound with takes the binding over.
+    write(file, { mcpServers: { gh: wrappedUnbound('claude-code', 'github') } });
+
+    const taken = await run(() => runProtectMcp([]));
+
+    const record = await store().getBinding('claude-code', 'github');
+    expect(record).toMatchObject({ server: 'gh', file, scope: 'project', commandDigest: old!.commandDigest });
+    expect(record!.id).not.toBe(old!.id);
+    expect(split(servers(file).gh.args).id).toBe(record!.id);
+    expect(taken.output).toContain(`    + gh: bound (took over the binding of server "github", no longer in ${file})\n`);
+  });
 });
 
 describe('the store keeps a binding beside its pair', () => {

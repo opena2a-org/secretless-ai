@@ -125,9 +125,13 @@ backend shared between machines, a file absent here is named as not found on
 this machine, with the backend named as read from other machines as well, so
 the binding may be in use there, and no entry takes its binding over. In a
 backend this machine alone uses, a home binding whose config file
-was deleted is taken over by the one home entry that reads its pair. Where a
-binding's entry is gone and several entries read its pair, each is left with
-the line that names the others.
+was deleted is taken over by the one home entry that reads its pair. A binding
+in the project's `.mcp.json` whose entry is gone from the file is taken over by
+the one entry there that reads its pair only when that entry's command and
+arguments are the ones the pair was bound with; an entry with another command
+is left, and its line says to put the server's values in its env and run
+`protect-mcp`. Where a binding's entry is gone and several entries read its
+pair, each is left with the line that names the others.
 
 **Discovery and `protect-mcp`'s rewrite decide by one function which entries
 run through a secretless wrapper.** An entry runs through one when its command
