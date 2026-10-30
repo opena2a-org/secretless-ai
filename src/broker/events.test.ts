@@ -33,7 +33,8 @@ describe('CredentialEventEmitter', () => {
       expect(loggedEvents).toHaveLength(1);
       expect(loggedEvents[0].eventType).toBe('credential.requested');
       expect(loggedEvents[0].agentId).toBe('agent-001');
-      expect(loggedEvents[0].credentialName).toBe('secret://keychain/db');
+      // No anchor names the reference, so the record writes its length, not its text.
+      expect(loggedEvents[0].credentialName).toBe('unparsed:20');
       expect(loggedEvents[0].result).toBe('allowed');
     });
   });
@@ -65,7 +66,7 @@ describe('CredentialEventEmitter', () => {
       expect(loggedEvents).toHaveLength(1);
       expect(loggedEvents[0].eventType).toBe('credential.denied');
       expect(loggedEvents[0].result).toBe('denied');
-      expect(loggedEvents[0].reason).toBe('Trust score too low');
+      expect(loggedEvents[0].reason).toBe('credential-denied');
     });
   });
 
@@ -76,7 +77,7 @@ describe('CredentialEventEmitter', () => {
 
       expect(loggedEvents).toHaveLength(1);
       expect(loggedEvents[0].eventType).toBe('credential.expired');
-      expect(loggedEvents[0].reason).toContain('after use');
+      expect(loggedEvents[0].reason).toBe('credential-expired-after-use');
     });
 
     it('logs a credential.expired event for unused credentials', () => {
@@ -84,7 +85,7 @@ describe('CredentialEventEmitter', () => {
       emitter.emitExpired('agent-001', 'secret://vault/key', false);
 
       expect(loggedEvents).toHaveLength(1);
-      expect(loggedEvents[0].reason).toContain('unused');
+      expect(loggedEvents[0].reason).toBe('credential-expired-unused');
     });
   });
 

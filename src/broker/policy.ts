@@ -9,7 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { PolicyRule, PolicyConstraints, AgentIdentity } from './types';
+import type { PolicyRule, PolicyConstraints, AgentIdentity, PolicyEvaluationCode } from './types';
 import { RateLimiter } from './rate-limiter';
 import { nearestMatch } from '../near-miss';
 
@@ -20,9 +20,16 @@ export interface PolicyEvaluation {
   allowed: boolean;
   /** ID of the matching rule, or empty string if default-deny. */
   matchedRuleId: string;
-  /** Human-readable reason for the decision. */
+  /** Human-readable reason for the decision, as the `/resolve` 403 body carries it. */
   reason: string;
+  /** The check that decided, as the audit record carries it. */
+  code: PolicyEvaluationCode;
 }
+
+/** The result of an allow rule's constraints: passed, or the check that failed. */
+type ConstraintCheck =
+  | { passed: true; reason: '' }
+  | { passed: false; reason: string; code: PolicyEvaluationCode };
 
 export class PolicyEngine {
   private rules: PolicyRule[] = [];
@@ -234,6 +241,7 @@ export class PolicyEngine {
         allowed: false,
         matchedRuleId: rule.id,
         reason: `Denied by rule "${rule.id}"`,
+        code: 'rule-deny',
       };
     }
 
@@ -256,6 +264,7 @@ export class PolicyEngine {
           allowed: false,
           matchedRuleId: rule.id,
           reason: constraintResult.reason,
+          code: constraintResult.code,
         };
       }
 
@@ -263,6 +272,7 @@ export class PolicyEngine {
         allowed: true,
         matchedRuleId: rule.id,
         reason: `Allowed by rule "${rule.id}"`,
+        code: 'rule-allow',
       };
     }
 
@@ -271,7 +281,17 @@ export class PolicyEngine {
       allowed: false,
       matchedRuleId: '',
       reason: 'No matching allow rule (default deny)',
+      code: 'rule-default-deny',
     };
+  }
+
+  /**
+   * True when a loaded rule's `credentialSelector` equals this credential name exactly. A
+   * `resolve` record writes a name it could not resolve only when it passes this check, so what it
+   * writes is the operator's text and never text an agent chose.
+   */
+  configures(credentialName: unknown): boolean {
+    return typeof credentialName === 'string' && this.rules.some((r) => r.credentialSelector === credentialName);
   }
 
   /** The file the current rules were loaded from, or null (absent file, or rules set in memory). */
@@ -308,13 +328,14 @@ export class PolicyEngine {
     agentId: string,
     credentialName: string,
     agentIdentity?: AgentIdentity,
-  ): { passed: boolean; reason: string } {
+  ): ConstraintCheck {
     // Time window check
     if (constraints.timeWindow) {
       if (!isWithinTimeWindow(constraints.timeWindow.start, constraints.timeWindow.end)) {
         return {
           passed: false,
           reason: `Outside allowed time window (${constraints.timeWindow.start}-${constraints.timeWindow.end})`,
+          code: 'rule-outside-time-window',
         };
       }
     }
@@ -325,12 +346,14 @@ export class PolicyEngine {
         return {
           passed: false,
           reason: `Trust score required (min ${constraints.minTrustScore}) but no agent identity available`,
+          code: 'rule-trust-score-no-identity',
         };
       }
       if (agentIdentity.trustScore < constraints.minTrustScore) {
         return {
           passed: false,
           reason: `Trust score ${agentIdentity.trustScore} below minimum ${constraints.minTrustScore}`,
+          code: 'rule-trust-score-below-minimum',
         };
       }
     }
@@ -350,12 +373,14 @@ export class PolicyEngine {
         return {
           passed: false,
           reason: `Capability "${constraints.requireCapability}" required but no agent identity available`,
+          code: 'rule-capability-no-identity',
         };
       }
       if (!agentIdentity.capabilities.includes(constraints.requireCapability)) {
         return {
           passed: false,
           reason: `Agent lacks required capability "${constraints.requireCapability}"`,
+          code: 'rule-capability-missing',
         };
       }
     }
@@ -368,6 +393,7 @@ export class PolicyEngine {
         return {
           passed: false,
           reason: `Rate limit exceeded (${constraints.rateLimit.maxPerMinute}/min)`,
+          code: 'rule-rate-limit-exceeded',
         };
       }
     }

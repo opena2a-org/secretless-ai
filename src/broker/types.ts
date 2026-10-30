@@ -131,6 +131,60 @@ export type GrantAuditReason = (typeof GRANT_AUDIT_REASONS)[number];
 /** The reason codes a grant policy evaluation names for a denial. */
 export type GrantPolicyDenial = Extract<GrantAuditReason, `policy-${string}`>;
 
+/**
+ * Every reason code a broker audit record carries, a closed set: the grant codes, unchanged and in
+ * their order, then the codes of the broker's other writers. A code names the component and the
+ * case. `AuditLogger` writes any other value as `unparsed:<length>`, so no text from an agent, a
+ * caller, AIM, a module loader or a credential backend reaches the signed record through `reason`.
+ */
+export const AUDIT_REASONS = [
+  ...GRANT_AUDIT_REASONS,
+  // AIM answered a lookup with a 4xx, by status.
+  'aim-unauthorized',
+  'aim-forbidden',
+  'aim-not-found',
+  'aim-rate-limited',
+  'aim-client-error',
+  // AIM did not answer the reachability probe at start.
+  'aim-unreachable',
+  'broker-started',
+  'broker-stopping',
+  // A request without the broker's bearer token, by the transport it came in on.
+  'auth-refused-socket',
+  'auth-refused-http',
+  // The duplicate-member scanner did not load, by endpoint; the request was refused.
+  'scanner-unavailable-resolve',
+  'scanner-unavailable-grant',
+  // A /resolve policy evaluation, by the check that decided.
+  'rule-allow',
+  'rule-deny',
+  'rule-default-deny',
+  'rule-outside-time-window',
+  'rule-trust-score-no-identity',
+  'rule-trust-score-below-minimum',
+  'rule-capability-no-identity',
+  'rule-capability-missing',
+  'rule-rate-limit-exceeded',
+  // A /resolve request the policy allowed: the resolver held no value, or threw.
+  'credential-not-found',
+  'backend-error',
+  // A credential event, by its type.
+  'credential-requested',
+  'credential-granted',
+  'credential-denied',
+  'credential-expired-after-use',
+  'credential-expired-unused',
+  'credential-revoked',
+  'credential-rotated',
+  'credential-leak-detected',
+] as const;
+
+/** A reason code of a broker audit record. */
+export type AuditReason = (typeof AUDIT_REASONS)[number];
+
+/** The reason codes a `/resolve` policy evaluation names, by the check that decided. */
+export type PolicyEvaluationCode = Extract<AuditReason, `rule-${string}`>;
+
 /** Audit log entry for credential access attempts. */
 export interface AuditEntry {
   /** ISO 8601 timestamp. */
@@ -140,12 +194,16 @@ export interface AuditEntry {
   /**
    * Agent that made the request. A grant record carries the verified ATX DID once the ATX
    * verifies. Before that it carries the agent-supplied id only when the id parses as a DID (W3C
-   * DID Core syntax), and otherwise the marker `unparsed:<length>`, the length in UTF-8 bytes.
+   * DID Core syntax), and otherwise the marker `unparsed:<length>`, the length in UTF-8 bytes. A
+   * `resolve` record and a credential event carry the id as sent only when it is at most 128 bytes
+   * and parses as a DID or as an agent name, and otherwise the marker.
    */
   agentId: string;
   /**
    * Credential that was requested. A grant record carries the grant reference only when it names
-   * a configured grant, and otherwise the marker `unparsed:<length>`.
+   * a configured grant, and otherwise the marker `unparsed:<length>`. A `resolve` record carries
+   * the name as sent only when the resolver returned a value for it or a policy rule's
+   * `credentialSelector` equals it, and otherwise the marker.
    */
   credentialName: string;
   /** Policy rule that matched (empty if no match). */
@@ -153,8 +211,9 @@ export interface AuditEntry {
   /** Whether the request was allowed or denied. */
   result: 'allowed' | 'denied';
   /**
-   * Reason for the decision. A grant record carries a {@link GrantAuditReason} code; other event
-   * types carry a description.
+   * Reason for the decision: an {@link AuditReason} code, or `unparsed:<length>` for a value
+   * written as one that is not. Typed `string` because records written before the codes carry a
+   * description.
    */
   reason: string;
   /** Request processing time in milliseconds. */
@@ -174,6 +233,9 @@ export interface AuditEntry {
    */
   operationCommitment?: string;
 }
+
+/** An audit entry as a writer hands it to `AuditLogger.log`: its reason is a code. */
+export type CodedAuditEntry = Omit<AuditEntry, 'reason'> & { reason: AuditReason };
 
 /** AIM agent identity information (subset of AIM API response). */
 export interface AgentIdentity {

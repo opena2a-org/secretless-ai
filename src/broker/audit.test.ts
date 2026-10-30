@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { AuditLogger, AUDIT_GENESIS_HASH, verifyAuditLog } from './audit';
-import type { AuditEntry } from './types';
+import type { CodedAuditEntry } from './types';
 
 describe('AuditLogger', () => {
   let tmpDir: string;
@@ -22,7 +22,7 @@ describe('AuditLogger', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeEntry(overrides?: Partial<AuditEntry>): AuditEntry {
+  function makeEntry(overrides?: Partial<CodedAuditEntry>): CodedAuditEntry {
     return {
       timestamp: new Date().toISOString(),
       eventType: 'resolve',
@@ -30,7 +30,7 @@ describe('AuditLogger', () => {
       credentialName: 'TEST_CRED',
       policyId: 'rule-1',
       result: 'allowed',
-      reason: 'Allowed by rule',
+      reason: 'rule-allow',
       latencyMs: 5,
       ...overrides,
     };
@@ -80,7 +80,7 @@ describe('AuditLogger', () => {
       credentialName: 'GITHUB_TOKEN',
       policyId: 'allow-scanner',
       result: 'allowed',
-      reason: 'Allowed by rule "allow-scanner"',
+      reason: 'rule-allow',
       latencyMs: 12,
     });
     logger.log(entry);
@@ -94,12 +94,12 @@ describe('AuditLogger', () => {
     expect(parsed.credentialName).toBe('GITHUB_TOKEN');
     expect(parsed.policyId).toBe('allow-scanner');
     expect(parsed.result).toBe('allowed');
-    expect(parsed.reason).toContain('allow-scanner');
+    expect(parsed.reason).toBe('rule-allow');
     expect(parsed.latencyMs).toBe(12);
   });
 
   it('logEvent convenience method populates timestamp', () => {
-    logger.logEvent('resolve', 'agent-1', 'CRED', 'rule-1', 'allowed', 'ok', 3);
+    logger.logEvent('resolve', 'agent-1', 'CRED', 'rule-1', 'allowed', 'rule-allow', 3);
 
     const entries = logger.readRecent(1);
     expect(entries).toHaveLength(1);
@@ -407,7 +407,7 @@ describe('AuditLogger', () => {
     });
 
     it('chains past a record longer than one tail read', () => {
-      logger.log(makeEntry({ reason: 'r'.repeat(10_000) }));
+      logger.log(makeEntry({ credentialName: 'r'.repeat(10_000) }));
       logger.log(makeEntry({ agentId: 'after-long' }));
       logger.log(makeEntry({ agentId: 'after-long-2' }));
 

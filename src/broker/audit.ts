@@ -24,9 +24,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import type { AuditEntry } from './types';
+import { AUDIT_REASONS, type AuditEntry, type AuditReason, type CodedAuditEntry } from './types';
+import { unparsed } from './parsed-form';
 
 const DEFAULT_AUDIT_LOG = path.join(os.homedir(), '.secretless-ai', 'broker-audit.log');
+
+/** The reasons a record is written with as given; any other value is written as the marker. */
+const KNOWN_REASONS: ReadonlySet<unknown> = new Set<unknown>(AUDIT_REASONS);
 
 /** Maximum log file size before rotation (50 MB). */
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -239,10 +243,15 @@ export class AuditLogger {
   }
 
   /**
-   * Write a signed audit entry to the log file.
+   * Write a signed audit entry to the log file, and return the entry as written, without its
+   * integrity fields.
    * Creates the log directory, file and signing key if they do not exist.
+   *
+   * The reason is a code from AUDIT_REASONS. A value that is not one, passed through a cast or
+   * from JavaScript, is written as `unparsed:<length>` (its UTF-8 byte length, 0 for a value that
+   * is not a string): the record is still written, and the value's text is written nowhere.
    */
-  log(entry: AuditEntry): void {
+  log(entry: CodedAuditEntry): AuditEntry {
     const dir = path.dirname(this.logPath);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
@@ -256,6 +265,8 @@ export class AuditLogger {
 
     // Integrity fields are the logger's to set, never the caller's.
     const { prevHash: _p, sig: _s, ...fields } = entry as SignedAuditRecord;
+    // The reason is a code, never text: any other value is written as the marker, in its place.
+    if (!KNOWN_REASONS.has(fields.reason)) fields.reason = unparsed(fields.reason);
     const unsigned = { ...fields, prevHash };
     const sig = crypto
       .sign(null, Buffer.from(JSON.stringify(unsigned), 'utf-8'), this.key())
@@ -267,11 +278,13 @@ export class AuditLogger {
 
     // Append-only write with restrictive permissions
     fs.appendFileSync(this.logPath, line, { mode: 0o600 });
+    return fields;
   }
 
   /**
-   * Create an audit entry from individual fields.
-   * Convenience method that populates the timestamp automatically.
+   * Create an audit entry from individual fields, write it, and return it as written.
+   * Convenience method that populates the timestamp automatically. `reason` is a code from
+   * AUDIT_REASONS; any other value is written as `unparsed:<length>`, as {@link log} writes it.
    */
   logEvent(
     eventType: string,
@@ -279,10 +292,10 @@ export class AuditLogger {
     credentialName: string,
     policyId: string,
     result: 'allowed' | 'denied',
-    reason: string,
+    reason: AuditReason,
     latencyMs: number,
-  ): void {
-    this.log({
+  ): AuditEntry {
+    return this.log({
       timestamp: new Date().toISOString(),
       eventType,
       agentId,

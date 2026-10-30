@@ -5,6 +5,9 @@ export type {
   PolicyRule,
   PolicyConstraints,
   AuditEntry,
+  AuditReason,
+  CodedAuditEntry,
+  PolicyEvaluationCode,
   AgentIdentity,
   BrokerHealth,
   BrokerStatus,
@@ -15,6 +18,7 @@ export type {
   ResolveOffReason,
   PidFileBrokerStatus,
 } from './types';
+export { AUDIT_REASONS } from './types';
 
 export { PolicyEngine, matchGlob, isWithinTimeWindow, type PolicyEvaluation } from './policy';
 export { RateLimiter } from './rate-limiter';
@@ -33,6 +37,7 @@ export {
 export {
   CredentialEventEmitter,
   type CredentialEvent,
+  type CredentialEventAnchor,
   type CredentialEventType,
   type AlertLevel,
 } from './events';
