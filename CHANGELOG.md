@@ -37,6 +37,8 @@ wrote and nothing else. `AUDIT_REASONS`, `AuditReason`, `CodedAuditEntry`,
 `docs/use-cases/run-broker.md` lists each of the 31 codes for the broker's
 other records and where to look for the detail it stands for.
 
+**The value cache keys every entry by the store it came from (backend, address or project, and the credential's identity), so a value cached from one Vault server, token or Google Cloud project is never returned to a read made against another.**
+
 **The broker's grant audit record, the `grant` event, gains two optional
 members, `cgtJti` and `operationCommitment`, and names the agent by its
 verified ATX DID instead of its AIM agent id. The grant audit record holds a

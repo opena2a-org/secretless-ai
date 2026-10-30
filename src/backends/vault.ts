@@ -8,12 +8,31 @@
  * Engine: KV v2 (most common) -- secrets at /v1/{mount}/data/{key}.
  */
 
-import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
+import * as crypto from 'crypto';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLine } from './types';
 import { boundedFetch, describeRequest, type BoundedResponse } from './bounded-fetch';
 
 const DEFAULT_MOUNT_PATH = 'secret';
 const REQUEST_TIMEOUT_MS = 10_000;
 const HEALTH_TIMEOUT_MS = 5_000;
+const DEFAULT_PORTS: Record<string, string> = { 'http:': '80', 'https:': '443' };
+
+/**
+ * A server address as the value cache's scope names it: scheme, host and
+ * port, then the path with no trailing slash, so `https://vault.example.com/`
+ * and `https://VAULT.example.com:443` name one server. Userinfo is left out:
+ * fetch refuses a URL that carries it, so no read is made with it.
+ */
+function normalizedVaultAddr(addr: string): string {
+  let url: URL;
+  try {
+    url = new URL(addr);
+  } catch {
+    return addr.replace(/\/+$/, '');
+  }
+  const port = url.port || DEFAULT_PORTS[url.protocol] || '';
+  return `${url.protocol}//${url.hostname}:${port}${url.pathname.replace(/\/+$/, '')}`;
+}
 
 /**
  * Where to point a user whose Vault did not answer. The origin only: an
@@ -65,6 +84,19 @@ export class VaultBackend implements WritableSecretBackend {
     this.addr = (c.addr ?? process.env.VAULT_ADDR ?? '').replace(/\/$/, '');
     this.token = c.token ?? process.env.VAULT_TOKEN ?? '';
     this.mountPath = c.mountPath ?? DEFAULT_MOUNT_PATH;
+  }
+
+  /**
+   * The server, namespace and mount this backend reads, and the token it
+   * reads with as its SHA-256, for the value cache's scope (cacheScope).
+   */
+  describeStore(): StoreScopeLine[] {
+    return [
+      ['addr', normalizedVaultAddr(this.addr)],
+      ['namespace', process.env.VAULT_NAMESPACE ?? ''],
+      ['mount', this.mountPath],
+      ['token-sha256', crypto.createHash('sha256').update(this.token, 'utf-8').digest('hex')],
+    ];
   }
 
   /**

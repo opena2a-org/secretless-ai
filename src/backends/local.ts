@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLine } from './types';
 
 const STORE_FILE = 'secrets.enc';
 const META_FILE = 'secrets.meta.json';
@@ -137,6 +137,11 @@ export class LocalBackend implements WritableSecretBackend {
     // Migration: if secrets.enc exists but was encrypted with the legacy SHA-256 key,
     // re-encrypt with the new scrypt-derived key.
     this.migrateIfNeeded();
+  }
+
+  /** The store directory this backend reads, for the value cache's scope (cacheScope). */
+  describeStore(): StoreScopeLine[] {
+    return [['store', path.resolve(this.storeDir)]];
   }
 
   /** Zero the encryption key buffer. Call when the backend is no longer needed. */

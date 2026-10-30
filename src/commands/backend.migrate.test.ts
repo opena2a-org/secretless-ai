@@ -161,12 +161,21 @@ describe('migrate reads --from itself, not the shared value cache (#370)', () =>
     expect(await fileStore()).toEqual({ 'secret/STRIPE_KEY': 'after-rotation' });
   });
 
-  it('CONTROL: the default role answers the same read from the cache, so the tests above can fail', async () => {
+  it('CONTROL: the default role answers a read of the same store from the cache, so the rotation test above can fail', async () => {
+    writeBackendConfig('vault');
+    vault = { STRIPE_KEY: 'before-rotation' };
+    await createBackend('vault').resolve('secret');
+    vault.STRIPE_KEY = 'after-rotation';
+
+    expect(await createBackend('vault').resolve('secret')).toEqual({ 'secret/STRIPE_KEY': 'before-rotation' });
+  });
+
+  it('the default role does not answer a read of vault with what the configured keychain cached under the same name', async () => {
     writeBackendConfig('keychain');
     await readThroughConfiguredKeychain({ STRIPE_KEY: 'held-by-keychain' });
     vault = { STRIPE_KEY: 'held-by-vault' };
 
-    expect(await createBackend('vault').resolve('secret')).toEqual({ 'secret/STRIPE_KEY': 'held-by-keychain' });
+    expect(await createBackend('vault').resolve('secret')).toEqual({ 'secret/STRIPE_KEY': 'held-by-vault' });
   });
 
   it('names an unreachable --from as the source, without offering the migration that was asked for', async () => {

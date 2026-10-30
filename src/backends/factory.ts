@@ -15,7 +15,7 @@ import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
 import { GCPSecretManagerBackend, isGCPAvailable } from './gcp-sm';
-import { CachedBackend } from './cache';
+import { CachedBackend, cacheScope } from './cache';
 import { readBackendConfig, readCacheTtl } from './config';
 import type { WritableSecretBackend } from './types';
 import type { SelectableBackendType } from './config';
@@ -45,11 +45,10 @@ import type { SelectableBackendType } from './config';
  * @param options.role - Default 'configured'. 'source' is a backend read
  *                 ALONGSIDE the configured one, such as the source of `secret
  *                 sync` or of `migrate --from`. It is built without the cache
- *                 layer: the cache file is shared and keyed by entry name
- *                 alone, so a value read from a second backend through it is
- *                 later served as the configured backend's value for the same
- *                 name, and a value already cached under a name is handed back
- *                 in place of the one the source holds. An unreachable-backend
+ *                 layer: the cache file holds the configured backend's values,
+ *                 so nothing read from a second backend is added to it, and a
+ *                 value already cached under a name is never handed back in
+ *                 place of the one the source holds. An unreachable-backend
  *                 error names it as the source and offers no migration.
  *                 'named' is a backend named for one run IN PLACE of the
  *                 configured one (`setup --backend`): `local` is the encrypted
@@ -95,7 +94,7 @@ export function createBackend(
         backend = createKeychainBackend(config);
         const ttlSeconds = cacheTtl();
         if (ttlSeconds > 0) {
-          return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000 });
+          return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000, scope: cacheScope(backend) });
         }
         return backend;
       } catch {
@@ -149,10 +148,11 @@ export function createBackend(
         return degradedFallback('gcp-sm', gcp.message, config);
       }
       const gcpBackend = new GCPSecretManagerBackend(config);
-      // The value cache is one file keyed by secret name alone. A project named
-      // by a repository's .secretless is one of several on this machine, so a
-      // cached value would be served to the next repository that asks for the
-      // same name from a different project (#177).
+      // A project named by a repository's .secretless is one of several on
+      // this machine, and its reads go round the value cache (#177). Any other
+      // project is cached under a scope that names the project and the
+      // credential (cacheScope), so its values are served to no read made
+      // against another project.
       if (gcpBackend.describeProject().source === 'manifest') {
         return gcpBackend;
       }
@@ -166,10 +166,12 @@ export function createBackend(
       return new LocalBackend(config);
   }
 
-  // Wrap keychain and 1password backends with a TTL cache to reduce OS auth prompts
+  // Wrap keychain and 1password backends with a TTL cache to reduce OS auth
+  // prompts. The scope is computed now, from what this backend names: a shell
+  // whose environment names another store or credential gets another scope.
   const ttlSeconds = cacheTtl();
   if (ttlSeconds > 0) {
-    return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000 });
+    return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000, scope: cacheScope(backend) });
   }
   return backend;
 }

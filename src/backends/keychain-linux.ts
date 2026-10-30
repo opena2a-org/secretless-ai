@@ -18,7 +18,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { WritableSecretBackend, BackendHealth, ResolveOptions } from './types';
+import type { WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLine } from './types';
 import { readKeyIndex } from './key-index';
 import {
   BACKEND_CHILD_TIMEOUT_MS,
@@ -168,6 +168,11 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
     // Deliberately from `internals`, never from `config`: config is user data.
     this.secretToolProgram = internals?.secretToolProgram ?? SECRET_TOOL_PROGRAM;
     this.childTimeoutMs = internals?.childTimeoutMs ?? BACKEND_CHILD_TIMEOUT_MS;
+  }
+
+  /** The store directory whose index this backend keeps, for the value cache's scope (cacheScope). */
+  describeStore(): StoreScopeLine[] {
+    return [['store', path.resolve(path.dirname(this.indexPath))]];
   }
 
   async store(key: string, value: string): Promise<void> {

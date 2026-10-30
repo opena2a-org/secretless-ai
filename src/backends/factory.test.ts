@@ -2,12 +2,20 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { createBackend, isKeychainAvailable, unavailableBackendError } from './factory';
 import type { BackendRole } from './factory';
-import { CachedBackend } from './cache';
+import { CachedBackend, cacheScope } from './cache';
 import { writeBackendConfig } from './config';
 import { LocalBackend } from './local';
+import { MacOSKeychainBackend } from './keychain-macos';
+import { LinuxKeychainBackend } from './keychain-linux';
+import { OnePasswordBackend } from './onepassword';
+import { VaultBackend } from './vault';
+import { GCPSecretManagerBackend } from './gcp-sm';
+import { fakeSecretManager, type FakeSecretManager } from './gcp-sm-fake.test-support';
+import type { SecretBackend, WritableSecretBackend } from './types';
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
@@ -354,4 +362,359 @@ describe('createBackend: a backend named for one run and the shared value cache 
       expect(createBackend('keychain', undefined, true, { role: 'named' }).name).toMatch(/^keychain-(macos|linux)$/);
     },
   );
+});
+
+/** A token built at run time, shaped like no provider's. */
+function runtimeToken(label: string): string {
+  return [label, 'test', crypto.randomBytes(12).toString('hex')].join('-');
+}
+
+function sha256Hex(text: string): string {
+  return crypto.createHash('sha256').update(text, 'utf-8').digest('hex');
+}
+
+/** Every file under `dir`, at any depth. */
+function filesUnder(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? filesUnder(full) : [full];
+  });
+}
+
+/**
+ * The value cache's file in `dir`, decrypted. This mirrors the cache's key
+ * derivation deliberately, as cache.test.ts's writeCacheFile does: it reads an
+ * output for a census, and a changed derivation fails the census loudly.
+ */
+function decryptedCacheText(dir: string): string {
+  const salt = fs.readFileSync(path.join(dir, '.salt'));
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '/tmp';
+  const keyMaterial = `${home}-secretless-cache-${process.env.USER ?? 'default'}`;
+  const key = crypto.scryptSync(keyMaterial, salt, 32, { N: 16384, r: 8, p: 1 });
+  const data = fs.readFileSync(path.join(dir, '.secret-cache'));
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, data.subarray(0, 16));
+  decipher.setAuthTag(data.subarray(16, 32));
+  return decipher.update(data.subarray(32)) + decipher.final('utf-8');
+}
+
+/**
+ * The value cache is one file per user, shared by every shell. These build the
+ * configured backend with the real factory under a home of their own, as two
+ * shells whose environments name different stores or credentials would, with
+ * Vault and Secret Manager played by in-process stubs: no request leaves the
+ * process. A token is reported by its label (T1, T2), never by its value.
+ */
+describe('createBackend: the value cache serves an entry only to a read in the store scope and identity that wrote it', () => {
+  const ADDR_A = 'http://127.0.0.1:8201';
+  const ADDR_B = 'http://127.0.0.1:8202';
+  const saved = {
+    HOME: process.env.HOME,
+    VAULT_ADDR: process.env.VAULT_ADDR,
+    VAULT_TOKEN: process.env.VAULT_TOKEN,
+    VAULT_NAMESPACE: process.env.VAULT_NAMESPACE,
+    GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    OP_ACCOUNT: process.env.OP_ACCOUNT,
+    OP_SERVICE_ACCOUNT_TOKEN: process.env.OP_SERVICE_ACCOUNT_TOKEN,
+  };
+  let root: string;
+  let tokenT1: string;
+  let tokenT2: string;
+  /** What each Vault holds, by address, and the tokens it lets read and write. */
+  let vaults: Record<string, { held: Record<string, string>; readers: string[] }>;
+  /** Every Vault request, as the address and the label of the token it carried. */
+  let vaultRequests: Array<{ addr: string; token: string }>;
+
+  /** A Vault KV v2 server at each address in `vaults`, refusing other tokens. */
+  function vaultFetch() {
+    const json = (status: number, body: unknown = {}) => ({ ok: status < 300, status, json: async () => body });
+    return vi.fn(async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
+      const { origin, pathname } = new URL(url);
+      const token = init.headers?.['X-Vault-Token'];
+      vaultRequests.push({ addr: origin, token: token === tokenT1 ? 'T1' : token === tokenT2 ? 'T2' : 'other' });
+      const vault = vaults[origin];
+      if (!vault) throw new Error('no Vault answers at this address');
+      if (token === undefined || !vault.readers.includes(token)) return json(403, { errors: ['permission denied'] });
+      const method = init.method ?? 'GET';
+      const data = /^\/v1\/secret\/data\/(.+)$/.exec(pathname)?.[1];
+      if (data !== undefined && method === 'GET') {
+        const name = decodeURIComponent(data);
+        return name in vault.held ? json(200, { data: { data: { value: vault.held[name] } } }) : json(404);
+      }
+      if (data !== undefined && method === 'POST') {
+        vault.held[decodeURIComponent(data)] = (JSON.parse(init.body ?? '{}') as { data: { value: string } }).data.value;
+        return json(200, { data: { version: 1 } });
+      }
+      const metadata = /^\/v1\/secret\/metadata\/(.+)$/.exec(pathname)?.[1];
+      if (metadata !== undefined && method === 'LIST') {
+        const under = `${decodeURIComponent(metadata)}/`;
+        const keys = Object.keys(vault.held)
+          .filter((name) => name.startsWith(under) && !name.slice(under.length).includes('/'))
+          .map((name) => name.slice(under.length));
+        return keys.length > 0 ? json(200, { data: { keys } }) : json(404);
+      }
+      throw new Error(`no Vault route for ${method} ${pathname}`);
+    });
+  }
+
+  /** The configured Vault backend, as a shell with this address and token builds it. */
+  function vaultShell(addr: string, token: string): WritableSecretBackend {
+    process.env.VAULT_ADDR = addr;
+    process.env.VAULT_TOKEN = token;
+    return createBackend('vault');
+  }
+
+  beforeEach(() => {
+    root = tmpDir();
+    process.env.HOME = path.join(root, 'home');
+    fs.mkdirSync(process.env.HOME);
+    delete process.env.VAULT_NAMESPACE;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    delete process.env.OP_ACCOUNT;
+    delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    tokenT1 = runtimeToken('t1');
+    tokenT2 = runtimeToken('t2');
+    vaults = {
+      [ADDR_A]: { held: { 'secret/X': 'held-at-address-a' }, readers: [tokenT1] },
+      [ADDR_B]: { held: { 'secret/X': 'held-at-address-b' }, readers: [tokenT1] },
+    };
+    vaultRequests = [];
+    vi.stubGlobal('fetch', vaultFetch());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    cleanup(root);
+  });
+
+  it('(a) a value cached from one Vault address is not served to a read made against another', async () => {
+    const a = vaultShell(ADDR_A, tokenT1);
+    expect(a.name).toBe('cached(vault)');
+    expect(await a.resolve('secret/X', { exact: true })).toEqual({ 'secret/X': 'held-at-address-a' });
+
+    const b = vaultShell(ADDR_B, tokenT1);
+    expect(await b.resolve('secret/X', { exact: true })).toEqual({ 'secret/X': 'held-at-address-b' });
+    expect(vaultRequests.filter((r) => r.addr === ADDR_B)).toHaveLength(1);
+  });
+
+  it('(b) a value cached under one Vault token is not served to a read made with another: the store answers it', async () => {
+    expect(await vaultShell(ADDR_A, tokenT1).resolve('secret/X', { exact: true })).toEqual({
+      'secret/X': 'held-at-address-a',
+    });
+
+    const outcome = await vaultShell(ADDR_A, tokenT2).resolve('secret/X', { exact: true }).then(
+      () => 'served',
+      (err: Error) => (/permission denied/.test(err.message) ? 'refused by the store' : 'failed otherwise'),
+    );
+    expect(outcome).toBe('refused by the store');
+    expect(vaultRequests.filter((r) => r.token === 'T2')).toHaveLength(1);
+  });
+
+  it('a value cached in one Vault namespace is not served to a read in another', async () => {
+    await vaultShell(ADDR_A, tokenT1).resolve('secret/X', { exact: true });
+    process.env.VAULT_NAMESPACE = 'team-b';
+    await vaultShell(ADDR_A, tokenT1).resolve('secret/X', { exact: true });
+    expect(vaultRequests).toHaveLength(2);
+  });
+
+  it('(e) CONTROL: the same Vault address and token are served from the cache, with no request', async () => {
+    await vaultShell(ADDR_A, tokenT1).resolve('secret/X', { exact: true });
+    expect(vaultRequests).toHaveLength(1);
+
+    expect(await vaultShell(ADDR_A, tokenT1).resolve('secret/X', { exact: true })).toEqual({
+      'secret/X': 'held-at-address-a',
+    });
+    // The same server, written with the trailing slash another shell may give it.
+    expect(await vaultShell(`${ADDR_A}/`, tokenT1).resolve('secret/X', { exact: true })).toEqual({
+      'secret/X': 'held-at-address-a',
+    });
+    expect(vaultRequests).toHaveLength(1);
+  });
+
+  it('every backend the factory caches names its store and the identity it reads with: another one is another scope', () => {
+    // Booleans only, so a failure prints no scope.
+    const differ = (a: SecretBackend, b: SecretBackend): boolean => cacheScope(a) !== cacheScope(b);
+    const dirA = path.join(root, 'store-a');
+    const dirB = path.join(root, 'store-b');
+
+    expect(differ(new MacOSKeychainBackend({ storeDir: dirA }), new MacOSKeychainBackend({ storeDir: dirA }))).toBe(false);
+    expect(differ(new MacOSKeychainBackend({ storeDir: dirA }), new MacOSKeychainBackend({ storeDir: dirB }))).toBe(true);
+    expect(differ(new LinuxKeychainBackend({ storeDir: dirA }), new LinuxKeychainBackend({ storeDir: dirB }))).toBe(true);
+    expect(differ(new LocalBackend({ storeDir: dirA, key: 'test' }), new LocalBackend({ storeDir: dirB, key: 'test' }))).toBe(true);
+    // One directory, read as the keychain's index and as the encrypted file: the kind differs.
+    expect(differ(new MacOSKeychainBackend({ storeDir: dirA }), new LocalBackend({ storeDir: dirA, key: 'test' }))).toBe(true);
+
+    expect(differ(new OnePasswordBackend({ vault: 'Team' }), new OnePasswordBackend({ vault: 'Team' }))).toBe(false);
+    expect(differ(new OnePasswordBackend({ vault: 'Team' }), new OnePasswordBackend({ vault: 'Personal' }))).toBe(true);
+    const onePassword = new OnePasswordBackend({ vault: 'Team' });
+    const signedIn = cacheScope(onePassword);
+    process.env.OP_ACCOUNT = 'second-account.example';
+    expect(cacheScope(onePassword) !== signedIn).toBe(true);
+    delete process.env.OP_ACCOUNT;
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = runtimeToken('service-account');
+    expect(cacheScope(onePassword) !== signedIn).toBe(true);
+
+    const vaultAt = (addr: string, token = tokenT1, mountPath?: string): VaultBackend =>
+      new VaultBackend({ addr, token, mountPath });
+    expect(differ(vaultAt('https://vault.example.test'), vaultAt('HTTPS://Vault.Example.Test:443/'))).toBe(false);
+    expect(differ(vaultAt('https://vault.example.test'), vaultAt('https://vault.example.test:8200'))).toBe(true);
+    expect(differ(vaultAt('https://vault.example.test'), vaultAt('https://vault.example.test', tokenT2))).toBe(true);
+    expect(differ(vaultAt('https://vault.example.test'), vaultAt('https://vault.example.test', tokenT1, 'kv'))).toBe(true);
+
+    // A gcp-sm backend that cannot name its project yet gets a scope no other
+    // backend has; one project read with one credential is one scope.
+    const gcpIn = (projectId?: string): GCPSecretManagerBackend =>
+      new GCPSecretManagerBackend({ projectId, projectDir: path.join(root, 'no-manifest') });
+    expect(differ(gcpIn(), gcpIn())).toBe(true);
+    expect(differ(gcpIn('project-a'), gcpIn('project-a'))).toBe(false);
+    expect(differ(gcpIn('project-a'), gcpIn('project-b'))).toBe(true);
+  });
+
+  it('(h) census: no file under the store directory holds a token or its digest, and the decrypted cache holds neither', async () => {
+    const shell = vaultShell(ADDR_A, tokenT1);
+    await shell.resolve('secret/X', { exact: true });
+    await shell.store('secret/W', 'stored-through-the-cache');
+    await shell.resolve('secret');
+    await vaultShell(ADDR_B, tokenT1).resolve('secret/X', { exact: true });
+    await vaultShell(ADDR_A, tokenT2).resolve('secret/X', { exact: true }).catch(() => undefined);
+
+    const storeRoot = path.join(process.env.HOME ?? '', '.secretless-ai');
+    const files = filesUnder(storeRoot);
+    const tokensAndDigests = [tokenT1, tokenT2].flatMap((token) => [token, sha256Hex(token)]);
+    const decryptedText = decryptedCacheText(path.join(storeRoot, 'cache'));
+    const entries = (JSON.parse(decryptedText) as { entries: Record<string, { scope?: unknown }> }).entries;
+    const scopes = [...new Set(Object.values(entries).map((entry) => entry.scope))].filter(
+      (scope): scope is string => typeof scope === 'string',
+    );
+    const holdsAny = (file: string, needles: string[]): boolean => {
+      const bytes = fs.readFileSync(file);
+      return needles.some((needle) => bytes.includes(needle));
+    };
+    const census = {
+      files: files.length,
+      filesHoldingATokenOrItsDigest: files.filter((file) => holdsAny(file, tokensAndDigests)).length,
+      filesHoldingAScopeInClear: files.filter((file) => holdsAny(file, scopes)).length,
+      tokensOrDigestsInTheDecryptedCache: tokensAndDigests.filter((needle) => decryptedText.includes(needle)).length,
+      entries: Object.keys(entries).filter((key) => !key.includes('__resolved__')).length,
+      markers: Object.keys(entries).filter((key) => key.includes('__resolved__')).length,
+      entriesOrMarkersWithoutAScope: Object.values(entries).filter((entry) => typeof entry.scope !== 'string').length,
+      scopes: scopes.length,
+    };
+    // Counts only: no token, digest or scope is printed, here or by a failure.
+    console.log(`census ${JSON.stringify(census)}`);
+
+    expect(census.files).toBeGreaterThan(0);
+    expect(census.filesHoldingATokenOrItsDigest).toBe(0);
+    expect(census.filesHoldingAScopeInClear).toBe(0);
+    expect(census.tokensOrDigestsInTheDecryptedCache).toBe(0);
+    expect(census.entries).toBeGreaterThan(0);
+    expect(census.markers).toBeGreaterThan(0);
+    expect(census.entriesOrMarkersWithoutAScope).toBe(0);
+    // Address A with T1 and address B with T1; T2 was refused and cached nothing.
+    expect(census.scopes).toBe(2);
+  });
+
+  describe('gcp-sm', () => {
+    let projects: Record<string, FakeSecretManager>;
+    let workDir: string;
+
+    beforeEach(() => {
+      projects = { 'project-a': fakeSecretManager('project-a'), 'project-b': fakeSecretManager('project-b') };
+      projects['project-a'].put('STRIPE_KEY', 'held-in-project-a');
+      projects['project-b'].put('STRIPE_KEY', 'held-in-project-b');
+      workDir = path.join(root, 'work');
+      fs.mkdirSync(workDir);
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+        const project = /^\/v1\/projects\/([^/]+)\//.exec(new URL(url).pathname)?.[1];
+        const fake = project === undefined ? undefined : projects[project];
+        if (!fake) throw new Error('no Secret Manager project answers this request');
+        return fake.fetch(url, init);
+      }));
+    });
+
+    /** A service account key file naming a project and an account. It holds no key. */
+    function keyFile(name: string, projectId: string, clientEmail: string): string {
+      const file = path.join(root, `${name}.json`);
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ type: 'service_account', project_id: projectId, client_email: clientEmail }),
+        { mode: 0o600 },
+      );
+      return file;
+    }
+
+    /**
+     * The configured gcp-sm backend, as a shell whose GOOGLE_APPLICATION_CREDENTIALS
+     * names `keyPath` (or no key file) builds it, in a directory with no
+     * .secretless. Its access token is primed, as the backend's own tests prime
+     * it, so no token request is made.
+     */
+    function gcpShell(keyPath: string | undefined): WritableSecretBackend {
+      if (keyPath === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      else process.env.GOOGLE_APPLICATION_CREDENTIALS = keyPath;
+      const backend = createBackend('gcp-sm', { projectDir: workDir });
+      const inner = (backend as unknown as { inner?: object }).inner ?? backend;
+      Object.assign(inner, { accessToken: runtimeToken('access'), tokenExpiry: Date.now() + 3_600_000 });
+      return backend;
+    }
+
+    it('(f) a value cached from one project named by the environment is not served to a read in another', async () => {
+      const account = 'reader@example-project.iam.gserviceaccount.com';
+      const a = gcpShell(keyFile('key-a', 'project-a', account));
+      expect(a.name).toBe('cached(gcp-sm)');
+      expect(await a.resolve('secret/STRIPE_KEY', { exact: true })).toEqual({
+        'secret/STRIPE_KEY': 'held-in-project-a',
+      });
+
+      const b = gcpShell(keyFile('key-b', 'project-b', account));
+      expect(await b.resolve('secret/STRIPE_KEY', { exact: true })).toEqual({
+        'secret/STRIPE_KEY': 'held-in-project-b',
+      });
+      expect(projects['project-b'].valueReads).toEqual(['STRIPE_KEY']);
+    });
+
+    it('a value cached by one service account is not served to a read made as another, in the same project', async () => {
+      await gcpShell(keyFile('key-one', 'project-a', 'reader-one@example-project.iam.gserviceaccount.com'))
+        .resolve('secret/STRIPE_KEY', { exact: true });
+      await gcpShell(keyFile('key-two', 'project-a', 'reader-two@example-project.iam.gserviceaccount.com'))
+        .resolve('secret/STRIPE_KEY', { exact: true });
+      expect(projects['project-a'].valueReads).toEqual(['STRIPE_KEY', 'STRIPE_KEY']);
+    });
+
+    it('a value cached under one Application Default Credentials login is not served after a login as another', async () => {
+      const adc = path.join(process.env.HOME ?? '', '.config', 'gcloud', 'application_default_credentials.json');
+      fs.mkdirSync(path.dirname(adc), { recursive: true });
+      const login = (grant: string): void => {
+        fs.writeFileSync(
+          adc,
+          JSON.stringify({ type: 'authorized_user', account: '', quota_project_id: 'project-a', refresh_token: grant }),
+          { mode: 0o600 },
+        );
+      };
+
+      login(runtimeToken('grant-one'));
+      await gcpShell(undefined).resolve('secret/STRIPE_KEY', { exact: true });
+      await gcpShell(undefined).resolve('secret/STRIPE_KEY', { exact: true });
+      expect(projects['project-a'].valueReads).toEqual(['STRIPE_KEY']);
+
+      login(runtimeToken('grant-two'));
+      await gcpShell(undefined).resolve('secret/STRIPE_KEY', { exact: true });
+      expect(projects['project-a'].valueReads).toEqual(['STRIPE_KEY', 'STRIPE_KEY']);
+    });
+
+    it('(e) CONTROL: the same project and service account are served from the cache, with no request', async () => {
+      const key = keyFile('key-a', 'project-a', 'reader@example-project.iam.gserviceaccount.com');
+      await gcpShell(key).resolve('secret/STRIPE_KEY', { exact: true });
+      const requests = projects['project-a'].requests.length;
+
+      expect(await gcpShell(key).resolve('secret/STRIPE_KEY', { exact: true })).toEqual({
+        'secret/STRIPE_KEY': 'held-in-project-a',
+      });
+      expect(projects['project-a'].requests).toHaveLength(requests);
+    });
+  });
 });
