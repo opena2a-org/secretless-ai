@@ -34,8 +34,8 @@ rule id as sent only when a new optional third constructor argument,
 `{ credentialNames, policyRuleIds }`, lists them. It sends AIM the record it
 wrote and nothing else. `AUDIT_REASONS`, `AuditReason`, `CodedAuditEntry`,
 `PolicyEvaluationCode` and `CredentialEventAnchor` are exported.
-`docs/use-cases/run-broker.md` lists every code and where to look for the
-detail it stands for.
+`docs/use-cases/run-broker.md` lists each of the 31 codes for the broker's
+other records and where to look for the detail it stands for.
 
 **The broker's grant audit record, the `grant` event, gains two optional
 members, `cgtJti` and `operationCommitment`, and names the agent by its
