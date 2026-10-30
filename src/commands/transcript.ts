@@ -244,6 +244,15 @@ export async function runClean(args: string[], options: RunCleanOptions = {}): P
   spans.length = 0;
   reportExposures(marks, dryRun);
   reportLinesNotRead(result);
+  // A file that changed while it was read, such as a session's transcript
+  // that is still being written, was left as it was, so the lines written
+  // meanwhile are kept. The run exits 1, so a hook records the abort.
+  if (result.aborted.length > 0) {
+    for (const a of result.aborted) {
+      console.error(`  Aborted: ${escapePathForDisplay(a.file)} changed while it was being read and was left unchanged. Run again when nothing writes to it: ${CLI} clean --path ${pathOperand(a.path)}`);
+    }
+    return 1;
+  }
   return 0;
 }
 
