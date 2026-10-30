@@ -4515,6 +4515,12 @@ tools.
 
 ### Fixed
 
+- `clean` leaves a transcript that changed while it was being read as it is.
+  Right before it renames the redacted copy over the file, it compares the
+  file's device, inode, size and modification time with the ones it read; on
+  any difference it removes the redacted copy, keeps the file with every line
+  written to it meanwhile, names the file in one line on stderr and exits 1.
+  The transcript watcher makes the same check before each rewrite.
 - The size `scan` prints for a file skipped for size reads as larger than the
   cap. Both figures were rounded, so a 1,052,708-byte file over the 1 MB
   source cap printed `(1.0 MB, cap 1.0 MB)`. When the rounded figures would

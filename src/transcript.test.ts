@@ -3,10 +3,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { deepScan, scanTranscriptFile, atomicWrite, discoverTranscripts, transcriptTarget, cleanTranscripts, MAX_LINE_SIZE, type TranscriptFinding } from './transcript';
+import { deepScan, scanTranscriptFile, atomicWrite, discoverTranscripts, transcriptTarget, cleanTranscripts, MAX_LINE_SIZE, TranscriptChangedError, type FileState, type TranscriptFinding } from './transcript';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-transcript-test-'));
+}
+
+/** The file's state now, as `scanTranscriptFile` records it at the read. */
+function fileStateOf(filePath: string): FileState {
+  const s = fs.statSync(filePath, { bigint: true });
+  return { dev: s.dev, ino: s.ino, size: s.size, mtimeNs: s.mtimeNs };
 }
 
 function cleanup(dir: string): void {
@@ -241,7 +247,7 @@ describe('atomicWrite', () => {
     const filePath = path.join(dir, 'test.jsonl');
     fs.writeFileSync(filePath, 'original');
 
-    atomicWrite(filePath, ['line1', 'line2']);
+    atomicWrite(filePath, ['line1', 'line2'], fileStateOf(filePath));
 
     // Verify content was written
     expect(fs.readFileSync(filePath, 'utf-8')).toBe('line1\nline2');
@@ -254,7 +260,7 @@ describe('atomicWrite', () => {
   it('cleans up temp file on write error', () => {
     const filePath = path.join(dir, 'nonexistent', 'deep', 'test.jsonl');
 
-    expect(() => atomicWrite(filePath, ['line1'])).toThrow();
+    expect(() => atomicWrite(filePath, ['line1'], { dev: 0n, ino: 0n, size: 0n, mtimeNs: 0n })).toThrow();
 
     // Verify no temp files left behind
     const rootFiles = fs.readdirSync(dir);
@@ -492,6 +498,173 @@ describe('cleanTranscripts', () => {
 
     expect(result.totalLinesNotRead).toBe(0);
     expect(result.linesNotRead).toEqual([]);
+  });
+});
+
+// A session that is still running appends to its transcript while clean reads
+// and redacts it, and a rename then would replace the file without those
+// lines. `onRedacted` runs after the read and before the rename, so each cell
+// makes its change there, as a concurrent writer would.
+describe('clean leaves a file that changed after it was read', () => {
+  // Whole seconds, so a cell can set the time back to exactly what was read.
+  const READ_MTIME = 1761000000;
+  const APPENDED = JSON.stringify({ type: 'user', seq: 3, message: { content: 'written while clean ran' } }) + '\n';
+  let dir: string;
+  let value: string;
+  let before: string;
+
+  beforeEach(() => {
+    dir = tmpDir();
+    // A synthetic value, built at run time, for a secret-named variable.
+    value = ['fixture', crypto.randomBytes(8).toString('hex')].join('');
+  });
+  afterEach(() => { cleanup(dir); });
+
+  function writeTranscript(filePath: string): void {
+    before = [
+      JSON.stringify({ type: 'user', seq: 1, message: { content: `export SERVICE_API_KEY=${value}` } }),
+      JSON.stringify({ type: 'assistant', seq: 2, message: { content: 'ok' } }),
+    ].join('\n') + '\n';
+    fs.writeFileSync(filePath, before);
+    fs.utimesSync(filePath, READ_MTIME, READ_MTIME);
+  }
+
+  /** Runs `change` on the first redacted span only. */
+  function once(change: () => void): () => void {
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      change();
+    };
+  }
+
+  const tempFiles = (where: string = dir): string[] => fs.readdirSync(where).filter((name) => name.includes('.tmp.'));
+
+  it('a file that grew is left with the appended line, the abort is counted, and no temp file is left', () => {
+    // The directory form `clean --last` runs as a Stop hook.
+    const projectDir = path.join(dir, 'p');
+    fs.mkdirSync(projectDir);
+    const filePath = path.join(projectDir, 'live.jsonl');
+    writeTranscript(filePath);
+    const ino = fs.statSync(filePath).ino;
+
+    const result = cleanTranscripts({
+      targetPath: dir,
+      lastSession: true,
+      onRedacted: once(() => {
+        fs.appendFileSync(filePath, APPENDED);
+        // The time it was read with, so the size is all that differs.
+        fs.utimesSync(filePath, READ_MTIME, READ_MTIME);
+      }),
+    });
+
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before + APPENDED);
+    expect(fs.statSync(filePath).ino).toBe(ino);
+    expect(tempFiles(projectDir)).toEqual([]);
+    expect(result.totalFindings).toBe(1);
+    expect(result.aborted).toEqual([{ file: filePath.replace(os.homedir(), '~'), path: filePath }]);
+    expect(result.totalRedacted).toBe(0);
+  });
+
+  it('a file whose modification time changed is left byte-identical and the abort is counted', () => {
+    const filePath = path.join(dir, 'live.jsonl');
+    writeTranscript(filePath);
+
+    const result = cleanTranscripts({
+      targetPath: filePath,
+      onRedacted: once(() => { fs.utimesSync(filePath, READ_MTIME + 60, READ_MTIME + 60); }),
+    });
+
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before);
+    expect(tempFiles()).toEqual([]);
+    expect(result.aborted).toHaveLength(1);
+    expect(result.totalRedacted).toBe(0);
+  });
+
+  it('a file replaced by another inode of the same size and time is left as the replacement', () => {
+    const filePath = path.join(dir, 'live.jsonl');
+    writeTranscript(filePath);
+    let replacementIno = -1;
+
+    const result = cleanTranscripts({
+      targetPath: filePath,
+      onRedacted: once(() => {
+        const replacement = path.join(dir, 'replacement.jsonl');
+        fs.writeFileSync(replacement, before);
+        fs.utimesSync(replacement, READ_MTIME, READ_MTIME);
+        fs.renameSync(replacement, filePath);
+        replacementIno = fs.statSync(filePath).ino;
+      }),
+    });
+
+    expect(fs.statSync(filePath).ino).toBe(replacementIno);
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before);
+    expect(fs.readdirSync(dir)).toEqual(['live.jsonl']);
+    expect(result.aborted).toHaveLength(1);
+    expect(result.totalRedacted).toBe(0);
+  });
+
+  it('a file removed after it was read is not written back', () => {
+    const filePath = path.join(dir, 'live.jsonl');
+    writeTranscript(filePath);
+
+    const result = cleanTranscripts({ targetPath: filePath, onRedacted: once(() => { fs.unlinkSync(filePath); }) });
+
+    expect(fs.readdirSync(dir)).toEqual([]);
+    expect(result.aborted).toHaveLength(1);
+    expect(result.totalRedacted).toBe(0);
+  });
+
+  it('a file on another device than the one it was read on is left as it is', () => {
+    const filePath = path.join(dir, 'live.jsonl');
+    writeTranscript(filePath);
+    const { redactedLines, readState } = scanTranscriptFile(filePath, false);
+    expect(redactedLines).not.toBeNull();
+    expect(readState).toEqual(fileStateOf(filePath));
+
+    const elsewhere = { ...readState!, dev: readState!.dev + 1n };
+    expect(() => atomicWrite(filePath, redactedLines!, elsewhere)).toThrow(TranscriptChangedError);
+    expect(() => atomicWrite(filePath, redactedLines!, elsewhere)).toThrow('(device)');
+
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before);
+    expect(tempFiles()).toEqual([]);
+  });
+
+  it('a dry run is unchanged: nothing is rewritten and nothing is aborted', () => {
+    const filePath = path.join(dir, 'live.jsonl');
+    writeTranscript(filePath);
+
+    const result = cleanTranscripts({
+      targetPath: filePath,
+      dryRun: true,
+      onRedacted: once(() => { fs.appendFileSync(filePath, APPENDED); }),
+    });
+
+    expect(result.totalFindings).toBe(1);
+    expect(result.aborted).toEqual([]);
+    expect(result.totalRedacted).toBe(0);
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before + APPENDED);
+    expect(tempFiles()).toEqual([]);
+  });
+
+  it('CONTROL: a file that did not change is redacted as before', () => {
+    const projectDir = path.join(dir, 'p');
+    fs.mkdirSync(projectDir);
+    const filePath = path.join(projectDir, 'live.jsonl');
+    writeTranscript(filePath);
+    const spans: string[] = [];
+
+    const result = cleanTranscripts({ targetPath: dir, lastSession: true, onRedacted: (span) => { spans.push(span); } });
+
+    expect(spans).toHaveLength(1);
+    expect(result.aborted).toEqual([]);
+    expect(result.totalFindings).toBe(1);
+    expect(result.totalRedacted).toBe(1);
+    const after = fs.readFileSync(filePath, 'utf-8');
+    expect(after).not.toContain(value);
+    expect(after).toContain('SERVICE_API_KEY=[REDACTED:secret-assignment]');
+    expect(tempFiles(projectDir)).toEqual([]);
   });
 });
 

@@ -200,11 +200,13 @@ export async function processFile(
   // Held in memory for the stored-secret comparison below, then dropped.
   const spans: RedactedSpan[] = [];
   try {
-    const { findings, redactedLines } = scanTranscriptFile(filePath, false, (span, where) => {
+    const { findings, redactedLines, readState } = scanTranscriptFile(filePath, false, (span, where) => {
       spans.push({ span, ...where });
     });
-    if (findings.length > 0 && redactedLines) {
-      atomicWrite(filePath, redactedLines);
+    if (findings.length > 0 && redactedLines && readState) {
+      // A file that changed after it was read is left as it is: the change
+      // fires another event, which reads it again.
+      atomicWrite(filePath, redactedLines, readState);
       const displayPath = filePath.replace(os.homedir(), '~');
       log(logPath, `Redacted ${findings.length} credential(s) in ${displayPath}`);
       for (const f of findings) {

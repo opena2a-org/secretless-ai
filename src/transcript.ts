@@ -33,6 +33,38 @@ export interface CleanResult {
    */
   linesNotRead: Array<{ file: string; path: string; lines: number[] }>;
   totalLinesNotRead: number;
+  /**
+   * Files with findings that changed between the read and the rewrite, such as
+   * the transcript of a session that is still writing it. Each was left as it
+   * was, unredacted, so no line written to it meanwhile was dropped.
+   */
+  aborted: Array<{ file: string; path: string }>;
+}
+
+/**
+ * A file as it was when it was read: device, inode, size and modification
+ * time, from a stat taken before its content was read.
+ */
+export interface FileState {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+}
+
+/**
+ * Thrown by `atomicWrite` when the file changed after it was read. The temp
+ * file is removed and the file is left as it is.
+ */
+export class TranscriptChangedError extends Error {
+  /** What differed: `device`, `inode`, `size`, `mtime`, or `missing`. */
+  readonly changed: string;
+
+  constructor(changed: string) {
+    super(`changed while it was being read (${changed}); left unchanged`);
+    this.name = 'TranscriptChangedError';
+    this.changed = changed;
+  }
 }
 
 export interface CleanOptions {
@@ -305,23 +337,33 @@ function scanString(
 }
 
 /**
- * Scan a single transcript file. Returns findings and optionally redacted lines.
+ * Scan a single transcript file. Returns findings and optionally redacted lines,
+ * with the state the file was read in, which `atomicWrite` checks it against.
  */
 export function scanTranscriptFile(
   filePath: string,
   dryRun: boolean,
   onRedacted?: OnRedacted,
-): { findings: TranscriptFinding[]; redactedLines: string[] | null; linesNotRead: number[] } {
+): { findings: TranscriptFinding[]; redactedLines: string[] | null; linesNotRead: number[]; readState: FileState | null } {
   const findings: TranscriptFinding[] = [];
   let hasChanges = false;
   const redactedLines: string[] = [];
   const linesNotRead: number[] = [];
 
   let content: string;
+  let readState: FileState;
   try {
-    content = fs.readFileSync(filePath, 'utf-8');
+    // The stat comes before the read, so a line appended while the file is
+    // being read makes it differ from the file at the re-check.
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      readState = stateOf(fs.fstatSync(fd, { bigint: true }));
+      content = fs.readFileSync(fd, 'utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
-    return { findings, redactedLines: null, linesNotRead };
+    return { findings, redactedLines: null, linesNotRead, readState: null };
   }
 
   const lines = content.split('\n');
@@ -378,13 +420,44 @@ export function scanTranscriptFile(
     findings,
     redactedLines: !dryRun && hasChanges ? redactedLines : null,
     linesNotRead,
+    readState,
   };
 }
 
+function stateOf(stat: fs.BigIntStats): FileState {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs };
+}
+
 /**
- * Atomic write: write to temp file then rename.
+ * What differs between the file at `filePath` now and `readState`: `device`,
+ * `inode`, `size`, `mtime`, or `missing` when it is gone; null when nothing does.
  */
-export function atomicWrite(filePath: string, lines: string[]): void {
+function changedSince(filePath: string, readState: FileState): string | null {
+  let now: FileState;
+  try {
+    now = stateOf(fs.statSync(filePath, { bigint: true }));
+  } catch {
+    return 'missing';
+  }
+  if (now.dev !== readState.dev) return 'device';
+  if (now.ino !== readState.ino) return 'inode';
+  if (now.size !== readState.size) return 'size';
+  if (now.mtimeNs !== readState.mtimeNs) return 'mtime';
+  return null;
+}
+
+/**
+ * Atomic write: write to temp file then rename, unless the file changed after
+ * it was read.
+ *
+ * A session that is still running appends to its transcript while it is read
+ * and redacted, and the rename would replace the file without those lines.
+ * So the file's device, inode, size and modification time are read again right
+ * before the rename and compared with `readState`, the state it was read in.
+ * On any difference the temp file is removed, the file is left as it is, and
+ * `TranscriptChangedError` is thrown.
+ */
+export function atomicWrite(filePath: string, lines: string[], readState: FileState): void {
   const suffix = crypto.randomBytes(8).toString('hex');
   const tempPath = `${filePath}.tmp.${process.pid}.${suffix}`;
   try {
@@ -392,6 +465,8 @@ export function atomicWrite(filePath: string, lines: string[]): void {
     const fd = fs.openSync(tempPath, 'w', 0o600);
     fs.writeSync(fd, lines.join('\n'));
     fs.closeSync(fd);
+    const changed = changedSince(filePath, readState);
+    if (changed) throw new TranscriptChangedError(changed);
     fs.renameSync(tempPath, filePath);
   } catch (err) {
     // Clean up temp file on error
@@ -413,6 +488,7 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
     findings: [],
     linesNotRead: [],
     totalLinesNotRead: 0,
+    aborted: [],
   };
 
   let files = discoverTranscripts(options?.targetPath);
@@ -443,7 +519,7 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
 
   for (const [index, file] of files.entries()) {
     result.filesScanned++;
-    const { findings, redactedLines, linesNotRead } = scanTranscriptFile(file, dryRun, options?.onRedacted);
+    const { findings, redactedLines, linesNotRead, readState } = scanTranscriptFile(file, dryRun, options?.onRedacted);
 
     if (linesNotRead.length > 0) {
       result.linesNotRead.push({ file: file.replace(os.homedir(), '~'), path: file, lines: linesNotRead });
@@ -455,9 +531,14 @@ export function cleanTranscripts(options?: CleanOptions): CleanResult {
       result.totalFindings += findings.length;
       result.findings.push(...findings);
 
-      if (!dryRun && redactedLines) {
-        atomicWrite(file, redactedLines);
-        result.totalRedacted += findings.length;
+      if (!dryRun && redactedLines && readState) {
+        try {
+          atomicWrite(file, redactedLines, readState);
+          result.totalRedacted += findings.length;
+        } catch (err) {
+          if (!(err instanceof TranscriptChangedError)) throw err;
+          result.aborted.push({ file: file.replace(os.homedir(), '~'), path: file });
+        }
       }
     }
 
