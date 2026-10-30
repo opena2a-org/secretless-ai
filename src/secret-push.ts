@@ -16,14 +16,17 @@
  *   3. every value is read from the local store;
  *   4. the writes run in order, and the first one that fails stops the rest.
  * A dry run stops after asking the target, per name, whether it already holds
- * a version. It reads metadata only, never a value, and writes nothing.
+ * a version or would refuse one. It reads metadata only, never a value, and
+ * writes nothing.
  */
 
 import type { SecretStore } from './secret-store';
 import { isValidSecretName } from './secret-store';
 import type { VaultBackend } from './backends/vault';
+import { decodeStoreKey } from './backends/gcp-sm';
 import type { GCPSecretManagerBackend } from './backends/gcp-sm';
 import { CLI } from './commands/utils';
+import { escapeForDisplay } from './display-safe';
 
 export type PushTargetType = 'azure-kv' | 'vault' | 'gcp-sm';
 export const PUSH_TARGETS: readonly PushTargetType[] = ['azure-kv', 'vault', 'gcp-sm'];
@@ -42,6 +45,12 @@ export class PushError extends Error {
     super(message);
   }
 }
+
+/**
+ * A write the target refuses for the name itself: a dry run reports the name
+ * as `would-refuse`, and a push stops at it before its value is sent.
+ */
+export class PushRefusal extends PushError {}
 
 /** Names the push was asked for that this machine's store does not hold. */
 export class MissingLocalNamesError extends PushError {
@@ -79,7 +88,10 @@ export interface PushTarget {
    * it authenticated, for the header, never the credential itself.
    */
   prepare(): Promise<string | undefined>;
-  /** Whether `remote` already holds a version. Reads metadata only. */
+  /**
+   * Whether `remote` already holds a version. Reads metadata only. Throws a
+   * PushRefusal for a name a write would be refused for.
+   */
   exists(remote: string): Promise<boolean>;
   /** Write `value` as a new version of `remote`. */
   write(remote: string, value: string): Promise<PushedVersion>;
@@ -92,6 +104,8 @@ export type PushAction =
   | 'would-create'
   /** Dry run: the target holds this name; a push adds a version. */
   | 'would-add-version'
+  /** Dry run: the target would refuse a version for this name; see `error`. */
+  | 'would-refuse'
   /** Written; `id` and `version` say where. */
   | 'pushed'
   /** The write raised; see `error`. */
@@ -107,7 +121,7 @@ export interface PushEntry {
   action: PushAction;
   id?: string;
   version?: string;
-  /** First line of the failure, for `failed`. */
+  /** First line of the failure, for `failed` and `would-refuse`. */
   error?: string;
 }
 
@@ -156,7 +170,7 @@ export async function pushSecrets(
         held = await target.exists(p.remote);
       } catch (err) {
         const failure = asPushError(err);
-        entries.push({ ...p, action: 'failed', error: firstLine(failure.message) });
+        entries.push({ ...p, action: failure instanceof PushRefusal ? 'would-refuse' : 'failed', error: firstLine(failure.message) });
         for (const rest of plan.slice(entries.length)) entries.push({ ...rest, action: 'skipped' });
         return { entries, dryRun, auth, failure, ok: false };
       }
@@ -303,9 +317,14 @@ export class VaultPushTarget implements PushTarget {
 
 // --- GCP Secret Manager ------------------------------------------------------
 
+/** The first line of the gcp-sm backend's refusal of a secret held for an MCP server binding. */
+const HELD_FOR_SERVER = /^GCP Secret Manager: the secret \S+ in .* is held for an MCP server binding/;
+
 /**
  * `--to gcp-sm`: each name is a Secret Manager secret of the same name in the
- * configured project, which `secret sync --from gcp-sm` reads.
+ * configured project, which `secret sync --from gcp-sm` reads. A secret held
+ * for an MCP server binding, one that carries the store-key label, gets no
+ * version: a push is refused before the value is sent, and a dry run says so.
  */
 export class GcpPushTarget implements PushTarget {
   readonly type = 'gcp-sm' as const;
@@ -354,7 +373,7 @@ export class GcpPushTarget implements PushTarget {
 
   async exists(remote: string): Promise<boolean> {
     try {
-      return await this.backend.hasSecret(remote);
+      return await this.backend.hasPlainSecret(remote);
     } catch (err) {
       throw this.failure(err, remote);
     }
@@ -381,11 +400,26 @@ export class GcpPushTarget implements PushTarget {
 
   private failure(err: unknown, remote: string): PushError {
     const message = errorText(err);
+    if (HELD_FOR_SERVER.test(message)) {
+      const serverKey = decodeStoreKey(remote);
+      const binding = serverKey === undefined
+        ? 'an MCP server binding'
+        : `an MCP server binding, the key '${escapeForDisplay(serverKey)}'`;
+      return new PushRefusal(
+        `GCP Secret Manager refused ${remote} in project ${this.project}: the secret is held for ${binding}, and a push adds no version to it.`,
+        [`gcloud secrets describe ${remote} --project ${this.project}`],
+        ['use a plain name no MCP server\'s secret is held under: run the push again with another --as name'],
+      );
+    }
     if (/permission/i.test(message)) {
+      // The backend names the role the refused request needs: Viewer for a
+      // read of the secret's metadata, its labels among it, and Admin otherwise.
+      const viewer = message.includes('\'Secret Manager Viewer\'');
       return new PushError(
-        `GCP Secret Manager refused ${remote} in project ${this.project}: insufficient IAM permissions.`,
+        `GCP Secret Manager refused ${remote} in project ${this.project}: insufficient IAM permissions`
+        + (viewer ? ' to read its metadata. Grant \'Secret Manager Viewer\' role.' : '.'),
         [`gcloud projects get-iam-policy ${this.project} --flatten=bindings --filter=bindings.role:roles/secretmanager --format="table(bindings.role,bindings.members)"`],
-        [`gcloud projects add-iam-policy-binding ${this.project} --member=user:<you> --role=roles/secretmanager.admin`],
+        [`gcloud projects add-iam-policy-binding ${this.project} --member=user:<you> --role=roles/secretmanager.${viewer ? 'viewer' : 'admin'}`],
       );
     }
     return new PushError(`GCP Secret Manager: ${remote}: ${message}`, [`gcloud secrets list --project ${this.project} --limit 1`]);

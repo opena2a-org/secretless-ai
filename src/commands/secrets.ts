@@ -1128,6 +1128,7 @@ export interface SecretPushDeps {
 const PUSH_LABEL: Record<PushAction, string> = {
   'would-create': 'would create',
   'would-add-version': 'would add a version',
+  'would-refuse': 'would refuse',
   pushed: 'pushed',
   failed: 'failed',
   skipped: 'not pushed',

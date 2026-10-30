@@ -910,3 +910,153 @@ describe('GCPSecretManagerBackend: a plain key never reaches a secret held for a
     }
   });
 });
+
+describe('GCPSecretManagerBackend: storeVersion adds no version to a secret held for an MCP server binding', () => {
+  // storeVersion writes under a bare name, the plain key `secret/<name>`'s,
+  // and protect-mcp stores the server key under a name that is also bare.
+  const SERVER_KEY = 'mcp/cursor/github/TOKEN';
+  const HELD = 'mcp--cursor--github--TOKEN';
+
+  let project: FakeSecretManager;
+  let stored: string;
+
+  beforeEach(async () => {
+    project = fakeSecretManager(TEST_PROJECT);
+    mockFetch.mockImplementation(project.fetch);
+    stored = placeholder('github');
+    await new McpVault({ backend: createGCPBackend() }).storeServerSecrets('cursor', 'github', { TOKEN: stored });
+    project.requests.length = 0;
+    mockFetch.mockClear();
+  });
+
+  /** The message `operation` was refused with, or what it settled to when it was not refused. */
+  async function refusal(operation: Promise<unknown>): Promise<string> {
+    try {
+      return `not refused: ${JSON.stringify(await operation)}`;
+    } catch (err) {
+      return (err as Error).message;
+    }
+  }
+
+  /** Each request sent since the setup whose URL or body carries `value`, as given or in base64. */
+  function carrying(value: string): string[] {
+    const encoded = Buffer.from(value, 'utf-8').toString('base64');
+    return mockFetch.mock.calls
+      .map(([url, init]) => `${String(url)} ${String((init as { body?: unknown } | undefined)?.body ?? '')}`)
+      .filter((request) => request.includes(value) || request.includes(encoded));
+  }
+
+  it('(f) a version for the held secret is refused with the refusal a plain-key store gives, and the value is never sent', async () => {
+    const backend = createGCPBackend();
+    const plainStore = await refusal(backend.store(`secret/${HELD}`, placeholder('plain')));
+    project.requests.length = 0;
+    mockFetch.mockClear();
+    const value = placeholder('pushed');
+
+    const message = await refusal(backend.storeVersion(HELD, value));
+
+    expect({
+      message,
+      secret: project.secrets.get(HELD),
+      addVersions: project.requests.filter((r) => r.includes(':addVersion')),
+      carryingTheValue: carrying(value),
+    }).toEqual({
+      message: plainStore,
+      secret: { labels: STORE_KEY_LABELS, versions: [stored] },
+      addVersions: [],
+      carryingTheValue: [],
+    });
+    expect(message).toContain(`the secret ${HELD} in project ${TEST_PROJECT} is held for an MCP server binding, the key '${SERVER_KEY}'`);
+    expect(message).toContain(`the plain key 'secret/${HELD}' does not reach it. Nothing was written.`);
+    expect(message).toContain(`  Verify:  gcloud secrets describe ${HELD} --project ${TEST_PROJECT}`);
+    expect(message).not.toContain(stored);
+  });
+
+  it('(f) control: a secret without the label gets the version, and an absent one is created without a label and gets it, as before', async () => {
+    const backend = createGCPBackend();
+    // The name another server key would have, on a secret without the label.
+    const unlabelled = 'mcp--cursor--gitlab--TOKEN';
+    const first = placeholder('first');
+    const second = placeholder('second');
+    const fresh = placeholder('fresh');
+    project.put(unlabelled, first);
+
+    const ids = [await backend.storeVersion(unlabelled, second), await backend.storeVersion('NEW_NAME', fresh)];
+
+    expect({
+      ids: ids.map((id) => id.replace(/^projects\/[^/]+\//, '')),
+      unlabelled: project.secrets.get(unlabelled),
+      created: project.secrets.get('NEW_NAME'),
+      addVersions: project.requests.filter((r) => r.includes(':addVersion')),
+      held: project.secrets.get(HELD),
+    }).toEqual({
+      ids: [`secrets/${unlabelled}/versions/2`, 'secrets/NEW_NAME/versions/1'],
+      unlabelled: { labels: {}, versions: [first, second] },
+      created: { labels: {}, versions: [fresh] },
+      addVersions: [
+        `POST /v1/projects/${TEST_PROJECT}/secrets/${unlabelled}:addVersion`,
+        `POST /v1/projects/${TEST_PROJECT}/secrets/NEW_NAME:addVersion`,
+      ],
+      held: { labels: STORE_KEY_LABELS, versions: [stored] },
+    });
+  });
+
+  it('(f) a label read answered 403 is refused with the Viewer hint, and the value is never sent', async () => {
+    // A principal that may create secrets and add versions but not read a
+    // secret's resource (secretmanager.secrets.get).
+    const name = 'DB_PASSWORD';
+    const db = placeholder('db');
+    project.put(name, db);
+    const resource = `/v1/projects/${TEST_PROJECT}/secrets/${name}`;
+    mockFetch.mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+      if ((init?.method ?? 'GET') === 'GET' && new URL(url).pathname === resource) {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ error: { code: 403, status: 'PERMISSION_DENIED' } }),
+          text: async () => 'forbidden',
+        };
+      }
+      return project.fetch(url, init);
+    });
+    const value = placeholder('pushed');
+
+    const message = await refusal(createGCPBackend().storeVersion(name, value));
+
+    expect({
+      message,
+      secret: project.secrets.get(name),
+      addVersions: project.requests.filter((r) => r.includes(':addVersion')),
+      carryingTheValue: carrying(value),
+    }).toEqual({
+      message: `GCP Secret Manager: insufficient IAM permissions on project ${TEST_PROJECT}. Grant 'Secret Manager Viewer' role.`,
+      secret: { labels: {}, versions: [db] },
+      addVersions: [],
+      carryingTheValue: [],
+    });
+  });
+
+  it("hasPlainSecret, the dry run's read: false for an absent secret, true for one without the label, and storeVersion's refusal for the held one, from the resource alone", async () => {
+    const backend = createGCPBackend();
+    project.put('PLAIN', placeholder('plain'));
+
+    const answers = [
+      await refusal(backend.hasPlainSecret('ABSENT')),
+      await refusal(backend.hasPlainSecret('PLAIN')),
+      await refusal(backend.hasPlainSecret(HELD)),
+    ];
+    const reads = [...project.requests];
+    const write = await refusal(backend.storeVersion(HELD, placeholder('pushed')));
+
+    expect({ answers, reads, valueReads: project.valueReads }).toEqual({
+      answers: ['not refused: false', 'not refused: true', write],
+      reads: [
+        `GET /v1/projects/${TEST_PROJECT}/secrets/ABSENT`,
+        `GET /v1/projects/${TEST_PROJECT}/secrets/PLAIN`,
+        `GET /v1/projects/${TEST_PROJECT}/secrets/${HELD}`,
+      ],
+      valueReads: [],
+    });
+    expect(write).toContain(`is held for an MCP server binding, the key '${SERVER_KEY}'`);
+  });
+});
