@@ -604,7 +604,7 @@ describe('encodeStoreKey and decodeStoreKey: one name per key, and back', () => 
   const envs = [
     'GITHUB_TOKEN', 'API_KEY', 'api-key', 'a.b', 'with space', 'x/y', '/', 'ü', '🙂', '_', '-', '--', '__',
     '_2D', 'a--b', '', 'K=V', '\u0000', '\u007f', 'Ω_ω',
-    '﻿', '﻿TOKEN', '﻿﻿', 'TO﻿KEN', 'TOKEN﻿',
+    '\uFEFF', '\uFEFFTOKEN', '\uFEFF\uFEFF', 'TO\uFEFFKEN', 'TOKEN\uFEFF',
   ];
   const keys = clients.flatMap((c) => servers.flatMap((s) => envs.map((e) => `mcp/${c}/${s}/${e}`)));
 
@@ -696,14 +696,14 @@ describe('encodeStoreKey and decodeStoreKey: one name per key, and back', () => 
 
   it('a segment that starts with U+FEFF, in any position, decodes back to itself', () => {
     for (const key of [
-      'mcp/cursor/github/﻿TOKEN',
-      'mcp/cursor/github/﻿',
-      'mcp/cursor/github/﻿﻿TOKEN',
-      'mcp/﻿cursor/github/TOKEN',
-      'mcp/cursor/﻿github/TOKEN',
-      '﻿mcp/cursor/github/TOKEN',
-      'a/﻿/b',
-      'secret/a/﻿b',
+      'mcp/cursor/github/\uFEFFTOKEN',
+      'mcp/cursor/github/\uFEFF',
+      'mcp/cursor/github/\uFEFF\uFEFFTOKEN',
+      'mcp/\uFEFFcursor/github/TOKEN',
+      'mcp/cursor/\uFEFFgithub/TOKEN',
+      '\uFEFFmcp/cursor/github/TOKEN',
+      'a/\uFEFF/b',
+      'secret/a/\uFEFFb',
     ]) {
       const name = encodeStoreKey(key);
       expect(name, key).toMatch(SECRET_ID);
@@ -829,14 +829,14 @@ describe('GCPSecretManagerBackend: a plain key never reaches a secret held for a
   });
 
   it('(e) an MCP key whose segment starts with U+FEFF decodes back to itself and keeps its server binding', async () => {
-    const key = 'mcp/cursor/github/﻿TOKEN';
+    const key = 'mcp/cursor/github/\uFEFFTOKEN';
     const name = encodeStoreKey(key);
     expect(name).toBe('mcp--cursor--github--_EF_BB_BFTOKEN');
 
     const value = placeholder('bom');
     const db = placeholder('db');
     project.put('DB_PASSWORD', db);
-    await vault.storeServerSecrets('cursor', 'github', { '﻿TOKEN': value });
+    await vault.storeServerSecrets('cursor', 'github', { '\uFEFFTOKEN': value });
     const backend = createGCPBackend();
     const listKeys = (backend as unknown as {
       listKeys(projectId: string, token: string): Promise<Array<{ key: string; secretName: string }>>;
@@ -850,20 +850,20 @@ describe('GCPSecretManagerBackend: a plain key never reaches a secret held for a
     }).toEqual({
       decoded: key,
       listedAs: [key],
-      server: { TOKEN: stored, '﻿TOKEN': value },
+      server: { TOKEN: stored, '\uFEFFTOKEN': value },
       plain: { 'secret/DB_PASSWORD': db },
     });
   });
 
   it('(f) control: U+FEFF inside a segment round-trips and keeps its server binding, as before', async () => {
-    const key = 'mcp/cursor/github/TO﻿KEN';
+    const key = 'mcp/cursor/github/TO\uFEFFKEN';
     const name = encodeStoreKey(key);
     expect(name).toBe('mcp--cursor--github--TO_EF_BB_BFKEN');
     expect(decodeStoreKey(name)).toBe(key);
 
     const value = placeholder('inner');
-    await vault.storeServerSecrets('cursor', 'github', { 'TO﻿KEN': value });
-    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ TOKEN: stored, 'TO﻿KEN': value });
+    await vault.storeServerSecrets('cursor', 'github', { 'TO\uFEFFKEN': value });
+    expect(await vault.getServerSecrets('cursor', 'github')).toEqual({ TOKEN: stored, 'TO\uFEFFKEN': value });
     expect(await createGCPBackend().resolve('secret')).toEqual({});
   });
 });
