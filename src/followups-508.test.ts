@@ -19,6 +19,9 @@ import { builtCommand } from './mcp/printed-command.test-support';
 
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
 const WRAPPER_JS = path.resolve(__dirname, '..', 'dist', 'mcp-wrapper.js');
+// A literal no value rule hides (no placeholder word, more than six distinct
+// characters), built at runtime, so mcp-status counts it as a plaintext secret.
+const SERVICE_KEY = ['Rk7m', 'Wq2p', 'Tz94', 'Lv3n'].join('-');
 // The wrapper protect-mcp writes into a config: this build's, as the built
 // CLI writes it, so mcp-status reads these entries as on a wrapper that checks
 // its binding (an entry on another build's wrapper gets no start clause:
@@ -106,7 +109,7 @@ async function protectAsTheCommandRunsIt(): Promise<Awaited<ReturnType<typeof pr
 
 describe('mcp-status classifies the env of a server that runs through the wrapper (#508)', () => {
   it('lists a server whose command is secretless-mcp, with a key in its env, as exposed', () => {
-    write(project, 'mcp.json', { mcpServers: { demo: { command: 'secretless-mcp', env: { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' } } } });
+    write(project, 'mcp.json', { mcpServers: { demo: { command: 'secretless-mcp', env: { MY_SERVICE_API_KEY: SERVICE_KEY } } } });
 
     const out = runCli(['mcp-status']);
 
@@ -118,7 +121,7 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
   it('lists a wrapped server with a secret in its env as exposed, one without as protected, and one with an env value it could not read as neither', () => {
     const cursorJson = write(home, path.join('.cursor', 'mcp.json'), {
       mcpServers: {
-        exposed: wrapped('exposed', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234', LOG_LEVEL: 'debug' }),
+        exposed: wrapped('exposed', { MY_SERVICE_API_KEY: SERVICE_KEY, LOG_LEVEL: 'debug' }),
         wrapped: wrapped('wrapped', { LOG_LEVEL: 'debug' }),
         partial: wrapped('partial', { API_TOKEN: 1234 }),
       },
@@ -141,13 +144,13 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
 
   it('lists the server as protected once protect-mcp has moved the secret out of its env', async () => {
     const cursorJson = write(home, path.join('.cursor', 'mcp.json'), {
-      mcpServers: { github: wrapped('github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) },
+      mcpServers: { github: wrapped('github', { MY_SERVICE_API_KEY: SERVICE_KEY }) },
     });
     expect(runCli(['mcp-status'])).toContain('    ! github: EXPOSED (1 plaintext secret(s))\n');
 
     const result = await protectAsTheCommandRunsIt();
     expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['MY_SERVICE_API_KEY'] }]);
-    expect(fs.readFileSync(cursorJson, 'utf-8')).not.toContain('FAKE-KEY-1234');
+    expect(fs.readFileSync(cursorJson, 'utf-8')).not.toContain(SERVICE_KEY);
 
     const out = runCli(['mcp-status']);
 

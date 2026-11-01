@@ -9,6 +9,7 @@ import * as os from 'os';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { findRealMatch } from './scan';
 import { discoverTranscripts, scanTranscriptFile } from './transcript';
+import { MCP_ENV_SECRET_NAME, envFindingsOnLine, homeMcpConfigPaths, isProjectMcpConfig, envFixOf, mcpEnvSecretsByLine, type LineSpan } from './mcp/env-secrets';
 
 export interface VerifyResult {
   /** Env var name → whether it's set */
@@ -19,6 +20,12 @@ export interface VerifyResult {
     patternName: string;
     file: string;
     line: number;
+    /**
+     * For a literal secret in an MCP server's env that no credential pattern
+     * matches (`MCP Server Env Secret`): the fix `scan` gives it, `mcp-status`'s
+     * own advice. `envVar` is then its key in the config. Absent otherwise.
+     */
+    fix?: string;
   }>;
   /** Credentials found in transcript files */
   exposedInTranscripts: Array<{
@@ -63,7 +70,20 @@ const PROJECT_CONTEXT_FILES = [
 ];
 
 /**
+ * The project-level MCP config `verify` reads for the env rule alone: no
+ * credential pattern is run on it, so a value outside its servers' `env` is
+ * not read.
+ */
+const ENV_ONLY_CONTEXT_FILES = ['.windsurf/mcp.json'];
+
+/**
  * Verify secrets are properly managed: accessible via env vars, absent from context.
+ *
+ * The root project MCP configs it reads (`.mcp.json`, `mcp.json`,
+ * `.cursor/mcp.json`, `.vscode/mcp.json`, and the `env` of
+ * `.windsurf/mcp.json`) are also read by the env rule `scan` reads them by
+ * (src/mcp/env-secrets.ts). The home-directory files are read by the
+ * credential patterns alone.
  */
 export function verify(projectDir: string): VerifyResult {
   const envVars: Record<string, boolean> = {};
@@ -79,19 +99,30 @@ export function verify(projectDir: string): VerifyResult {
     envVars[envVar] = !!process.env[envVar] && process.env[envVar]!.length > 0;
   }
 
-  // Build list of all files to check
-  const filesToCheck: Array<{ absPath: string; label: string }> = [];
+  // Build list of all files to check. `patterns`: run the credential patterns
+  // on every line. `env`: read the env of its MCP servers by the env rule.
+  const filesToCheck: Array<{ absPath: string; label: string; patterns: boolean; env: boolean }> = [];
 
   for (const global of AI_CONTEXT_FILES) {
-    filesToCheck.push({ absPath: global, label: global.replace(os.homedir(), '~') });
+    filesToCheck.push({ absPath: global, label: global.replace(os.homedir(), '~'), patterns: true, env: false });
   }
 
+  // A project directory that is the home directory holds per-user MCP
+  // configs, which the env rule leaves to mcp-status.
+  const homeConfigs = homeMcpConfigPaths();
   for (const rel of PROJECT_CONTEXT_FILES) {
-    filesToCheck.push({ absPath: path.join(projectDir, rel), label: rel });
+    const absPath = path.join(projectDir, rel);
+    filesToCheck.push({ absPath, label: rel, patterns: true, env: isProjectMcpConfig(absPath, homeConfigs) });
   }
+  for (const rel of ENV_ONLY_CONTEXT_FILES) {
+    const absPath = path.join(projectDir, rel);
+    if (isProjectMcpConfig(absPath, homeConfigs)) filesToCheck.push({ absPath, label: rel, patterns: false, env: true });
+  }
+
+  const onSuppressed = () => { placeholdersSuppressed += 1; };
 
   // Scan each file for credential patterns
-  for (const { absPath, label } of filesToCheck) {
+  for (const { absPath, label, patterns, env: envRule } of filesToCheck) {
     if (!fs.existsSync(absPath)) continue;
     try {
       const stat = fs.statSync(absPath);
@@ -99,8 +130,12 @@ export function verify(projectDir: string): VerifyResult {
 
       const content = fs.readFileSync(absPath, 'utf-8');
       const lines = content.split('\n');
+      const env = envRule ? mcpEnvSecretsByLine(content) : undefined;
+      const fileExposed: VerifyResult['exposedInContext'] = [];
+      // The span of the match each line's pattern finding was made for.
+      const reported = new Map<number, LineSpan>();
 
-      for (let i = 0; i < lines.length; i++) {
+      for (let i = 0; patterns && i < lines.length; i++) {
         const line = lines[i];
         if (line.length > 4096) continue;
 
@@ -113,17 +148,32 @@ export function verify(projectDir: string): VerifyResult {
           // hiding a value here is dangerous because verify answers "is a real key exposed
           // right now?" and a real key whose body contains a token like `sample`/`xxx`
           // would otherwise vanish into a green pass.
-          if (findRealMatch(line, pattern, { onSuppressed: () => { placeholdersSuppressed += 1; } })) {
-            exposedInContext.push({
+          const match = findRealMatch(line, pattern, { onSuppressed });
+          if (match) {
+            fileExposed.push({
               envVar: pattern.envPrefix,
               patternName: pattern.name,
               file: label,
               line: i + 1,
             });
+            reported.set(i + 1, { from: match.index ?? 0, to: (match.index ?? 0) + match[0].length });
             break;
           }
         }
       }
+
+      // A literal secret in an MCP server's env, read as `scan` reads it: a
+      // value a pattern reported on its line is that finding.
+      const envFix = envFixOf(absPath);
+      for (const [lineNo, secrets] of env ?? []) {
+        for (const found of envFindingsOnLine(secrets, reported.get(lineNo), { onSuppressed })) {
+          fileExposed.push(found.vendor
+            ? { envVar: found.vendor.pattern.envPrefix, patternName: found.vendor.pattern.name, file: label, line: lineNo }
+            : { envVar: found.secret.key, patternName: MCP_ENV_SECRET_NAME, file: label, line: lineNo, fix: envFix() });
+        }
+      }
+      if (env !== undefined) fileExposed.sort((a, b) => a.line - b.line);
+      exposedInContext.push(...fileExposed);
     } catch {
       // Skip unreadable
     }

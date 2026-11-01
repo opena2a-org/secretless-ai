@@ -24,6 +24,7 @@ import { VERSION, CLI, IS_EMBEDDED, CLI_BARE, formatUptime, formatRemainingTime 
 import { findGitCredentialExposure, describeExposure } from '../git-credential-files';
 import { explainFinding, isEngineAvailable, engineUnavailableReason, type EngineUnavailableReason } from '../nanomind';
 import { CREDENTIAL_PATTERNS } from '../patterns';
+import { MCP_ENV_SECRET_ID } from '../mcp/env-secrets';
 import { CONFIDENCE_WEIGHTS, type PathKind } from '../confidence';
 import { escapeForDisplay, escapePathForDisplay, excerptLinesForDisplay, hasDisplayHazard, quotePathForDisplay, shellQuote as quoteForShell, withSlashSeparators } from '../display-safe';
 import { c, divider } from './colors';
@@ -1412,10 +1413,26 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, val
   }
 
   console.log(divider('Next Steps'));
-  // Only where running `init` would change something (`initIsNextStep`).
-  if (initNext) console.log(`  ${c.cyan('Protect now:')}        npx secretless-ai init`);
+  // A literal secret in an MCP server's env: `init` leaves an MCP config as it
+  // is, so its step is the fix `mcp-status` gives, once per distinct fix.
+  mcpEnvSteps(findings).forEach((step, i) => {
+    console.log(`  ${i === 0 ? c.cyan('MCP env secrets:') : '                '}    ${step}`);
+  });
+  // Only where running `init` would change something (`initIsNextStep`), and
+  // for a finding other than those.
+  if (initNext && initIsStepFor(findings)) console.log(`  ${c.cyan('Protect now:')}        npx secretless-ai init`);
   console.log(`  ${c.cyan('Full security scan:')} npx hackmyagent secure`);
   console.log();
+}
+
+/** The distinct fixes of the `mcp-env-secret` findings, in the order the findings are listed. */
+function mcpEnvSteps(findings: readonly ScanFinding[]): string[] {
+  return [...new Set(findings.filter(f => f.patternId === MCP_ENV_SECRET_ID).map(f => f.fix))];
+}
+
+/** Whether any finding is one `init` is a step for: any but a literal secret in an MCP server's env. */
+function initIsStepFor(findings: readonly ScanFinding[]): boolean {
+  return findings.some(f => f.patternId !== MCP_ENV_SECRET_ID);
 }
 
 /** How many of a finding's `aliases` the text report names. */
@@ -1448,6 +1465,9 @@ const REGEX_DISPLAY_MAX = 72;
 function explainPattern(finding: ScanFinding): string {
   if (PRESENCE_FINDINGS.has(finding.patternId)) {
     return `${finding.patternId}, matched by file type, not content`;
+  }
+  if (finding.patternId === MCP_ENV_SECRET_ID) {
+    return `${finding.patternId}, a literal value under a secret's name in an MCP server's env, not a value format`;
   }
   const pattern = CREDENTIAL_PATTERNS.find(p => p.id === finding.patternId);
   if (!pattern) return finding.patternId;
@@ -1570,7 +1590,8 @@ async function runScanWithExplanations(
     console.log();
   }
 
-  if (initNext) console.log(`  Run \`npx secretless-ai init\` to add protections.`);
+  for (const step of mcpEnvSteps(findings)) console.log(`  MCP env secrets: ${step}`);
+  if (initNext && initIsStepFor(findings)) console.log(`  Run \`npx secretless-ai init\` to add protections.`);
   console.log('  For a full security scan: npx hackmyagent secure\n');
   return findings.length > 0 ? 1 : 0;
 }
@@ -2171,8 +2192,15 @@ export function runVerify(projectDir: string, showAll = false): number {
     // one `scan` gives for the line: store it with `import`, delete it, and
     // start the app through `run`.
     const envOperands = new Set<string>();
+    // A literal secret in an MCP server's env carries the fix `scan` gives
+    // it, `mcp-status`'s own advice: `init` leaves an MCP config as it is.
+    const mcpFixes = new Set<string>();
     let otherContext = false;
     for (const exp of result.exposedInContext) {
+      if (exp.fix !== undefined) {
+        mcpFixes.add(exp.fix);
+        continue;
+      }
       const operand = exp.file.startsWith('~') ? undefined : envFileOperand(path.join(projectDir, exp.file));
       if (operand === undefined) otherContext = true;
       else envOperands.add(operand);
@@ -2183,6 +2211,9 @@ export function runVerify(projectDir: string, showAll = false): number {
     if (envOperands.size > 0) {
       console.log('                      then delete those lines, and start the app with npx secretless-ai run -- <command>');
     }
+    [...mcpFixes].forEach((fix, i) => {
+      console.log(`  ${i === 0 ? c.cyan('MCP env secrets:') : '                '}    ${fix}`);
+    });
     if (otherContext) {
       console.log(`  ${c.cyan('Protect context:')}    npx secretless-ai init`);
     }

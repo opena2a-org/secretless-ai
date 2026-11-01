@@ -18,7 +18,7 @@ import { builtCommand } from './mcp/printed-command.test-support';
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'cli.js');
 
 // A Slack-shaped bot token, built at runtime so the file holds no token literal.
-const SLACK_TOKEN = ['xox', 'b-1234567890-1234567890-', 'FAKEabcdefghijklmnopqrst'].join('');
+const SLACK_TOKEN = ['xox', 'b-1234567890-1234567890-', 'Qm7Rk2Wp9Tz4Lv8Nc3Hd6JyB'].join('');
 const SLACK_SERVER = { command: 'npx', args: ['-y', 'slack-mcp'], env: { SLACK_BOT_TOKEN: SLACK_TOKEN } };
 
 let home: string;

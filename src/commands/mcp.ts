@@ -28,7 +28,7 @@ import type {
 } from '../mcp/protect';
 import { discoverMcpConfigsDetailed, mcpConfigLocations, rewrittenByProtectMcp, thisBuildWrapperPath } from '../mcp/discover';
 import type { McpConfigFile, McpPlaceVerdict, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from '../mcp/discover';
-import { classifyEnvVars } from '../mcp/classify';
+import { envSecretKind, mcpEnvSecrets } from '../mcp/env-secrets';
 import { restoreConfig } from '../mcp/rewrite';
 import { BindingWriteRefusedError, McpVault, boundEntryName, isPerMachineStore, ownsBinding } from '../mcp/vault';
 import { bindingHomeId, readBindingHomeId } from '../mcp/binding-home-id';
@@ -783,6 +783,48 @@ function stateWords(state: McpBindingState): string {
   }
 }
 
+/**
+ * The plaintext secrets `mcp-status` counts for each server: each value in
+ * its env, in the config's text, that the rule `scan` reports by calls a
+ * literal (src/mcp/env-secrets.ts). An empty value, a whole-value expansion
+ * and a placeholder are not counted, and a key written twice counts each of
+ * its values. A config's text is read once. A server is never counted lower
+ * than its parsed env holds literals, so a file that cannot be read again is
+ * counted from that.
+ */
+class LiteralSecretCounts {
+  private readonly byFile = new Map<string, Map<string, number> | undefined>();
+
+  count(config: McpConfigFile, server: McpServerEntry): number {
+    const parsed = Object.entries(server.env).filter(([key, value]) => envSecretKind(key, value) === 'literal').length;
+    const inText = this.countsIn(config.filePath)?.get(serverKey(config.projectKey, server.name)) ?? 0;
+    return Math.max(parsed, inText);
+  }
+
+  private countsIn(filePath: string): Map<string, number> | undefined {
+    if (!this.byFile.has(filePath)) {
+      let counts: Map<string, number> | undefined;
+      try {
+        counts = new Map();
+        for (const secret of mcpEnvSecrets(fs.readFileSync(filePath, 'utf-8'), { projectMaps: true })) {
+          if (secret.kind !== 'literal') continue;
+          const key = serverKey(secret.projectKey, secret.server);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+      } catch {
+        counts = undefined;
+      }
+      this.byFile.set(filePath, counts);
+    }
+    return this.byFile.get(filePath);
+  }
+}
+
+/** A server's key among the counts of one file: its project key under `projects`, if any, and its name. */
+function serverKey(projectKey: string | undefined, server: string): string {
+  return JSON.stringify([projectKey ?? null, server]);
+}
+
 export async function runMcpStatus(): Promise<number> {
   console.log('\n  Secretless MCP Status\n');
 
@@ -843,6 +885,8 @@ export async function runMcpStatus(): Promise<number> {
   const homeId = homeIdRead.state === 'present' ? homeIdRead.id : undefined;
   // The backend of the store the first entry printed with that state reads.
   let anotherMachineBackend: string | undefined;
+  // The literal secrets in each server's env, read from each config's text once.
+  const literals = new LiteralSecretCounts();
 
   for (const config of configs) {
     console.log(`  ${configLabel(config)}`);
@@ -854,8 +898,10 @@ export async function runMcpStatus(): Promise<number> {
     for (const server of config.servers) {
       // The env of a server that runs through the wrapper is classified too:
       // the wrapper does not take a value out of the file, so a plaintext
-      // secret added to its env stays on disk.
-      const secretCount = Object.keys(classifyEnvVars(server.env).secrets).length;
+      // secret added to its env stays on disk. A secret counts when its value
+      // is a literal by the rule `scan` reports one by (src/mcp/env-secrets.ts),
+      // each occurrence in the file.
+      const secretCount = literals.count(config, server);
       const name = listedName(server.name);
       if (secretCount > 0) {
         console.log(`    ! ${name}: EXPOSED (${secretCount} plaintext secret(s))`);

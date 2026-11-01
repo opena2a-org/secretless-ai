@@ -48,14 +48,17 @@ function runCli(args: string[]): string {
 }
 
 const server = (env: Record<string, string>) => ({ type: 'stdio', command: 'npx', args: ['some-mcp'], env });
+// The stem of two literals no value rule hides (no placeholder word, more
+// than six distinct characters), built at runtime.
+const TOKEN_STEM = ['Rk7m', 'Wq2p', 'Tz94'].join('-');
 
 /** One user-scope server and one local-scope server, each with a value its env key marks as a secret. */
 function writeClaudeJson(): string {
   const content = JSON.stringify({
     numStartups: 3,
-    mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
+    mcpServers: { github: server({ GITHUB_TOKEN: `${TOKEN_STEM}-1` }) },
     projects: {
-      '/work/app': { allowedTools: [], mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } },
+      '/work/app': { allowedTools: [], mcpServers: { slack: server({ SLACK_BOT_TOKEN: `${TOKEN_STEM}-2` }) } },
       '/work/empty': { allowedTools: [], mcpServers: {} },
     },
   }, null, 2);
@@ -132,7 +135,7 @@ describe('protect-mcp, mcp-status and mcp-unprotect over ~/.claude.json', () => 
 
     await protectInProcess();
     const protectedFile = fs.readFileSync(claudeJson, 'utf-8');
-    expect(protectedFile).not.toContain('not-a-real-token');
+    expect(protectedFile).not.toContain(TOKEN_STEM);
 
     const status = runCli(['mcp-status']);
     expect(status).toContain(`  claude-code (${claudeJson})\n    + github: protected and bound\n`);

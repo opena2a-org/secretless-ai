@@ -12,6 +12,20 @@ import { loadSecretlessIgnore, buildMatcher, defaultIgnoreLines, DEFAULT_IGNORE_
 import { scoreFinding, type ConfidenceBreakdown, type ConfidenceTier } from './confidence';
 import { BUNDLE_EXTENSION } from './bundle';
 import { withSlashSeparators, hasDisplayHazard, shellQuote } from './display-safe';
+import {
+  MCP_ENV_SECRET_ID,
+  MCP_ENV_SECRET_NAME,
+  envFindingPreview,
+  envFindingsOnLine,
+  homeMcpConfigPaths,
+  isProjectMcpConfig,
+  maskEnvSecrets,
+  envFixOf,
+  mcpEnvSecretsByLine,
+  type EnvLineFinding,
+  type LineSpan,
+  type McpEnvSecret,
+} from './mcp/env-secrets';
 
 export interface ScanFinding {
   file: string;
@@ -711,6 +725,59 @@ function valueStart(match: RegExpMatchArray): number {
   return rel > 0 ? index + rel : index;
 }
 
+/** Where on its line the match a pattern finding was made for lies. */
+function matchSpan(match: RegExpMatchArray): LineSpan {
+  const from = match.index ?? 0;
+  return { from, to: from + match[0].length };
+}
+
+/** `line` with the env secrets on it masked, for a preview `maskCredentials` then masks the rest of. */
+function maskEnvOnLine(line: string, secrets: readonly McpEnvSecret[] | undefined): string {
+  return secrets === undefined ? line : maskEnvSecrets(line, secrets);
+}
+
+/** A pattern with no value format: an env finding scored by it gets 0 for the pattern part. */
+const NO_VALUE_FORMAT = /(?:)/;
+
+/**
+ * The finding the env rule makes for a secret in a project MCP config, and
+ * its confidence: under the credential pattern its value matches when it
+ * matches one, scored as the pattern path scores that match, and otherwise
+ * as `mcp-env-secret`, scored from the value's entropy and length and the
+ * file's path with 0 for the pattern part. Its preview is built from the key
+ * (`envFindingPreview`), so no character of the value reaches it. `envFix`
+ * gives the config's `mcpEnvFix` (`envFixOf`). The caller applies the
+ * confidence floor.
+ */
+function envFindingFor(
+  found: EnvLineFinding,
+  file: string,
+  line: number,
+  scoredPath: string,
+  envFix: () => string,
+  options: ScanOptions | undefined,
+): { finding: ScanFinding; breakdown: ConfidenceBreakdown } {
+  const { secret, vendor } = found;
+  const breakdown = vendor
+    ? scoreFinding({ pattern: { id: vendor.pattern.id, regex: vendor.pattern.regex }, value: vendor.match[0], filePath: scoredPath })
+    : scoreFinding({ pattern: { id: MCP_ENV_SECRET_ID, regex: NO_VALUE_FORMAT }, value: secret.value, filePath: scoredPath });
+  const patternName = vendor?.pattern.name ?? MCP_ENV_SECRET_NAME;
+  const finding: ScanFinding = {
+    file,
+    line,
+    patternId: vendor?.pattern.id ?? MCP_ENV_SECRET_ID,
+    patternName,
+    severity: 'critical',
+    preview: envFindingPreview(secret.key, patternName),
+    fix: vendor ? fixFor(vendor.pattern) : envFix(),
+    confidence: breakdown.score,
+    confidenceTier: breakdown.tier,
+    looksLikeFixture: false,
+    ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
+  };
+  return { finding, breakdown };
+}
+
 /** Global config files that may contain secrets (outside project dir) */
 const GLOBAL_CONFIG_FILES = [
   { dir: path.join(os.homedir(), '.claude'), file: 'CLAUDE.md', label: '~/.claude/CLAUDE.md' },
@@ -789,7 +856,13 @@ function scanSingleFile(
       stats?.oversize?.push({ path: display, bytes: stat.size, capBytes: singleCap });
       return findings;
     }
-    const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n');
+    // A project MCP config's env is read by the env rule, by line. A per-user
+    // config mcp-status reads in the home directory is not.
+    const env = isProjectMcpConfig(filePath) ? mcpEnvSecretsByLine(content) : undefined;
+    // The span of the match each line's pattern finding was made for.
+    const reported = new Map<number, LineSpan>();
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -817,7 +890,7 @@ function scanSingleFile(
             patternId: pattern.id,
             patternName: pattern.name,
             severity,
-            preview: maskCredentials(line).trim().substring(0, 80),
+            preview: maskCredentials(maskEnvOnLine(line, env?.get(i + 1))).trim().substring(0, 80),
             fix: fixFor(pattern, { envFile }),
             confidence: breakdown.score,
             confidenceTier: breakdown.tier,
@@ -829,9 +902,34 @@ function scanSingleFile(
             LINE_VALUES.set(finding, valuesOnLine(line, matchOpts.includeExamples, minConfidence, name));
           }
           findings.push(finding);
+          reported.set(i + 1, matchSpan(match));
         }
       }
     }
+
+    // The env rule reads every line its pass found a secret on, those the
+    // pattern path skips (over 4096 characters, or holding `${NAME}`) too.
+    const envFix = envFixOf(filePath);
+    for (const [lineNo, secrets] of env ?? []) {
+      const onLine = envFindingsOnLine(secrets, reported.get(lineNo), {
+        showPlaceholders: matchOpts.includeExamples,
+        onSuppressed: matchOpts.onSuppressed,
+      });
+      for (const found of onLine) {
+        const { finding, breakdown } = envFindingFor(found, display, lineNo, name, envFix, options);
+        if (breakdown.score < minConfidence) {
+          if (stats) stats.confidenceSuppressed = (stats.confidenceSuppressed ?? 0) + 1;
+          continue;
+        }
+        if (options?.retainValues && found.vendor) {
+          keepMatchedValue(finding, found.vendor.match);
+          LINE_VALUES.set(finding, valuesOnLine(found.secret.value, matchOpts.includeExamples, minConfidence, name));
+        }
+        findings.push(finding);
+      }
+    }
+    // In line order, as the pattern path alone left them.
+    if (env !== undefined) findings.sort((a, b) => a.line - b.line);
   } catch {
     // Unreadable — no findings rather than a crash, but say so. A named target
     // that cannot be opened used to print "No hardcoded credentials found" and
@@ -956,6 +1054,28 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
     return finding;
   }
 
+  // The finding the env rule makes for a secret in a project MCP config, with
+  // the floor and the fixture flag `buildFinding` applies. `envFix` gives the
+  // config's fix (`envFixOf`).
+  function buildEnvFinding(file: string, line: number, found: EnvLineFinding, envFix: () => string): ScanFinding | null {
+    const { finding, breakdown } = envFindingFor(found, file, line, file, envFix, options);
+    if (breakdown.score < minConfidence) {
+      belowFloor.push({ file, line, patternId: finding.patternId });
+      return null;
+    }
+    finding.looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(file)));
+    if (options?.retainValues && found.vendor) {
+      keepMatchedValue(finding, found.vendor.match);
+      LINE_VALUES.set(finding, valuesOnLine(found.secret.value, matchOpts.includeExamples, minConfidence, file));
+    }
+    return finding;
+  }
+
+  // The per-user MCP configs mcp-status reads in the home directory, which the
+  // env rule leaves to it. Resolved once, for the first config file read.
+  let homeConfigSet: ReadonlySet<string> | undefined;
+  const homeConfigs = (): ReadonlySet<string> => (homeConfigSet ??= homeMcpConfigPaths());
+
   // Scan global config files (keys in ~/.claude/CLAUDE.md are in every session's context)
   for (const global of (scanGlobal ? GLOBAL_CONFIG_FILES : [])) {
     const fullPath = path.join(global.dir, global.file);
@@ -1068,6 +1188,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
 
       const content = fs.readFileSync(fullPath, 'utf-8');
       const lines = content.split('\n');
+      // A project MCP config's env is read by the env rule, by line. A per-user
+      // config mcp-status reads in the home directory is not.
+      const env = isProjectMcpConfig(fullPath, homeConfigs()) ? mcpEnvSecretsByLine(content) : undefined;
+      // The span of the match each line's pattern finding was made for.
+      const reported = new Map<number, LineSpan>();
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -1081,10 +1206,28 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         // One finding per line
         const found = lineMatch(line, matchOpts);
         if (found) {
-          // Mask every credential on the line in the preview
-          const masked = maskCredentials(line);
+          // Mask every credential on the line in the preview, the env
+          // secrets the pass found on it first, as they are written.
+          const masked = maskCredentials(maskEnvOnLine(line, env?.get(i + 1)));
 
           const finding = buildFinding(configFile, i + 1, found.pattern, found.match, 'critical', masked, line);
+          if (finding) {
+            findings.push(finding);
+            reported.set(i + 1, matchSpan(found.match));
+          }
+        }
+      }
+
+      // The env rule reads every line its pass found a secret on, those the
+      // pattern path skips (over 4096 characters, or holding `${NAME}`) too.
+      const envFix = envFixOf(fullPath);
+      for (const [lineNo, secrets] of env ?? []) {
+        const onLine = envFindingsOnLine(secrets, reported.get(lineNo), {
+          showPlaceholders: matchOpts.includeExamples,
+          onSuppressed: matchOpts.onSuppressed,
+        });
+        for (const found of onLine) {
+          const finding = buildEnvFinding(configFile, lineNo, found, envFix);
           if (finding) findings.push(finding);
         }
       }
