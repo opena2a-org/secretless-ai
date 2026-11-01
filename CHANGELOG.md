@@ -41,8 +41,12 @@ written twice is read; a duplicate key whose last value is empty still
 reports the earlier literal, and `mcp-status` counts each such value. The
 secrets are grouped by line in a map built once, no credential pattern is
 compiled per value, and the fix a config's findings name is worked out once
-for the config: on a 2 MB `.mcp.json` with ten `env` entries a server,
-`scan --json`, `scan-staged` and `verify` each finish in under 5 s. A
+for the config, so the time a command takes grows with the size of the
+config, not with the square of its `env` entries: on a 2 MB `.mcp.json`
+with ten `env` entries a server, `scan --json`, `scan-staged` and `verify`
+each take less than twelve times the CPU time they take on a config an
+eighth of that size, where a pass over the text per entry would take
+sixty-four times. A
 finding's preview is built from its key,
 `"<key>": "[MCP Server Env Secret REDACTED]"`, never from the line, and the
 preview of another finding on a line holding an env secret
