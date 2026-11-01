@@ -9,6 +9,63 @@ the predicate as satisfied; a binding is enforced whole or not loaded.** A grant
 file that carries either predicate does not load until the broker evaluates it.
 (opena2a-standards/agent-authorization-protocol a557452e4471)
 
+**`scan`, `scan-staged`, the pre-commit hook, `status` and `verify` report a
+literal secret in a project MCP config's `env` as `mcp-status` does: `scan`
+and `scan-staged` exit 1 where they exited 0, the hook refuses the commit it
+let through, `status` counts the credential and `verify` reads `FAIL` where
+it read `AI context: clean`. `mcp-status` counts an empty value, a
+whole-value expansion and a placeholder as clean where it listed them as
+`EXPOSED`.**
+One decision, in `src/mcp/env-secrets.ts`, is used by all six commands: in
+the `env` of a server in a project-level MCP config (`.mcp.json`, or
+`mcp.json` on its own or under `.cursor/`, `.vscode/` or `.windsurf/`), a
+value under a name `classifyEnvVars` calls a secret is a literal unless it is
+empty, a whole-value expansion (`${NAME}`, `${NAME:-default}`, `${env:NAME}`
+or `${input:ID}`), or a placeholder by the value rules of `isKnownExample`;
+its comment rule is not applied, since a JSON value holds no comment. A bare
+`$NAME` is a literal, and so is a value that holds an expansion and other
+text. A literal is a `critical` finding: a value a credential
+pattern matches is reported once, under that pattern's name, and any other
+value as `mcp-env-secret` (`MCP Server Env Secret`), one finding per line and
+name, the env of a server that runs through the wrapper included. `scan`
+reads these configs at any depth, `scan-staged` and the hook read them as
+staged, and `verify` reads the root configs it already read and the `env`
+of `.windsurf/mcp.json`, with no credential pattern run on the rest of that
+file. No other file is read: a config in the home directory (the Claude
+Desktop config, `~/.claude.json`, `~/.cursor/mcp.json` and the others
+`mcp-status` lists) is read by `mcp-status` alone, as before. The config's
+text is read in one forward pass that records the line and offsets of each
+`env` value's string token, so a key or value written with escapes
+(`\u0041`, `\/`) is found where it is written and each value of a key
+written twice is read; a duplicate key whose last value is empty still
+reports the earlier literal, and `mcp-status` counts each such value. The
+secrets are grouped by line in a map built once, no credential pattern is
+compiled per value, and the fix a config's findings name is worked out once
+for the config: on a 2 MB `.mcp.json` with ten `env` entries a server,
+`scan --json`, `scan-staged` and `verify` each finish in under 5 s. A
+finding's preview is built from its key,
+`"<key>": "[MCP Server Env Secret REDACTED]"`, never from the line, and the
+preview of another finding on a line holding an env secret
+masks that value's token as written, escapes included, while a value the
+rule does not count stays in view. With no value format matched, the
+pattern part of the finding's confidence is 0: a 40-character random value
+in `.mcp.json` scores under 0.6, in the `low` tier, so `scan` reports it with
+no `--min-confidence` and a floor above its score hides it. A value that
+looks like a placeholder is hidden and counted like a placeholder a pattern
+matches, and `scan --show-placeholders` reports it with exit 1. After such a
+finding, `scan` and `verify` give `mcp-status`'s own advice as the next step,
+in place of `init`, which leaves an MCP config as it is: `protect-mcp` for a
+`.mcp.json`, the file it rewrites, and otherwise "Move each value out of its
+file and rotate it, then run `npx secretless-ai mcp-status` again"; each
+names the directory to run in when it is not the current one. `mcp-status`
+prints that advice with the command for the build it runs, and `scan` names
+`npx secretless-ai`, as in each of its fixes, so its JSON and SARIF output
+carry no path of the machine it ran on. Of the docs,
+`docs/scanning.md` says `scan` reads these configs at any depth while
+`verify` reads the root configs, and `docs/use-cases/secure-mcp-configs.md`
+says a server `mcp-status` lists as exposed is reported under its value's
+pattern name, or as `MCP Server Env Secret`.
+
 **Every broker audit record holds a closed code from `AUDIT_REASONS`
 (`src/broker/types.ts`) as its reason, and the `/resolve` record and the
 credential event record hold an agent id, a credential name and a policy rule

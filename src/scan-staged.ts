@@ -6,10 +6,13 @@
  */
 
 import { execFileSync } from 'child_process';
+import * as path from 'path';
 import { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CREDENTIAL_PREFIX_QUICK_CHECK } from './patterns';
 import { findRealMatch } from './scan';
 import { loadSecretlessIgnore, type IgnoreMatcher } from './secretlessignore';
 import { BUNDLE_EXTENSION } from './bundle';
+import { MCP_ENV_SECRET_NAME, envFindingsOnLine, homeMcpConfigPaths, isProjectMcpConfig, mcpEnvSecretsByLine, type LineSpan } from './mcp/env-secrets';
+import { mcpConfigLocations } from './mcp/discover';
 
 export interface ScanStagedOptions {
   /** Repo root used to load `.secretlessignore`. Defaults to `git rev-parse --show-toplevel`. */
@@ -157,6 +160,12 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
     }
 
     const lines = content.split('\n');
+    // A staged project MCP config's env is read by the env rule, as `scan`
+    // reads it, from the staged text.
+    const env = stagedMcpConfig(file) ? mcpEnvSecretsByLine(content) : undefined;
+    const fileFindings: StagedFinding[] = [];
+    // The span of the match each line's pattern finding was made for.
+    const reported = new Map<number, LineSpan>();
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (line.length > 4096) continue; // ReDoS protection
@@ -170,15 +179,55 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
         const match = findRealMatch(line, pattern, matchOpts);
         if (!match) continue;
 
-        findings.push({
+        fileFindings.push({
           file,
           line: i + 1,
           patternName: pattern.name,
         });
+        reported.set(i + 1, { from: match.index ?? 0, to: (match.index ?? 0) + match[0].length });
         break; // One finding per line
       }
     }
+    // Every line the pass found a secret on, those skipped above too. A
+    // value a pattern reported on its line is that finding.
+    for (const [lineNo, secrets] of env ?? []) {
+      for (const found of envFindingsOnLine(secrets, reported.get(lineNo), matchOpts)) {
+        fileFindings.push({ file, line: lineNo, patternName: found.vendor?.pattern.name ?? MCP_ENV_SECRET_NAME });
+      }
+    }
+    if (env !== undefined) fileFindings.sort((a, b) => a.line - b.line);
+    findings.push(...fileFindings);
   }
 
   return { findings, blockedFiles, placeholdersSuppressed };
+}
+
+/**
+ * The per-user MCP configs `mcp-status` reads in the home directory that a
+ * staged path names when the repository is the home directory:
+ * `.cursor/mcp.json`, `.vscode/mcp.json` and `.windsurf/mcp.json`.
+ */
+const HOME_RELATIVE_MCP_CONFIGS: ReadonlySet<string> = new Set(
+  mcpConfigLocations()
+    .filter((l) => l.scope === 'home' && path.basename(l.relativePath) === 'mcp.json')
+    .map((l) => l.relativePath.split(path.sep).join('/')),
+);
+
+/**
+ * Whether the env rule reads a staged file: one named as a project MCP
+ * config, unless it is a per-user config `mcp-status` reads in the home
+ * directory, as a repository kept at the home directory stages one. Only
+ * for such a path is the repository's top level asked for.
+ */
+function stagedMcpConfig(file: string): boolean {
+  const name = file.split('/').pop() ?? file;
+  if (name !== '.mcp.json' && name !== 'mcp.json') return false;
+  if (!HOME_RELATIVE_MCP_CONFIGS.has(file)) return true;
+  let top: string;
+  try {
+    top = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  } catch {
+    return true;
+  }
+  return isProjectMcpConfig(path.join(top, file), homeMcpConfigPaths());
 }
