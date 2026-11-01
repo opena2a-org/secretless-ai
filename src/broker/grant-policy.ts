@@ -7,10 +7,13 @@
  *
  * The grammar is federation-aware from v1 so federation lights up later with no grammar
  * change (AAP §7.1). A v1 broker MUST parse the full clause — including the federation-only
- * predicates `issuerChainIncludes` and `jurisdiction` — and MAY treat those as satisfied
- * within its own org, while still enforcing `trustClass`, `oasbLevel`, mode, scope, and ttl
- * (AAP-BROKER-PROFILE §7.1). `minTrustLevel` is enforced here as well; it is this build's
- * addition, not a line of that list. Default-deny: no matching binding ⇒ denied (AAP §3.4).
+ * predicates `issuerChainIncludes` and `jurisdiction` — and MUST NOT treat a predicate as
+ * satisfied without evaluating it. This broker evaluates neither, so it REFUSES to load a
+ * clause that carries either one, naming the predicate in the load error: a clause is enforced
+ * whole or not loaded (AAP-BROKER-PROFILE §7.1). It enforces `trustClass`, `oasbLevel`, mode,
+ * scope, and ttl, the predicates that section requires at every conformance level.
+ * `minTrustLevel` is enforced here as well; it is this build's addition, not a line of that
+ * list. Default-deny: no matching binding ⇒ denied (AAP §3.4).
  *
  * WHAT THE PREDICATES BIND, AND AGAINST WHOM. Two of the three — `trustClass` (read from
  * `ctx.capabilities`) and `oasbLevel` (read from `ctx.scanSummary.oasbLevel`) — sit outside
@@ -59,9 +62,15 @@ export interface GrantMatch {
    * compared. A floor this build cannot rank is refused at load rather than loading as none.
    */
   oasbLevel?: string;
-  /** Federation: issuer chain must include a node in this partner set. v1: parsed, in-org satisfied. */
+  /**
+   * Federation: the issuer chain must include a node in this partner set (AAP §7). This broker
+   * does not evaluate it, so a clause carrying it is refused at load (AAP-BROKER-PROFILE §7.1).
+   */
   issuerChainIncludes?: { partnersSet: string };
-  /** Jurisdiction constraint. v1: parsed, NOT enforced (AAP §9 — v3 concern). */
+  /**
+   * Residency: the agent's jurisdiction must be one of these (AAP §9). This broker does not
+   * evaluate it, so a clause carrying it is refused at load (AAP-BROKER-PROFILE §7.1).
+   */
   jurisdiction?: { in: string[] };
 }
 
@@ -114,7 +123,11 @@ const OASB_RANK: ReadonlyMap<string, number> = new Map([
 const KNOWN_BINDING_KEYS = new Set(['grant', 'match', 'resolve']);
 
 /**
- * The five predicates a `match` clause may carry, mirroring `GrantMatch`.
+ * The five predicate names of the `match` grammar, mirroring `GrantMatch`.
+ *
+ * Two of them, `issuerChainIncludes` and `jurisdiction`, are known here only so that
+ * `validateGrantMatch` refuses them by name as predicates this broker does not evaluate, and so
+ * that a misspelling of either is still reported as an unknown field.
  *
  * A clause carrying anything else is REFUSED, not ignored. This is the same decision
  * `policy.ts` makes for `PolicyRule` at four nesting levels, and it is here for the same
@@ -358,11 +371,10 @@ export class GrantPolicy {
       }
     }
 
-    // Parsed-but-not-enforced-in-v1 predicates. The SHAPE of each is validated at load, so a
-    // malformed clause is refused there rather than discovered at request time; evaluation is
-    // deferred to v2 (federation) / v3 (jurisdiction).
-    // m.issuerChainIncludes — federation (AAP §7): treated as satisfied within a single org.
-    // m.jurisdiction        — residency  (AAP §9): parsed, not enforced.
+    // `issuerChainIncludes` (federation, AAP §7) and `jurisdiction` (residency, AAP §9) are not
+    // evaluated here, and a loaded clause never carries either: this broker does not evaluate
+    // them, so a clause carrying one is refused at load (AAP-BROKER-PROFILE §7.1) rather than
+    // granted as if it held. Every predicate a loaded clause carries is checked above.
 
     return { allowed: true, binding, reason: `Granted by binding for ${target}` };
   }
@@ -564,39 +576,28 @@ function validateGrantMatch(label: string, m: Record<string, unknown>): GrantMat
     out.oasbLevel = oasbLevel;
   }
 
-  // Federation predicates. AAP §7.1 requires a v1 broker to PARSE the full clause, so these are
-  // accepted rather than refused — but their shape is validated here, so the docstring's claim
-  // that a malformed clause is caught at load is true rather than aspirational.
+  // Predicates this broker does not evaluate. AAP-BROKER-PROFILE §7.1: a broker MUST NOT treat a
+  // predicate as satisfied without evaluating it, and a broker that does not evaluate a predicate
+  // present in a clause MUST refuse to load that clause, naming the predicate. Loading either one
+  // granted a clause such as "partners only, in us or eu" to every agent that met the rest of it.
+  // The refusal is on presence, before any shape is read, so no shape of either predicate loads.
+  // Both names stay in KNOWN_MATCH_KEYS, so this message rather than an unknown-field one is what
+  // the operator sees, and a misspelling of either is still an unknown field.
   if (m.issuerChainIncludes !== undefined) {
-    const ici = m.issuerChainIncludes;
-    if (!ici || typeof ici !== 'object' || Array.isArray(ici)) {
-      throw new Error(`${label}: match.issuerChainIncludes must be an object with "partnersSet"`);
-    }
-    const rec = ici as Record<string, unknown>;
-    checkKeys(`${label}: match.issuerChainIncludes`, rec, new Set(['partnersSet']));
-    if (!isNonEmptyString(rec.partnersSet)) {
-      throw new Error(
-        `${label}: match.issuerChainIncludes.partnersSet must be a non-empty string naming the ` +
-        `partner set.`,
-      );
-    }
-    out.issuerChainIncludes = Object.freeze({ partnersSet: rec.partnersSet });
+    throw new Error(
+      `${label}: match.issuerChainIncludes is a federation predicate this broker does not ` +
+      `evaluate; a clause carrying a predicate the broker does not evaluate is refused at load ` +
+      `(AAP broker profile Section 7.1). Remove match.issuerChainIncludes to load the binding ` +
+      `without that restriction.`,
+    );
   }
-
   if (m.jurisdiction !== undefined) {
-    const j = m.jurisdiction;
-    if (!j || typeof j !== 'object' || Array.isArray(j)) {
-      throw new Error(`${label}: match.jurisdiction must be an object with an "in" array`);
-    }
-    const rec = j as Record<string, unknown>;
-    checkKeys(`${label}: match.jurisdiction`, rec, new Set(['in']));
-    if (!Array.isArray(rec.in) || rec.in.length === 0 || !rec.in.every(isNonEmptyString)) {
-      throw new Error(
-        `${label}: match.jurisdiction.in must be a non-empty array of non-empty strings. An ` +
-        `empty list names no jurisdiction, which is not the same as naming every one.`,
-      );
-    }
-    out.jurisdiction = Object.freeze({ in: Object.freeze([...rec.in]) as string[] });
+    throw new Error(
+      `${label}: match.jurisdiction is a residency predicate (AAP broker profile Section 9) this ` +
+      `broker does not evaluate; a clause carrying a predicate the broker does not evaluate is ` +
+      `refused at load (AAP broker profile Section 7.1). Remove match.jurisdiction to load the ` +
+      `binding without that restriction.`,
+    );
   }
 
   return out;

@@ -17,14 +17,15 @@ const CTX: ResolutionContext = {
   signedCapabilities: true,
 };
 
+// Carries neither federation predicate (`issuerChainIncludes`, `jurisdiction`): this broker does
+// not evaluate them, so a clause carrying either is refused at load (AAP broker profile
+// Section 7.1). The refusal cells add one at a time with `withMatch`.
 const BINDING: GrantBinding = {
   grant: 'grant://orders-db',
   match: {
     trustClass: 'orders:read',
     minTrustLevel: 3,
     oasbLevel: '>=L2',
-    issuerChainIncludes: { partnersSet: 'trusted-partners' },
-    jurisdiction: { in: ['us', 'eu'] },
   },
   resolve: {
     mode: 'exchange',
@@ -53,6 +54,22 @@ function withResolve(patch: Record<string, unknown>): Record<string, unknown> {
   b.resolve = { ...(b.resolve as object), ...patch };
   return b;
 }
+
+/** The message `new GrantPolicy(bindings)` throws. A policy that loads fails the calling test. */
+function loadError(bindings: unknown[]): string {
+  try {
+    new GrantPolicy(bindings);
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+  throw new Error('expected the policy to refuse to load, and it loaded');
+}
+
+/** The refusal of each predicate this broker does not evaluate (AAP broker profile Section 7.1). */
+const REFUSED_ISSUER_CHAIN =
+  /match\.issuerChainIncludes is a federation predicate this broker does not evaluate; a clause carrying a predicate the broker does not evaluate is refused at load \(AAP broker profile Section 7\.1\)/;
+const REFUSED_JURISDICTION =
+  /match\.jurisdiction is a residency predicate \(AAP broker profile Section 9\) this broker does not evaluate; a clause carrying a predicate the broker does not evaluate is refused at load \(AAP broker profile Section 7\.1\)/;
 
 /** An agent presenting NO OASB level — the party an unenforced floor lets through. */
 const NO_OASB = { ...CTX, oasbLevel: undefined } as ResolutionContext;
@@ -88,15 +105,43 @@ describe('GrantPolicy (decision/enforcement split, AAP §3/§7)', () => {
     expect(r.reason).toMatch(/OASB/);
   });
 
-  it('parses but does not enforce federation/jurisdiction predicates in v1', () => {
-    // An out-of-jurisdiction agent (v3 concern) and a non-partner-only chain still pass v1,
-    // because only trustClass/minTrustLevel/oasbLevel are enforced (AAP §7.1).
-    const r = new GrantPolicy([BINDING]).evaluate('orders-db', {
-      ...CTX,
-      jurisdiction: ['cn'],
-      issuerChain: ['did:opena2a:authority:opena2a.org'],
-    });
-    expect(r.allowed).toBe(true);
+  // AAP broker profile Section 7.1: a broker MUST NOT treat a predicate as satisfied without
+  // evaluating it, and one that does not evaluate a predicate present in a clause MUST refuse to
+  // load that clause, naming the predicate. This broker evaluates neither federation predicate.
+  // Both used to load, and evaluate() then granted an agent from outside the partner set and the
+  // named jurisdictions as if each predicate held.
+  it('refuses to load a binding whose match carries issuerChainIncludes, naming it and Section 7.1', () => {
+    expect(() =>
+      new GrantPolicy([withMatch({ issuerChainIncludes: { partnersSet: 'trusted-partners' } })]),
+    ).toThrow(/issuerChainIncludes/);
+    const message = loadError([withMatch({ issuerChainIncludes: { partnersSet: 'trusted-partners' } })]);
+    expect(message).toContain('issuerChainIncludes');
+    expect(message).toContain('7.1');
+    expect(message).toContain('Grant binding "grant://orders-db": match.issuerChainIncludes');
+    expect(message).toMatch(REFUSED_ISSUER_CHAIN);
+  });
+
+  it('refuses to load a binding whose match carries jurisdiction, naming it and Sections 7.1 and 9', () => {
+    expect(() =>
+      new GrantPolicy([withMatch({ jurisdiction: { in: ['us', 'eu'] } })]),
+    ).toThrow(/jurisdiction/);
+    const message = loadError([withMatch({ jurisdiction: { in: ['us', 'eu'] } })]);
+    expect(message).toContain('jurisdiction');
+    expect(message).toContain('7.1');
+    expect(message).toContain('Section 9');
+    expect(message).toContain('Grant binding "grant://orders-db": match.jurisdiction');
+    expect(message).toMatch(REFUSED_JURISDICTION);
+  });
+
+  it('loads nothing from a list in which one binding carries a predicate it does not evaluate', () => {
+    // The clean binding is not loaded on its own either: the constructor refuses the whole list,
+    // which is how a grant file that carries either predicate does not load.
+    const other = withMatch({ jurisdiction: { in: ['us'] } });
+    other.grant = 'grant://payroll-db';
+    expect(() => new GrantPolicy([BINDING, other])).toThrow(REFUSED_JURISDICTION);
+    // Absence direction: the same list without the predicate loads both bindings.
+    delete (other.match as Record<string, unknown>).jurisdiction;
+    expect(new GrantPolicy([BINDING, other]).size).toBe(2);
   });
 
   it('is an empty default-deny policy when constructed with no bindings', () => {
@@ -390,18 +435,20 @@ describe('GrantPolicy: a field this build does not read is refused at load', () 
     expect(() => new GrantPolicy([withMatch({ oasbLevl: '>=L3' })])).toThrow();
   });
 
-  it('refuses an unknown sub-key of a federation predicate', () => {
+  it('refuses an issuerChainIncludes carrying an unknown sub-key as a predicate it does not evaluate', () => {
+    // The predicate is refused by name, so its sub-keys are never read: the refusal, not an
+    // unknown-field message about `partnerSet`, is what the operator sees.
     expect(() =>
       new GrantPolicy([withMatch({ issuerChainIncludes: { partnersSet: 'p', partnerSet: 'q' } })]),
-    ).toThrow(/unknown field "partnerSet"/);
+    ).toThrow(REFUSED_ISSUER_CHAIN);
   });
 
-  it('refuses an unknown sub-key of the jurisdiction predicate', () => {
-    // The sibling of the case above. Without this, `jurisdiction: { in: ['us'], residency: ['cn'] }`
-    // loaded silently — asymmetric coverage of the exact guard class this change is about.
+  it('refuses a jurisdiction carrying an unknown sub-key as a predicate it does not evaluate', () => {
+    // The sibling of the case above. `jurisdiction: { in: ['us'], residency: ['cn'] }` once loaded
+    // silently; it is now refused with the rest of the predicate.
     expect(() =>
       new GrantPolicy([withMatch({ jurisdiction: { in: ['us'], residency: ['cn'] } })]),
-    ).toThrow(/unknown field "residency"/);
+    ).toThrow(REFUSED_JURISDICTION);
   });
 
   for (const bad of [null, 'orders:read', 42, []]) {
@@ -421,13 +468,17 @@ describe('GrantPolicy: a field this build does not read is refused at load', () 
     });
   }
 
-  it('shape-validates the federation predicates it parses but does not enforce', () => {
-    expect(() => new GrantPolicy([withMatch({ issuerChainIncludes: { partnersSet: '' } })])).toThrow();
-    expect(() => new GrantPolicy([withMatch({ issuerChainIncludes: 'trusted' })])).toThrow();
-    expect(() => new GrantPolicy([withMatch({ jurisdiction: { in: [] } })])).toThrow();
-    expect(() => new GrantPolicy([withMatch({ jurisdiction: { in: ['us', ''] } })])).toThrow();
-    expect(() => new GrantPolicy([withMatch({ jurisdiction: ['us'] })])).toThrow();
-    // Absence direction: the well-formed clauses in BINDING still load.
+  it('refuses each federation predicate whatever its shape, naming the predicate', () => {
+    // Well-formed or not, a predicate this broker does not evaluate never loads, so every shape
+    // gets the same refusal rather than a shape message that implies a fixed shape would load.
+    expect(() => new GrantPolicy([withMatch({ issuerChainIncludes: { partnersSet: '' } })])).toThrow(REFUSED_ISSUER_CHAIN);
+    expect(() => new GrantPolicy([withMatch({ issuerChainIncludes: 'trusted' })])).toThrow(REFUSED_ISSUER_CHAIN);
+    expect(() => new GrantPolicy([withMatch({ issuerChainIncludes: null })])).toThrow(REFUSED_ISSUER_CHAIN);
+    expect(() => new GrantPolicy([withMatch({ jurisdiction: { in: [] } })])).toThrow(REFUSED_JURISDICTION);
+    expect(() => new GrantPolicy([withMatch({ jurisdiction: { in: ['us', ''] } })])).toThrow(REFUSED_JURISDICTION);
+    expect(() => new GrantPolicy([withMatch({ jurisdiction: ['us'] })])).toThrow(REFUSED_JURISDICTION);
+    expect(() => new GrantPolicy([withMatch({ jurisdiction: null })])).toThrow(REFUSED_JURISDICTION);
+    // Absence direction: BINDING, which carries neither predicate, still loads.
     expect(() => new GrantPolicy([BINDING])).not.toThrow();
   });
 
@@ -778,7 +829,8 @@ describe('GrantPolicy: every validated field is read exactly once', () => {
  * The loaded policy is immutable all the way down. The element freeze landed earlier; the ARRAY
  * and the nested federation predicates did not, and the array is what the `as number` cast in
  * `evaluate()` rests on — an appended binding never passes validation, so an unrankable floor
- * could reach the comparison, where `1 < undefined` is false.
+ * could reach the comparison, where `1 < undefined` is false. Both federation predicates are
+ * refused at load now, so the last cell holds the property on the clauses that do load.
  */
 describe('GrantPolicy: the loaded policy cannot be extended or reshaped', () => {
   it('freezes the bindings array, not just its elements', () => {
@@ -802,11 +854,21 @@ describe('GrantPolicy: the loaded policy cannot be extended or reshaped', () => 
     expect(p.evaluate('evil', { ...CTX, oasbLevel: 'L1' }).allowed).toBe(false);
   });
 
-  it('freezes the federation predicates nested inside match', () => {
-    const r = new GrantPolicy([BINDING]).evaluate('orders-db', CTX);
-    expect(Object.isFrozen(r.binding?.match.jurisdiction)).toBe(true);
-    expect(Object.isFrozen(r.binding?.match.jurisdiction?.in)).toBe(true);
-    expect(Object.isFrozen(r.binding?.match.issuerChainIncludes)).toBe(true);
+  it('freezes the match and resolve clauses of a binding it loaded', () => {
+    // A clause the loader accepts. The federation predicates whose nested objects this cell once
+    // checked are refused at load now, so the property is held on what does load.
+    const p = new GrantPolicy([BINDING]);
+    const r = p.evaluate('orders-db', CTX);
+    expect(r.allowed).toBe(true);
+    expect(Object.isFrozen(r.binding)).toBe(true);
+    expect(Object.isFrozen(r.binding?.match)).toBe(true);
+    expect(Object.isFrozen(r.binding?.resolve)).toBe(true);
+    const match = r.binding?.match as unknown as Record<string, unknown>;
+    expect(() => {
+      match.minTrustLevel = 0;
+    }).toThrow(TypeError);
+    // The same policy still holds its floor after the attempt.
+    expect(p.evaluate('orders-db', { ...CTX, trustLevel: 1 }).allowed).toBe(false);
   });
 });
 

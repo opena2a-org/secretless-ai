@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**The broker refuses to load a grant binding whose `match` carries
+`issuerChainIncludes` or `jurisdiction`, naming the predicate and AAP broker
+profile Section 7.1 in the load error, where it loaded the binding and treated
+the predicate as satisfied; a binding is enforced whole or not loaded.** A grant
+file that carries either predicate does not load until the broker evaluates it.
+(opena2a-standards/agent-authorization-protocol a557452e4471)
+
 **Every broker audit record holds a closed code from `AUDIT_REASONS`
 (`src/broker/types.ts`) as its reason, and the `/resolve` record and the
 credential event record hold an agent id, a credential name and a policy rule
