@@ -30,5 +30,13 @@ export default defineConfig({
     env: { SECRETLESS_OS_KEYCHAIN: 'off', OPENA2A_TELEMETRY: 'off' },
     // Fails a test that starts the CLI with telemetry on.
     setupFiles: ['src/telemetry-guard.test-support.ts'],
+    // Tests here start the built CLI, git and recorder programs as child
+    // processes, and hooks start them too: the beforeEach in
+    // src/record-init.test.ts runs three git commands. A loaded host slows
+    // each start, and #525 records such tests, which pass on an idle CI
+    // runner, running past vitest's 5 s default. Removing these lines is
+    // caught by src/vitest-config-budget.test.ts.
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
   },
 });

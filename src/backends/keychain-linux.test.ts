@@ -86,44 +86,51 @@ describe('LinuxKeychainBackend', () => {
   describe('C4: every child call is bounded', () => {
     // The hanging child's pid is the one it wrote. Each cell first runs the
     // recorder outside the bound (positive control, and the slow first start
-    // paid there), so the bounded child can write its pid inside 0.5s.
+    // paid there), so the bounded child can write its pid inside
+    // HANG_BOUND_MS. A 0.5s bound ended the child before it wrote its pid on
+    // a loaded host in the macOS cells of the same shape (#525). The cells
+    // pass this bound in, in place of the backend's own
+    // BACKEND_CHILD_TIMEOUT_MS. A bounded call is held to HANG_BOUND_MS plus
+    // the same 4.5s margin the 0.5s bound had.
+    const HANG_BOUND_MS = 3_000;
+
     async function expectHungChildGone(): Promise<void> {
       const pid = recorder.takeHangPid();
       expect(pid, 'the hanging secret-tool wrote no pid before the bound ended it').not.toBeNull();
       expect(await waitForProcessGone(pid!), `pid ${pid} is still running`).toBe(true);
     }
 
-    it('SLS-10.AC4 a secret-tool that never exits: store throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
+    it('SLS-10.AC4 a secret-tool that never exits: store throws within the bound and the child is gone', async () => {
       expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
-      const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
+      const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: HANG_BOUND_MS });
 
       const start = Date.now();
-      await expect(bounded.store('secret/K', 'value')).rejects.toThrow(/did not respond within 0\.5s/);
-      expect(Date.now() - start).toBeLessThan(5_000);
+      await expect(bounded.store('secret/K', 'value')).rejects.toThrow(/did not respond within 3s/);
+      expect(Date.now() - start).toBeLessThan(HANG_BOUND_MS + 4_500);
       await expectHungChildGone();
     });
 
-    it('SLS-10.AC4 a secret-tool that never exits: resolve throws within the bound and the child is gone', { timeout: 10_000 }, async () => {
+    it('SLS-10.AC4 a secret-tool that never exits: resolve throws within the bound and the child is gone', async () => {
       fs.writeFileSync(path.join(dir, 'keychain-index.json'), JSON.stringify(['secret/K']));
       expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
-      const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
+      const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: HANG_BOUND_MS });
 
       const start = Date.now();
-      await expect(bounded.resolve('secret/K')).rejects.toThrow(/did not respond within 0\.5s/);
-      expect(Date.now() - start).toBeLessThan(5_000);
+      await expect(bounded.resolve('secret/K')).rejects.toThrow(/did not respond within 3s/);
+      expect(Date.now() - start).toBeLessThan(HANG_BOUND_MS + 4_500);
       await expectHungChildGone();
     });
 
-    it('SLS-10.AC4 a secret-tool that never exits: delete returns within the bound and the child is gone', { timeout: 10_000 }, async () => {
+    it('SLS-10.AC4 a secret-tool that never exits: delete returns within the bound and the child is gone', async () => {
       expect(recorder.controlRun()).toBe(true);
       recorder.setMode({ kind: 'hang' });
-      const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: 500 });
+      const bounded = new LinuxKeychainBackend({ storeDir: dir }, { secretToolProgram: recorder.program, childTimeoutMs: HANG_BOUND_MS });
 
       const start = Date.now();
       expect(await bounded.delete('secret/K')).toBe(false);
-      expect(Date.now() - start).toBeLessThan(5_000);
+      expect(Date.now() - start).toBeLessThan(HANG_BOUND_MS + 4_500);
       await expectHungChildGone();
     });
   });
