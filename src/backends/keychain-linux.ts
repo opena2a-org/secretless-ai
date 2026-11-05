@@ -22,8 +22,10 @@ import type { WritableSecretBackend, BackendHealth, ResolveOptions, StoreScopeLi
 import { readKeyIndex } from './key-index';
 import {
   BACKEND_CHILD_TIMEOUT_MS,
+  KeychainChildren,
   runBoundedChild,
   type BoundedChildResult,
+  type KeychainFirstCall,
 } from './bounded-child';
 
 const LEGACY_SERVICE_NAME = 'secretless';
@@ -159,8 +161,14 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
   private readonly indexPath: string;
   private readonly secretToolProgram: string;
   private readonly childTimeoutMs: number;
+  private readonly children: KeychainChildren;
 
-  constructor(config?: Record<string, unknown>, internals?: LinuxKeychainInternals) {
+  /**
+   * @param firstCall - What the run asks of the first `secret-tool` child (see
+   *   KeychainFirstCall): a line before it, and, for a run no one can answer,
+   *   the unattended bound. Absent: the first child is started as every other.
+   */
+  constructor(config?: Record<string, unknown>, internals?: LinuxKeychainInternals, firstCall?: KeychainFirstCall) {
     const home = process.env.HOME ?? '/tmp';
     const storeDir = (config?.storeDir as string) ?? path.join(home, '.secretless-ai', 'store');
     fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
@@ -168,6 +176,7 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
     // Deliberately from `internals`, never from `config`: config is user data.
     this.secretToolProgram = internals?.secretToolProgram ?? SECRET_TOOL_PROGRAM;
     this.childTimeoutMs = internals?.childTimeoutMs ?? BACKEND_CHILD_TIMEOUT_MS;
+    this.children = new KeychainChildren('Linux Secret Service', this.secretToolProgram, this.childTimeoutMs, firstCall);
   }
 
   /** The store directory whose index this backend keeps, for the value cache's scope (cacheScope). */
@@ -261,13 +270,11 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
   /**
    * One place every `secret-tool` child starts: the program, the argv exactly
    * as given, the bound from its one source, and the value (when there is one)
-   * on stdin.
+   * on stdin. The first child of a run is started as the run asked (see
+   * KeychainChildren).
    */
   private secretTool(args: string[], input?: string): Promise<BoundedChildResult> {
-    return runBoundedChild(this.secretToolProgram, args, {
-      timeoutMs: this.childTimeoutMs,
-      input,
-    });
+    return this.children.run(args, input);
   }
 
   /**

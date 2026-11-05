@@ -39,6 +39,8 @@ import type { McpStartVerdict } from '../mcp/start-check';
 import { isVersion, packageVersionAbove } from '../mcp/wrapper-version';
 import { resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
+import { KeychainNoAnswerError, UNATTENDED_FIRST_CALL_TIMEOUT_MS } from '../backends/bounded-child';
+import type { KeychainFirstCall } from '../backends/bounded-child';
 import type { SelectableBackendType } from '../backends/config';
 import { listedName } from '../secret-value';
 import { escapeForDisplay } from '../display-safe';
@@ -349,8 +351,45 @@ function inConfigOrder<T extends { client: string; filePath: string; projectPath
   return labels.flatMap((label) => entries.filter((entry) => configLabel(entry) === label));
 }
 
-export async function runProtectMcp(args: string[]): Promise<number> {
+/** What protect-mcp reads from the process it runs in, for a caller to give in its place. */
+export interface ProtectMcpDeps {
+  /** Whether stdin is a terminal. With none, no one can answer a keychain prompt (see KeychainFirstCall). */
+  stdinIsTTY?: boolean;
+}
+
+/**
+ * The lines ahead of the first OS keychain call of a protect-mcp run: the
+ * store this step uses, and with no terminal how long it has to answer; then
+ * the stores a run with no one to answer a prompt can use instead.
+ */
+function printKeychainNotice(store: string, stdinIsTTY: boolean): void {
+  console.log(stdinIsTTY
+    ? `  This step stores secrets in the ${store}, which can ask for approval.`
+    : `  This step stores secrets in the ${store}. No terminal is attached, so the run stops if the ${store} does not answer within ${UNATTENDED_FIRST_CALL_TIMEOUT_MS / 1000}s.`);
+  console.log(`  A run with no one to answer can store elsewhere: --backend 1password, --backend vault or --backend gcp-sm, or \`${cliCommand('backend set local')}\` first for the encrypted file.\n`);
+}
+
+/**
+ * The refusal of a protect-mcp run whose first OS keychain call no one
+ * answered (KeychainNoAnswerError): what happened, what was left as it was,
+ * then one line per fix.
+ */
+function printKeychainNoAnswer(err: KeychainNoAnswerError): void {
+  console.error(`\n  The ${err.store} did not answer within ${err.timeoutMs / 1000}s, and no terminal is attached to answer a keychain prompt.`);
+  console.error('  The run stopped there: nothing was stored, and no secret was moved out of an MCP config.\n');
+  console.error(`  Fix:     run \`${cliCommand('protect-mcp')}\` in a terminal, where the ${err.store} can ask for approval`);
+  console.error(`  Fix:     \`${cliCommand('protect-mcp --backend 1password')}\`, or --backend vault or --backend gcp-sm, stores in that backend`);
+  console.error(`  Fix:     \`${cliCommand('backend set local')}\`, then \`${cliCommand('protect-mcp')}\`, stores in the encrypted local file\n`);
+}
+
+/** What a protect-mcp run asks of the first child of an OS keychain store (see KeychainFirstCall). */
+function keychainFirstCall(stdinIsTTY: boolean): KeychainFirstCall {
+  return { unattended: !stdinIsTTY, before: (store) => printKeychainNotice(store, stdinIsTTY) };
+}
+
+export async function runProtectMcp(args: string[], deps: ProtectMcpDeps = {}): Promise<number> {
   console.log('\n  Secretless MCP Protection\n');
+  const stdinIsTTY = deps.stdinIsTTY ?? !!process.stdin.isTTY;
 
   const wrapperPath = getWrapperPath();
 
@@ -370,7 +409,7 @@ export async function runProtectMcp(args: string[]): Promise<number> {
   }
 
   try {
-    const result = await protectMcp({ wrapperPath, backendType });
+    const result = await protectMcp({ wrapperPath, backendType, firstCall: keychainFirstCall(stdinIsTTY) });
     const { unparsed, unchecked, sharedName, refusedName, unmoved, projectLevel } = result;
     const notChecked = () => {
       if (sharedName.length > 0) {
@@ -495,6 +534,10 @@ export async function runProtectMcp(args: string[]): Promise<number> {
     console.log(`  Run \`${cliCommand('mcp-unprotect')}\` to restore originals.\n`);
     return 0;
   } catch (err) {
+    if (err instanceof KeychainNoAnswerError) {
+      printKeychainNoAnswer(err);
+      return 1;
+    }
     console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }

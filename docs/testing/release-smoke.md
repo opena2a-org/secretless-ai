@@ -335,6 +335,24 @@ Only exercise `protect-mcp`/`mcp-unprotect` manually (on the real `$HOME`,
 against a client you actually use) when the diff touches `src/mcp/`, and
 check the restored config with `git diff`-style comparison before and after.
 
+### 7a. protect-mcp with no terminal ends within a second
+
+A keychain that never answers (refused within one second, exit 1, one line
+per fix, nothing stored) is covered by `src/mcp/protect-no-terminal.test.ts`
+in the unit suite. By hand, keep the OS keychain switched off, so `security`
+is never started and no dialog can open, in a scratch project whose
+`.mcp.json` holds two servers with one secret each:
+
+```bash
+H="$(mktemp -d)"; cd "$(mktemp -d)"   # write .mcp.json here first
+time SECRETLESS_OS_KEYCHAIN=off HOME="$H" $SL protect-mcp < /dev/null
+#   real under 1.0 s; before the per-server lines, one line names the OS
+#   keychain and the next names --backend; exit 0; no line starts with "at "
+SECRETLESS_OS_KEYCHAIN=off HOME="$H" $SL backend set local
+time SECRETLESS_OS_KEYCHAIN=off HOME="$H" $SL protect-mcp < /dev/null
+#   exit 0; "2 secret(s) encrypted across 2 server(s)."; no keychain line
+```
+
 ---
 
 ## 8. Daemons + cache (1 min)

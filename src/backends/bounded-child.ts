@@ -20,11 +20,99 @@
  * Nothing reads this from the environment, config or a flag: the bound is a
  * property of the code. Tests that need a shorter window pass one through a
  * constructor or function parameter, which no caller outside a test reaches.
+ *
+ * The one other bound is UNATTENDED_FIRST_CALL_TIMEOUT_MS, below: the first
+ * OS keychain call of a run that no one can answer. A command asks for it by
+ * saying so (KeychainFirstCall), never with a number of its own.
  */
 
 import { spawn, execFileSync, type ExecFileSyncOptions } from 'child_process';
 
 export const BACKEND_CHILD_TIMEOUT_MS = 30_000;
+
+/**
+ * The bound on the first OS keychain call of a run no one can answer: a run
+ * whose stdin is not a terminal, as in a tool call, CI or a script. A keychain
+ * that needs no approval answers that call in milliseconds; one waiting on an
+ * unlock or approval dialog does not answer at all, and with no terminal
+ * there is no one to expect at the dialog. So that call gets this long, and a
+ * call not answered in it ends the run with a refusal (KeychainNoAnswerError)
+ * in place of BACKEND_CHILD_TIMEOUT_MS once per entry.
+ *
+ * The value is the builder's, with its basis:
+ *
+ *   500 milliseconds. Measured 2026-11-05 on a machine at load average 33
+ *   to 37: a native child (`/bin/echo`) took 3 ms at the median and 158 ms at
+ *   most over 20 runs, and a perl child 7 ms and 103 ms over 30 runs;
+ *   `security` itself was not timed. 500 ms is three times the slowest of
+ *   those, and leaves the rest of one second for node to start the CLI and
+ *   for the run's own work.
+ *
+ * Only the first call has it, and never a longer one than the backend's own
+ * bound: once the keychain has answered, every later call of the run has the
+ * bound a run with a terminal has for every call.
+ */
+export const UNATTENDED_FIRST_CALL_TIMEOUT_MS = 500;
+
+/** What a run asks of the first child an OS keychain backend starts in it (see KeychainChildren). */
+export interface KeychainFirstCall {
+  /**
+   * No one can answer a keychain prompt in this run: its stdin is not a
+   * terminal. The first child is bounded at UNATTENDED_FIRST_CALL_TIMEOUT_MS,
+   * and when it is not answered in that time the run is refused.
+   */
+  unattended?: boolean;
+  /** Told once, before the first child starts, with the store's name (`macOS Keychain`). */
+  before?: (store: string) => void;
+}
+
+/**
+ * The first child of an OS keychain backend, in a run no one can answer, was
+ * not answered within its bound and was ended. Its own class, so a caller
+ * that reports other store errors entry by entry ends the run on this one.
+ * The message names the store and the bound, and nothing of any entry.
+ */
+export class KeychainNoAnswerError extends Error {
+  override readonly name = 'KeychainNoAnswerError';
+
+  constructor(readonly store: string, readonly timeoutMs: number) {
+    super(`The ${store} did not answer within ${timeoutMs / 1000}s, and no terminal is attached to answer a keychain prompt. Nothing was stored.`);
+  }
+}
+
+/**
+ * Starts the children of one OS keychain backend: the first as the run asked
+ * (KeychainFirstCall), every later one with the backend's own bound. A first
+ * child not answered within the unattended bound is ended, and that call and
+ * every later one is refused with the same KeychainNoAnswerError before any
+ * child starts, so no call of the run waits on the keychain again.
+ */
+export class KeychainChildren {
+  private started = false;
+  private unanswered: KeychainNoAnswerError | undefined;
+
+  constructor(
+    private readonly store: string,
+    private readonly program: string,
+    private readonly timeoutMs: number,
+    private readonly firstCall: KeychainFirstCall = {},
+  ) {}
+
+  async run(args: readonly string[], input?: string): Promise<BoundedChildResult> {
+    if (this.unanswered) throw this.unanswered;
+    const first = !this.started;
+    this.started = true;
+    if (first) this.firstCall.before?.(this.store);
+    const unattended = first && this.firstCall.unattended === true;
+    const timeoutMs = unattended ? Math.min(UNATTENDED_FIRST_CALL_TIMEOUT_MS, this.timeoutMs) : this.timeoutMs;
+    const res = await runBoundedChild(this.program, args, { timeoutMs, input });
+    if (unattended && res.timedOut) {
+      this.unanswered = new KeychainNoAnswerError(this.store, timeoutMs);
+      throw this.unanswered;
+    }
+    return res;
+  }
+}
 
 /**
  * `SECRETLESS_OS_KEYCHAIN=off` refuses to start the OS credential-store CLIs.
