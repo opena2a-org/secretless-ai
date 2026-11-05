@@ -21,6 +21,7 @@ import { readWrapperArgv, withWrapperBinding, wrapperFlag } from '../argv';
 import { resolveBackendType } from '../backends/config';
 import type { SelectableBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
+import { KeychainNoAnswerError, type KeychainFirstCall } from '../backends/bounded-child';
 import { listedName, quotedName } from '../secret-value';
 import { escapeForDisplay } from '../display-safe';
 import { printedCommand } from '../printed-command';
@@ -49,6 +50,13 @@ export interface ProtectOptions {
   wrapperPath: string;
   /** Backend type for secret storage. Defaults to config file or 'local'. */
   backendType?: SelectableBackendType;
+  /**
+   * For an OS keychain store: what this run asks of its first child (see
+   * KeychainFirstCall). A first child no one answers ends the run with a
+   * KeychainNoAnswerError, thrown from protectMcp, in place of an outcome for
+   * each entry.
+   */
+  firstCall?: KeychainFirstCall;
 }
 
 export interface ProtectedServer {
@@ -383,6 +391,7 @@ function protectVault(options: ProtectOptions, paths: ProtectPaths): McpVault {
     storeDir: paths.vaultDir,
     ...(paths.vaultKey ? { key: paths.vaultKey } : {}),
     ...(options.backendType ? { backendType: options.backendType } : {}),
+    ...(options.firstCall ? { firstCall: options.firstCall } : {}),
   });
 }
 
@@ -716,6 +725,8 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
         try {
           await storeBindingOf(binder, reads, newBinding(binder, config, server.name, id, digest), found);
         } catch (err) {
+          // A keychain no one answers ends the run (see KeychainNoAnswerError).
+          if (err instanceof KeychainNoAnswerError) throw err;
           const reason = notStoredReason(err, bindingValues({ id, commandDigest: digest }, found));
           result.unmoved.push({ client: config.client, ...mapLocation(config), server: server.name, reason });
           continue;
@@ -1447,6 +1458,8 @@ async function applyBinding(
     } catch {
       // The line this leads to names the store's error.
     }
+    // A keychain no one answers ends the run (see KeychainNoAnswerError).
+    if (err instanceof KeychainNoAnswerError) throw err;
     binder.lastReason = notStoredReason(err, plan.kind === 'bind'
       ? bindingValues({ id: plan.id, commandDigest: plan.digest }, plan.tookOver, plan.movedFrom)
       : bindingValues(plan.binding, { id: plan.binding.id, commandDigest: plan.digest }));
@@ -1523,6 +1536,8 @@ async function replaceBinding(
   try {
     stored = await storeBindingOf(binder, reads, { ...plan.binding, id, boundAt: new Date().toISOString(), boundBy: binder.boundBy }, plan.binding);
   } catch (err) {
+    // A keychain no one answers ends the run (see KeychainNoAnswerError).
+    if (err instanceof KeychainNoAnswerError) throw err;
     if (err instanceof BindingHomeIdError) return { kind: 'home-id', reason: HOME_ID_UNUSABLE(err) };
     if (err instanceof BindingWriteRefusedError) return { kind: 'refused', reason: BINDING_NOT_AS_READ(err) };
     return { kind: 'store-refused', error: firstLine(err, held) };

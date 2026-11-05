@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+**`protect-mcp` with no terminal on stdin (a tool call, CI, a script) stops within one second when the OS keychain does not answer its first call in 0.5s: it exits 1, stores nothing and prints one line per fix naming `--backend`, where it waited 30s for each server (0.23.0 waited without end); a keychain that answers is used as before, and each run names the keychain it uses before its first call to it.**
+
 **The broker refuses to load a grant binding whose `match` carries
 `issuerChainIncludes` or `jurisdiction`, naming the predicate and AAP broker
 profile Section 7.1 in the load error, where it loaded the binding and treated

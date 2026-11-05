@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LocalBackend } from './local';
 import { MacOSKeychainBackend, SECURITY_PROGRAM } from './keychain-macos';
-import { BACKEND_CHILD_TIMEOUT_MS, OsKeychainRefusedError, execFileSyncBounded } from './bounded-child';
+import { BACKEND_CHILD_TIMEOUT_MS, OsKeychainRefusedError, execFileSyncBounded, type KeychainFirstCall } from './bounded-child';
 import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
@@ -71,12 +71,16 @@ import type { SelectableBackendType } from './config';
  *                 as a source is: it is not the configured backend while the
  *                 copy runs. An unreachable-backend error names it as the
  *                 destination and offers no migration.
+ * @param options.firstCall - For an OS keychain backend, the one `keychain`
+ *                 builds and the one the default upgrades to: what the run
+ *                 asks of its first child (see KeychainFirstCall). Every other
+ *                 backend is built as without it.
  */
 export function createBackend(
   type: SelectableBackendType,
   config?: Record<string, unknown>,
   strict: boolean = true,
-  options?: { role?: BackendRole },
+  options?: { role?: BackendRole; firstCall?: KeychainFirstCall },
 ): WritableSecretBackend {
   let backend: WritableSecretBackend;
   const role: BackendRole = options?.role ?? 'configured';
@@ -91,7 +95,7 @@ export function createBackend(
     const keychainStatus = isKeychainLikely();
     if (keychainStatus.available) {
       try {
-        backend = createKeychainBackend(config);
+        backend = createKeychainBackend(config, options?.firstCall);
         const ttlSeconds = cacheTtl();
         if (ttlSeconds > 0) {
           return new CachedBackend(backend, { ttlMs: ttlSeconds * 1000, scope: cacheScope(backend) });
@@ -105,7 +109,7 @@ export function createBackend(
 
   switch (type) {
     case 'keychain':
-      backend = createKeychainBackend(config);
+      backend = createKeychainBackend(config, options?.firstCall);
       break;
 
     case '1password': {
@@ -521,15 +525,15 @@ export function hasKeychainImplementation(): boolean {
   return process.platform === 'darwin' || process.platform === 'linux';
 }
 
-function createKeychainBackend(config?: Record<string, unknown>): WritableSecretBackend {
+function createKeychainBackend(config?: Record<string, unknown>, firstCall?: KeychainFirstCall): WritableSecretBackend {
   const platform = process.platform;
 
   if (platform === 'darwin') {
-    return new MacOSKeychainBackend(config);
+    return new MacOSKeychainBackend(config, undefined, firstCall);
   }
 
   if (platform === 'linux') {
-    return new LinuxKeychainBackend(config);
+    return new LinuxKeychainBackend(config, undefined, firstCall);
   }
 
   // Unsupported platform — fall back to local with a message

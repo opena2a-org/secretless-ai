@@ -16,6 +16,7 @@ import * as crypto from 'crypto';
 import { createBackend } from '../backends/factory';
 import { resolveBackendType } from '../backends/config';
 import type { WritableSecretBackend } from '../backends/types';
+import type { KeychainFirstCall } from '../backends/bounded-child';
 import type { SelectableBackendType } from '../backends/config';
 import { findSecretValueProblem, listedName, unstorableMcpSecretError } from '../secret-value';
 
@@ -293,6 +294,8 @@ export interface McpVaultOptions {
   backendType?: SelectableBackendType;
   /** Pre-constructed backend instance (overrides backendType). For DI/testing. */
   backend?: WritableSecretBackend;
+  /** For an OS keychain store: what this run asks of its first child (see KeychainFirstCall). */
+  firstCall?: KeychainFirstCall;
 }
 
 export class McpVault {
@@ -315,7 +318,10 @@ export class McpVault {
       ? resolveBackendType(options.backendType as string | undefined)
       : resolveBackendType();
 
-    this.backend = createBackend(backendType, config);
+    const firstCall = options && 'firstCall' in options ? options.firstCall as KeychainFirstCall | undefined : undefined;
+    this.backend = firstCall
+      ? createBackend(backendType, config, true, { firstCall })
+      : createBackend(backendType, config);
   }
 
   /**
