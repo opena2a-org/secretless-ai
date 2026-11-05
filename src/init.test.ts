@@ -29,16 +29,19 @@ function cleanup(dir: string): void {
 //
 // The commands are the coverage, so thinning them to save time would be paying
 // for speed with the thing the test exists to check. Raise the bound instead,
-// to 30s: several times the slowest test's time as `--reporter=verbose` prints
-// it, while a genuinely hung `execSync` still fails the run rather than
-// hanging it. This is a timeout, not an assertion — nothing here starts
-// passing because the number went up.
+// to 120s. The earlier 30s was several times the slowest test's time as
+// `--reporter=verbose` printed it, and three tests still ran past it on a
+// loaded host (#525). 120s is twice the 60s default that vitest.config.ts
+// sets, so this describe raises the bound for its tests instead of lowering
+// it below that default, while a genuinely hung `execSync` still fails the
+// run rather than hanging it. This is a timeout, not an assertion — nothing
+// here starts passing because the number went up.
 //
-// The bound holds only while each test checks about twenty commands or fewer:
-// lists of forty to seventy ran past it when the whole suite shared a loaded
-// machine, so the long lists are split into one test per family. A new case
-// joins the family it belongs to; a new family gets a test of its own.
-describe('init', { timeout: 30_000 }, () => {
+// The long lists are split into one test per family: lists of forty to
+// seventy commands ran past the earlier 30s bound when the whole suite shared
+// a loaded machine. A new case joins the family it belongs to; a new family
+// gets a test of its own.
+describe('init', { timeout: 120_000 }, () => {
   let dir: string;
 
   beforeEach(() => { dir = tmpDir(); });
