@@ -1,0 +1,59 @@
+# Secure Enclave availability: reports whether CryptoKit's
+# SecureEnclave.isAvailable reads true on each GitHub-hosted macOS image.
+#
+# One job per runner label. Each job prints exactly one reading line,
+# SecureEnclave.isAvailable=<true|false>. When swift exits non-zero, or prints
+# anything other than true or false, the job fails and prints no such line, so
+# a missing reading is never shown as a value.
+#
+# The labels are the macOS entries of the standard runner table in the
+# GitHub-hosted runners reference, plus macos-latest. macos-latest keeps its
+# own job even while it names the same image as another label, because it
+# moves to new images over time. Larger-runner labels (-large, -xlarge) are
+# not listed.
+#
+# The workflow installs nothing, checks nothing out, and runs with no token
+# permissions.
+name: Secure Enclave availability
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/secure-enclave-availability.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  probe:
+    name: SecureEnclave.isAvailable on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      # Every label reports on its own; one failing image must not cancel the rest.
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-latest
+          - macos-26
+          - macos-26-intel
+          - macos-15
+          - macos-15-intel
+          - macos-14
+          - xcode-27
+    steps:
+      - name: Print SecureEnclave.isAvailable
+        shell: bash
+        run: |
+          # Machine line, before the reading: what sysctl printed for
+          # hw.optional.arm64 (Apple silicon) and kern.hv_vmm_present (virtual
+          # machine), joined with " | ", with its exit status. A missing oid shows
+          # sysctl's message. The line never fails the step; only the reading can.
+          machine_exit=0
+          machine="$(sysctl -n hw.optional.arm64 kern.hv_vmm_present 2>&1)" || machine_exit=$?
+          echo "sysctl -n hw.optional.arm64 kern.hv_vmm_present: ${machine//$'\n'/ | } (exit $machine_exit)"
+          value="$(swift -e 'import CryptoKit; print(SecureEnclave.isAvailable)')"
+          case "$value" in
+            true | false) echo "SecureEnclave.isAvailable=$value" ;;
+            *) echo "swift printed an unexpected value: $value" >&2; exit 1 ;;
+          esac
