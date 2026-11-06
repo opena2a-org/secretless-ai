@@ -16,8 +16,11 @@ import { runProtectMcp } from '../commands/mcp';
  * names, so the same backend is built on every runner. The stand-ins are perl
  * scripts: a native start, so a call they answer returns in milliseconds.
  * Each keeps its entries in files beside itself. With a file named `hang`
- * beside it, every call writes its pid and never answers, as a keychain
- * waiting on a dialog no one sees.
+ * beside it, the stand-in is a locked keychain whose unlock dialog no one
+ * sees: a call that waits on that dialog writes its pid and never answers.
+ * For `security` that is every call. For `secret-tool` it is `store` and
+ * `lookup`; `clear` and `search` act on unlocked items only and never open
+ * the dialog (libsecret), so they answer at once, locked or not.
  *
  * Every run is under a two-second alarm. Fixture values are assembled at run
  * time and are not credentials.
@@ -53,7 +56,7 @@ const ALARM_MS = 2000;
 /** The bar a run with no one to answer meets: an outcome within one second. */
 const OUTCOME_MS = 1000;
 
-/** Shared by both stand-ins: the call log, the `hang` switch and the entry files. */
+/** Shared by both stand-ins: the call log, the `hang` switch (a locked keychain) and the entry files. */
 const PERL_PROLOGUE = String.raw`#!/usr/bin/perl
 use strict;
 use warnings;
@@ -61,7 +64,8 @@ my ($dir) = $0 =~ m{^(.*)/[^/]+$};
 open(my $calls, '>>', "$dir/calls.log") or die "calls.log: $!";
 print $calls (defined $ARGV[0] ? $ARGV[0] : ''), "\n";
 close $calls;
-if (-e "$dir/hang") {
+my $locked = -e "$dir/hang";
+sub waits_on_dialog {
   open(my $p, '>', "$dir/hang.pid") or die "hang.pid: $!";
   print $p $$;
   close $p;
@@ -73,8 +77,9 @@ sub keep { my ($file, $hex) = @_; open(my $f, '>', $file) or return 0; print $f 
 sub kept { my ($file) = @_; open(my $f, '<', $file) or return undef; my $hex = <$f>; close $f; return pack('H*', $hex); }
 `;
 
-/** `security`: add-generic-password (one line on stdin with -i), find-generic-password, delete-generic-password. */
+/** `security`: add-generic-password (one line on stdin with -i), find-generic-password, delete-generic-password. Locked, every call waits. */
 const SECURITY_STAND_IN = PERL_PROLOGUE + String.raw`
+waits_on_dialog() if $locked;
 sub opt { my ($args, $flag) = @_; for my $i (0 .. $#$args - 1) { return $args->[$i + 1] if $args->[$i] eq $flag; } return undef; }
 sub has { my ($args, $flag) = @_; return scalar grep { $_ eq $flag } @$args; }
 sub tokens {
@@ -123,15 +128,21 @@ if ((defined $ARGV[0] ? $ARGV[0] : '') eq '-i') {
 exit run(@ARGV);
 `;
 
-/** `secret-tool`: store (value on stdin), lookup, search and clear, by service and account. */
+/**
+ * `secret-tool`: store (value on stdin), lookup, search and clear, by service
+ * and account. Locked, `store` and `lookup` wait on the unlock dialog; `clear`
+ * and `search` never open it: `clear` removes unlocked items only, so it
+ * leaves the entry and exits 0, and `search` lists the entry without its value.
+ */
 const SECRET_TOOL_STAND_IN = PERL_PROLOGUE + String.raw`
-my %attr; my @rest = @ARGV; my $sub = shift @rest;
+my %attr; my @rest = @ARGV; my $sub = shift @rest; $sub = '' unless defined $sub;
 while (@rest) { my $k = shift @rest; if ($k =~ /^--/) { next; } $attr{$k} = shift @rest; }
 my $file = item($attr{service}, $attr{account});
+waits_on_dialog() if $locked && ($sub eq 'store' || $sub eq 'lookup');
 if ($sub eq 'store') { local $/; my $value = <STDIN>; $value = '' unless defined $value; exit(keep($file, unpack('H*', $value)) ? 0 : 1); }
 if ($sub eq 'lookup') { my $value = kept($file); exit 1 unless defined $value; print STDOUT $value; exit 0; }
 if ($sub eq 'search') { exit 0 unless -e $file; print STDOUT "[/1]\nlabel = x\n"; exit 0; }
-if ($sub eq 'clear') { unlink $file if -e $file; exit 0; }
+if ($sub eq 'clear') { unlink $file if -e $file && !$locked; exit 0; }
 exit 2;
 `;
 
@@ -282,13 +293,20 @@ async function protectMcp(stdinIsTTY: boolean, args: string[] = []): Promise<Out
   }
 }
 
+/**
+ * Each OS keychain, and the first call a protect-mcp run makes to it: the
+ * write of the first binding, which is the call that waits on the unlock
+ * dialog. On Linux that is `secret-tool store`. The legacy `clear` follows
+ * it: put first, it would answer at once (it never opens the dialog), use up
+ * the one bounded call, and leave `store` the 30 s bound.
+ */
 const KEYCHAINS = [
-  { platform: 'darwin' as const, store: 'macOS Keychain' },
-  { platform: 'linux' as const, store: 'Secret Service' },
+  { platform: 'darwin' as const, store: 'macOS Keychain', firstCall: '-i' },
+  { platform: 'linux' as const, store: 'Secret Service', firstCall: 'store' },
 ];
 
 describe('protect-mcp with stdin not a terminal and a keychain that never answers', () => {
-  for (const { platform, store } of KEYCHAINS) {
+  for (const { platform, store, firstCall } of KEYCHAINS) {
     for (const args of [[], ['--backend', 'keychain']]) {
       it(`refuses within one second, names --backend and stores nothing (${store}, protect-mcp ${args.join(' ') || 'with no flags'})`, async () => {
         onPlatform(platform);
@@ -302,8 +320,9 @@ describe('protect-mcp with stdin not a terminal and a keychain that never answer
         expect(outcome.lines.filter((line) => /^\s+Fix:/.test(line)).length).toBeGreaterThan(1);
         expect(outcome.lines.filter((line) => /^\s+at /.test(line))).toEqual([]);
 
-        // The run stopped at its first keychain call: one was started, and it is gone.
-        expect(calls().length).toBe(1);
+        // The run stopped at its first keychain call, the write that waits on
+        // the dialog: it alone was started, and it is gone.
+        expect(calls()).toEqual([firstCall]);
         const pid = hangPid();
         expect(pid).not.toBeNull();
         expect(alive(pid!)).toBe(false);

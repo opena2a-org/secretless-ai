@@ -44,12 +44,12 @@ describe('LinuxKeychainBackend', () => {
       await backend.store('mcp/client/server/KEY', 'secret-value');
 
       const calls = recorder.calls();
-      // Legacy clear first, then the store.
+      // The store first; the legacy clear only once the new value is committed.
       expect(calls.map(c => c.argv)).toEqual([
-        ['clear', 'service', 'secretless', 'account', 'mcp/client/server/KEY'],
         ['store', '--label=Secretless: mcp/client/server/KEY', 'service', 'Secretless: KEY', 'account', 'mcp/client/server/KEY'],
+        ['clear', 'service', 'secretless', 'account', 'mcp/client/server/KEY'],
       ]);
-      expect(calls[1].stdin).toBe('secret-value');
+      expect(calls[0].stdin).toBe('secret-value');
       for (const call of calls) {
         expect(JSON.stringify(call.argv)).not.toContain('secret-value');
         expect(JSON.stringify(call.env)).not.toContain('secret-value');
@@ -73,6 +73,13 @@ describe('LinuxKeychainBackend', () => {
       expect(err.message).toMatch(/Verify:/);
       expect(err.message).toMatch(/Fix:/);
       expect(fs.existsSync(path.join(dir, 'keychain-index.json'))).toBe(false);
+    });
+
+    it('starts secret-tool store as its first child, and after a failed store runs no clear: the legacy entry is left as it was', async () => {
+      recorder.setMode({ kind: 'fail', status: 1, stderr: 'secret-tool: Cannot create an item in a locked collection\n' });
+      await expect(backend.store('secret/K', 'value')).rejects.toThrow(/Could not store "secret\/K"/);
+
+      expect(recorder.calls().map(c => c.argv[0])).toEqual(['store']);
     });
   });
 

@@ -187,11 +187,10 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
   async store(key: string, value: string): Promise<void> {
     const svc = serviceNameFor(key);
 
-    // Delete legacy entry to prevent duplicates. No legacy entry is the common
-    // case, so the outcome is not inspected.
-    await this.secretTool(['clear', 'service', LEGACY_SERVICE_NAME, 'account', key]);
-
-    // secret-tool store reads the value from stdin
+    // secret-tool store reads the value from stdin. It is the first child of
+    // a store, and on a locked collection the one that waits on the unlock
+    // dialog, so a run no one can answer is refused here (KeychainChildren),
+    // before anything is deleted.
     const res = await this.secretTool([
       'store',
       `--label=Secretless: ${key}`,
@@ -201,6 +200,15 @@ export class LinuxKeychainBackend implements WritableSecretBackend {
     if (res.spawnError || res.timedOut || res.status !== 0) {
       throw secretToolStoreError(key, res, this.childTimeoutMs);
     }
+
+    // Only once the new value is committed, retire the legacy entry (old
+    // unified service name), so a failed store leaves the user the entry they
+    // had. Its outcome does not matter: no legacy entry is the common case.
+    // Never ahead of the store: `secret-tool clear` removes unlocked items
+    // only and never opens the unlock dialog (libsecret), so put first it
+    // answered at once and used up the bounded first call of an unattended
+    // run, and `store` then waited the full child bound.
+    await this.secretTool(['clear', 'service', LEGACY_SERVICE_NAME, 'account', key]);
 
     // Update index
     const index = this.readIndex();
