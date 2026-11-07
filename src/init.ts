@@ -13,6 +13,7 @@ import { loadCustomRulesDetailed, customRulesToDenyRules, customRulesToHookBlock
 import type { CustomRules, RulesFileIssue } from './custom-rules';
 import { scan, newScanStats, coverageIncomplete } from './scan';
 import { commandPrefixForHooks, missingPrefixTarget, resolveHookPrefix, targetCheck } from './hook-prefix';
+import { shellQuote } from './env';
 import { VERSION } from './commands/utils';
 
 /**
@@ -3154,6 +3155,12 @@ try:
 except Exception:
     pass`;
 
+// The two expressions of the guard's accessor exemption (NOTE ON ENVIRONMENT
+// ACCESSORS): the characters that withhold it, and the shape of a plain grep
+// whose pattern word it may rewrite.
+const SEARCH_WITHHELD_ERE = '[;&<>$`[:cntrl:]]';
+const SEARCH_SHAPE_ERE = String.raw`^([[:blank:]]*(grep|egrep|fgrep|git[[:blank:]]+grep)([[:blank:]]+-[a-cg-ln-zE-Z0-9]+)*[[:blank:]]+(-e[[:blank:]]+)?)("([^"\]|[\][^"])*"|'[^']*'|([A-Za-z0-9_./]|[\][A-Za-z0-9_./])+)(([[:blank:]]+(--|[A-Za-z0-9_./*?@%+=:,][A-Za-z0-9_./*?@%+=:,-]*))*[[:blank:]]*([|][[:blank:]]*(head|wc|sort|uniq)([[:blank:]]+-[A-Za-z0-9]+)*[[:blank:]]*)*)$`;
+
 // src/guard-verdict-snapshot.test.ts runs the script this returns over every
 // command in src/fixtures/guard-corpus.txt, with and without python3, and fails
 // when a verdict differs from src/fixtures/guard-verdicts.txt. A change to the
@@ -3233,6 +3240,16 @@ set -euo pipefail
 # the decoding step, so a command cannot change how it is matched by carrying
 # undecodable bytes, and matching no longer varies with the developer's locale.
 export LC_ALL=C
+
+# NOTE ON TEMPORARY FILES. bash 3.2, the /bin/bash of macOS, writes the text of
+# every here-document and here-string to a temporary file, and bash 5 does so
+# for a long one. When that file cannot be written (a full disk, a sandbox that
+# refuses the write), the command it feeds does not run, and set -e does not
+# stop the script. So this script feeds no command that way, and its verdict
+# does not depend on a temporary file: the text it carries is assigned in
+# single quotes, the candidate paths are split at line breaks, and grep reads a
+# text through a pipe (text_matches below), whose failure makes the script exit
+# 2, the code the hook protocol reads as a refusal.
 
 INPUT=$(cat)
 # Each field is optional depending on the tool (a Bash call has no file_path; a
@@ -3432,6 +3449,22 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": join
     printf '%s\\n' "$m" \\
       | tr -c '[:print:]\\n' '?' | cut -c1-160 | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' || true
   }
+  # Whether grep with the options $1 finds the pattern $2 in the text $3, read
+  # as grep -q reads its input. The text goes through a pipe, not a here-string
+  # (NOTE ON TEMPORARY FILES). grep -q stops at its first match and the writer
+  # can die of SIGPIPE, so pipefail is off in the subshell and its status is
+  # grep's own: 0 for a match, 1 for none. Any other status means the rule was
+  # not checked, and the guard exits 2, which the hook protocol reads as a
+  # refusal.
+  text_matches() {
+    local rc=0
+    (set +o pipefail; printf '%s\\n' "$3" | grep -q "$1" -- "$2") || rc=$?
+    if [ "$rc" -le 1 ]; then
+      return "$rc"
+    fi
+    echo "Secretless: blocked a call the guard could not check: grep exited $rc." >&2
+    exit 2
+  }
   # NOTE ON TEMPLATE FILES. The command guard refuses \`cat <name>.env.example\`
   # even though the file-path guard below allows template files, so the two
   # layers disagree about committed placeholders. That is a known, deliberate
@@ -3481,15 +3514,8 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": join
   # cat\` rebuilds \`.env\` from its output, the derivation NOTE ON TEMPLATE
   # FILES describes. The interpreter one-liner arm keeps the original text.
   FILE_READ_COMMAND="$COMMAND"
-  SEARCH_WITHHELD=""
-  SEARCH_SHAPE=""
-  {
-    IFS= read -r SEARCH_WITHHELD || true
-    IFS= read -r SEARCH_SHAPE || true
-  } <<'SECRETLESS_SEARCH_SHAPE'
-[;&<>$\`[:cntrl:]]
-^([[:blank:]]*(grep|egrep|fgrep|git[[:blank:]]+grep)([[:blank:]]+-[a-cg-ln-zE-Z0-9]+)*[[:blank:]]+(-e[[:blank:]]+)?)("([^"\\]|[\\][^"])*"|'[^']*'|([A-Za-z0-9_./]|[\\][A-Za-z0-9_./])+)(([[:blank:]]+(--|[A-Za-z0-9_./*?@%+=:,][A-Za-z0-9_./*?@%+=:,-]*))*[[:blank:]]*([|][[:blank:]]*(head|wc|sort|uniq)([[:blank:]]+-[A-Za-z0-9]+)*[[:blank:]]*)*)$
-SECRETLESS_SEARCH_SHAPE
+  SEARCH_WITHHELD=${shellQuote(SEARCH_WITHHELD_ERE)}
+  SEARCH_SHAPE=${shellQuote(SEARCH_SHAPE_ERE)}
   if [ -n "$SEARCH_WITHHELD" ] && [ -n "$SEARCH_SHAPE" ] \\
     && ! [[ $COMMAND =~ $SEARCH_WITHHELD ]] && [[ $COMMAND =~ $SEARCH_SHAPE ]]; then
     SEARCH_HEAD=\${BASH_REMATCH[1]-}
@@ -3542,9 +3568,9 @@ SECRETLESS_SEARCH_SHAPE
   SCAN_TEXT="$COMMAND"
   ENV_VERDICT=""
   if command -v python3 >/dev/null 2>&1; then
-    IFS= read -r -d '' GUARD_ANALYZER <<'SECRETLESS_ANALYZER' || true
-${GUARD_COMMAND_ANALYZER}
-SECRETLESS_ANALYZER
+    # Assigned, not read from a here-document (NOTE ON TEMPORARY FILES), so the
+    # analyzer that runs is always this text, never a value from the environment.
+    GUARD_ANALYZER=${shellQuote(GUARD_COMMAND_ANALYZER + '\n')}
     REDUCED=$(printf '%s' "$COMMAND" | python3 -I -c "$GUARD_ANALYZER" 2>/dev/null || true)
     case "$REDUCED" in
       ENV-PRINT:*)
@@ -3617,7 +3643,7 @@ SECRETLESS_ANALYZER
       printf '${SECRET_ENV_SCRIPT_DENY}' \\
         "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*(os\\.environ|process\\.env).*(${SECRET_VAR_WORDS})' "$FILE_READ_SCAN")"
       exit 0
-    elif [ -z "$ENV_VERDICT" ] || grep -qE 'process\\??\\.env([^.?A-Za-z0-9_$[]|$)' <<< "$FILE_READ_SCAN"; then
+    elif [ -z "$ENV_VERDICT" ] || text_matches -E 'process\\??\\.env([^.?A-Za-z0-9_$[]|$)' "$FILE_READ_SCAN"; then
       printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked script command that reads environment variables. Matched \`%s\`: a python or node one-liner that names process.env, the Node environment, which holds every variable, credentials included. This guard cannot tell which variable this one-liner reads or whether it prints them all, so a variable that holds no secret is blocked too. Safe path: read one variable that holds no secret by property name, process.env.NAME, in a one-liner run directly by node; to check a secret, test it with the shell test -n instead of printing it."}}\\n' \\
         "$(matched_text '' '(python3?|node)${VERB_GAP}-(c|e).*process\\??\\.env' "$FILE_READ_SCAN")"
       exit 0
@@ -3801,8 +3827,9 @@ SECRETLESS_ANALYZER
   # \`(\`, a backquote or \`!\`, after a \`\\n\` or \`\\t\` escape, after eval or a
   # shell's -c, behind a wrapper or a directory). The arms above keep their own
   # reasons; this one names the missing parse and its fix. The command reaches
-  # grep as a here-string, so no writer is left to die of SIGPIPE.
-  if [ -z "$ENV_VERDICT" ] && grep -qiE '${ENV_CLASS_POSITION}${ENV_CLASS_WORDS}' <<< "$COMMAND"; then
+  # grep through text_matches, so a writer that dies of SIGPIPE does not hide a
+  # match, and no temporary file is needed (NOTE ON TEMPORARY FILES).
+  if [ -z "$ENV_VERDICT" ] && text_matches -iE '${ENV_CLASS_POSITION}${ENV_CLASS_WORDS}' "$COMMAND"; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked a command that may print the environment. python3 is missing or did not run, so the guard cannot parse this command, and without a parse a command that runs set, env, printenv, export, declare, typeset, local, readonly, compgen, ps, pgrep, tmux or docker inspect is refused. Fix: install python3 (macOS: xcode-select --install; Debian or Ubuntu: sudo apt-get install python3), then run the command again."}}'
     exit 0
   fi
@@ -3906,8 +3933,21 @@ resolve_path() {
 
 # Check EVERY candidate path. A payload carrying both a benign top-level path
 # and a secret one nested deeper must block on the secret one, so the loop only
-# skips a template candidate rather than exiting on it.
-while IFS= read -r CANDIDATE; do
+# skips a template candidate rather than exiting on it. The list is split at its
+# line breaks with globbing off, so each candidate is one line as given and a *
+# in it stays a character, and no here-document feeds the loop (NOTE ON
+# TEMPORARY FILES). The + form of the expansion keeps set -u on bash 3.2 from
+# reading an empty list as unset.
+split_candidates() {
+  local IFS='
+'
+  set -f
+  CANDIDATE_LIST=($1)
+  set +f
+}
+CANDIDATE_LIST=()
+split_candidates "$FILE_PATH_CANDIDATES"
+for CANDIDATE in \${CANDIDATE_LIST[@]+"\${CANDIDATE_LIST[@]}"}; do
   [ -z "$CANDIDATE" ] && continue
 
   # The name the tool was given: a secret name is refused whatever it points at.
@@ -3946,9 +3986,7 @@ while IFS= read -r CANDIDATE; do
       deny_file "Secretless: blocked access to secret file matching pattern '$REASON' at the path this one resolves to"
     fi
   fi
-done <<EOF
-$FILE_PATH_CANDIDATES
-EOF
+done
 
 exit 0
 `;

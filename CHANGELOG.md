@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+**The guard hook reaches the same verdict when bash cannot write a temporary file, as on a full disk or under a sandbox that refuses the write: it feeds no command through a here-document or here-string, its candidate paths are split at line breaks with globbing off, and a check that cannot run makes it exit 2, which the hook protocol reads as a refusal.**
+
 **On Linux, the Secret Service backend writes the new entry (`secret-tool store`) before it retires the legacy one (`secret-tool clear`, service `secretless`), where it cleared first: a store that fails now leaves the legacy entry as it was, and `protect-mcp` with no terminal on stdin stops within one second against a locked keyring, as on macOS, where it waited 30s for each server.** `clear` removes unlocked items only and never opens the unlock dialog, so run first it answered at once and used up the one bounded call, while `store`, the call that waits on the dialog, kept the 30s bound.
 
 **`protect-mcp` with no terminal on stdin (a tool call, CI, a script) stops within one second when the OS keychain does not answer its first call in 0.5s: it exits 1, stores nothing and prints one line per fix naming `--backend`, where it waited 30s for each server (0.23.0 waited without end); a keychain that answers is used as before, and each run names the keychain it uses before its first call to it.**
