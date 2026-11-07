@@ -88,6 +88,18 @@ const CASES: Case[] = [
     verdict: 'allow',
   },
   {
+    // The candidates are sorted: A.md, B/.env, [1]=README.md. A split that
+    // read [1]=README.md as an array element assignment would put README.md
+    // in the place of B/.env, and no candidate would be refused.
+    name: 'a candidate shaped like an array element assignment is judged as a path and leaves the others in place',
+    payload: () => ({
+      tool_name: 'Edit',
+      tool_input: { file_path: 'A.md', edits: [{ file_path: 'B/.env' }, { path: '[1]=README.md' }] },
+    }),
+    python3: true,
+    verdict: "deny: blocked access to secret file matching pattern '.env'",
+  },
+  {
     name: 'npm run env is refused by the command analyzer',
     payload: () => ({ tool_name: 'Bash', tool_input: { command: 'npm run env' } }),
     python3: true,
