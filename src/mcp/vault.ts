@@ -18,7 +18,7 @@ import { resolveBackendType } from '../backends/config';
 import type { WritableSecretBackend } from '../backends/types';
 import type { KeychainFirstCall } from '../backends/bounded-child';
 import type { SelectableBackendType } from '../backends/config';
-import { findSecretValueProblem, listedName, unstorableMcpSecretError } from '../secret-value';
+import { findSecretValueProblem, listedName, quotedName, unstorableMcpSecretError } from '../secret-value';
 
 const MCP_PREFIX = 'mcp';
 
@@ -269,20 +269,38 @@ export async function expectBinding(
 /** Validates client/server names to prevent path traversal. */
 const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
 
+/**
+ * The rule a read or a delete applies to a client or server name: the
+ * character class only. A pair an earlier version stored under a name the
+ * write rule refuses (see mcpNameProblem) stays readable and removable.
+ */
 function validateName(label: string, value: string): void {
   if (!SAFE_NAME.test(value)) {
     throw new Error(`Invalid ${label} name: "${value}". Only alphanumeric, dash, and underscore allowed.`);
   }
 }
 
+/** The write rule's reason for a client or server name whose first character is `-`. */
+const LEADING_DASH_NAME_PROBLEM = 'it begins with -, which a command line reads as an option';
+
 /**
- * Why the vault refuses `name` as a client or server name, or undefined when
- * it takes it: the rule validateName applies, for a caller that reports the
- * refusal and goes on.
+ * Why the store refuses to write a pair under `name` as a client or server
+ * name, or undefined when it takes it: the write rule storeServerSecrets and
+ * storeBinding apply, for a caller that reports the refusal and goes on. In
+ * order: an empty name, a character other than A-Z, a-z, 0-9, - and _, then
+ * a first character -.
  */
 export function mcpNameProblem(name: string): string | undefined {
   if (name === '') return 'it is empty';
-  return SAFE_NAME.test(name) ? undefined : 'it holds a character other than A-Z, a-z, 0-9, - or _';
+  if (!SAFE_NAME.test(name)) return 'it holds a character other than A-Z, a-z, 0-9, - or _';
+  if (name.startsWith('-')) return LEADING_DASH_NAME_PROBLEM;
+  return undefined;
+}
+
+/** The write rule as a write applies it: a name mcpNameProblem refuses throws before anything is written. */
+function validateWriteName(label: string, value: string): void {
+  const problem = mcpNameProblem(value);
+  if (problem !== undefined) throw new Error(`Invalid ${label} name ${quotedName(value)}: ${problem}.`);
 }
 
 export interface McpVaultOptions {
@@ -341,15 +359,16 @@ export class McpVault {
    * `secret set` applies: a value holding terminal escapes or U+FFFD is a
    * capture that already lost the credential, and storing it only moves the
    * failure to the server's first request (#104). Checking up front means a
-   * refusal leaves nothing of this server behind.
+   * refusal leaves nothing of this server behind. A client or server name
+   * the write rule refuses (see mcpNameProblem) throws first.
    */
   async storeServerSecrets(
     client: string,
     server: string,
     secrets: Record<string, string>,
   ): Promise<void> {
-    validateName('client', client);
-    validateName('server', server);
+    validateWriteName('client', client);
+    validateWriteName('server', server);
     for (const [envKey, value] of Object.entries(secrets)) {
       const problem = findSecretValueProblem(value);
       if (problem) throw unstorableMcpSecretError(client, server, envKey, problem);
@@ -439,11 +458,12 @@ export class McpVault {
    * before. protect-mcp stores it before the pair's secrets, so a store that
    * refuses it leaves no secret without a binding. A binding without a
    * well-formed `boundOn` is refused, so every binding stored names the
-   * secretless home that stored it.
+   * secretless home that stored it. A client or server name the write rule
+   * refuses (see mcpNameProblem) throws first.
    */
   async storeBinding(client: string, server: string, binding: McpBinding): Promise<void> {
-    validateName('client', client);
-    validateName('server', server);
+    validateWriteName('client', client);
+    validateWriteName('server', server);
     const text = JSON.stringify(binding);
     const parsed = parseBinding(text);
     if (parsed === undefined) {
