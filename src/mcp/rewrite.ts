@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { runsThroughSecretlessWrapper, serverMapKey } from './discover';
+import { mcpNameProblem } from './vault';
 import { withWrapperBinding } from '../argv';
 
 // ---------------------------------------------------------------------------
@@ -70,13 +71,6 @@ export interface RewriteOptions {
    */
   keepBackup?: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Validates server/client names contain only safe characters. */
-const SAFE_NAME = /^[a-zA-Z0-9_\-]+$/;
 
 // ---------------------------------------------------------------------------
 // Backup encryption (prevents plaintext secret leakage in backup files)
@@ -321,8 +315,9 @@ function wrapServers(
     // Skip a server that already runs through a wrapper, as discovery counts it
     if (runsThroughSecretlessWrapper(command, wrapperPath)) continue;
 
-    // Validate server name for defense in depth
-    if (!SAFE_NAME.test(serverName)) continue;
+    // A server whose name the store's write rule refuses is left as it is:
+    // the rewrite and the store answer that with one function.
+    if (mcpNameProblem(serverName) !== undefined) continue;
 
     // Skip if no secrets for this server
     const secrets = serverSecrets[serverName];
