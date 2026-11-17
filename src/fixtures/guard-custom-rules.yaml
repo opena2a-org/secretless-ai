@@ -1,0 +1,14 @@
+# The custom rules src/guard-hook.bytes.test.ts and the custom-rule leg of
+# src/guard-verdict-snapshot.test.ts write as .secretless-rules.yaml before
+# running init. Each pattern takes a different branch of the hook generator:
+# a file extension, a dotfile name, a path fragment, an absolute path in the
+# deny-rule grammar's // form, an environment variable name and a command.
+env:
+  - ACME_*
+files:
+  - "*.acmekey"
+  - ".acme-config"
+  - "acme-vault/"
+  - "//srv/acme/creds/*.json"
+bash:
+  - "acme-cli*get*"
