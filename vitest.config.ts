@@ -21,6 +21,19 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
+    // The bound for a test that sets none of its own (vitest's default is
+    // 5000 ms). Three whole-suite runs with four workers on a 16-core machine,
+    // each started while the one-minute load average was under 24, measured
+    // per-test durations of p99 6160 to 7960 ms (7017 ms over all three) and a
+    // max of 171644 ms, a test that sets its own larger bound and keeps it. The
+    // slowest test that passed under the 5000 ms default took 4988 ms. The
+    // value is the smallest multiple of 5000 ms that is at least the highest
+    // p99 and at least twice 4988 ms (derivation: the builder's, not ruled).
+    //
+    // The worker count stays vitest's default unless VITEST_MAX_WORKERS is
+    // set; vitest reads that variable itself, ahead of this file and of
+    // --maxWorkers.
+    testTimeout: 10_000,
     // Every worker, and every CLI child the tests start from a copy of
     // process.env, refuses to start the OS credential-store CLIs. Removing
     // this line is caught by src/backends/bounded-child.test.ts.
