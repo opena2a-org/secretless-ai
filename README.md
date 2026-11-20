@@ -62,7 +62,7 @@ Recorded with secretless-ai 0.23.1 on 2026-10-22 (pre-release build)
 
 ```bash
 npx secretless-ai secret set STRIPE_SECRET_KEY --from-clipboard   # unreleased; key copied from the web
-npx secretless-ai secret set STRIPE_SECRET_KEY   # or type or paste it at a prompt, input hidden
+npx secretless-ai secret set STRIPE_SECRET_KEY   # or type or paste it at a prompt; unreleased: input hidden
 npx secretless-ai import .env                    # or migrate an existing .env
 npx secretless-ai secret list                    # names only, values are never printed
 npx secretless-ai run --only STRIPE_SECRET_KEY -- node charge.js   # one command gets the value
