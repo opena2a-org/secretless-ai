@@ -1,5 +1,5 @@
 name: CI
-# The gate this repository's branch protection can actually require.
+# The checks this repository's branch protection can actually require.
 #
 # This workflow used to carry `paths: [src/**, package.json, tsconfig.json]` on
 # both triggers. That made `build-and-test` unrequireable: a docs-only pull
@@ -9,17 +9,28 @@ name: CI
 # required check has to exist on every change and decide for itself what to do.
 #
 # So the filter moved off the trigger and into the run. There are no `paths:`
-# here, and the `gate` job below reports on every push to main and every pull
-# request to main. Inside the run it classifies the change against the SAME
-# globs the trigger filter used, and:
-#   - code change      -> npm ci, npm run build, npm test; the gate is that
+# here and no job-level `if:`, so this workflow runs on every push to main and
+# every pull request to main.
+#
+# The required set this workflow is built for is five contexts: `gate`,
+# `Node 20` and `Node 22` from this file, `Gate file approval` from
+# gate-file-approval.yml and `Automated code review` from pr-review.yml. The
+# live branch protection is the record of the required set; this workflow
+# never takes this list as its input.
+#
+# `Node 20` and `Node 22` are the two legs of the `build-and-test` matrix. Both
+# are in that set, and a required context has to reach a conclusion on every
+# head, a documentation-only head included, so the matrix job carries no
+# job-level `if:`. Each leg runs the suite when the change is code and ends in
+# the same verdict command as `gate`.
+#
+# Inside the run, `gate` classifies the change:
+#   - code change      -> npm ci, npm run build, npm test; the verdict is that
 #                         suite's result
 #   - non-code change  -> a deterministic pass, no suite
-#
-# `gate` is the context to require. Its name is a literal — the matrix job's
-# name is `Node ${{ matrix.node-version }}`, which is a different string per leg
-# and changes the moment the matrix changes, so requiring it pins branch
-# protection to a matrix definition. `gate` never moves.
+# Every change that changes a file is code: the documentation list in the
+# classifier is empty, because the suite reads Markdown files. An empty change
+# list against a resolved base is the one non-code change.
 #
 # The classification is NOT written inline here. It lives in
 # .github/scripts/ci-gate.mjs and is exercised by src/ci-gate.test.ts, so the
@@ -40,7 +51,7 @@ permissions:
 
 jobs:
   gate:
-    # Fixed, path-agnostic, matrix-free. This is the required context.
+    # Fixed, path-agnostic, matrix-free: a check name no matrix change can move.
     name: gate
     runs-on: ubuntu-latest
     outputs:
@@ -102,9 +113,11 @@ jobs:
           else
             # Three-dot: the change against the merge base, so commits the base
             # branch gained since the fork point are not counted as this
-            # change's. core.quotePath=false keeps non-ASCII paths unescaped, so
-            # the classifier sees the path git recorded.
-            git -c core.quotePath=false diff --name-only "${base}...${head}" > "$CHANGED_FILES_FILE"
+            # change's. --no-renames lists a rename as the path it left and the
+            # path it reached, so the classifier sees both and not only the
+            # destination. core.quotePath=false keeps non-ASCII paths unescaped,
+            # so the classifier sees the path git recorded.
+            git -c core.quotePath=false diff --no-renames --name-only "${base}...${head}" > "$CHANGED_FILES_FILE"
           fi
 
           echo "unresolved-base=$unresolved" >> "$GITHUB_OUTPUT"
@@ -152,13 +165,14 @@ jobs:
         run: node .github/scripts/ci-gate.mjs verdict
 
   build-and-test:
-    # Unchanged: same job id, same check names (`Node 20`, `Node 22`), same
-    # matrix, same steps. Only its gating moved, and it had to: the workflow-level
-    # `paths:` filter that used to keep this job off non-code changes is gone, so
-    # without the `if:` below the full matrix would start running on every README
-    # commit. The condition is the same classification the old filter expressed,
-    # read from the gate job, so the set of changes this job runs on is the set it
-    # ran on before.
+    # Same job id, same check names (`Node 20`, `Node 22`), same matrix and the
+    # same three suite commands. No job-level `if:`: a job skipped by one never
+    # expands its matrix, so neither `Node 20` nor `Node 22` reports, and a
+    # required context that never reports blocks the pull request. So the legs
+    # decide per step instead. Their suite steps run when `gate` classified the
+    # change as code, and their last step runs the same verdict command as
+    # `gate`, so a leg fails when its suite did not run on a code change and
+    # passes without the suite on a non-code change.
     #
     # The gate deliberately does not delegate to this job. A required context
     # whose verdict is assembled from other jobs' results is one `if:` away from
@@ -167,7 +181,6 @@ jobs:
     # on a code change, and that is the intended trade.
     name: Node ${{ matrix.node-version }}
     needs: gate
-    if: needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -184,11 +197,32 @@ jobs:
             exit 1
           fi
 
+      # The suite, on a code change only. Each step carries the same condition,
+      # and the verdict below re-checks that all three reported success.
       - uses: actions/setup-node@v4
+        if: needs.gate.outputs.code == 'true'
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
       - run: npm ci
+        id: npm_ci
+        if: needs.gate.outputs.code == 'true'
       - run: npm run build
+        id: build
+        if: needs.gate.outputs.code == 'true'
       - run: npm test
+        id: test
+        if: needs.gate.outputs.code == 'true'
+
+      - name: Gate verdict
+        # always(): a failed or skipped suite step must still reach the verdict,
+        # so a leg whose suite did not run on a code change fails instead of
+        # reporting green.
+        if: always()
+        env:
+          GATE_CODE: ${{ needs.gate.outputs.code }}
+          GATE_NPM_CI_OUTCOME: ${{ steps.npm_ci.outcome }}
+          GATE_BUILD_OUTCOME: ${{ steps.build.outcome }}
+          GATE_TEST_OUTCOME: ${{ steps.test.outcome }}
+        run: node .github/scripts/ci-gate.mjs verdict

@@ -22,6 +22,8 @@
  * that reports on every change is only worth requiring if it cannot be talked
  * into a green check by a state nobody anticipated, so:
  *   - a base commit that cannot be resolved classifies as code (run the suite);
+ *   - a changed path classifies as code unless it is on the documentation
+ *     list, and that list is empty;
  *   - a classification that is neither "true" nor "false" fails the gate;
  *   - a code-classified run whose suite steps did not all report `success`
  *     fails the gate, and `skipped` is not `success`.
@@ -32,25 +34,20 @@ import * as fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 /**
- * The paths that make a change a code change.
+ * The paths a change may touch and still be a non-code change. Empty.
  *
- * The first three are exactly the globs that used to sit in this workflow's
- * `on: paths:` filter, moved from the trigger (where they decided whether the
- * check reported AT ALL) into the run (where they decide what the check does).
- * Moving them is the whole point of the change: a required context that never
- * reports on a docs-only pull request wedges that pull request forever.
+ * Every change that changes a file is a code change, and the suite runs on it.
+ * The suite reads documentation: `npm test` runs `check:docs` over tracked
+ * Markdown files before vitest, and tests read README.md, CHANGELOG.md,
+ * SECURITY.md and pages under docs/. A change to one of those that skipped the
+ * suite could merge with every check green and leave the suite on main red.
  *
- * The last two are new and are self-protection: a pull request that edits the
- * workflow or this classifier is a change to the gate itself, and the gate must
- * not be able to wave through its own rewrite without running the suite.
+ * A path belongs on this list only when no step `npm test` runs reads it,
+ * measured at the head that adds it. The list names exceptions, so a path
+ * nobody thought to classify (a lockfile, a test config, a new directory) runs
+ * the suite instead of skipping it.
  */
-export const CODE_PATH_GLOBS = [
-  'src/**',
-  'package.json',
-  'tsconfig.json',
-  '.github/workflows/ci.yml',
-  '.github/scripts/ci-gate.mjs',
-];
+export const DOC_PATH_GLOBS = [];
 
 /** The suite the gate runs on a code change, in order. */
 export const SUITE_STEPS = ['npm ci', 'npm run build', 'npm test'];
@@ -87,10 +84,13 @@ export function globToRegExp(glob) {
   return new RegExp(`^${source}$`);
 }
 
-const CODE_PATH_MATCHERS = CODE_PATH_GLOBS.map(globToRegExp);
+const DOC_PATH_MATCHERS = DOC_PATH_GLOBS.map(globToRegExp);
 
 /**
  * Decide whether a changed-file list is a code change.
+ *
+ * A path is code unless it matches a documentation glob, so `matched` holds
+ * the changed paths that make the change code.
  *
  * @param {readonly string[]} files changed paths, repository-relative
  * @param {{ unresolvedBase?: boolean }} [options]
@@ -100,7 +100,7 @@ export function classifyChangedFiles(files, options = {}) {
   const paths = (files ?? [])
     .map((entry) => String(entry).trim())
     .filter((entry) => entry.length > 0);
-  const matched = paths.filter((entry) => CODE_PATH_MATCHERS.some((re) => re.test(entry)));
+  const matched = paths.filter((entry) => !DOC_PATH_MATCHERS.some((re) => re.test(entry)));
 
   // An unresolvable base (first push to a branch, a force-push that orphaned
   // the previous tip, a shallow clone) means the file list below is not a
@@ -136,8 +136,9 @@ export function gateVerdict(input) {
     return { pass: false, reason: 'unknown-classification', notRun: [...SUITE_STEPS] };
   }
 
-  // The deterministic pass. A docs-only change gets a green `gate` without the
-  // suite having run — that is the point of the job, not a loophole in it.
+  // The deterministic pass. A non-code change gets a green verdict without the
+  // suite having run. With the documentation list empty, the one change that
+  // classifies this way is an empty change list.
   if (code === false) {
     return { pass: true, reason: 'non-code-change', notRun: [...SUITE_STEPS] };
   }
