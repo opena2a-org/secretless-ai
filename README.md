@@ -37,7 +37,7 @@ What `npx secretless-ai init` prints, trimmed ([full output](docs/captures/quick
 
 Captured in a project holding an empty `.claude/` directory. Run it in a project root. It needs Node.js 20.19 or later and exits 1 when it leaves a tool not configured.
 
-`npx secretless-ai status` prints `Protected` only where the Claude Code hook or deny patterns apply. A project set up through instruction files alone reads `Advisory only`.
+The capture and the recording are from a pre-release build. The published release prints differently and lacks what is marked unreleased below ([changelog](CHANGELOG.md#unreleased)).
 
 <!-- demo:init:start -->
 ![secretless-ai init sets up a project, then verify checks it](docs/vhs/init.gif)
@@ -49,30 +49,30 @@ Recorded with secretless-ai 0.23.1 on 2026-10-22 (pre-release build)
 
 - [Store a secret and use it by name](#store-secrets-and-use-them-in-ai-sessions)
 - [Scan for hardcoded credentials](docs/commands.md#scan-for-hardcoded-credentials)
-- [Send scan findings to the GitHub Security tab](docs/scanning.md#scan-in-ci)
+- [Send scan findings to the GitHub Security tab](docs/scanning.md#scan-in-ci) (unreleased)
 - [Encrypt keys in MCP configs](docs/commands.md#mcp-server-protection)
-- [Move secrets to another machine](docs/managing-secrets.md#move-secrets-to-another-machine)
-- [Track an exposed key until rotated](docs/managing-secrets.md#track-an-exposed-key-until-it-is-rotated)
-- [Give git a stored token](docs/managing-secrets.md#give-git-a-stored-token-over-https)
-- [Push secrets to a cloud store](docs/managing-secrets.md#push-secrets-to-a-cloud-secret-store)
+- [Move secrets to another machine](docs/managing-secrets.md#move-secrets-to-another-machine) (unreleased)
+- [Track an exposed key until rotated](docs/managing-secrets.md#track-an-exposed-key-until-it-is-rotated) (unreleased)
+- [Give git a stored token](docs/managing-secrets.md#give-git-a-stored-token-over-https) (unreleased)
+- [Push secrets to a cloud store](docs/managing-secrets.md#push-secrets-to-a-cloud-secret-store) (unreleased)
 - [Switch storage backend](docs/how-it-works.md#storage-backends)
 - [Run the broker](docs/use-cases/run-broker.md)
 
 ## Store secrets and use them in AI sessions
 
 ```bash
-npx secretless-ai secret set STRIPE_SECRET_KEY --from-clipboard   # key copied from a web page
-npx secretless-ai secret set STRIPE_SECRET_KEY   # or type or paste it at a prompt, input hidden
-npx secretless-ai import .env                    # or migrate an existing .env in one step
+npx secretless-ai secret set STRIPE_SECRET_KEY --from-clipboard   # unreleased; key copied from the web
+npx secretless-ai secret set STRIPE_SECRET_KEY   # or type or paste it at a prompt; unreleased: input hidden
+npx secretless-ai import .env                    # or migrate an existing .env
 npx secretless-ai secret list                    # names only, values are never printed
 npx secretless-ai run --only STRIPE_SECRET_KEY -- node charge.js   # one command gets the value
 ```
 
-Commands and AI tools see the name, and the value goes to the process that uses it. With no backend configured, secrets go to the OS keychain where one is available, and otherwise to an AES-256-GCM encrypted file.
+Commands and AI tools see the name, and the value goes to the process that uses it. With no backend configured, secrets go to the OS keychain where one is available, otherwise to an AES-256-GCM encrypted file.
 
-On a terminal, `secret set` asks before it adds a hook to `~/.zshenv` or `~/.bashrc` that exports every stored secret as an environment variable in each new terminal; `--no-shell-hook` skips the question, and with a value piped in the profile is left as it is. `secret set NAME=VALUE` puts the value in shell history.
+Unreleased: on a terminal, `secret set` asks before it adds a hook to `~/.zshenv` or `~/.bashrc` that exports every stored secret as an environment variable in each new terminal; `--no-shell-hook` skips the question, and with a value piped in the profile is left alone. `secret set NAME=VALUE` puts the value in shell history.
 
-`init` also registers a prompt-submit hook that refuses a prompt holding a credential-shaped value or a stored secret's value, and offers a watcher that redacts a credential reaching a saved transcript. Both are local hooks; a chat in a browser is outside their reach.
+Unreleased: `init` also registers a prompt-submit hook that refuses a prompt holding a credential-shaped value or a stored secret's value, and offers a watcher that redacts a credential reaching a saved transcript. Both are local hooks; a chat in a browser is outside their reach.
 
 ## Install
 
