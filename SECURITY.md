@@ -17,7 +17,5 @@ pasting the value.
 We acknowledge receipt within 48 hours and give a remediation timeline in that reply.
 ## Change control
 
-Changes to the automated review and release configuration (everything under
-`.github/`) require an approving review from a code owner. Automation can
-propose those changes; it cannot approve them. Ordinary pull requests are
-gated by status checks alone.
+Pull requests, including changes to the automated review and release
+configuration (everything under `.github/`), are gated by status checks alone.
