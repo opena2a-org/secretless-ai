@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LocalBackend } from './local';
 import { MacOSKeychainBackend, SECURITY_PROGRAM } from './keychain-macos';
-import { BACKEND_CHILD_TIMEOUT_MS, OsKeychainRefusedError, execFileSyncBounded, type KeychainFirstCall } from './bounded-child';
+import { BACKEND_CHILD_TIMEOUT_MS, OsKeychainRefusedError, execFileSyncBounded, type BoundedChildReport, type KeychainFirstCall } from './bounded-child';
 import { LinuxKeychainBackend } from './keychain-linux';
 import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
@@ -357,6 +357,12 @@ function binaryOnPath(name: string): boolean {
 export interface ProbeInternals {
   /** Per-child bound. The default is the one named source in bounded-child.ts. */
   childTimeoutMs?: number;
+  /**
+   * Told, for each child a probe starts, what became of it (its pid, and
+   * whether it was killed at the bound), from the probe's own call. What the
+   * probe returns is the same with or without it.
+   */
+  onChild?: (report: BoundedChildReport) => void;
 }
 
 /**
@@ -366,7 +372,7 @@ export interface ProbeInternals {
  * instead of never returning.
  */
 function probe(program: string, args: string[], internals?: ProbeInternals): void {
-  execFileSyncBounded(program, args, internals?.childTimeoutMs ?? BACKEND_CHILD_TIMEOUT_MS);
+  execFileSyncBounded(program, args, internals?.childTimeoutMs ?? BACKEND_CHILD_TIMEOUT_MS, undefined, internals?.onChild);
 }
 
 /**

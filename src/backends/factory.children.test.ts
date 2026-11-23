@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { isKeychainAvailable } from './factory';
+import type { BoundedChildReport } from './bounded-child';
 import {
   makeHangingProgram,
   makeMarkerProgram,
@@ -103,6 +104,29 @@ describe('factory probes: every child call is bounded', () => {
     stderr: string;
   }
 
+  /** What the harness prints: the probe's answer, and the probe's own report of each child it started. */
+  interface ProbeReport {
+    result: { available: boolean; platform?: string; message: string };
+    elapsedMs: number;
+    children: BoundedChildReport[];
+    osKeychainSwitch: string | null;
+  }
+
+  /**
+   * The pid and the outcome come from the probe, not from the stand-in: a
+   * stand-in on a busy machine may be killed before it writes anything, and by
+   * the time the probe returns it has killed and reaped the stand-in.
+   */
+  function expectOneChildKilledAtTheBound(children: BoundedChildReport[], elapsedMs: number): void {
+    const detail = `probe elapsed ${elapsedMs}ms; children ${JSON.stringify(children)}`;
+    expect(children, detail).toHaveLength(1);
+    const [child] = children;
+    expect(child.timedOut, detail).toBe(true);
+    expect(child.signal, detail).toBe('SIGKILL');
+    expect(child.pid, detail).toEqual(expect.any(Number));
+    expect(processIsGone(child.pid!), detail).toBe(true);
+  }
+
   function runProbeInChild(
     fn: 'isKeychainAvailable' | 'isOnePasswordAvailable',
     platform: NodeJS.Platform,
@@ -124,9 +148,10 @@ const [dist, fn, platform, prefix, ms] = process.argv.slice(2);
 process.env.PATH = prefix + path.delimiter + (process.env.PATH || '');
 Object.defineProperty(process, 'platform', { value: platform, configurable: true });
 const factory = require(dist);
+const children = [];
 const start = Date.now();
-const result = factory[fn]({ childTimeoutMs: Number(ms) });
-process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, osKeychainSwitch: process.env.SECRETLESS_OS_KEYCHAIN ?? null }));
+const result = factory[fn]({ childTimeoutMs: Number(ms), onChild: (report) => children.push(report) });
+process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, children, osKeychainSwitch: process.env.SECRETLESS_OS_KEYCHAIN ?? null }));
 `);
     return new Promise((resolve) => {
       const child = spawn(
@@ -152,7 +177,6 @@ process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, osK
     try {
       // Positive control, and the program's first start paid outside the bound.
       expect(hanging.controlRun()).toBe(true);
-      expect(hanging.pid()).toBeNull();
       // SECRETLESS_OS_KEYCHAIN=off would refuse `which secret-tool` before it
       // starts, and this cell needs the child to start. It is removed for this
       // one harness only: its platform is forced to linux, so the probe's only
@@ -162,14 +186,12 @@ process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, osK
       const out = await runProbeInChild('isKeychainAvailable', 'linux', hanging.dir, 500, withoutSwitch);
       expect(out.signal, `probe did not return before the outer deadline\n${out.stderr}`).toBeNull();
       expect(out.status, out.stderr).toBe(0);
-      const { result, elapsedMs, osKeychainSwitch } = JSON.parse(out.stdout);
+      const { result, elapsedMs, children, osKeychainSwitch } = JSON.parse(out.stdout) as ProbeReport;
       expect(osKeychainSwitch).toBeNull();
       expect(result.available).toBe(false);
       expect(result.platform).toBe('Linux');
       expect(elapsedMs).toBeLessThan(5_000);
-      const pid = hanging.pid();
-      expect(pid, `the hanging which left no pid; probe elapsed ${elapsedMs}ms\n${out.stderr}`).not.toBeNull();
-      expect(processIsGone(pid!)).toBe(true);
+      expectOneChildKilledAtTheBound(children, elapsedMs);
     } finally {
       hanging.cleanup();
     }
@@ -182,16 +204,15 @@ process.stdout.write(JSON.stringify({ result, elapsedMs: Date.now() - start, osK
       // `op` is not an OS credential-store CLI, so SECRETLESS_OS_KEYCHAIN=off
       // does not refuse it: this probe starts the planted `op` either way.
       expect(hanging.controlRun()).toBe(true);
-      expect(hanging.pid()).toBeNull();
       const out = await runProbeInChild('isOnePasswordAvailable', process.platform, hanging.dir, 500);
       expect(out.signal, `probe did not return before the outer deadline\n${out.stderr}`).toBeNull();
       expect(out.status, out.stderr).toBe(0);
-      const { result, elapsedMs } = JSON.parse(out.stdout);
+      const { result, elapsedMs, children } = JSON.parse(out.stdout) as ProbeReport;
       expect(result.available).toBe(false);
       expect(elapsedMs).toBeLessThan(5_000);
-      const pid = hanging.pid();
-      expect(pid).not.toBeNull();
-      expect(processIsGone(pid!)).toBe(true);
+      // `op --version` is the probe's first child; it never exits, so it is
+      // the only one.
+      expectOneChildKilledAtTheBound(children, elapsedMs);
     } finally {
       hanging.cleanup();
     }
