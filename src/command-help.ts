@@ -261,6 +261,11 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
     summary: 'Redact credentials in shell history.',
     usage: ['[--dry-run]'],
     flags: { '--dry-run': 'Preview without modifying' },
+    notes: [
+      'A dry run writes nothing: it counts the files that would change and the',
+      'lines that would be redacted. Without it, each changed file is backed up',
+      'with a .bak extension first.',
+    ],
   },
   run: {
     summary: 'Run a command with secrets injected into its environment.',
@@ -498,6 +503,12 @@ const DOCS: Readonly<Record<string, VerbDoc>> = {
   telemetry: {
     summary: 'Show or change anonymous usage telemetry.',
     usage: ['[on|off|status]'],
+    notes: [
+      'on       Send anonymous usage events',
+      'off      Send nothing',
+      'status   Show the current setting (the default with no action), and the',
+      '         one action that would change it',
+    ],
   },
   rules: {
     summary: 'List, create or test custom deny rules.',
