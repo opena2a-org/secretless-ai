@@ -1358,8 +1358,13 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, val
   const critCount = findings.filter(f => f.severity === 'critical').length;
   const highCount = findings.length - critCount;
 
-  if (critCount > 0) {
+  // The headline counts every finding, as the list below it does. It named
+  // only the critical ones, so `3 critical credentials exposed` stood over a
+  // list of 7 (#410); the critical count is now a label on the total.
+  if (critCount === findings.length) {
     console.log(`  ${c.boldRed(`${critCount} critical credential${critCount > 1 ? 's' : ''} exposed`)}`);
+  } else if (critCount > 0) {
+    console.log(`  ${c.boldRed(`${findings.length} credentials exposed, ${critCount} critical`)}`);
   } else {
     console.log(`  ${c.boldYellow(`${findings.length} credential${findings.length > 1 ? 's' : ''} found`)}`);
   }
