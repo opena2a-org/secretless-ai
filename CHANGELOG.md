@@ -4650,8 +4650,11 @@ project or from user-level settings, still make the project protected.
 - gcp-sm: a plain read, a store to an existing secret and a plain delete first
   read the secret's labels. That read needs `secretmanager.secrets.get`
   (Secret Manager Viewer, grantable on the one secret) besides Secret
-  Accessor; a principal with Secret Accessor alone is refused with the Viewer
-  hint, and no value is read.
+  Accessor; a plain read or a plain delete by a principal with Secret
+  Accessor alone is refused with the Viewer hint, and no value is read. A
+  store reads the labels only after its create attempt, so a principal that
+  may not create secrets gets the Admin hint first; a store with only
+  Secret Accessor fails its create attempt and gets the Admin hint.
 - gcp-sm: an MCP key whose segment starts with U+FEFF decodes back to itself
   and keeps its server binding.
 - gcp-sm: `secret push --to gcp-sm` reads the secret's store-key label before
