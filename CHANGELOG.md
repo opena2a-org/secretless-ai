@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**With the `gcp-sm` backend, a store that cannot be read is an error, not an
+empty store (#182).** With expired Application Default Credentials,
+`run --only NAME -- true` exits 1 with Google's own reason
+(`invalid_grant: Token has been expired or revoked.`) and the line
+`Fix:     gcloud auth application-default login`, and starts nothing; it
+printed `GCP ADC token refresh failed (HTTP 400)` and the raw response body.
+A request answered 401 names the credential and the same fix, and a 403 adds
+Google's message under the role it needs. A project the credentials cannot
+list was read as holding no secrets unless a repository's `.secretless` named
+it, so `run` printed `No secrets found` and started the command, or reported a
+requested name as not in the store; it is now an error whichever way the
+project was chosen. A listed secret whose value cannot be read was skipped,
+so `run` started the command without it; it is now an error naming the
+secret. `src/run-unreadable-store.test.ts` runs each case against a stubbed
+Google API.
+
 **`migrate` given only `--from` or only `--to` names that backend in the
 usage line it prints, at exit 2 as before (#471).** `migrate --from local`
 printed the usage line with both flags as placeholders,
