@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**A `.secretlessignore` that excludes every path, as `*` or `**` does, no
+longer turns the pre-commit hook off (#191).** With such a file, `scan-staged`
+passed a commit that staged a `.env` file and a GitHub token and exited 0. It
+now sets the file aside, scans the staged files with the default-ignore list,
+says so on stderr and refuses the commit as before. A `.secretlessignore` of
+particular paths, such as `fixtures/`, still applies.
+`src/pre-commit-regressions.test.ts` runs the hook in a real repository: a
+`secretless-ai` stub in an ancestor directory's `node_modules/.bin` does not
+run, a `*` ignore file does not turn the hook off, and a `git diff --cached`
+that fails makes the hook exit non-zero.
+
 **With the `gcp-sm` backend, a store that cannot be read is an error, not an
 empty store (#182).** With expired Application Default Credentials,
 `run --only NAME -- true` exits 1 with Google's own reason
