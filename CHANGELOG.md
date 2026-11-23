@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**`import --detect` does not store a placeholder, and says the `.env` files
+still hold what it stored (#410).** An entry such as
+`PLACEHOLDER_KEY=your-key-here` was stored as a secret; an entry whose value is
+a placeholder by the scanner's value rules is now left out and named under its
+file, `(1 skipped — placeholder values: PLACEHOLDER_KEY)`. `import <file>`
+stores every entry as before. After the total, `import --detect` names the
+files a value was stored from, says they still hold those values in plaintext,
+and gives the next step: delete the imported lines and start the app with
+`npx secretless-ai run -- <command>`. `src/import-detect-placeholders.test.ts`
+runs both.
+
 **A `.secretlessignore` that excludes every path, as `*` or `**` does, no
 longer turns the pre-commit hook off (#191).** With such a file, `scan-staged`
 passed a commit that staged a `.env` file and a GitHub token and exited 0. It

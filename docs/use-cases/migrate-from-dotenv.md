@@ -75,9 +75,14 @@ Expected output:
   .env.local: 2 imported
 
   Total: 5 secret(s) imported.
+
+  .env, .env.local still hold these values in plaintext.
+  Next: delete the imported lines from them, and start the app with npx secretless-ai run -- <command>.
 ```
 
-`import --detect` reads the `.env` files in the current directory and stores every entry, the Sentry DSN included. An entry whose name cannot be stored is counted as skipped.
+`import --detect` reads the `.env` files in the current directory and stores every entry, the Sentry DSN included. An entry whose name cannot be stored is counted as skipped. An entry whose value is a placeholder, such as `your-api-key-here`, is not stored: it is named on a `skipped — placeholder values` line under its file. `import .env` stores a file's entries as they are, placeholders included.
+
+The import copies the values; it does not change the `.env` files. Until you delete the imported lines, the values are still in plaintext on disk.
 
 To import a specific file instead:
 

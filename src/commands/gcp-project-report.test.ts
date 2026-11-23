@@ -284,8 +284,8 @@ describe('every write to a project the repository named prints that project firs
   });
 
   it('import --detect names it once for every file it imports', async () => {
-    fs.writeFileSync(path.join(repoDir, '.env'), 'DATABASE_URL=placeholder-value\n');
-    fs.writeFileSync(path.join(repoDir, '.env.local'), 'API_TOKEN=placeholder-value-2\n');
+    fs.writeFileSync(path.join(repoDir, '.env'), 'DATABASE_URL=stored-value\n');
+    fs.writeFileSync(path.join(repoDir, '.env.local'), 'API_TOKEN=stored-value-2\n');
     expect(await runImport(['--detect'])).toBe(0);
     expectProjectNamedBeforeFirstWrite();
     expect(events.filter((e) => e.includes(note))).toHaveLength(1);

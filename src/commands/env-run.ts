@@ -4,7 +4,7 @@ import { importEnvFile, detectEnvFiles } from '../env-import';
 import { runSetup } from '../setup';
 import { printCommandHelp } from '../command-help';
 import { generateEnvExports, detectAgentRuntime } from '../env';
-import { formatCommandError } from './utils';
+import { CLI, formatCommandError } from './utils';
 import { isBundleFile } from '../bundle';
 import { EXIT_USAGE } from '../argv';
 import { escapeForDisplay } from '../display-safe';
@@ -145,19 +145,33 @@ export async function runImport(args: string[], deps?: BundleCommandDeps): Promi
       projectNamed = true;
       console.log(`  ${projectNote}\n`);
     };
+    // The files a value was stored from: each still holds it in plaintext.
+    const storedFrom: string[] = [];
     for (const file of files) {
       try {
-        const result = await importEnvFile(file, { beforeWrite });
+        // A placeholder (`your-key-here`) is no secret to store (#410).
+        const result = await importEnvFile(file, { beforeWrite, skipPlaceholders: true });
         console.log(`  ${path.basename(file)}: ${result.imported} imported`);
         if (result.skipped > 0) {
           console.log(`    (${result.skipped} skipped — invalid names)`);
         }
+        if (result.placeholders.length > 0) {
+          // Names passed the storable-name check, so they print as they are.
+          console.log(`    (${result.placeholders.length} skipped — placeholder values: ${result.placeholders.join(', ')})`);
+        }
         totalImported += result.imported;
+        if (result.imported > 0) storedFrom.push(path.basename(file));
       } catch (err) {
         console.error(`  Error importing ${file}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     console.log(`\n  Total: ${totalImported} secret(s) imported.\n`);
+    if (storedFrom.length > 0) {
+      // The import copies the values; the plaintext files still hold them (#410).
+      const one = storedFrom.length === 1;
+      console.log(`  ${storedFrom.join(', ')} still ${one ? 'holds' : 'hold'} these values in plaintext.`);
+      console.log(`  Next: delete the imported lines from ${one ? 'it' : 'them'}, and start the app with ${CLI} run -- <command>.\n`);
+    }
     return 0;
   }
 

@@ -10,6 +10,7 @@ import * as path from 'path';
 import { SecretStore } from './secret-store';
 import type { SecretStoreOptions } from './secret-store';
 import { repositoryProjectNote } from './backends/gcp-project';
+import { isPlaceholderValue } from './scan';
 
 /** Known .env file names to auto-detect. */
 const ENV_FILE_NAMES = [
@@ -85,11 +86,20 @@ export function parseEnvFile(content: string): EnvEntry[] {
 
 export interface ImportResult {
   imported: number;
+  /** Entries whose name cannot be stored. */
   skipped: number;
   entries: string[];
+  /** Names left out because their value is a placeholder (`skipPlaceholders`). */
+  placeholders: string[];
 }
 
 export interface ImportEnvOptions extends SecretStoreOptions {
+  /**
+   * Leave out an entry whose value is a placeholder by the scanner's value
+   * rules (`your-key-here`, `replace_me`, a known example key), and
+   * name it in `placeholders` instead of storing it.
+   */
+  skipPlaceholders?: boolean;
   /**
    * Called once before the first write with the line naming the GCP project
    * the entries go to when this repository's .secretless named it, so the
@@ -113,11 +123,16 @@ export async function importEnvFile(
   let imported = 0;
   let skipped = 0;
   const names: string[] = [];
+  const placeholders: string[] = [];
 
   for (const entry of entries) {
     // Validate name is safe for storage
     if (!/^[a-zA-Z0-9_-]+$/.test(entry.name)) {
       skipped++;
+      continue;
+    }
+    if (options?.skipPlaceholders && entry.value !== '' && isPlaceholderValue(entry.value)) {
+      placeholders.push(entry.name);
       continue;
     }
 
@@ -130,7 +145,7 @@ export async function importEnvFile(
     names.push(entry.name);
   }
 
-  return { imported, skipped, entries: names };
+  return { imported, skipped, entries: names, placeholders };
 }
 
 /**

@@ -36,7 +36,7 @@ import * as path from 'path';
 import { CREDENTIAL_PATTERNS, type CredentialPattern } from '../patterns';
 // A cycle, read only at call time: scan.ts imports this module, and this
 // module calls scan.ts's value rules, so there is one copy of them.
-import { isKnownExample } from '../scan';
+import { isKnownExample, isPlaceholderValue } from '../scan';
 import { hasDisplayHazard, shellQuote, withSlashSeparators } from '../display-safe';
 import { classifyEnvVars } from './classify';
 import { mcpConfigLocations, serverMapKey } from './discover';
@@ -55,13 +55,6 @@ export type EnvSecretKind = 'literal' | 'placeholder';
 /** The whole value is one expansion and nothing else. */
 const WHOLE_VALUE_EXPANSION =
   /^\$\{(?:[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?|env:[A-Za-z_][A-Za-z0-9_]*|input:[^${}]+)\}$/;
-
-/** Whether `value` is a placeholder by `isKnownExample`'s value rules alone. */
-function isPlaceholderValue(value: string): boolean {
-  // An empty line holds no comment, so the comment rule cannot apply.
-  const match = Object.assign([value], { index: 0, input: value }) as unknown as RegExpMatchArray;
-  return isKnownExample('', match);
-}
 
 /** What an env value is, by the decision above. Says nothing about the key. */
 export function envValueKind(value: string): EnvValueKind {

@@ -629,6 +629,15 @@ export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
 }
 
 /**
+ * Whether a whole value is a placeholder by `isKnownExample`'s value rules
+ * alone. The comment rule reads the line a value is on; it is given none.
+ */
+export function isPlaceholderValue(value: string): boolean {
+  const match = Object.assign([value], { index: 0, input: value }) as unknown as RegExpMatchArray;
+  return isKnownExample('', match);
+}
+
+/**
  * Return the first match in `line` for `pattern.regex` that is NOT a known
  * example, or null if every match is an example (or there are no matches).
  *
