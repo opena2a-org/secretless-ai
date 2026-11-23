@@ -211,6 +211,38 @@ function gcpTimeoutError(method: string, url: string, timeoutMs: number): Error 
   );
 }
 
+/** The command that renews the Application Default Credentials. */
+const ADC_LOGIN = 'gcloud auth application-default login';
+
+/** Longest account of a refusal taken from Google's error body. */
+const MAX_GOOGLE_DETAIL = 300;
+
+/**
+ * Google's own account of a refused request, from its error body: an API
+ * error's `error.status` and `error.message`, or the token endpoint's `error`
+ * and `error_description`. '' when the body carries no message: a bare status
+ * says nothing the HTTP code does not. Escaped and bounded. An error body
+ * holds no secret value, and nothing else of it is shown.
+ */
+async function googleErrorDetail(response: BoundedResponse): Promise<string> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return '';
+  }
+  if (!body || typeof body !== 'object') return '';
+  const { error, error_description: description } = body as { error?: unknown; error_description?: unknown };
+  const [code, message] = error && typeof error === 'object'
+    ? [(error as { status?: unknown }).status, (error as { message?: unknown }).message]
+    : [error, description];
+  if (typeof message !== 'string' || message.trim() === '') return '';
+  const detail = escapeForDisplay(
+    typeof code === 'string' && code.trim() !== '' ? `${code.trim()}: ${message.trim()}` : message.trim(),
+  );
+  return detail.length > MAX_GOOGLE_DETAIL ? `${detail.slice(0, MAX_GOOGLE_DETAIL)}...` : detail;
+}
+
 export interface GCPSecretManagerConfig {
   /** GCP project ID. Overrides auto-detected project. */
   projectId?: string;
@@ -276,6 +308,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
   // Token cache
   private accessToken: string | null = null;
   private tokenExpiry: number = 0;
+  /** The key file the token was signed with; undefined for ADC. */
+  private tokenKeyFile: string | undefined;
 
   constructor(config?: GCPSecretManagerConfig | Record<string, unknown>) {
     const c = (config ?? {}) as GCPSecretManagerConfig;
@@ -451,14 +485,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
       return false;
     }
 
-    if (response.status === 403) {
-      throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Admin' role.`
-      );
-    }
-
     if (!response.ok) {
-      throw new Error(`GCP Secret Manager: delete failed (HTTP ${response.status})`);
+      throw await this.refusedError(response, projectId, 'delete', 'Secret Manager Admin');
     }
 
     return true;
@@ -583,9 +611,11 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
         throw new Error(`Expected service account key, got type: ${key.type}`);
       }
 
-      const token = await this.exchangeJwtForToken(key.client_email, key.private_key);
+      this.tokenKeyFile = keyPath;
+      const token = await this.exchangeJwtForToken(key.client_email, key.private_key, keyPath);
       return token;
     }
+    this.tokenKeyFile = undefined;
 
     // Try Application Default Credentials (ADC)
     const adcPath = path.join(os.homedir(), '.config', 'gcloud', 'application_default_credentials.json');
@@ -609,7 +639,7 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
    * Exchange a signed JWT for an access token (service account flow).
    * Reuses JWT signing utilities similar to src/scope/gcp.ts.
    */
-  private async exchangeJwtForToken(clientEmail: string, privateKey: string): Promise<string> {
+  private async exchangeJwtForToken(clientEmail: string, privateKey: string, keyPath: string): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
 
     const header = { alg: 'RS256', typ: 'JWT' };
@@ -642,8 +672,20 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     }, body.toString());
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`GCP token exchange failed (HTTP ${response.status}): ${text}`);
+      const detail = await googleErrorDetail(response);
+      throw new Error(
+        [
+          `GCP Secret Manager: the service account key ${escapeForDisplay(keyPath)} was refused (HTTP ${response.status}).`,
+          ...(detail ? [`  Google:  ${detail}`] : []),
+          '',
+          '  Nothing was read or written: the store could not be reached, which is not',
+          '  the same as an empty store.',
+          '',
+          `  Verify:  gcloud iam service-accounts keys list --iam-account ${escapeForDisplay(clientEmail)}`,
+          '  Fix:     point GOOGLE_APPLICATION_CREDENTIALS at a current key for that service account,',
+          `           or unset it and run: ${ADC_LOGIN}`,
+        ].join('\n'),
+      );
     }
 
     const data = await response.json() as { access_token?: string; expires_in?: number };
@@ -672,8 +714,22 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     }, body.toString());
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`GCP ADC token refresh failed (HTTP ${response.status}): ${text}`);
+      // An expired or revoked login is answered 400 invalid_grant. Whatever the
+      // status, the stored login could not be turned into a token, and the one
+      // fix is to log in again.
+      const detail = await googleErrorDetail(response);
+      throw new Error(
+        [
+          `GCP Secret Manager: the Application Default Credentials were refused (HTTP ${response.status}).`,
+          ...(detail ? [`  Google:  ${detail}`] : []),
+          '',
+          '  Nothing was read or written: the store could not be reached, which is not',
+          '  the same as an empty store.',
+          '',
+          '  Verify:  gcloud auth application-default print-access-token',
+          `  Fix:     ${ADC_LOGIN}`,
+        ].join('\n'),
+      );
     }
 
     const data = await response.json() as { access_token?: string; expires_in?: number };
@@ -698,14 +754,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
       return undefined;
     }
 
-    if (response.status === 403) {
-      throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Secret Accessor' role.`
-      );
-    }
-
     if (!response.ok) {
-      throw new Error(`GCP Secret Manager: read failed (HTTP ${response.status})`);
+      throw await this.refusedError(response, projectId, 'read', 'Secret Manager Secret Accessor', secretName);
     }
 
     const body = await response.json() as {
@@ -742,14 +792,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
       return false;
     }
 
-    if (response.status === 403) {
-      throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Admin' role.`
-      );
-    }
-
     if (!response.ok) {
-      throw new Error(`GCP Secret Manager: create secret failed (HTTP ${response.status})`);
+      throw await this.refusedError(response, projectId, 'create secret', 'Secret Manager Admin');
     }
 
     return true;
@@ -771,14 +815,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
       payload: { data: encoded },
     });
 
-    if (response.status === 403) {
-      throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Admin' role.`
-      );
-    }
-
     if (!response.ok) {
-      throw new Error(`GCP Secret Manager: add version failed (HTTP ${response.status})`);
+      throw await this.refusedError(response, projectId, 'add version', 'Secret Manager Admin');
     }
 
     // The new version's resource name only; the response carries no payload.
@@ -815,12 +853,11 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     const results: Record<string, string> = {};
     for (const { key, secretName } of await this.listKeys(projectId, token)) {
       if (prefix !== '' && key !== prefix && !key.startsWith(`${prefix}/`)) continue;
-      try {
-        const value = await this.getSecretValue(projectId, secretName, token);
-        if (value !== undefined) results[key] = value;
-      } catch {
-        // Skip secrets we can't read (permission issues, etc.)
-      }
+      // A secret that cannot be read is thrown, not skipped: skipped, it left
+      // the answer a name short, and `run` started the command without it or
+      // reported a requested name as not in the store (#182).
+      const value = await this.getSecretValue(projectId, secretName, token);
+      if (value !== undefined) results[key] = value;
     }
     return results;
   }
@@ -839,13 +876,8 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     const response = await this.request('GET', url, token);
 
     if (response.status === 404) return 'absent';
-    if (response.status === 403) {
-      throw new Error(
-        `GCP Secret Manager: insufficient IAM permissions on ${this.projectLabel(projectId)}. Grant 'Secret Manager Viewer' role.`
-      );
-    }
     if (!response.ok) {
-      throw new Error(`GCP Secret Manager: read failed (HTTP ${response.status})`);
+      throw await this.refusedError(response, projectId, 'read', 'Secret Manager Viewer');
     }
     const body = await response.json() as { labels?: Record<string, string> };
     return body.labels?.[STORE_KEY_LABEL] === STORE_KEY_LABEL_VALUE ? 'stored-key' : 'other';
@@ -923,16 +955,14 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
       const response = await this.request('GET', url, token);
 
       if (!response.ok) {
-        // A project named by a repository manifest that cannot be listed is
-        // reported, not read as "no secrets": an empty answer would look like
-        // missing names rather than a project these credentials cannot use.
-        if (this.resolution?.source === 'manifest') {
-          throw new Error(
-            `GCP Secret Manager: cannot list secrets in ${this.projectLabel(projectId)} (HTTP ${response.status}). `
-            + `Verify access: gcloud secrets list --project ${projectId} --limit 1`
-          );
-        }
-        return keys;
+        // A project that cannot be listed is reported, not read as "no
+        // secrets": an empty answer looks like an empty store, and `run` went
+        // on to say "No secrets found" or that a requested name was not in the
+        // store (#177, #182).
+        throw await this.refusedError(
+          response, projectId, 'list', 'Secret Manager Viewer', undefined,
+          `gcloud secrets list --project ${projectId} --limit 1`,
+        );
       }
 
       const body = await response.json() as {
@@ -959,6 +989,60 @@ export class GCPSecretManagerBackend implements WritableSecretBackend {
     } while (pageToken);
 
     return keys;
+  }
+
+  /**
+   * The error for a Secret Manager request Google answered with a failure,
+   * with Google's own account of why. 401 is the credential, and the Fix
+   * renews it; 403 names the role `role` the request needs. `secretName`
+   * names the secret the request was for, `verify` a command that shows the
+   * same refusal. Never a value: an error body holds none.
+   */
+  private async refusedError(
+    response: BoundedResponse,
+    projectId: string,
+    op: 'read' | 'list' | 'delete' | 'create secret' | 'add version',
+    role: string,
+    secretName?: string,
+    verify?: string,
+  ): Promise<Error> {
+    const detail = await googleErrorDetail(response);
+    const google = detail ? [`  Google:  ${detail}`] : [];
+    const verifyLine = verify ? [`  Verify:  ${verify}`] : [];
+    const label = this.projectLabel(projectId);
+    const of = secretName ? ` of ${secretName}` : '';
+
+    if (response.status === 401) {
+      const fix = this.tokenKeyFile
+        ? [
+          '  Fix:     point GOOGLE_APPLICATION_CREDENTIALS at a current service account key,',
+          `           or unset it and run: ${ADC_LOGIN}`,
+        ]
+        : [`  Fix:     ${ADC_LOGIN}`];
+      return new Error(
+        [
+          `GCP Secret Manager: the credentials were not accepted for a ${op}${of} in ${label} (HTTP 401).`,
+          ...google,
+          '',
+          '  The store could not be read, which is not the same as an empty store.',
+          '',
+          ...verifyLine,
+          ...fix,
+        ].join('\n'),
+      );
+    }
+
+    if (response.status === 403) {
+      const head = secretName
+        ? `GCP Secret Manager: insufficient IAM permissions on ${label} to read ${secretName}. Grant '${role}' role.`
+        : `GCP Secret Manager: insufficient IAM permissions on ${label}. Grant '${role}' role.`;
+      return new Error([head, ...google, ...(verify ? ['', ...verifyLine] : [])].join('\n'));
+    }
+
+    const head = op === 'list'
+      ? `GCP Secret Manager: cannot list secrets in ${label} (HTTP ${response.status}).`
+      : `GCP Secret Manager: ${op} failed (HTTP ${response.status})${secretName ? ` for ${secretName}` : ''}`;
+    return new Error([head, ...google, ...(verify ? ['', ...verifyLine] : [])].join('\n'));
   }
 
   /**
