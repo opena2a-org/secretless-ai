@@ -1950,6 +1950,20 @@ export function withDirsVisitedBudget<T>(budget: number, fn: () => T): T {
   }
 }
 
+/** Directories entered by every walk since {@link countDirsEntered} began. */
+let dirsEnteredTotal = 0;
+
+/**
+ * @internal Test only: run `fn` and return how many directories the walks it
+ * started entered, summed. A measure of the work a walk does that, unlike the
+ * time it takes, does not depend on how busy the machine is.
+ */
+export function countDirsEntered(fn: () => unknown): number {
+  dirsEnteredTotal = 0;
+  fn();
+  return dirsEnteredTotal;
+}
+
 /**
  * How many distinct paths to the SAME real directory one walk will follow.
  *
@@ -2173,6 +2187,7 @@ function walkTree(dir: string, maxFiles: number, spec: WalkSpec): WalkResult {
     visitsByReal.set(currentReal, seenCount + 1);
     const childAncestors = [...ancestors, currentReal];
     dirsVisited += 1;
+    dirsEnteredTotal += 1;
 
     let entries: fs.Dirent[];
     try {
