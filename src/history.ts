@@ -181,10 +181,33 @@ function stripZshTimestamp(line: string): string {
 }
 
 /**
- * Check a single line against all patterns.
+ * A marker `clean-history` writes in place of a value, `[REDACTED:<pattern
+ * id>]`. It replaces a value through its trailing credential characters, so a
+ * marker it wrote is never followed by one; a marker that is is not taken for
+ * a redacted value. Quotes around the marker go with it: `secret set
+ * NAME="<value>"` reports any quoted value, and `" "` would be one.
+ */
+const REDACTED_MARKER = /(["']?)\[REDACTED:[a-z0-9-]+\]\1(?![A-Za-z0-9_-])/g;
+
+/**
+ * `line` with each value `clean-history` already redacted taken out (#471).
+ * The marker is 20 characters or more, so `export NAME="[REDACTED:github-pat]"`
+ * read as the `export NAME=<20 characters>` a command pattern reports, and
+ * `scan --history` still reported the lines one `clean-history` had cleaned. A
+ * marker becomes a space rather than nothing, so the text either side of it is
+ * not joined into a value.
+ */
+function withoutRedactedMarkers(line: string): string {
+  return line.replace(REDACTED_MARKER, ' ');
+}
+
+/**
+ * Check a single line against all patterns, a value already redacted aside.
  * Returns the first matching pattern or null.
  */
-function matchLine(line: string): { id: string; name: string; regex: RegExp } | null {
+function matchLine(rawLine: string): { id: string; name: string; regex: RegExp } | null {
+  const line = withoutRedactedMarkers(rawLine);
+
   // Check credential patterns first
   for (const pattern of CREDENTIAL_PATTERNS) {
     if (pattern.regex.test(line)) {
