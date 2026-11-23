@@ -244,22 +244,72 @@ export function runBoundedChild(
 }
 
 /**
+ * What became of the one child a synchronous bounded call started, as that
+ * call itself saw it. Internal: it reaches no caller outside this package's
+ * own probes and their tests.
+ */
+export interface BoundedChildReport {
+  /**
+   * The child's pid. Known whenever the call did not end in a clean exit (a
+   * timeout, a non-zero exit, a signal); null when the child exited 0, since
+   * `execFileSync` returns only its output then, and null when it never started.
+   */
+  pid: number | null;
+  /** True when the bound elapsed and the child was killed with BACKEND_CHILD_KILL_SIGNAL. */
+  timedOut: boolean;
+  /** Exit status, or null when the child ended on a signal or never started. */
+  status: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+/**
  * Synchronous counterpart for the factory's availability probes, which are
  * called from synchronous code. Throws exactly as `execFileSync` does; the
  * bound is the one addition, so a probe of a locked or wedged tool returns a
  * "not available" answer instead of never returning.
+ *
+ * `observe`, when given, is told what became of the child once the call has
+ * returned or thrown, from that same `execFileSync` call: there is no second
+ * path for an observed call. By then the child has exited or been killed and
+ * reaped. A call refused before any child starts tells it nothing.
  */
 export function execFileSyncBounded(
   program: string,
   args: readonly string[],
   timeoutMs: number,
   opts?: Omit<ExecFileSyncOptions, 'timeout' | 'killSignal'>,
+  observe?: (report: BoundedChildReport) => void,
 ): Buffer | string {
   if (osKeychainRefused(program, args)) throw osKeychainRefusedError(program);
-  return execFileSync(program, [...args], {
-    stdio: 'pipe',
-    ...opts,
-    timeout: timeoutMs,
-    killSignal: BACKEND_CHILD_KILL_SIGNAL,
-  });
+  let out: Buffer | string;
+  try {
+    out = execFileSync(program, [...args], {
+      stdio: 'pipe',
+      ...opts,
+      timeout: timeoutMs,
+      killSignal: BACKEND_CHILD_KILL_SIGNAL,
+    });
+  } catch (err) {
+    observe?.(reportFromError(err));
+    throw err;
+  }
+  observe?.({ pid: null, timedOut: false, status: 0, signal: null });
+  return out;
+}
+
+/**
+ * `execFileSync` throws its `spawnSync` result merged into the error: `pid`,
+ * `status`, `signal`, and `code` ETIMEDOUT when the bound elapsed. A child
+ * that never started has pid 0.
+ */
+function reportFromError(err: unknown): BoundedChildReport {
+  const e = (err ?? {}) as { pid?: unknown; status?: unknown; signal?: unknown; code?: unknown };
+  const pid = typeof e.pid === 'number' && e.pid > 0 ? e.pid : null;
+  const signal = typeof e.signal === 'string' ? (e.signal as NodeJS.Signals) : null;
+  return {
+    pid,
+    timedOut: e.code === 'ETIMEDOUT',
+    status: typeof e.status === 'number' ? e.status : null,
+    signal,
+  };
 }

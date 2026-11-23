@@ -13,7 +13,8 @@ import {
 } from './bounded-child';
 import { MacOSKeychainBackend } from './keychain-macos';
 import { LinuxKeychainBackend } from './keychain-linux';
-import { makeMarkerProgram, withPathPrefix, withPlatform } from './child-recorder.test-support';
+import { makeMarkerProgram, processIsGone, withPathPrefix, withPlatform } from './child-recorder.test-support';
+import type { BoundedChildReport } from './bounded-child';
 
 /**
  * `child_process` is wrapped, not replaced: every call goes to the real
@@ -231,5 +232,44 @@ describe('SECRETLESS_OS_KEYCHAIN=off: every backend operation fails closed, and 
       plantedWhich.cleanup();
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The report comes from the one `execFileSync` call every probe makes: these
+ * cells run real children through it, as production does.
+ */
+describe('execFileSyncBounded: the observer is told what became of the child', () => {
+  it('a child that never exits is killed at the bound, reaped, and reported with its pid', () => {
+    const reports: BoundedChildReport[] = [];
+    expect(() => execFileSyncBounded(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 300, undefined, r => reports.push(r)))
+      .toThrow(/ETIMEDOUT/);
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ timedOut: true, signal: 'SIGKILL', status: null });
+    expect(reports[0].pid).toEqual(expect.any(Number));
+    expect(processIsGone(reports[0].pid!)).toBe(true);
+  });
+
+  it('a child that exits non-zero is reported with its pid and status, not as timed out', () => {
+    const reports: BoundedChildReport[] = [];
+    expect(() => execFileSyncBounded(process.execPath, ['-e', 'process.exit(3)'], 10_000, undefined, r => reports.push(r))).toThrow();
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ timedOut: false, signal: null, status: 3 });
+    expect(reports[0].pid).toEqual(expect.any(Number));
+  });
+
+  it('a child that exits 0 is reported as exited, and the output is returned as before', () => {
+    const reports: BoundedChildReport[] = [];
+    const out = execFileSyncBounded(process.execPath, ['-e', 'process.stdout.write("ok")'], 10_000, { encoding: 'utf-8' }, r => reports.push(r));
+    expect(out).toBe('ok');
+    expect(reports).toEqual([{ pid: null, timedOut: false, status: 0, signal: null }]);
+  });
+
+  it('a refused call starts no child and tells the observer nothing', () => {
+    const reports: BoundedChildReport[] = [];
+    expect(() => execFileSyncBounded('/usr/bin/security', ['default-keychain'], 1000, undefined, r => reports.push(r))).toThrow(REFUSAL);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(reports).toEqual([]);
   });
 });
