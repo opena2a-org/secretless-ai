@@ -39,7 +39,9 @@ function cleanup(dir: string): void {
 //
 // The long lists are split into one test per family: lists of forty to
 // seventy commands ran past the earlier 30s bound when the whole suite shared
-// a loaded machine. A new case joins the family it belongs to; a new family
+// a loaded machine. A test holds about twenty commands, counting each host a
+// list is run on; the fixture's own setup is not counted. A new case joins the
+// family it belongs to; a new family, or a family that would pass about twenty,
 // gets a test of its own.
 describe('init', { timeout: 120_000 }, () => {
   let dir: string;
@@ -1595,24 +1597,7 @@ describe('init', { timeout: 120_000 }, () => {
     it('without python3 a tab or line-break escape does not hide a secret value print', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
-      const bin = path.join(dir, 'bin-without-python3');
-      fs.mkdirSync(bin);
-      for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
-        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
-      }
-      const bash = path.join(bin, 'bash');
-      const env = { ...process.env, PATH: bin };
-      expect(
-        () => execSync('command -v python3', { env, shell: bash, stdio: 'ignore' }),
-        'python3 must not be reachable on the test PATH',
-      ).toThrow();
-      function decide(command: string): { decision: string; reason: string } {
-        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
-        const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
-        if (!out.trim()) return { decision: 'allow', reason: '' };
-        const hso = JSON.parse(out).hookSpecificOutput;
-        return { decision: hso.permissionDecision, reason: hso.permissionDecisionReason };
-      }
+      const decide = decideWithoutPython3(hookPath);
 
       const mustBlock: Array<[string, string]> = [
         ['echo\t$GITHUB_TOKEN', 'exposes secret environment variables'],
@@ -1639,6 +1624,12 @@ describe('init', { timeout: 120_000 }, () => {
         expect(d.decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
         expect(d.reason, `deny reason without python3 for: ${JSON.stringify(c)}`).toContain(reason);
       }
+    });
+
+    it('without python3 a tab beside printenv is refused, and a tab in a harmless command is allowed', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const decide = decideWithoutPython3(hookPath);
 
       // printenv of any name is refused now; without python3 on its name.
       for (const c of ['printenv\tPATH', 'printenv | wc -l']) {
@@ -1663,24 +1654,7 @@ describe('init', { timeout: 120_000 }, () => {
     it('without python3 a double quote does not end the command the hook reads', () => {
       init(dir);
       const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
-      const bin = path.join(dir, 'bin-without-python3');
-      fs.mkdirSync(bin);
-      for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
-        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
-      }
-      const bash = path.join(bin, 'bash');
-      const env = { ...process.env, PATH: bin };
-      expect(
-        () => execSync('command -v python3', { env, shell: bash, stdio: 'ignore' }),
-        'python3 must not be reachable on the test PATH',
-      ).toThrow();
-      function decide(command: string): { decision: string; reason: string } {
-        const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
-        const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
-        if (!out.trim()) return { decision: 'allow', reason: '' };
-        const hso = JSON.parse(out).hookSpecificOutput;
-        return { decision: hso.permissionDecision, reason: hso.permissionDecisionReason };
-      }
+      const decide = decideWithoutPython3(hookPath);
 
       const mustBlock: Array<[string, string]> = [
         ['echo "$GITHUB_TOKEN"', 'exposes secret environment variables'],
@@ -1703,6 +1677,12 @@ describe('init', { timeout: 120_000 }, () => {
         expect(d.decision, `expected hook without python3 to BLOCK: ${JSON.stringify(c)}`).toBe('deny');
         expect(d.reason, `deny reason without python3 for: ${JSON.stringify(c)}`).toContain(reason);
       }
+    });
+
+    it('without python3 an escaped quote or trailing backslash does not end the string early, and the reason quotes the text', () => {
+      init(dir);
+      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+      const decide = decideWithoutPython3(hookPath);
 
       // An escaped quote or a trailing backslash inside the string does not end
       // it early or run it past its end.
@@ -1848,49 +1828,50 @@ describe('init', { timeout: 120_000 }, () => {
     // read a secret variable. Every command below was refused and still is,
     // except a read of one variable by property name where python3 parses the
     // one-liner; the reason now names what it matched, with python3 and without.
-    it('a one-liner reading process.env is refused for reading the environment, not a secret file', () => {
-      init(dir);
-      const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
-      const bin = path.join(dir, 'bin-without-python3');
-      fs.mkdirSync(bin);
-      for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
-        fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
-      }
-      const bash = path.join(bin, 'bash');
-      const withoutPython3 = { ...process.env, PATH: bin };
-      expect(
-        () => execSync('command -v python3', { env: withoutPython3, shell: bash, stdio: 'ignore' }),
-        'python3 must not be reachable on the test PATH',
-      ).toThrow();
-      const hosts: Array<[string, NodeJS.ProcessEnv]> = [['without python3', withoutPython3]];
-      if (hasPython3) hosts.push(['with python3', process.env]);
+    // One test per host: the cells below run once without python3 and once with
+    // it, so a single test over both hosts would run twice as many commands.
+    for (const host of ['without python3', 'with python3']) {
+      (host === 'with python3' && !hasPython3 ? it.skip : it)(`a one-liner reading process.env is refused for reading the environment, not a secret file, ${host}`, () => {
+        init(dir);
+        const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
+        const bin = path.join(dir, 'bin-without-python3');
+        fs.mkdirSync(bin);
+        for (const tool of ['bash', 'cat', 'cut', 'grep', 'head', 'sed', 'sort', 'tr', 'basename', 'readlink']) {
+          fs.symlinkSync(execSync(`command -v ${tool}`, { encoding: 'utf-8' }).trim(), path.join(bin, tool));
+        }
+        const bash = path.join(bin, 'bash');
+        const withoutPython3 = { ...process.env, PATH: bin };
+        expect(
+          () => execSync('command -v python3', { env: withoutPython3, shell: bash, stdio: 'ignore' }),
+          'python3 must not be reachable on the test PATH',
+        ).toThrow();
+        const env = host === 'with python3' ? process.env : withoutPython3;
 
-      const secretVariable = 'reads secret environment variables';
-      const environment = 'reads environment variables';
-      const secretFile = 'reads secret files';
-      // A read of one variable by property name: refused without python3, where
-      // nothing parses the one-liner, and allowed with it, where the parse has
-      // already refused a one-liner that names the whole environment.
-      const propertyRead = 'reads environment variables without a parse';
-      // [command, the class its reason names]. The commands hold no double quote,
-      // so the matched text reads the same with python3 and without it.
-      const cells: Array<[string, string]> = [
-        ["node -e 'console.log(process.env.GITHUB_TOKEN)'", secretVariable],
-        ["node -e 'console.log(process.env[process.argv[1]])' API_KEY", secretVariable],
-        ["python3 -c 'import os,sys; print(os.environ[sys.argv[1]])' GITHUB_TOKEN", secretVariable],
-        ["node -e 'console.log(process.env.HOME)'", propertyRead],
-        ["node -e 'console.log(process.env)'", environment],
-        ["node -e 'console.log(JSON.stringify(process.env))'", environment],
-        ["node -e 'for (const k in process.env) console.log(k, process.env[k])'", environment],
-        ["node -e 'console.log(process?.env.HOME)'", propertyRead],
-        // A secret-file name left once process.env is set aside is still a file.
-        ["node -e 'require(`fs`).readFileSync(`.env`)'", secretFile],
-        ["node -e 'console.log(process.env.HOME); require(`fs`).readFileSync(`server.key`)'", secretFile],
-        ["node -e 'require(`fs`).readFileSync(`.env`); console.log(process.env.GITHUB_TOKEN)'", secretFile],
-        ["node -e 'require(`fs`).readFileSync(process.env.HOME + `/.env`)'", secretFile],
-        ["python3 -c 'print(open(`.env`).read())'", secretFile],
-      ];
-      for (const [host, env] of hosts) {
+        const secretVariable = 'reads secret environment variables';
+        const environment = 'reads environment variables';
+        const secretFile = 'reads secret files';
+        // A read of one variable by property name: refused without python3, where
+        // nothing parses the one-liner, and allowed with it, where the parse has
+        // already refused a one-liner that names the whole environment.
+        const propertyRead = 'reads environment variables without a parse';
+        // [command, the class its reason names]. The commands hold no double quote,
+        // so the matched text reads the same with python3 and without it.
+        const cells: Array<[string, string]> = [
+          ["node -e 'console.log(process.env.GITHUB_TOKEN)'", secretVariable],
+          ["node -e 'console.log(process.env[process.argv[1]])' API_KEY", secretVariable],
+          ["python3 -c 'import os,sys; print(os.environ[sys.argv[1]])' GITHUB_TOKEN", secretVariable],
+          ["node -e 'console.log(process.env.HOME)'", propertyRead],
+          ["node -e 'console.log(process.env)'", environment],
+          ["node -e 'console.log(JSON.stringify(process.env))'", environment],
+          ["node -e 'for (const k in process.env) console.log(k, process.env[k])'", environment],
+          ["node -e 'console.log(process?.env.HOME)'", propertyRead],
+          // A secret-file name left once process.env is set aside is still a file.
+          ["node -e 'require(`fs`).readFileSync(`.env`)'", secretFile],
+          ["node -e 'console.log(process.env.HOME); require(`fs`).readFileSync(`server.key`)'", secretFile],
+          ["node -e 'require(`fs`).readFileSync(`.env`); console.log(process.env.GITHUB_TOKEN)'", secretFile],
+          ["node -e 'require(`fs`).readFileSync(process.env.HOME + `/.env`)'", secretFile],
+          ["python3 -c 'print(open(`.env`).read())'", secretFile],
+        ];
         for (const [c, cellClass] of cells) {
           const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: c } });
           const out = execSync(`${JSON.stringify(bash)} ${JSON.stringify(hookPath)}`, { input, encoding: 'utf-8', env });
@@ -1910,8 +1891,8 @@ describe('init', { timeout: 120_000 }, () => {
           expect(reason, `deny reason ${host} must quote the matched text for: ${JSON.stringify(c)}`)
             .toContain('Matched `' + c + '`');
         }
-      }
-    });
+      });
+    }
 
     it('deny rules cover the same prefixed variables as the hook', () => {
       init(dir);
