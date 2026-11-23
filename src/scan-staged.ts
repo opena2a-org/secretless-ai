@@ -9,7 +9,7 @@ import { execFileSync } from 'child_process';
 import * as path from 'path';
 import { CREDENTIAL_PATTERNS, SECRET_FILE_PATTERNS, CREDENTIAL_PREFIX_QUICK_CHECK } from './patterns';
 import { findRealMatch } from './scan';
-import { loadSecretlessIgnore, type IgnoreMatcher } from './secretlessignore';
+import { buildMatcher, defaultIgnoreLines, loadSecretlessIgnore, type IgnoreMatcher } from './secretlessignore';
 import { BUNDLE_EXTENSION } from './bundle';
 import { MCP_ENV_SECRET_NAME, envFindingsOnLine, homeMcpConfigPaths, isProjectMcpConfig, mcpEnvSecretsByLine, type LineSpan } from './mcp/env-secrets';
 import { mcpConfigLocations } from './mcp/discover';
@@ -48,12 +48,29 @@ export interface ScanStagedResult {
    * counted the way `scan` counts them, so the hook can say what it hid.
    */
   placeholdersSuppressed: number;
+  /**
+   * True when the repository's `.secretlessignore` excluded any path at all
+   * (`*`, `**`) and was set aside, so only the default-ignore list applied.
+   */
+  ignoreFileSetAside?: boolean;
+}
+
+/** A name no rule meant for particular paths excludes. */
+const ANY_NAME = 'secretless-any-path-probe';
+
+/**
+ * Whether `ignore` excludes a path that names nothing in particular, at the
+ * top level or one directory down: the ignore file then excludes every path.
+ */
+function excludesAnyPath(ignore: IgnoreMatcher): boolean {
+  return ignore.matches(ANY_NAME) || ignore.matches(`${ANY_NAME}/${ANY_NAME}`);
 }
 
 export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
   const findings: StagedFinding[] = [];
   const blockedFiles: string[] = [];
   let placeholdersSuppressed = 0;
+  let ignoreFileSetAside = false;
   const matchOpts = { onSuppressed: () => { placeholdersSuppressed += 1; } };
 
   // Get list of staged files
@@ -96,6 +113,13 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
     if (rootDir) {
       try {
         ignore = loadSecretlessIgnore(rootDir);
+        // An ignore file that excludes a path naming nothing in particular,
+        // as `*` or `**` does, excludes every staged path and so turns the
+        // pre-commit hook off. The hook keeps scanning, with the defaults.
+        if (excludesAnyPath(ignore)) {
+          ignore = buildMatcher(defaultIgnoreLines());
+          ignoreFileSetAside = true;
+        }
       } catch {
         ignore = null;
       }
@@ -199,7 +223,9 @@ export function scanStagedFiles(options?: ScanStagedOptions): ScanStagedResult {
     findings.push(...fileFindings);
   }
 
-  return { findings, blockedFiles, placeholdersSuppressed };
+  return ignoreFileSetAside
+    ? { findings, blockedFiles, placeholdersSuppressed, ignoreFileSetAside }
+    : { findings, blockedFiles, placeholdersSuppressed };
 }
 
 /**

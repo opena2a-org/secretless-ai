@@ -63,7 +63,7 @@ export function runHook(args: string[], projectDir: string = process.cwd()): num
 
 export function runScanStaged(args: string[] = []): number {
   const noIgnore = args.includes('--no-ignore');
-  const { findings, blockedFiles, notARepo, placeholdersSuppressed } = scanStagedFiles({ noIgnore });
+  const { findings, blockedFiles, notARepo, placeholdersSuppressed, ignoreFileSetAside } = scanStagedFiles({ noIgnore });
   if (notARepo) {
     // Same message and exit code as `diff` in the same situation. Exiting 0
     // with no output made a pre-commit or CI step in the wrong directory look
@@ -72,6 +72,9 @@ export function runScanStaged(args: string[] = []): number {
     console.error('  `scan-staged` scans the files staged for commit, so it runs inside a git repo.');
     console.error('  Run it inside a git repo, or scan a directory instead: npx secretless-ai scan .\n');
     return 2;
+  }
+  if (ignoreFileSetAside) {
+    console.error('\n  .secretlessignore excludes every path, so scan-staged did not read it and scanned the staged files with the default-ignore list.\n');
   }
   const total = findings.length + blockedFiles.length;
 
