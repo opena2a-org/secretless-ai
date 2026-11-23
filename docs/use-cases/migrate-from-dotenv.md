@@ -28,24 +28,28 @@ Expected output for a project whose `.env` holds a Stripe key, a database URL an
   │ OPENAI_API_KEY=[OpenAI Project Key REDACTED]
   │ Confidence: high (0.98)
   │ Fix: Store it with npx secretless-ai import .env, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate at platform.openai.com > API Keys.
+  │ Verify: npx secretless-ai scan .env
 
   │ CRITICAL  PostgreSQL Connection String
   │ .env:2
   │ DATABASE_URL=[PostgreSQL Connection String REDACTED]
   │ Confidence: high (0.97)
   │ Fix: Store it with npx secretless-ai import .env, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate the database password.
+  │ Verify: npx secretless-ai scan .env
 
   │ CRITICAL  Redis Connection String
   │ .env.local:2
   │ REDIS_URL=[Redis Connection String REDACTED]
   │ Confidence: high (0.96)
   │ Fix: Store it with npx secretless-ai import .env.local, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate the Redis password (requirepass or ACL user).
+  │ Verify: npx secretless-ai scan .env.local
 
   │ CRITICAL  Stripe Live Key
   │ .env:1
   │ STRIPE_KEY=[Stripe Live Key REDACTED]
   │ Confidence: high (0.95)
   │ Fix: Store it with npx secretless-ai import .env, delete the line, and start the app with npx secretless-ai run -- <command>. Rotate at dashboard.stripe.com > Developers > API Keys.
+  │ Verify: npx secretless-ai scan .env
 
   ── Next Steps ──────────────────────────────────────────────
   Protect now:        npx secretless-ai init
