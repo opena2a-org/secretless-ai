@@ -1301,23 +1301,24 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
   const initNext = await initIsNextStep(projectDir);
   const validity = await validityOf(findings);
 
+  // The path a `Verify:` command re-scans, runnable from the shell's cwd.
+  // A file target's findings are all in that file, and a home-directory
+  // config file is reported by its `~/` label, which the shell expands.
+  const targetIsFile = (() => {
+    try { return nodeFs.statSync(projectDir).isFile(); } catch { return false; }
+  })();
+  const verifyOperand = (file: string): string => {
+    if (targetIsFile) return operand(['.']);
+    if (file.startsWith('~/')) {
+      const rest = file.slice(2);
+      return hasDisplayHazard(rest) ? '<path>' : `~/${shellQuote(rest)}`;
+    }
+    return operand([file]);
+  };
+
   // --explain: the detailed per-finding view. Built from the scan alone, so it
   // does not depend on the NanoMind engine or its model.
   if (options?.explain) {
-    // The path a `Verify:` command re-scans, runnable from the shell's cwd.
-    // A file target's findings are all in that file, and a home-directory
-    // config file is reported by its `~/` label, which the shell expands.
-    const targetIsFile = (() => {
-      try { return nodeFs.statSync(projectDir).isFile(); } catch { return false; }
-    })();
-    const verifyOperand = (file: string): string => {
-      if (targetIsFile) return operand(['.']);
-      if (file.startsWith('~/')) {
-        const rest = file.slice(2);
-        return hasDisplayHazard(rest) ? '<path>' : `~/${shellQuote(rest)}`;
-      }
-      return operand([file]);
-    };
     const code = await runScanWithExplanations(findings, verifyOperand, initNext, validity);
     coverageWarnings();
     placeholderHint();
@@ -1325,7 +1326,7 @@ export async function runScan(projectDir: string, options?: RunScanOptions): Pro
     return code;
   }
 
-  printFindings(findings, initNext, validity);
+  printFindings(findings, initNext, verifyOperand, validity);
   coverageWarnings();
   placeholderHint();
   confidenceHint();
@@ -1354,7 +1355,24 @@ function validitySummaryLine(validity: Map<ScanFinding, ValidityResult>): string
   return `  ${c.cyan('Validity:')} ${parts.join(', ')}${asked}`;
 }
 
-function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, validity: Map<ScanFinding, ValidityResult> | null = null): void {
+/**
+ * The command that shows a finding is gone once fixed: the finding is gone
+ * when the value is. A file flagged for existing is checked by listing it,
+ * under the path reported: its severity and confidence do not depend on the
+ * path. Otherwise the path re-scanned is the one the finding was scored for.
+ */
+function verifyCommand(finding: ScanFinding, verifyOperand: (file: string) => string): string {
+  return PRESENCE_FINDINGS.has(finding.patternId)
+    ? `ls -l ${verifyOperand(finding.file)}`
+    : `npx secretless-ai scan ${verifyOperand(scoredPathOf(finding) ?? finding.file)}`;
+}
+
+function printFindings(
+  findings: ReturnType<typeof scan>,
+  initNext: boolean,
+  verifyOperand: (file: string) => string,
+  validity: Map<ScanFinding, ValidityResult> | null = null,
+): void {
   const critCount = findings.filter(f => f.severity === 'critical').length;
   const highCount = findings.length - critCount;
 
@@ -1410,6 +1428,7 @@ function printFindings(findings: ReturnType<typeof scan>, initNext: boolean, val
     if (finding.fix) {
       console.log(`  ${sevColor('\u2502')} ${c.cyan('Fix:')} ${finding.fix}`);
     }
+    console.log(`  ${sevColor('\u2502')} ${c.cyan('Verify:')} ${verifyCommand(finding, verifyOperand)}`);
   }
 
   console.log(divider('Next Steps'));
@@ -1560,12 +1579,7 @@ async function runScanWithExplanations(
     if (finding.fix) {
       console.log(`         Fix: ${finding.fix}`);
     }
-    // Re-run after the fix: the finding is gone when the value is. A file
-    // flagged for existing is checked by listing it, under the path reported:
-    // its severity and confidence do not depend on the path.
-    console.log(PRESENCE_FINDINGS.has(finding.patternId)
-      ? `         Verify: ls -l ${verifyOperand(finding.file)}`
-      : `         Verify: npx secretless-ai scan ${verifyOperand(scoredPath ?? finding.file)}`);
+    console.log(`         Verify: ${verifyCommand(finding, verifyOperand)}`);
     // Generated context is OFF by default. Measured over 30 runs against the
     // local engine (2026-08-06): 30/30 produced text, 0/30 produced a usable
     // explanation. What survived validation was instruction-tuning noise
