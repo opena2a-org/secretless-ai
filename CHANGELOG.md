@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+**`scan --history` passes over a value `clean-history` already redacted
+(#471).** The `[REDACTED:<pattern id>]` marker `clean-history` writes is 20
+characters or more, so a line such as `export GITHUB_TOKEN="ghp_…"`, cleaned
+to `export GITHUB_TOKEN="[REDACTED:github-pat]"`, was still the
+`export NAME=<20 characters>` the command patterns report: `scan --history`
+listed it after one `clean-history`, and a second `clean-history` rewrote the
+file and its backup again. A marker, with the quotes around it, is now left
+out when a line is matched; one followed by more credential characters is
+not taken for a redacted value, and a credential elsewhere on the line is
+still reported. `src/history-redacted-markers.test.ts` runs `clean-history`
+and then `scan --history` over lines of every command pattern.
+
 **A `.secretlessignore` that excludes every path, as `*` or `**` does, no
 longer turns the pre-commit hook off (#191).** With such a file, `scan-staged`
 passed a commit that staged a `.env` file and a GitHub token and exited 0. It
