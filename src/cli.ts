@@ -199,15 +199,26 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  // --version: cli-ui versionLine helper appends the standard telemetry line.
+  // --version: cli-ui versionLine helper appends the standard telemetry line,
+  // which is printed on stderr.
   // `-V` too: it is the version flag in commander-based CLIs, and refusing it
   // as an unknown command while `-v` works was a surprise with no upside.
   if (command === '--version' || command === '-v' || command === '-V') {
     // While telemetry is off, the helper's line still offered
     // OPENA2A_TELEMETRY=off as the opt-out (#486); the hint names what turns
     // it on, as `telemetry status` does.
-    const shown = versionLine({ tool: TOOL, version: VERSION, telemetry: telemetryStatus() });
-    console.log(withVersionHint(shown, CLI_BARE, telemetryState()));
+    //
+    // Only the version goes to stdout, so `$(secretless-ai --version)` is the
+    // version alone (#410). The telemetry line the helper appends is the
+    // disclosure, not the answer: it is kept, unchanged, on stderr.
+    const shown = withVersionHint(
+      versionLine({ tool: TOOL, version: VERSION, telemetry: telemetryStatus() }),
+      CLI_BARE,
+      telemetryState(),
+    );
+    const [head, ...rest] = shown.split('\n');
+    console.log(head);
+    if (rest.length > 0) console.error(rest.join('\n'));
     return 0;
   }
 
