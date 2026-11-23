@@ -37,8 +37,10 @@ const CACHE_SUBCOMMANDS = ['clear', 'ttl'];
  * behave the same way, so this matches the tree rather than inventing a third
  * convention.
  *
- * The token is printed escaped, as those eight siblings print the token they
- * refuse: a line feed in it started a line of its own under this message.
+ * The unrecognised token is printed escaped, as those eight siblings print the
+ * token they refuse: a line feed in it started a line of its own under this
+ * message. That covers this refusal only; it says nothing about the other
+ * values this file refuses, each of which is escaped (or not) where it prints.
  *
  * Exit 2, the refused-command-line code, not 1: 1 is "credentials found".
  */
