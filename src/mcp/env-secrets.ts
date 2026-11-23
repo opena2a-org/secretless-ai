@@ -406,22 +406,23 @@ export interface LineSpan {
  * name as the pattern path makes one per line. A literal is reported; a
  * placeholder only with `showPlaceholders`, and otherwise passed to
  * `onSuppressed` when no credential pattern matches it (a value one matches
- * is counted where the pattern path reads it). A secret whose token the
- * pattern path's finding on the line covers (`covered`) is that finding, and
- * is not reported again.
+ * is counted where the pattern path reads it). A secret whose token one of
+ * the pattern path's findings on the line covers (`covered`, a span or the
+ * spans of each) is that finding, and is not reported again.
  */
 export function envFindingsOnLine(
   secrets: readonly McpEnvSecret[],
-  covered: LineSpan | undefined,
+  covered: LineSpan | readonly LineSpan[] | undefined,
   options: { showPlaceholders?: boolean; onSuppressed?: () => void } = {},
 ): EnvLineFinding[] {
+  const spans: readonly LineSpan[] = covered === undefined ? [] : 'from' in covered ? [covered] : covered;
   const byName = new Map<string, EnvLineFinding>();
   for (const secret of secrets) {
     if (secret.kind === 'placeholder' && !options.showPlaceholders) {
       if (vendorMatchOf(secret.value, true) === undefined) options.onSuppressed?.();
       continue;
     }
-    if (covered !== undefined && secret.from < covered.to && covered.from < secret.to) continue;
+    if (spans.some((span) => secret.from < span.to && span.from < secret.to)) continue;
     const vendor = vendorMatchOf(secret.value, options.showPlaceholders === true);
     const name = vendor?.pattern.id ?? MCP_ENV_SECRET_ID;
     if (!byName.has(name)) byName.set(name, vendor === undefined ? { secret } : { secret, vendor });
