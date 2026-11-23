@@ -18,7 +18,7 @@ import { McpVault } from './vault';
 const wrapperPath = '/usr/local/bin/secretless-mcp';
 
 // Values are assembled when the test runs, so the file holds no credential-shaped literal.
-const value = (label: string): string => ['FAKE', 'pair', 'source', label].join('-');
+const value = (label: string): string => ['PLAIN', 'pair', 'source', label].join('-');
 
 const projectRule = 'a value from a project-level config is stored only under a name that holds no stored secret';
 

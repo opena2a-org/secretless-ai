@@ -30,8 +30,8 @@ const WRAPPER = '/usr/local/bin/secretless-mcp';
 const BINDING_ID = /^[0-9a-f]{32}$/;
 
 /** A value built at run time, shaped like no provider's token. */
-function placeholder(label: string): string {
-  return [label, 'placeholder', crypto.randomBytes(6).toString('hex')].join('-');
+function runtimeValue(label: string): string {
+  return [label, 'plain', crypto.randomBytes(6).toString('hex')].join('-');
 }
 
 function gcpBackendFor(project: FakeSecretManager): GCPSecretManagerBackend {
@@ -52,8 +52,8 @@ describe('protectMcp on the gcp-sm backend', () => {
     homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-gcp-home-'));
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-gcp-data-'));
     project = fakeSecretManager(PROJECT);
-    dbPassword = placeholder('db');
-    stripeKey = placeholder('stripe');
+    dbPassword = runtimeValue('db');
+    stripeKey = runtimeValue('stripe');
     project.put('DB_PASSWORD', dbPassword);
     project.put('STRIPE_KEY', stripeKey);
     vi.stubGlobal('fetch', vi.fn(project.fetch));
@@ -70,7 +70,7 @@ describe('protectMcp on the gcp-sm backend', () => {
   });
 
   it('stores the secret of a server the project holds nothing for and rewrites the server, reading no other secret', async () => {
-    const token = placeholder('github');
+    const token = runtimeValue('github');
     const configPath = path.join(homeDir, '.cursor', 'mcp.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({

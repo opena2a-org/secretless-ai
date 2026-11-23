@@ -82,6 +82,26 @@ export function envSecretKind(key: string, value: string): EnvSecretKind | undef
   return kind === 'literal' || kind === 'placeholder' ? kind : undefined;
 }
 
+/**
+ * A server's env split by the decision: `secrets`, the entries that hold a
+ * literal, which `mcp-status` counts and `protect-mcp` moves into the
+ * backend; `nonSecrets`, every other entry (an empty value, an expansion, a
+ * placeholder, and a key `classifyEnvVars` does not call a secret), which
+ * stays in the env.
+ */
+export function classifyEnvLiterals(env: Record<string, string>): {
+  secrets: Record<string, string>;
+  nonSecrets: Record<string, string>;
+} {
+  const secrets: Record<string, string> = {};
+  const nonSecrets: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (envSecretKind(key, value) === 'literal') secrets[key] = value;
+    else nonSecrets[key] = value;
+  }
+  return { secrets, nonSecrets };
+}
+
 /** One string value in a server's env, where the config's text holds it. */
 export interface McpEnvValue {
   /** The key under `projects` in ~/.claude.json, for a server kept for one project; undefined at the top level. */
