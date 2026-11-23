@@ -216,11 +216,43 @@ describe('the CI gate reports on every change to main', () => {
 });
 
 describe('the gate cannot silently skip the suite on a code change', () => {
-  it('SLS-01.AC2 a change set touching only docs is classified non-code', () => {
-    const run = classify(['README.md', 'CHANGELOG.md', 'docs/USE-CASES.md', 'STATUS.md']);
+  it('SLS-01.AC2 a change set touching no code path is classified non-code', () => {
+    const run = classify(['LICENSE', '.gitignore', '.github/CODEOWNERS']);
     expect(run.status).toBe(0);
     expect(run.outputs.code).toBe('false');
     expect(run.outputs.reason).toBe('no-code-paths-changed');
+  });
+
+  it('a docs-only change runs the suite, because npm test runs the docs prose check first', () => {
+    // The full gate is the only place check:docs runs in CI, so the prose it
+    // reads, docs/, and the checker itself each have to classify as code.
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8'));
+    expect(pkg.scripts.test).toMatch(/^npm run check:docs && /);
+    expect(pkg.scripts['check:docs']).toBe('node scripts/check-docs-prose.mjs');
+
+    const cases: Array<[string, string]> = [
+      ['README.md', 'a Markdown file at the root'],
+      ['STATUS.md', 'another Markdown file at the root'],
+      ['docs/USE-CASES.md', 'Markdown under docs/'],
+      ['docs/use-cases/run-broker.md', 'nested Markdown under docs/'],
+      ['docs/guide.mdx', 'MDX, which the prose check also reads'],
+      ['examples/demo/README.md', 'Markdown outside docs/'],
+      ['docs/images/init-demo.png', 'a docs asset'],
+      ['scripts/check-docs-prose.mjs', 'the docs prose checker'],
+    ];
+    for (const [file, why] of cases) {
+      const run = classify([file]);
+      expect(run.outputs.code, `${file} (${why}) must classify as code`).toBe('true');
+      expect(run.outputs.reason).toBe('code-paths-changed');
+    }
+
+    const docsOnly = classify(['README.md', 'docs/USE-CASES.md', 'scripts/check-docs-prose.mjs']);
+    expect(docsOnly.outputs.code).toBe('true');
+    expect(verdict({ code: docsOnly.outputs.code, ...SUITE_SKIPPED }).status).toBe(1);
+    expect(verdict({ code: docsOnly.outputs.code, ...SUITE_PASSED }).status).toBe(0);
+
+    // Only the docs checker joins: another script under scripts/ stays out.
+    expect(classify(['scripts/child-env.mjs']).outputs.code).toBe('false');
   });
 
   it('SLS-01.AC2 a change set touching src/** is classified code', () => {
@@ -253,7 +285,7 @@ describe('the gate cannot silently skip the suite on a code change', () => {
 
     // A single `*` does not cross a separator: `package.json` must not drag in
     // an unrelated path that merely ends the same way.
-    expect(classify(['docs/package.json']).outputs.code).toBe('false');
+    expect(classify(['examples/package.json']).outputs.code).toBe('false');
     expect(classify(['other/src/app.ts']).outputs.code).toBe('false');
   });
 
@@ -348,10 +380,11 @@ describe('the same gate check reports on a docs-only change and on a src change'
     expect(jobLevelKeys(gate)).not.toContain('strategy');
   });
 
-  it('SLS-01.AC3 the docs-only case and the src case both end in a green gate, by the two paths they should', () => {
-    // Case 1 — a docs-only change. Under the old trigger filter this produced no
-    // run and therefore no context at all.
-    const docs = classify(['README.md', 'docs/use-cases/run-broker.md']);
+  it('SLS-01.AC3 the non-code case and the src case both end in a green gate, by the two paths they should', () => {
+    // Case 1 — a non-code change. Under the old trigger filter this produced no
+    // run and therefore no context at all. (Docs are not this case any more:
+    // npm test runs the docs prose check, so a docs change runs the suite.)
+    const docs = classify(['LICENSE', '.github/CODEOWNERS']);
     expect(docs.outputs.code).toBe('false');
     const docsVerdict = verdict({ code: docs.outputs.code, ...SUITE_SKIPPED });
     expect(docsVerdict.status).toBe(0);
