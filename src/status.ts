@@ -82,15 +82,13 @@ export interface StatusResult {
    */
   userSettings: UserSettingsStatus | null;
   /**
-   * The strongest mechanism `isProtected` rests on. `none` whenever it is
-   * false, and in the one case below where it is true.
+   * The strongest mechanism Secretless has in place for this project.
    *
-   * `isProtected` is true for a project whose only configuration is an
-   * instruction file, which is advice: nothing enforces it. That boolean and
-   * `summary.verdict` are what consumers gate on, so they keep their meaning;
-   * this field carries the difference they do not. `hook` means Claude Code
-   * applies a guard hook or deny patterns from this project's settings or from
-   * user-level settings that reach it. `ignore-file` and `advisory` mean
+   * `advisory` is reported with `isProtected` false: the project's only
+   * configuration is an instruction file, which is advice, and nothing
+   * enforces it. Otherwise this is `none` whenever `isProtected` is false.
+   * `hook` means Claude Code applies a guard hook or deny patterns from this
+   * project's settings or from user-level settings that reach it. `ignore-file` and `advisory` mean
    * nothing of that kind is in place: see `Enforcement`. `none` is also
    * reported while `isProtected` is true when that rests on a guard script no
    * settings file runs, and no tool is configured.
@@ -740,6 +738,15 @@ async function readProtection(projectDir: string, homeDir: string): Promise<Stat
     result.enforcement = 'advisory';
   } else {
     result.enforcement = 'none';
+  }
+
+  // Instruction files alone are advice: no guard hook runs and no deny
+  // pattern applies here. `isProtected` was true for them while `enforcement`
+  // said `advisory` (#410), so a consumer gating on the boolean read advice as
+  // a control. `enforcement` keeps naming what is configured.
+  if (result.enforcement === 'advisory') {
+    result.isProtected = false;
+    result.protectionScope = null;
   }
 
   return result;

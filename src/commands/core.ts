@@ -1972,9 +1972,9 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // `project` or `user`: which settings scope `isProtected` rests on.
       protectionScope: s.protectionScope,
       // `hook`, `ignore-file`, `advisory` or `none`: the strongest mechanism
-      // `isProtected` rests on. `isProtected` is true on an instruction file
-      // alone, and on a guard script no settings file runs, and only this
-      // field says that nothing enforces either.
+      // in place. `isProtected` is false on an instruction file alone, which
+      // this field reports as `advisory`. It is true on a guard script no
+      // settings file runs, and only this field says nothing enforces that.
       enforcement: s.enforcement,
       // `hookInstalled`: the guard script is on disk. `hookWired`: this
       // project's settings run it. Claude Code runs only the second.
@@ -2071,7 +2071,17 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   // `hook`); "Clean" requires zero warnings.
   console.log();
   console.log(`  ── Verdict ${headerLine.slice(0, Math.max(0, 49))}`);
-  if (!s.isProtected) {
+  const attention = warningCount === 0
+    ? ''
+    : s.secretsFound > 0
+      ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need${s.secretsFound === 1 ? 's' : ''} review)`
+      : ` (${warningCount} observation${warningCount === 1 ? '' : 's'} need attention)`;
+  if (s.enforcement === 'advisory') {
+    // Instruction files alone: `isProtected` is false, and this line used to
+    // print the same `Protected` a guard hook earns. Nothing enforces an
+    // instruction file, so the line names the mode instead.
+    console.log(`  Advisory only: instructions for ${instructionTools.map(toolDisplayName).join(', ')}, which nothing enforces${attention}`);
+  } else if (!s.isProtected) {
     if (s.settingsUnreadable) {
       // `init` refuses on this project, so sending the user there is a dead
       // end — the same defect as pointing at a command that no-ops for the
@@ -2085,17 +2095,7 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       console.log('  Not protected. Run `secretless-ai init` to install hooks.');
     }
   } else {
-    const attention = warningCount === 0
-      ? ''
-      : s.secretsFound > 0
-        ? ` (${s.secretsFound} unblocked credential${s.secretsFound === 1 ? '' : 's'} need${s.secretsFound === 1 ? 's' : ''} review)`
-        : ` (${warningCount} observation${warningCount === 1 ? '' : 's'} need attention)`;
-    if (s.enforcement === 'advisory') {
-      // `isProtected` is true on instruction files alone, and this line used
-      // to print the same `Protected` a guard hook earns. Nothing enforces an
-      // instruction file, so the line names the mode instead.
-      console.log(`  Advisory only: instructions for ${instructionTools.map(toolDisplayName).join(', ')}, which nothing enforces${attention}`);
-    } else if (s.enforcement === 'ignore-file') {
+    if (s.enforcement === 'ignore-file') {
       console.log(`  Ignore file only: ${AIDER_IGNORE_FILE.path} for ${s.ignoreFileTools.map(toolDisplayName).join(', ')}, which no hook enforces${attention}`);
     } else if (s.enforcement === 'none') {
       // `isProtected` rests on the guard script being on disk, and no settings

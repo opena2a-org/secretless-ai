@@ -4605,6 +4605,16 @@ unsafe pattern characters no longer configures nothing while `init` exits 0,
 and the problem is reported even when Claude Code is not among the configured
 tools.
 
+**`status --json` reports `isProtected: false` for a project whose
+enforcement is advisory (#410).** A project configured only through
+instruction files, with no guard hook run and no deny patterns applied, had
+`isProtected: true` and `summary.verdict: "protected-warnings"` next to
+`enforcement: "advisory"`. It now has `isProtected: false`,
+`protectionScope: null` and `summary.verdict: "not-protected"`; `enforcement`
+still reads `advisory`, and the human verdict line still reads
+`Advisory only: ...`. A guard hook or deny patterns that apply, from the
+project or from user-level settings, still make the project protected.
+
 ### Security
 
 - On the gcp-sm backend a read for one MCP server returns only that server's
