@@ -56,6 +56,7 @@ function run(args: string[], extra: NodeJS.ProcessEnv = {}) {
   return {
     status: res.status,
     stdout: res.stdout,
+    stderr: res.stderr,
     events: printed.map((l) => JSON.parse(l.slice(PREFIX.length)) as Record<string, unknown>),
   };
 }
@@ -141,7 +142,7 @@ describe('the CLI sends no usage event from CI or a test runner', () => {
     const res = run(['--version'], { CI: 'true' });
 
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Telemetry: off');
+    expect(res.stderr).toContain('Telemetry: off');
   });
 
   itIfBuilt('`telemetry status` in CI says off, and names the variable that turned it off', () => {
@@ -199,7 +200,7 @@ describe('a test that starts the CLI with telemetry on fails before the child st
     const res = spawnSync(process.execPath, [CLI_PATH, '--version'], { encoding: 'utf-8', env: scratch({ OPENA2A_TELEMETRY: 'off' }) });
 
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Telemetry: off');
+    expect(res.stderr).toContain('Telemetry: off');
   });
 
   itIfBuilt('CONTROL: a child given process.env starts the CLI', () => {

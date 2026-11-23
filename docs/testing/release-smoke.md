@@ -41,10 +41,11 @@ Fail the release if any step is red.
 
 ```bash
 node dist/cli.js --help     # prints the full help block; no telemetry line here
-node dist/cli.js --version  # prints two lines: version + telemetry disclosure
+node dist/cli.js --version  # version on stdout, telemetry disclosure on stderr
 ```
 
-The `--version` output must be exactly two lines:
+The `--version` output must be exactly two lines, the first on stdout and the
+second on stderr, so `$(secretless-ai --version)` is the version alone:
 
 ```
 secretless-ai 0.x.x
@@ -403,7 +404,7 @@ rm -f ~/.config/opena2a/telemetry.json   # start clean
 
 | # | Command | Expected |
 |---|---------|----------|
-| 10.1 | `secretless-ai --version` | Two lines: `secretless-ai 0.x.x` then `Telemetry: on (opt-out: ...)` |
+| 10.1 | `secretless-ai --version` | Two lines: `secretless-ai 0.x.x` on stdout, then `Telemetry: on (opt-out: ...)` on stderr |
 | 10.2 | `secretless-ai telemetry status` | Prints `state: on`, install_id, config path, policy URL, toggle hint |
 | 10.3 | `secretless-ai telemetry off` | Prints `Telemetry disabled for secretless-ai.` Then `--version` shows `Telemetry: off (turn on: 'secretless-ai telemetry on'  •  details: opena2a.org/telemetry)`, not the `opt-out:` hint. `~/.config/opena2a/telemetry.json` has `"enabled": false`. |
 | 10.4 | `secretless-ai telemetry on` | Re-enables persistently. |

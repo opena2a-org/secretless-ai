@@ -72,6 +72,7 @@ function run(home: string, args: string[], extra: NodeJS.ProcessEnv = {}, noFile
   return {
     status: res.status,
     stdout: res.stdout,
+    stderr: res.stderr,
     events: printed.map((l) => JSON.parse(l.slice(PREFIX.length)) as Record<string, unknown>),
   };
 }
@@ -87,7 +88,7 @@ describe('under OPENA2A_TELEMETRY=off no install id is derived or written (#422)
     const res = run(home, ['--version'], OFF);
 
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Telemetry: off');
+    expect(res.stderr).toContain('Telemetry: off');
     expect(filesUnder(home)).toEqual([]);
   });
 
@@ -785,7 +786,7 @@ describe('the other ways telemetry is off write no install id either', () => {
   itIfBuilt('CI=true: --version and a scan write no setting file', () => {
     const home = tmp('install-id-home-');
 
-    expect(run(home, ['--version'], { CI: 'true' }).stdout).toContain('Telemetry: off');
+    expect(run(home, ['--version'], { CI: 'true' }).stderr).toContain('Telemetry: off');
     expect(run(home, ['scan', tmp('install-id-scan-'), '--json'], { CI: 'true' }).status).toBe(0);
     expect(filesUnder(home)).toEqual([]);
   });
@@ -819,7 +820,7 @@ describe('CONTROL: with telemetry on, the SDK still creates and keeps the instal
 
     const res = run(home, ['--version']);
 
-    expect(res.stdout).toContain('Telemetry: on');
+    expect(res.stderr).toContain('Telemetry: on');
     expect(filesUnder(home)).toEqual(['.config/opena2a/telemetry.json']);
     expect(stored(home)).toMatchObject({ enabled: true, installId: expect.any(String) });
   });

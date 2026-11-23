@@ -284,8 +284,8 @@ describe('`--version` names what turns telemetry on while it is off (#486)', () 
     const res = spawnSync(process.execPath, [CLI_PATH, '--version'], { encoding: 'utf-8', env });
 
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain("Telemetry: off (turn on: 'secretless-ai telemetry on'  •  details: opena2a.org/telemetry)");
-    expect(res.stdout).not.toContain('opt-out');
+    expect(res.stderr).toContain("Telemetry: off (turn on: 'secretless-ai telemetry on'  •  details: opena2a.org/telemetry)");
+    expect(res.stderr).not.toContain('opt-out');
   });
 });
 

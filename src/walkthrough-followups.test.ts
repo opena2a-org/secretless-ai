@@ -35,6 +35,20 @@ describe('`-V` prints the version like `-v` and `--version` (#127)', () => {
   });
 });
 
+describe('the version flags print only the version on stdout (#410)', () => {
+  const version = (JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8')) as { version: string }).version;
+
+  for (const flag of ['--version', '-v', '-V']) {
+    itIfBuilt(`\`${flag}\`: stdout is the version line alone, the telemetry line is on stderr`, () => {
+      const res = cli([flag]);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toBe(`secretless-ai ${version}\n`);
+      expect(res.stderr).toContain('Telemetry: off');
+    });
+  }
+});
+
 describe('`init` on a path that is not a directory (#127)', () => {
   itIfBuilt('a missing directory gets a plain message with Verify and Fix, not a raw ENOENT', () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-walk-init-'));
