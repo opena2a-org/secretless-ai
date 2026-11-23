@@ -30,6 +30,9 @@ function withBinding(args: string[]): unknown[] {
   return [...args.slice(0, at), '--binding', BINDING_ID, ...args.slice(at)];
 }
 
+/** A GitHub-shaped token, built at runtime so the file holds no token literal. */
+const ghpToken = ['ghp_', 'QZWV23def456ghi789jkl012mno345pqr678'].join('');
+
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-mcp-protect-'));
 }
@@ -136,7 +139,7 @@ describe('protectMcp', () => {
       configPath,
       JSON.stringify({
         mcpServers: {
-          github: { command: 'npx', env: { GITHUB_TOKEN: 'not-a-real-token', API_TOKEN: 1234 } },
+          github: { command: 'npx', env: { GITHUB_TOKEN: 'plain-token', API_TOKEN: 1234 } },
           db: { command: 'npx', env: 'not-an-object' },
         },
       })
@@ -175,7 +178,7 @@ describe('protectMcp', () => {
       JSON.stringify({
         mcpServers: {
           github: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'ghp_1234567890abcdef1234567890abcdef12345678' } },
-          slack: { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'test-slack-bot-token-placeholder-value' } },
+          slack: { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'slack-bot-token-plain-value' } },
         },
       })
     );
@@ -236,7 +239,7 @@ describe('protectMcp', () => {
         github: {
           command: 'npx',
           args: ['@github/mcp-server'],
-          env: { GITHUB_TOKEN: '\x1b[200~ghp_FAKE23def456ghi789jkl012mno345pqr678\x1b[201~' },
+          env: { GITHUB_TOKEN: `\x1b[200~${ghpToken}\x1b[201~` },
         },
       },
     });
@@ -264,7 +267,7 @@ describe('protectMcp', () => {
         github: {
           command: 'npx',
           args: ['@github/mcp-server'],
-          env: { GITHUB_TOKEN: 'ghp_FAKE23def456ghi789jkl012mno345pqr678\u009b[2J' },
+          env: { GITHUB_TOKEN: `${ghpToken}\u009b[2J` },
         },
       },
     });
@@ -298,7 +301,7 @@ describe('protectMcp — project-level client configs', () => {
   });
 
   // A Slack-shaped bot token, built at runtime so the file holds no token literal.
-  const slackToken = ['xox', 'b-1234567890-1234567890-', 'FAKEabcdefghijklmnopqrst'].join('');
+  const slackToken = ['xox', 'b-1234567890-1234567890-', 'QZWVabcdefghijklmnopqrst'].join('');
 
   function write(baseDir: string, relativePath: string, content: string): string {
     const fullPath = path.join(baseDir, relativePath);
@@ -436,9 +439,9 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
   it('protects the user-scope server at the top level and the local-scope server of a project, and backs the file up as it was', async () => {
     fs.writeFileSync(configPath, JSON.stringify({
       numStartups: 3,
-      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
+      mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-1' }) },
       projects: {
-        '/work/app': { allowedTools: [], mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } },
+        '/work/app': { allowedTools: [], mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'plain-token-2' }) } },
         '/work/empty': { allowedTools: [], mcpServers: {} },
       },
     }, null, 2));
@@ -460,8 +463,8 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
     expect(config.mcpServers.github).toEqual(bound('github'));
     expect(config.projects['/work/app']).toEqual({ allowedTools: [], mcpServers: { slack: bound('slack') } });
     expect(config.projects['/work/empty']).toEqual({ allowedTools: [], mcpServers: {} });
-    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
-    expect(await vault().getServerSecrets('claude-code', 'slack')).toEqual({ SLACK_BOT_TOKEN: 'not-a-real-token-2' });
+    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'plain-token-1' });
+    expect(await vault().getServerSecrets('claude-code', 'slack')).toEqual({ SLACK_BOT_TOKEN: 'plain-token-2' });
 
     // One backup, of the file as it was before either map was rewritten.
     expect(restoreConfig(configPath, path.join(dataDir, 'mcp-backups'))).toBe(true);
@@ -470,8 +473,8 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
 
   it('leaves a project server named like the protected server at the top level as it is, and returns it', async () => {
     fs.writeFileSync(configPath, JSON.stringify({
-      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
-      projects: { '/work/app': { mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } } },
+      mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-1' }) },
+      projects: { '/work/app': { mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-2' }) } } },
     }));
 
     const result = await protect();
@@ -483,9 +486,9 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
     ]);
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     expect(config.mcpServers.github).toEqual(bound('github'));
-    expect(config.projects['/work/app'].mcpServers.github).toEqual(server({ GITHUB_TOKEN: 'not-a-real-token-2' }));
+    expect(config.projects['/work/app'].mcpServers.github).toEqual(server({ GITHUB_TOKEN: 'plain-token-2' }));
     // The stored value is the protected server's, not overwritten by the other's.
-    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
+    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'plain-token-1' });
   });
 
   it('leaves a server whose name a server protected before reads by, under a map key that differs from it', async () => {
@@ -493,7 +496,7 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
       mcpServers: {
         'github-personal': { command: wrapperPath, args: ['--server=github', '--client', 'claude-code', '--', 'npx', 'some-mcp'], env: {} },
       },
-      projects: { '/work/app': { mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } } },
+      projects: { '/work/app': { mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-2' }) } } },
     });
     fs.writeFileSync(configPath, before);
 
@@ -511,9 +514,9 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
   });
 
   it('leaves the server of the same name in the project .mcp.json, read after ~/.claude.json, as it is', async () => {
-    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) } }));
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-1' }) } }));
     const mcpJsonPath = path.join(projectDir, '.mcp.json');
-    const mcpJson = JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } });
+    const mcpJson = JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-2' }) } });
     fs.writeFileSync(mcpJsonPath, mcpJson);
 
     const result = await protect();
@@ -526,16 +529,16 @@ describe('protectMcp — ~/.claude.json (#470)', () => {
   });
 
   it('CONTROL: protects servers of the same name in the configs of two clients', async () => {
-    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) } }));
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-1' }) } }));
     fs.mkdirSync(path.join(homeDir, '.cursor'));
-    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-2' }) } }));
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-2' }) } }));
 
     const result = await protect();
 
     expect(result.servers.map((s) => `${s.client}/${s.server}`)).toEqual(['cursor/github', 'claude-code/github']);
     expect(result.sharedName).toEqual([]);
-    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-2' });
-    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'not-a-real-token-1' });
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ GITHUB_TOKEN: 'plain-token-2' });
+    expect(await vault().getServerSecrets('claude-code', 'github')).toEqual({ GITHUB_TOKEN: 'plain-token-1' });
   });
 });
 
@@ -565,10 +568,10 @@ describe('protectMcp — clientsScanned counts clients, not configs or server ma
 
   it('counts ~/.claude.json with a user-scope server and the local-scope servers of two projects as one client', async () => {
     write(homeDir, '.claude.json', {
-      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
+      mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-1' }) },
       projects: {
-        '/work/app': { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } },
-        '/work/api': { mcpServers: { db: server({ API_KEY: 'not-a-real-token-3' }) } },
+        '/work/app': { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'plain-token-2' }) } },
+        '/work/api': { mcpServers: { db: server({ API_KEY: 'plain-token-3' }) } },
       },
     });
 
@@ -579,8 +582,8 @@ describe('protectMcp — clientsScanned counts clients, not configs or server ma
   });
 
   it('counts ~/.claude/settings.json and the project .mcp.json as one client', async () => {
-    write(homeDir, path.join('.claude', 'settings.json'), { mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) } });
-    write(projectDir, '.mcp.json', { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } });
+    write(homeDir, path.join('.claude', 'settings.json'), { mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-1' }) } });
+    write(projectDir, '.mcp.json', { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'plain-token-2' }) } });
 
     const result = await protect();
 
@@ -590,10 +593,10 @@ describe('protectMcp — clientsScanned counts clients, not configs or server ma
 
   it('CONTROL: counts the configs of two clients as two', async () => {
     write(homeDir, '.claude.json', {
-      mcpServers: { github: server({ GITHUB_TOKEN: 'not-a-real-token-1' }) },
-      projects: { '/work/app': { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'not-a-real-token-2' }) } } },
+      mcpServers: { github: server({ GITHUB_TOKEN: 'plain-token-1' }) },
+      projects: { '/work/app': { mcpServers: { slack: server({ SLACK_BOT_TOKEN: 'plain-token-2' }) } } },
     });
-    write(homeDir, path.join('.cursor', 'mcp.json'), { mcpServers: { db: server({ API_KEY: 'not-a-real-token-3' }) } });
+    write(homeDir, path.join('.cursor', 'mcp.json'), { mcpServers: { db: server({ API_KEY: 'plain-token-3' }) } });
 
     const result = await protect();
 
@@ -655,8 +658,8 @@ describe('protectMcp — a secret in the env of a server that already runs throu
   };
 
   it('stores it under the --client and --server its wrapper reads by, beside the secrets stored there, and removes it from the env', async () => {
-    await vault().storeServerSecrets('cursor', 'github', { GITHUB_TOKEN: 'not-a-real-token-1' });
-    const server = wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234', LOG_LEVEL: 'debug' });
+    await vault().storeServerSecrets('cursor', 'github', { GITHUB_TOKEN: 'plain-token-1' });
+    const server = wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234', LOG_LEVEL: 'debug' });
     writeConfig({ 'github-personal': server });
 
     const result = await protect();
@@ -670,8 +673,8 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     expect(config.mcpServers['github-personal']).toEqual({ ...server, args: withBinding(server.args), env: { LOG_LEVEL: 'debug' } });
     expect(await vault().getServerSecrets('cursor', 'github')).toEqual({
-      GITHUB_TOKEN: 'not-a-real-token-1',
-      MY_SERVICE_API_KEY: 'FAKE-KEY-1234',
+      GITHUB_TOKEN: 'plain-token-1',
+      MY_SERVICE_API_KEY: 'PLAIN-KEY-1234',
     });
     // The file is backed up as it was, value included, for mcp-unprotect.
     expect(restoreConfig(configPath, path.join(dataDir, 'mcp-backups'))).toBe(true);
@@ -679,19 +682,19 @@ describe('protectMcp — a secret in the env of a server that already runs throu
   });
 
   it('stores it for a server whose --backend argument names the backend this run stores in', async () => {
-    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', 'local'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', 'local'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) });
 
     const result = await protect();
 
     expect(result.unmoved).toEqual([]);
     expect(result.secretsFound).toBe(1);
     expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers.github.env).toEqual({});
-    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
   });
 
   it('leaves it, and returns the server, when another protected server reads its secrets by the same name', async () => {
     const before = writeConfig({
-      github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+      github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }),
       'github-work': wrapped(['--server=github', '--client', 'cursor'], {}),
     });
 
@@ -710,7 +713,7 @@ describe('protectMcp — a secret in the env of a server that already runs throu
   });
 
   it('leaves it when the other protected server reading by the same name is in a project-level config it does not rewrite', async () => {
-    const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+    const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) });
     const projectConfig = path.join(projectDir, '.cursor', 'mcp.json');
     fs.mkdirSync(path.dirname(projectConfig), { recursive: true });
     fs.writeFileSync(projectConfig, JSON.stringify({ mcpServers: { repoTool: wrapped(['--server', 'github', '--client', 'cursor'], {}) } }));
@@ -735,7 +738,7 @@ describe('protectMcp — a secret in the env of a server that already runs throu
 
   it('leaves it when its --backend argument names a backend other than the one this run stores in', async () => {
     const before = writeConfig({
-      github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', '1password'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+      github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', '1password'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }),
     });
 
     const result = await protect();
@@ -753,7 +756,7 @@ describe('protectMcp — a secret in the env of a server that already runs throu
   it('leaves it when it gives no --backend and the configured backend is not the one this run stores in', async () => {
     fs.mkdirSync(path.join(homeDir, '.secretless-ai'), { recursive: true });
     fs.writeFileSync(path.join(homeDir, '.secretless-ai', 'config.json'), JSON.stringify({ backend: '1password' }));
-    const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+    const before = writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) });
 
     const result = await protect();
 
@@ -772,18 +775,18 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     // it. Until #513 the wrapper gave its store a key and read `local` from
     // the encrypted file, and these cases were left in the env.
     vi.mocked(effectiveBackendName).mockImplementation((type) => (type === 'local' ? 'keychain-macos' : type));
-    vi.mocked(createBackend).mockImplementation((_type, config) => new LocalBackend({ ...config, key: 'not-a-real-key' }));
+    vi.mocked(createBackend).mockImplementation((_type, config) => new LocalBackend({ ...config, key: 'plain-key' }));
     const cases: Array<{ backendType?: 'local'; wrapperArgs: string[] }> = [
       { wrapperArgs: [] },
       { wrapperArgs: ['--backend', 'local'] },
       { backendType: 'local', wrapperArgs: [] },
     ];
-    const standIn = new McpVault({ backend: new LocalBackend({ storeDir: path.join(dataDir, 'mcp-vault'), key: 'not-a-real-key' }) });
+    const standIn = new McpVault({ backend: new LocalBackend({ storeDir: path.join(dataDir, 'mcp-vault'), key: 'plain-key' }) });
     for (const { backendType, wrapperArgs } of cases) {
       // Each case starts from the same state: the pair and its binding not stored.
       await standIn.removeServerSecrets('cursor', 'github');
       writeConfig({
-        github: wrapped(['--server', 'github', '--client', 'cursor', ...wrapperArgs], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+        github: wrapped(['--server', 'github', '--client', 'cursor', ...wrapperArgs], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }),
       });
 
       const result = await protectMcp({ dataDir, projectDir, wrapperPath, ...(backendType ? { backendType } : {}) });
@@ -792,26 +795,26 @@ describe('protectMcp — a secret in the env of a server that already runs throu
       expect(result.secretsFound).toBe(1);
       expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers.github.env).toEqual({});
     }
-    expect(await standIn.getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    expect(await standIn.getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
   });
 
   it('CONTROL: stores it when a home directory is given, as the vault then has a key and is the encrypted file for local', async () => {
     vi.mocked(effectiveBackendName).mockReturnValue('keychain-macos');
-    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) });
 
     const result = await protect();
 
     expect(result.unmoved).toEqual([]);
     expect(result.secretsFound).toBe(1);
-    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
   });
 
   it('leaves it when another value is stored under the same env name for the name its wrapper reads by', async () => {
     // The wrapper gives the server the stored value in place of the one in its
     // env, so storing this one would change the credential the server is given.
-    await vault().storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    await vault().storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
     const before = writeConfig({
-      github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-5678', OTHER_API_KEY: 'FAKE-KEY-9012' }),
+      github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-5678', OTHER_API_KEY: 'PLAIN-KEY-9012' }),
     });
 
     const result = await protect();
@@ -825,25 +828,25 @@ describe('protectMcp — a secret in the env of a server that already runs throu
     }]);
     // Bound in place, its secrets left in its env.
     expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(boundIn(before, 'github'));
-    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
   });
 
   it('CONTROL: stores it when the value stored under the same env name is the same value', async () => {
-    await vault().storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
-    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) });
+    await vault().storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
+    writeConfig({ github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) });
 
     const result = await protect();
 
     expect(result.unmoved).toEqual([]);
     expect(result.secretsFound).toBe(1);
     expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).mcpServers.github.env).toEqual({});
-    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    expect(await vault().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
   });
 
   it('leaves it when its args choose the store its wrapper reads from with --vault-dir or --vault-key', async () => {
-    for (const storeFlag of [['--vault-dir', path.join(dataDir, 'other-vault')], ['--vault-key', 'not-a-real-key']]) {
+    for (const storeFlag of [['--vault-dir', path.join(dataDir, 'other-vault')], ['--vault-key', 'plain-key']]) {
       const before = writeConfig({
-        github: wrapped(['--server', 'github', '--client', 'cursor', ...storeFlag], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }),
+        github: wrapped(['--server', 'github', '--client', 'cursor', ...storeFlag], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }),
       });
 
       const result = await protect();

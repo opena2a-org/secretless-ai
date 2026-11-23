@@ -165,7 +165,7 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
         github: {
           command: WRAPPER_PATH,
           args: ['--server', 'github', '--client', 'cursor', '--', process.execPath, '-e', childScript],
-          env: { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' },
+          env: { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' },
         },
       },
     });
@@ -191,6 +191,6 @@ describe('mcp-status classifies the env of a server that runs through the wrappe
       },
     );
 
-    expect(out).toBe('FAKE-KEY-1234');
+    expect(out).toBe('PLAIN-KEY-1234');
   });
 });

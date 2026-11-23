@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { checkLaunchPlace, discoverMcpConfigsDetailed, rewrittenByProtectMcp, serverMapKey } from './discover';
 import type { McpConfigDiscovery, McpConfigFile, McpServerEntry, UncheckedMcpServer, UnparsedMcpConfig } from './discover';
-import { classifyEnvVars } from './classify';
+import { classifyEnvLiterals } from './env-secrets';
 import { BindingWriteRefusedError, McpVault, boundEntryName, commandDigest, expectBinding, isBindingId, isPerMachineStore, mcpNameProblem, newBindingId, ownsBinding } from './vault';
 import type { McpBinding } from './vault';
 import { BindingHomeIdError, ensureBindingHomeId, readBindingHomeId } from './binding-home-id';
@@ -579,8 +579,9 @@ export async function protectMcp(options: ProtectOptions): Promise<ProtectResult
       const repoint: string[] = [];
 
       for (const server of config.servers) {
-        // Classify env vars into secrets and non-secrets
-        const classified = classifyEnvVars(server.env);
+        // The literal secrets in its env, as mcp-status counts them: an empty
+        // value, an expansion and a placeholder stay in the env.
+        const classified = classifyEnvLiterals(server.env);
         const secretKeys = Object.keys(classified.secrets);
 
         // A server already wrapped by secretless-mcp reads its secrets from
@@ -897,7 +898,7 @@ export async function planMcpBindings(
     for (const config of fileConfigs) {
       for (const server of config.servers) {
         if (!server.alreadyProtected) continue;
-        const secrets = classifyEnvVars(server.env).secrets;
+        const secrets = classifyEnvLiterals(server.env).secrets;
         const storeReason = await wrappedStoreReason(setup, config, server, secrets);
         const plan = unstoredPlan(
           setup.binder,
