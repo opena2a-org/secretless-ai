@@ -513,6 +513,9 @@ mv .env .env.bak
 touch .env
 echo FOO=bar >> .env
 cp .env.example .env
+cat < .env.example
+cat .env.example .env
+cat .env*.example
 chmod 600 .env
 ls -la .env
 stat .env
@@ -643,6 +646,8 @@ grep -rn "os.environ" src
 grep -rn "\.env" src
 grep -rn '.env' .gitignore
 grep -n "^\.env" .gitignore
+ls -a | grep '^\.env'
+grep -rn "env.example" docs
 
 # Prose, messages and template fields that mention a secret word.
 git commit -m "Stop tracking .env"

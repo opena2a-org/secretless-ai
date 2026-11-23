@@ -550,9 +550,10 @@ describe('init', { timeout: 120_000 }, () => {
         init(dir);
         const hookPath = path.join(dir, '.claude', 'hooks', 'secretless-guard.sh');
 
-        // The file guard exempts templates; the COMMAND guard deliberately does
-        // not (see the revert note in init.ts). This asserts the file-guard half
-        // still works once the payload parses.
+        // The file guard exempts templates by name; the COMMAND guard exempts
+        // them only in a command its analyzer parses whole (NOTE ON TEMPLATE
+        // FILES in init.ts). This asserts the file-guard half still works once
+        // the payload parses.
         const pretty = JSON.stringify(
           { tool_name: 'Read', tool_input: { file_path: '/p/.env.example' } },
           null,
@@ -562,10 +563,12 @@ describe('init', { timeout: 120_000 }, () => {
       });
     });
 
-    // A template exemption in the COMMAND guard was implemented, then reverted:
-    // subtracting template-suffixed tokens from the command text is a credential
-    // bypass, because the command can rebuild the real path from the token that
-    // was deleted. These cases lock that the guard stays closed.
+    // A textual template exemption in the COMMAND guard was implemented, then
+    // reverted: subtracting template-suffixed tokens from the command text is a
+    // credential bypass, because the command can rebuild the real path from the
+    // token that was deleted. The exemption the guard has now is the analyzer's,
+    // which never applies to a command with an expansion. These cases lock that
+    // the guard stays closed.
     describe('the command guard must not be weakened by template names', () => {
       it('blocks a command that derives a real secret path from a template name', () => {
         init(dir);
@@ -683,8 +686,10 @@ describe('init', { timeout: 120_000 }, () => {
       // a search pattern that merely contains a secret-file token. A plain grep's
       // pattern no longer reaches the arms (guard-command-operation.test.ts), so
       // the pattern shape is a search the hook does not parse.
+      // The template read goes through xargs, which the analyzer does not parse,
+      // so it is matched on its text as every template read once was.
       const deadEnds = [
-        'cat .env.example',
+        'cat .env.example | xargs echo',
         'git grep -n "dotenv(.env)"',
       ];
       for (const c of deadEnds) {
@@ -707,13 +712,15 @@ describe('init', { timeout: 120_000 }, () => {
 
       // Pinned pre-change corpus for the secret-file-read arm. Every command
       // here denied before the message change and must still deny — including
-      // the deliberate template over-block (exempting the template NAME from
-      // the command guard is a credential bypass; see init.ts). The pattern-only
+      // the template over-block where the analyzer cannot parse the command
+      // (exempting the template NAME from command text is a credential bypass;
+      // see init.ts). A plain `cat .env.example` is now allowed, which
+      // guard-template-operand.test.ts pins. The pattern-only
       // search is a git grep: a plain grep with the same pattern is now allowed,
       // which guard-command-operation.test.ts pins.
       const mustBlock = [
         'cat .env',
-        'cat .env.example',
+        'cat .env.example | xargs echo',
         'head -5 prod.env',
         'grep AWS_SECRET .env',
         'git grep -n "dotenv(.env)"',
@@ -866,10 +873,10 @@ describe('init', { timeout: 120_000 }, () => {
 
       // The pinned command corpus of the Bash secret-file deny message change,
       // re-checked here: no command that denied is allowed now, including the
-      // deliberate `cat .env.example` over-block, and nothing allowed is newly
-      // blocked.
+      // template over-block of a command the analyzer cannot parse, and nothing
+      // allowed is newly blocked.
       for (const c of [
-        'cat .env', 'cat .env.example', 'head -5 prod.env', 'grep AWS_SECRET .env',
+        'cat .env', 'cat .env.example | xargs echo', 'head -5 prod.env', 'grep AWS_SECRET .env',
         'git grep -n "dotenv(.env)"', 'xxd server.key', 'sed -n 1p client.pem',
         'strings cert.p12',
       ]) {
@@ -1421,7 +1428,7 @@ describe('init', { timeout: 120_000 }, () => {
         // An unquoted delimiter whose body the shell expands keeps the body in
         // the text the rules match.
         ['cat > notes.md <<EOF\nthe head of $HOME/.env\nEOF', 'head of $HOME/.env'],
-        ['cat .env.example', 'cat .env.example'],
+        ['cat .env.example | xargs echo', 'cat .env.example'],
         [`python3 -c "open('.env').read()"`, `python3 -c "open('.env').read()"`],
         ['\\tail .env', 'tail .env'],
         ["printf 'x\\ncat .env' | sh", "cat .env'"],

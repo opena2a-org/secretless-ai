@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+**The guard hook admits a Bash command that reads a committed template
+(`cat .env.example`, `head < config/.env.sample`, `grep KEY .env.dist`) or lists
+names (`ls -a | grep '^\.env'`), where it refused them as secret-file reads,
+and its refusal names the token that tripped it: `cat .env.example .env` is
+refused with ``then `.env`, a secret-file name``.** The template operand is set
+aside only when python3 parses the whole command: no `$`, backtick, parenthesis
+or brace anywhere, every program one that neither runs a command nor reads
+names from its input (`ls` is now one of them), and the operand a literal word
+ending in `.example`, `.sample`, `.template` or `.dist` with no glob, no
+leading `~` and no symbolic link in its path. `cat "$(basename .env.example
+.example)"`, `cat .env.example | xargs cat`, `cat config.env.example` where it
+links to `.env`, and every template read without python3 are refused as
+before. `src/guard-template-operand.test.ts` pins both sides.
+
 **`migrate` given only `--from` or only `--to` names that backend in the
 usage line it prints, at exit 2 as before (#471).** `migrate --from local`
 printed the usage line with both flags as placeholders,
