@@ -180,7 +180,7 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
     configureLocal();
     const childScript = 'process.stdout.write(String(process.env.MY_SERVICE_API_KEY))';
     const cursorJson = write(path.join('.cursor', 'mcp.json'), {
-      mcpServers: { github: { command: process.execPath, args: ['-e', childScript], env: { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' } } },
+      mcpServers: { github: { command: process.execPath, args: ['-e', childScript], env: { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' } } },
     });
 
     const result = await protect();
@@ -195,7 +195,7 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
       stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv(server.env),
     });
-    expect(out).toBe('FAKE-KEY-1234');
+    expect(out).toBe('PLAIN-KEY-1234');
   });
 
   it('CONTROL: a wrapper given --vault-dir reads `local` from the encrypted file under the default key', async () => {
@@ -203,7 +203,7 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
     // keychain upgrade (0.12.3): the encrypted file under ~/.secretless-ai/mcp-vault.
     const vaultDir = path.join(home, '.secretless-ai', 'mcp-vault');
     const store = new McpVault({ backend: new LocalBackend({ storeDir: vaultDir }) });
-    await store.storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    await store.storeServerSecrets('cursor', 'github', { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
     const childScript = 'process.stdout.write(String(process.env.MY_SERVICE_API_KEY))';
     // Bound as protect-mcp binds it, for the command after the wrapper's `--`.
     const id = newBindingId();
@@ -226,13 +226,13 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
       { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], env: childEnv() },
     );
 
-    expect(out).toBe('FAKE-KEY-1234');
+    expect(out).toBe('PLAIN-KEY-1234');
   });
 
   it('with no backend configured, moves a secret from the env of a server that runs through the wrapper into the store its wrapper reads', async () => {
     standInKeychain();
     const cursorJson = write(path.join('.cursor', 'mcp.json'), {
-      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) },
+      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) },
     });
 
     for (const backendType of [undefined, 'local'] as const) {
@@ -241,12 +241,12 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
       expect(result.unmoved).toEqual([]);
       expect(result.servers).toEqual([{ client: 'cursor', server: 'github', secretKeys: ['MY_SERVICE_API_KEY'] }]);
       expect(JSON.parse(fs.readFileSync(cursorJson, 'utf-8')).mcpServers.github.env).toEqual({});
-      expect(await standInStore().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+      expect(await standInStore().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
       // The next run starts from the same state: the pair and its binding
       // gone from the store, and the server unbound with its secret in its env.
       await standInStore().removeServerSecrets('cursor', 'github');
       write(path.join('.cursor', 'mcp.json'), {
-        mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) },
+        mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) },
       });
     }
   });
@@ -255,15 +255,15 @@ describe('protect-mcp and the wrapper build one store for the same arguments (#5
 describe('protect-mcp goes on past a name the store refuses (#513 item 2)', () => {
   it('lists a server whose wrapper reads by a refused name as not moved, protects the servers after it, and exits 0', async () => {
     configureLocal();
-    const dotted = wrapped(['--server', 'my.server', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    const dotted = wrapped(['--server', 'my.server', '--client', 'cursor'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
     const cursorJson = write(path.join('.cursor', 'mcp.json'), {
       mcpServers: {
         dotted,
-        github: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'not-a-real-token-1' } },
+        github: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'plain-token-1' } },
       },
     });
     const settingsJson = write(path.join('.claude', 'settings.json'), {
-      mcpServers: { slack: { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'not-a-real-token-2' } } },
+      mcpServers: { slack: { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'plain-token-2' } } },
     });
 
     const { code, output } = await runProtect([]);
@@ -295,7 +295,7 @@ describe('protect-mcp goes on past a name the store refuses (#513 item 2)', () =
       },
     ];
     for (const { wrapperArgs, reason } of cases) {
-      const before = JSON.stringify({ mcpServers: { github: wrapped(wrapperArgs, { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) } });
+      const before = JSON.stringify({ mcpServers: { github: wrapped(wrapperArgs, { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) } });
       const cursorJson = write(path.join('.cursor', 'mcp.json'), before);
 
       const result = await protect();
@@ -308,11 +308,11 @@ describe('protect-mcp goes on past a name the store refuses (#513 item 2)', () =
 
   it('lists a server whose name the store refuses as not protected, with the reason, and protects the others', async () => {
     configureLocal();
-    const refused = { command: 'npx', args: ['some-mcp'], env: { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' } };
+    const refused = { command: 'npx', args: ['some-mcp'], env: { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' } };
     const cursorJson = write(path.join('.cursor', 'mcp.json'), {
       mcpServers: {
         'my.server': refused,
-        github: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'not-a-real-token-1' } },
+        github: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'plain-token-1' } },
       },
     });
 
@@ -336,7 +336,7 @@ describe('protect-mcp goes on past a name the store refuses (#513 item 2)', () =
 
 describe('mcp-unprotect restores the file as it was before the first protect-mcp run (#513 item 3)', () => {
   const original = JSON.stringify({
-    mcpServers: { github: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'not-a-real-token-1' } } },
+    mcpServers: { github: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_TOKEN: 'plain-token-1' } } },
   }, null, 2);
 
   type Servers = Record<string, { command: string; args: string[]; env: Record<string, string> }>;
@@ -344,12 +344,12 @@ describe('mcp-unprotect restores the file as it was before the first protect-mcp
     {
       label: 'a server with a secret added since',
       change: (servers) => {
-        servers.slack = { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'not-a-real-token-2' } };
+        servers.slack = { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'plain-token-2' } };
       },
     },
     {
       label: 'a secret added to the env of the server the first run wrapped',
-      change: (servers) => { servers.github.env.MY_SERVICE_API_KEY = 'FAKE-KEY-1234'; },
+      change: (servers) => { servers.github.env.MY_SERVICE_API_KEY = 'PLAIN-KEY-1234'; },
     },
   ];
 
@@ -377,7 +377,7 @@ describe('mcp-unprotect restores the file as it was before the first protect-mcp
     runCli(['mcp-unprotect']);
     expect(fs.readFileSync(cursorJson, 'utf-8')).toBe(original);
     const config = JSON.parse(original);
-    config.mcpServers.slack = { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'not-a-real-token-2' } };
+    config.mcpServers.slack = { command: 'npx', args: ['slack-mcp'], env: { SLACK_BOT_TOKEN: 'plain-token-2' } };
     const edited = JSON.stringify(config, null, 2);
     fs.writeFileSync(cursorJson, edited);
 
@@ -392,7 +392,7 @@ describe('protect-mcp compares the stores a wrapper and this run build, and name
   it('with no backend configured, moves a secret from the env of a server given --backend keychain into the platform keychain', async () => {
     standInKeychain();
     const cursorJson = write(path.join('.cursor', 'mcp.json'), {
-      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', 'keychain'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) },
+      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', 'keychain'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) },
     });
 
     const result = await protect();
@@ -400,13 +400,13 @@ describe('protect-mcp compares the stores a wrapper and this run build, and name
     expect(result.unmoved).toEqual([]);
     expect(result.secretsFound).toBe(1);
     expect(JSON.parse(fs.readFileSync(cursorJson, 'utf-8')).mcpServers.github.env).toEqual({});
-    expect(await standInStore().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'FAKE-KEY-1234' });
+    expect(await standInStore().getServerSecrets('cursor', 'github')).toEqual({ MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' });
   });
 
   it('names the store this run stores in when it leaves a secret whose wrapper reads another', async () => {
     standInKeychain();
     const before = JSON.stringify({
-      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', '1password'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) },
+      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', '1password'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) },
     });
     const cursorJson = write(path.join('.cursor', 'mcp.json'), before);
 
@@ -422,7 +422,7 @@ describe('protect-mcp compares the stores a wrapper and this run build, and name
     vi.mocked(effectiveBackendName).mockImplementation((type) => type);
     vi.mocked(createBackend).mockImplementation((_type, config) => new LocalBackend({ ...config, key: STAND_IN_KEY }));
     const before = JSON.stringify({
-      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', 'keychain'], { MY_SERVICE_API_KEY: 'FAKE-KEY-1234' }) },
+      mcpServers: { github: wrapped(['--server', 'github', '--client', 'cursor', '--backend', 'keychain'], { MY_SERVICE_API_KEY: 'PLAIN-KEY-1234' }) },
     });
     const cursorJson = write(path.join('.cursor', 'mcp.json'), before);
 

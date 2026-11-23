@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { isKnownExample, findRealMatch, scan, fixFor, isEnvFile, type ScanStats } from './scan';
+import { isKnownExample, findRealMatch, scan, fixFor, isEnvFile, countDirsEntered, type ScanStats } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { buildMatcher, loadSecretlessIgnore } from './secretlessignore';
 
@@ -946,9 +946,10 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     // A 31-directory link lattice produced 2047 traversals, 45s and 289 MB.
     // A repo is a hostile input; the multiplicity cap makes this bounded, and
     // crossing it must SAY so rather than pass silently.
+    const LEVELS = 12;
     const dir = tmpdir('scan-lattice-');
     let prev = dir;
-    for (let level = 0; level < 12; level++) {
+    for (let level = 0; level < LEVELS; level++) {
       const next = path.join(prev, 'd');
       fs.mkdirSync(next, { recursive: true });
       fs.symlinkSync(next, path.join(prev, 'l1'), 'dir');
@@ -957,12 +958,21 @@ describe('scan() — a symlinked config file or directory is followed (0.21.1 re
     }
     fs.writeFileSync(path.join(prev, 'config.json'), `{"key": "${GKEY}"}\n`);
 
-    const started = process.hrtime.bigint();
-    const stats = { placeholdersSuppressed: 0, truncated: false };
-    const findings = scan(dir, { scanGlobal: false }, stats);
-    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    // The work is counted, not timed: a time limit failed a bounded walk on a
+    // machine busy with other suites. The real directory at depth k is reached
+    // by 3^k routes, 3^12 = 531441 to the deepest, so one walk that followed
+    // every route would enter about 800000 directories (or stop on the
+    // 50000-directory budget). A bounded walk enters each of the LEVELS + 1
+    // real directories at most 32 times, 416 in all; the few walks a scan runs
+    // over the root entered 984 together when this was written.
+    const stats: ScanStats = { placeholdersSuppressed: 0, truncated: false };
+    let findings: ReturnType<typeof scan> = [];
+    const entered = countDirsEntered(() => { findings = scan(dir, { scanGlobal: false }, stats); });
 
-    expect(elapsedMs).toBeLessThan(10_000);
+    expect(entered).toBeGreaterThanOrEqual(LEVELS + 1);
+    expect(entered).toBeLessThan(5_000);
+    // The cap was reached, and the scan says so.
+    expect(stats.walkBudgetExceeded).toBe(true);
     // One real credential, however many routes reach it.
     expect(findings.length).toBe(1);
   });
