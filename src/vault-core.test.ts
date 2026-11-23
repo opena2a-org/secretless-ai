@@ -968,6 +968,37 @@ describeWithAimCore('vault-core', () => {
           { envName: 'ROTATED' },
         )).toBe(0);
       }, 60_000);
+
+      // An embedding host sets SECRETLESS_CLI_PREFIX; the rotate command
+      // vault test prints and the vault rotate usage name the host's
+      // command, as vault --help does, not the standalone secretless-ai.
+      it('the CLI: with SECRETLESS_CLI_PREFIX set, the vault test Fix line and the vault rotate usage start with it', async () => {
+        const core = await import('./vault-core.js');
+        await replaceIdentity(core, ['-x']);
+        const cliPath = path.resolve(__dirname, '..', 'dist', 'cli.js');
+        expect(fs.existsSync(cliPath), 'run `npm run build` first').toBe(true);
+        const vaultCli = (...args: string[]) => spawnSync(process.execPath, [cliPath, 'vault', ...args], {
+          env: { ...process.env, HOME: tmpHome, OPENA2A_TELEMETRY: 'off', SECRETLESS_OS_KEYCHAIN: 'off', SECRETLESS_CLI_PREFIX: 'host secrets' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf-8',
+          timeout: 30_000,
+        });
+
+        const test = vaultCli('test');
+        expect(test.status).toBe(1);
+        const printed = test.stdout.split('\n').map((l) => l.trim()).filter((l) => / vault rotate /.test(l));
+        expect(printed).toEqual(['host secrets vault rotate -- -x']);
+        expect(test.stdout).not.toContain('secretless-ai');
+
+        const usage = vaultCli('rotate', '-x');
+        expect(usage.status).toBe(2);
+        expect(usage.stderr).toContain('  Usage: host secrets vault rotate <namespace> [--env <VAR>]\n');
+        expect(usage.stderr).toContain('         host secrets vault rotate [--env <VAR>] -- <namespace>\n');
+        expect(usage.stderr).not.toContain('secretless-ai');
+
+        const help = vaultCli('--help');
+        expect(help.stdout).toContain('host secrets vault ');
+      }, 60_000);
     });
   });
 

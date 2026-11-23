@@ -16,6 +16,7 @@ import * as readline from 'readline';
 import { escapeForDisplay, escapePathForDisplay, hasDisplayHazard, quotePathForDisplay, shellQuote } from './display-safe';
 import { canReadHidden, readHiddenLine } from './hidden-line';
 import type { PromptOutput, TtyInput } from './hidden-line';
+import { CLI_BARE } from './commands/utils';
 
 // ── Types for the dynamically loaded aim-core vault module ──────────
 
@@ -311,7 +312,7 @@ function identityProblem(
       reason: `Other tools that use @opena2a/aim-core can share ${AIM_DATA_DIR_SHOWN}, so no new identity was written over that file.`,
       fix: [
         'Restore it from a backup, or move it aside and start with a new identity:',
-        `  ${moveIdentity} && secretless-ai vault init`,
+        `  ${moveIdentity} && ${CLI_BARE} vault init`,
       ],
     };
   }
@@ -322,12 +323,12 @@ function identityProblem(
       ? [
         `Restore ${IDENTITY_FILE_SHOWN} from a backup, or move it and the vault aside and start a new vault,`,
         'which leaves the credentials in the old vault unreadable:',
-        `  mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && ${moveIdentity} && secretless-ai vault init`,
+        `  mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && ${moveIdentity} && ${CLI_BARE} vault init`,
       ]
       : [
         `Restore ${AIM_DATA_DIR_SHOWN} from a backup, or move the vault aside and start a new one,`,
         'which leaves the credentials in the old vault unreadable:',
-        `  mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && secretless-ai vault init`,
+        `  mv ${VAULT_DIR_SHOWN} ${VAULT_DIR_SHOWN}.old && ${CLI_BARE} vault init`,
       ],
   };
 }
@@ -373,7 +374,7 @@ export async function getVaultStore(): Promise<{
   if (!store.exists()) {
     throw new Error(
       'Vault not initialized. Run:\n' +
-      '  secretless-ai vault init',
+      `  ${CLI_BARE} vault init`,
     );
   }
 
@@ -446,11 +447,11 @@ export async function vaultInit(agentName?: string): Promise<void> {
   console.log(`  Crypto:      XSalsa20-Poly1305, Ed25519 identity-bound`);
   console.log(`  Identity:    ${AIM_DATA_DIR}\n`);
   console.log('  Next steps:');
-  console.log('    secretless-ai vault register github        (prompts for the token)');
-  console.log('    secretless-ai vault list');
+  console.log(`    ${CLI_BARE} vault register github        (prompts for the token)`);
+  console.log(`    ${CLI_BARE} vault list`);
   // The child is given the credential as $GITHUB; the example reads it in the
   // child's shell and passes it to curl on stdin, off the command line (#410).
-  console.log(`    secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'\n`);
+  console.log(`    ${CLI_BARE} vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'\n`);
 
   vault.zeroize(edSecretKey);
 }
@@ -519,7 +520,7 @@ export async function vaultRegister(
 
   console.log(`\n  Credential registered in namespace "${namespace}".`);
   console.log(`  Version: ${store.listCredentials().find(c => c.namespace === namespace)?.version ?? 1}`);
-  console.log(`\n  Use it:  secretless-ai vault exec ${namespace} -- <command>\n`);
+  console.log(`\n  Use it:  ${CLI_BARE} vault exec ${namespace} -- <command>\n`);
 
   // Zeroize sensitive material
   credentialBytes.fill(0);
@@ -539,7 +540,7 @@ export async function vaultList(): Promise<void> {
 
   if (credentials.length === 0) {
     console.log('\n  No credentials in vault.\n');
-    console.log('  Register one:  secretless-ai vault register <namespace>   (prompts for the value)\n');
+    console.log(`  Register one:  ${CLI_BARE} vault register <namespace>   (prompts for the value)\n`);
     vault.zeroize(edSecretKey);
     store.lock();
     return;
@@ -700,7 +701,7 @@ export async function vaultScan(targetDir?: string): Promise<void> {
       if (stats.truncated) console.log('  Scan incomplete: stopped at the file cap, so files were left unscanned.');
       if (stats.unreadable.length > 0) console.log(`  ${stats.unreadable.length} path(s) could not be read, so they are not known to be clean.`);
       if (stats.oversize.length > 0) console.log(`  ${stats.oversize.length} file(s) skipped for size, so they are not known to be clean.`);
-      console.log('  Check coverage: secretless-ai scan --json | jq .summary\n');
+      console.log(`  Check coverage: ${CLI_BARE} scan --json | jq .summary\n`);
       return;
     }
     console.log('  No hardcoded credentials found.\n');
@@ -714,7 +715,7 @@ export async function vaultScan(targetDir?: string): Promise<void> {
     // an ESC or an OSC sequence in a directory name reached the terminal.
     console.log(`  ${escapePathForDisplay(relPath)}:${finding.line}`);
     console.log(`    Pattern:  ${finding.patternId}`);
-    console.log(`    Migrate:  secretless-ai vault register ${finding.patternId.toLowerCase()}`);
+    console.log(`    Migrate:  ${CLI_BARE} vault register ${finding.patternId.toLowerCase()}`);
     console.log();
   }
 
@@ -722,7 +723,7 @@ export async function vaultScan(targetDir?: string): Promise<void> {
   console.log('  so the value stays out of shell history and the process list.\n');
 
   console.log('  After registering, use vault exec to inject credentials at runtime:');
-  console.log('    secretless-ai vault exec <namespace> -- <command>\n');
+  console.log(`    ${CLI_BARE} vault exec <namespace> -- <command>\n`);
 }
 
 /**
@@ -745,7 +746,7 @@ export async function vaultExec(
   options?: { envName?: string },
 ): Promise<number> {
   if (command.length === 0) {
-    throw new Error('No command specified. Usage: secretless-ai vault exec <namespace> -- <command>');
+    throw new Error(`No command specified. Usage: ${CLI_BARE} vault exec <namespace> -- <command>`);
   }
 
   const vault = await loadAimCoreVault();
@@ -886,7 +887,7 @@ export async function vaultTest(): Promise<boolean> {
   if (read.kind !== 'found') {
     if (read.kind === 'missing' && !store.exists()) {
       console.log('  [FAIL]  No agent identity found');
-      console.log('          Fix: secretless-ai vault init\n');
+      console.log(`          Fix: ${CLI_BARE} vault init\n`);
       return false;
     }
     const { summary, fix } = identityProblem(read, store.exists());
@@ -899,7 +900,7 @@ export async function vaultTest(): Promise<boolean> {
   // Check 3: Vault exists
   if (!store.exists()) {
     console.log('  [FAIL]  Vault not initialized');
-    console.log('          Fix: secretless-ai vault init\n');
+    console.log(`          Fix: ${CLI_BARE} vault init\n`);
     return false;
   }
   console.log('  [OK]  Vault exists at ~/.aim/vault/');
@@ -944,7 +945,7 @@ export async function vaultTest(): Promise<boolean> {
       [
         `Restore ${IDENTITY_FILE_SHOWN} from a backup of the identity the vault was created with,`,
         'or store each of these credentials again with the identity in place:',
-        ...undecryptable.map((namespace) => `  secretless-ai vault rotate ${namespaceOperand(namespace)}`),
+        ...undecryptable.map((namespace) => `  ${CLI_BARE} vault rotate ${namespaceOperand(namespace)}`),
       ],
     );
     return false;
@@ -992,7 +993,7 @@ export async function vaultMigrate(options: {
   if (secretNames.length === 0) {
     console.log('  No secrets found in SecretStore to migrate.\n');
     console.log('  To migrate from a .env file:');
-    console.log('    secretless-ai vault migrate --env-file .env\n');
+    console.log(`    ${CLI_BARE} vault migrate --env-file .env\n`);
     return;
   }
 
@@ -1060,7 +1061,7 @@ export async function vaultMigrate(options: {
     console.log('  Run without --dry-run to execute.\n');
   } else {
     console.log(`  Migrated: ${migrated}, Skipped: ${skipped}`);
-    console.log('\n  Verify: secretless-ai vault list\n');
+    console.log(`\n  Verify: ${CLI_BARE} vault list\n`);
   }
 }
 
@@ -1187,7 +1188,7 @@ async function migrateFromEnvFile(
     if (!dryRun && migrated > 0) {
       console.log(`\n  Consider removing credentials from ${envFilePath} now that they are in the vault.`);
     }
-    console.log('\n  Verify: secretless-ai vault list\n');
+    console.log(`\n  Verify: ${CLI_BARE} vault list\n`);
   }
 }
 

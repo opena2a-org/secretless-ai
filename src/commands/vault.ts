@@ -18,6 +18,7 @@ import {
 } from '../vault-core';
 import { escapeForDisplay } from '../display-safe';
 import { EXIT_USAGE } from '../argv';
+import { CLI_BARE } from './utils';
 
 export async function runVault(args: string[]): Promise<number> {
   const subcommand = args[0];
@@ -76,7 +77,7 @@ async function handleInit(args: string[]): Promise<number> {
 async function handleRegister(args: string[]): Promise<number> {
   const namespace = args[0];
   if (!namespace || namespace.startsWith('-')) {
-    console.error('\n  Usage: secretless-ai vault register <namespace> [options]\n');
+    console.error(`\n  Usage: ${CLI_BARE} vault register <namespace> [options]\n`);
     console.error('  Options:');
     console.error('    --value <value>       Value as an argument (shell history keeps it);');
     console.error('                          omit it to be prompted or to pipe the value');
@@ -124,8 +125,8 @@ async function handleList(): Promise<number> {
 async function handleRotate(args: string[]): Promise<number> {
   const operands = rotateOperands(args);
   if (!operands) {
-    console.error('\n  Usage: secretless-ai vault rotate <namespace> [--env <VAR>]');
-    console.error('         secretless-ai vault rotate [--env <VAR>] -- <namespace>');
+    console.error(`\n  Usage: ${CLI_BARE} vault rotate <namespace> [--env <VAR>]`);
+    console.error(`         ${CLI_BARE} vault rotate [--env <VAR>] -- <namespace>`);
     console.error('  A namespace that begins with - goes after --, as in the second form.');
     console.error('  Without --env, the new value is read from a prompt or a pipe.\n');
     return EXIT_USAGE;
@@ -149,7 +150,7 @@ async function handleRotate(args: string[]): Promise<number> {
 async function handleRevoke(args: string[]): Promise<number> {
   const namespace = args[0];
   if (!namespace || namespace.startsWith('-')) {
-    console.error('\n  Usage: secretless-ai vault revoke <namespace>\n');
+    console.error(`\n  Usage: ${CLI_BARE} vault revoke <namespace>\n`);
     return EXIT_USAGE;
   }
 
@@ -192,10 +193,10 @@ async function handleExec(args: string[]): Promise<number> {
   // Parse: vault exec <namespace> [--env-name VAR] -- <command...>
   const dashDashIdx = args.indexOf('--');
   if (dashDashIdx === -1) {
-    console.error('\n  Usage: secretless-ai vault exec <namespace> -- <command> [args...]\n');
+    console.error(`\n  Usage: ${CLI_BARE} vault exec <namespace> -- <command> [args...]\n`);
     console.error('  Example:');
-    console.error(`    secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'`);
-    console.error('    secretless-ai vault exec aws-prod --env-name AWS_SECRET_ACCESS_KEY -- aws s3 ls\n');
+    console.error(`    ${CLI_BARE} vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'`);
+    console.error(`    ${CLI_BARE} vault exec aws-prod --env-name AWS_SECRET_ACCESS_KEY -- aws s3 ls\n`);
     return EXIT_USAGE;
   }
 
@@ -211,7 +212,7 @@ async function handleExec(args: string[]): Promise<number> {
   // with EXIT_USAGE; vaultExec's own refusal of it reached handleError, exit 1 (#471).
   if (command.length === 0) {
     console.error('\n  Error: a command is required after --\n');
-    console.error('  Usage: secretless-ai vault exec <namespace> -- <command> [args...]\n');
+    console.error(`  Usage: ${CLI_BARE} vault exec <namespace> -- <command> [args...]\n`);
     return EXIT_USAGE;
   }
 
@@ -254,7 +255,7 @@ async function handleMigrate(args: string[]): Promise<number> {
 
 function printVaultHelp(): void {
   console.log(`
-  Usage: secretless-ai vault <command> [options]
+  Usage: ${CLI_BARE} vault <command> [options]
 
   Identity Vault — encrypted, identity-bound credential storage.
   exec sets the credential in the child command's environment for that
@@ -293,13 +294,13 @@ function printVaultHelp(): void {
     --namespace <ns>         Filter by namespace
 
   Examples:
-    secretless-ai vault init
-    secretless-ai vault register github                  (prompts for the value)
-    gh auth token | secretless-ai vault register github  (reads it from the pipe)
-    secretless-ai vault register aws --env AWS_SECRET_ACCESS_KEY
-    secretless-ai vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'
-    secretless-ai vault migrate --env-file .env --dry-run
-    secretless-ai vault audit --limit 10
+    ${CLI_BARE} vault init
+    ${CLI_BARE} vault register github                  (prompts for the value)
+    gh auth token | ${CLI_BARE} vault register github  (reads it from the pipe)
+    ${CLI_BARE} vault register aws --env AWS_SECRET_ACCESS_KEY
+    ${CLI_BARE} vault exec github -- sh -c 'printf "Authorization: Bearer %s\\n" "$GITHUB" | curl -s -H @- https://api.github.com/user'
+    ${CLI_BARE} vault migrate --env-file .env --dry-run
+    ${CLI_BARE} vault audit --limit 10
 `);
 }
 
