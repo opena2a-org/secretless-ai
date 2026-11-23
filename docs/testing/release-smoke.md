@@ -184,9 +184,9 @@ ADV=$(mktemp -d) && mkdir "$ADV/.windsurf"
 $SL init "$ADV"      # under Configured: "Advisory: Windsurf (instruction file, nothing enforces it)"
 $SL status "$ADV"    # verdict: "Advisory only: instructions for Windsurf, which nothing enforces (...)"
 $SL status --json "$ADV" | jq ".isProtected, .enforcement, .summary.verdict"
-#   true
+#   false
 #   "advisory"
-#   "protected-warnings"
+#   "not-protected"
 AID=$(mktemp -d) && touch "$AID/.aider.conf.yml"
 $SL init "$AID"      # under Configured: "Ignore file: Aider (.aiderignore, no hook enforces it)"
 $SL status "$AID"    # verdict: "Ignore file only: ..."; never "Not protected" after init
@@ -205,11 +205,12 @@ $SL init "$UNW" && $SL status --json "$UNW" | jq ".enforcement, .hookWired"
 ```
 
 `enforcement` is `hook | ignore-file | advisory | none`: the strongest mechanism
-`isProtected` rests on. `hookInstalled` says the guard script is on disk; `hookWired`
+in place. `advisory` comes with `isProtected` false, since nothing enforces an
+instruction file. `hookInstalled` says the guard script is on disk; `hookWired`
 says `.claude/settings.json` runs it. `enforcement` is `hook` only when a settings file
 that reaches the project runs the guard or carries deny patterns. Fail if the verdict
 line prints `Protected` for a project where no settings file runs the guard and none
-carries deny patterns, if `init` and
+carries deny patterns, if `isProtected` is true where `enforcement` is `advisory`, if `init` and
 `status` disagree about any of these directories, or if a `Claude Code hook not installed` row
 in these projects ends in a bare `secretless-ai init`, which installs no hook there.
 

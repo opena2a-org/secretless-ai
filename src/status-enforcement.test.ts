@@ -116,9 +116,12 @@ describe('status --json names the mechanism isProtected rests on', () => {
     const doc = await statusJson(project);
 
     expect(doc.enforcement).toBe('advisory');
-    // What CI consumers already gate on is unchanged.
-    expect(doc.isProtected).toBe(true);
-    expect(doc.summary.verdict).toBe('protected-warnings');
+    // No hook and no deny pattern: what CI consumers gate on says so (#410).
+    expect(doc.hookWired).toBe(false);
+    expect(doc.denyRuleCount).toBe(0);
+    expect(doc.isProtected).toBe(false);
+    expect(doc.protectionScope).toBeNull();
+    expect(doc.summary.verdict).toBe('not-protected');
     expect(doc.configuredTools).toEqual([tool]);
   });
 
@@ -159,6 +162,7 @@ describe('status --json names the mechanism isProtected rests on', () => {
     expect(doc.hookInstalled).toBe(false);
     expect(doc.denyRuleCount).toBe(1);
     expect(doc.enforcement).toBe('advisory');
+    expect(doc.isProtected).toBe(false);
   });
 
   it('reports none for a project with no configuration', async () => {
@@ -295,6 +299,12 @@ describe('status reads the guard wiring, not only the guard script', () => {
 
     expect(doc.configuredTools).toEqual(['claude-code']);
     expect(doc.enforcement).toBe('advisory');
+    // The guard script is on disk, but nothing runs it and no deny pattern applies.
+    expect(doc.hookInstalled).toBe(true);
+    expect(doc.hookWired).toBe(false);
+    expect(doc.denyRuleCount).toBe(0);
+    expect(doc.isProtected).toBe(false);
+    expect(doc.summary.verdict).toBe('not-protected');
     expect(verdict).toMatch(/^Advisory only: instructions for Claude Code/);
   });
 
