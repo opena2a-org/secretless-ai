@@ -9,7 +9,7 @@ import { scanToSarif } from './sarif';
 import type { ScanFinding } from './scan';
 import { probeCredential, type ProbeFetch } from './validity';
 import { runSecret } from './commands/secrets';
-import { runBackend } from './commands/backend';
+import { runBackend, runMigrate } from './commands/backend';
 import { runVault } from './commands/vault';
 import { runProtectMcp } from './commands/mcp';
 import { CLI } from './commands/utils';
@@ -348,6 +348,21 @@ describe('backend set names both backends in the migrate it offers (#471)', () =
     expect(res.code).toBe(0);
     expect(res.text).toContain('Backend set to: local');
     expect(res.text).not.toContain('migrate');
+  });
+});
+
+describe('migrate given one of --from and --to fills it into its usage line, at exit 2 (#471)', () => {
+  const ALL = '<local|keychain|1password|vault|gcp-sm>';
+
+  it.each([
+    [[], `migrate --from ${ALL} --to ${ALL}`],
+    [['--from', 'local'], 'migrate --from local --to <keychain|1password|vault|gcp-sm>'],
+    [['--to', 'vault'], 'migrate --from <local|keychain|1password|gcp-sm> --to vault'],
+  ])('migrate %j', async (args, usage) => {
+    vi.stubEnv('HOME', tmpDir());
+    const res = await captured(() => runMigrate(args));
+    expect(res.code).toBe(2);
+    expect(res.text).toContain(`  Usage: npx secretless-ai ${usage}\n`);
   });
 });
 

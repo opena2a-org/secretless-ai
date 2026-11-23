@@ -293,6 +293,17 @@ export async function runBackend(args: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * The `migrate` usage line, with a backend already given filled in: given
+ * `--from local`, it reads `migrate --from local --to <keychain|...>`, so the
+ * line pasted back needs only the missing name.
+ */
+export function migrateUsage(backends: readonly string[], from?: string, to?: string): string {
+  const slot = (given: string | undefined, other: string | undefined): string =>
+    given ?? `<${backends.filter((b) => b !== other).join('|')}>`;
+  return `npx secretless-ai migrate --from ${slot(from, to)} --to ${slot(to, from)}`;
+}
+
 export async function runMigrate(args: string[]): Promise<number> {
   let fromType: SelectableBackendType | undefined;
   let toType: SelectableBackendType | undefined;
@@ -323,9 +334,11 @@ export async function runMigrate(args: string[]): Promise<number> {
   }
 
   // --from or --to left out prints the usage and moves nothing: EXIT_USAGE,
-  // as for an unknown subcommand (#127).
+  // as for an unknown subcommand (#127). The usage line names the backend
+  // already given in its place, and offers the other flag only the backends
+  // it would take, since one backend named as both is refused below (#471).
   if (!fromType || !toType) {
-    console.error('\n  Usage: npx secretless-ai migrate --from <local|keychain|1password|vault|gcp-sm> --to <local|keychain|1password|vault|gcp-sm>\n');
+    console.error(`\n  Usage: ${migrateUsage(validBackends, fromType, toType)}\n`);
     return EXIT_USAGE;
   }
 
