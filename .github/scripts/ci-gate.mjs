@@ -43,6 +43,13 @@ import { pathToFileURL } from 'node:url';
  * The last two are new and are self-protection: a pull request that edits the
  * workflow or this classifier is a change to the gate itself, and the gate must
  * not be able to wave through its own rewrite without running the suite.
+ *
+ * The rest are the docs prose check's inputs. `npm test` runs
+ * `npm run check:docs` before vitest, and that check reads every tracked
+ * Markdown file, so a change to the prose, to docs/, or to the checker itself
+ * is a change the suite has something to say about. Left non-code, a docs-only
+ * pull request was the one change that could land an em dash on main: the
+ * check that refuses it never ran.
  */
 export const CODE_PATH_GLOBS = [
   'src/**',
@@ -50,6 +57,10 @@ export const CODE_PATH_GLOBS = [
   'tsconfig.json',
   '.github/workflows/ci.yml',
   '.github/scripts/ci-gate.mjs',
+  '**/*.md',
+  '**/*.mdx',
+  'docs/**',
+  'scripts/check-docs-prose.mjs',
 ];
 
 /** The suite the gate runs on a code change, in order. */
