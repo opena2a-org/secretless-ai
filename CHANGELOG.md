@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+**`scan`'s headline counts every finding it lists: over 3 critical and 4 high findings it reads `7 credentials exposed, 3 critical`, where it read `3 critical credentials exposed` over a list of 7.** With only critical findings, or none, the headline is as it was.
+
 **The guard hook reaches the same verdict when bash cannot write a temporary file, as on a full disk or under a sandbox that refuses the write: it feeds no command through a here-document or here-string, its candidate paths are split at line breaks with globbing off, and two of its Bash command checks (a bare `process.env` in a python or node one-liner, and, when python3 is missing or returns no verdict, a command that may print the environment) make it exit 2, which the hook protocol reads as a refusal, when their grep returns an error.**
 
 **On Linux, the Secret Service backend writes the new entry (`secret-tool store`) before it retires the legacy one (`secret-tool clear`, service `secretless`), where it cleared first: a store that fails now leaves the legacy entry as it was, and `protect-mcp` with no terminal on stdin stops within one second against a locked keyring, as on macOS, where it waited 30s for each server.** `clear` removes unlocked items only and never opens the unlock dialog, so run first it answered at once and used up the one bounded call, while `store`, the call that waits on the dialog, kept the 30s bound.
