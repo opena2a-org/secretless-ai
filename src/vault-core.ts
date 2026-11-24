@@ -709,10 +709,13 @@ export async function vaultScan(targetDir?: string): Promise<void> {
 
   console.log(`  Found ${findings.length} credential(s) that could be moved to the vault:\n`);
   for (const finding of findings) {
-    const relPath = path.relative(dir, finding.file);
+    // Printed as `scan` prints it: relative to the scanned directory, a
+    // `~/` label for a global config, or the path a named file was given by.
+    // It was taken relative to `dir` a second time, which resolved it from
+    // cwd, so `vault scan sub` printed `../app.ts` for `sub/app.ts`.
     // A name from the scanned tree, escaped as `scan` escapes it: printed raw,
     // an ESC or an OSC sequence in a directory name reached the terminal.
-    console.log(`  ${escapePathForDisplay(relPath)}:${finding.line}`);
+    console.log(`  ${escapePathForDisplay(finding.file)}:${finding.line}`);
     console.log(`    Pattern:  ${finding.patternId}`);
     console.log(`    Migrate:  secretless-ai vault register ${finding.patternId.toLowerCase()}`);
     console.log();

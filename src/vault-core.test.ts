@@ -1259,4 +1259,32 @@ describe('vaultScan migration line', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // The finding path was taken relative to the scanned directory a second
+  // time, resolved from cwd, so a directory other than cwd printed
+  // `../../..`-style paths to files that are not there.
+  it('prints each finding at a path that exists under the scanned directory', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-vault-scan-path-'));
+    const key = ['sk-proj-', 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2'].join('');
+    fs.mkdirSync(path.join(dir, 'sub'));
+    fs.writeFileSync(path.join(dir, 'sub', 'config.sh'), `OPENAI_API_KEY=${key}\n`);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      expect(path.resolve(process.cwd())).not.toBe(path.resolve(dir));
+      const { vaultScan } = await import('./vault-core.js');
+      await vaultScan(dir);
+
+      const lines = consoleSpy.mock.calls.map((call) => call.join(' ')).join('\n').split('\n');
+      const located = lines
+        .map((l) => /^ {2}(\S.*):(\d+)$/.exec(l))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => m[1]);
+      expect(located).toEqual([path.join('sub', 'config.sh')]);
+      expect(fs.existsSync(path.join(dir, located[0]))).toBe(true);
+    } finally {
+      consoleSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
