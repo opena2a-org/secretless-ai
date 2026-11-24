@@ -109,6 +109,53 @@ describe('isKnownExample (#411: "example" counts only inside a comment)', () => 
   });
 });
 
+describe('isKnownExample (#444: a comment that describes a credential)', () => {
+  // Built from parts so this file holds no credential-shaped literal.
+  const PAT = ['gh', 'p_', 'R1T2Y3U4I5O6P7A8S9D0F1G2H3J4K5L6Z7X8'].join('');
+  const AWS = ['AK', 'IA', 'R7QW2KD9LMXP4TZB'].join('');
+  const uri = (scheme: string, host: string) => [scheme, '://', 'app', ':', 'Wq7vR2pLm9Xc4Tz8', '@', host, '/app'].join('');
+  // The ids of the patterns with a match on `line`, every match or real ones only.
+  const found = (line: string, includeExamples = false) =>
+    CREDENTIAL_PATTERNS.filter(p => findRealMatch(line, p, { includeExamples })).map(p => p.id);
+
+  it.each([
+    ['a # comment with a URI to the bare host "host"', `# DATABASE_URL=${uri('postgres', 'host:5432')}`],
+    ['a JSDoc line with a URI to the bare host "<hostname>"', ` * Connects with ${uri('mongodb+srv', '<hostname>')}`],
+    ['a // comment naming a token format', `// Token format: ${PAT}`],
+    ['a block comment naming a key prefix', `/* AWS keys start with the prefix AKIA, such as ${AWS} */`],
+  ])('hides the value: %s', (_label, line) => {
+    expect(found(line, true).length).toBe(1);
+    expect(found(line)).toEqual([]);
+  });
+
+  it.each([
+    ['a comment with a URI to a dotted host', `// ${uri('postgres', 'db.internal.corp:5432')}`],
+    ['a comment with a URI to localhost', `# ${uri('postgres', 'localhost:5432')}`],
+    ['a URI to a bare host in code', `const url = "${uri('postgres', 'db:5432')}"; // primary`],
+    ['a value in code beside a comment that says format', `const token = "${PAT}"; // format checked in CI`],
+    ['a comment with neither', `// rotate ${PAT} next sprint`],
+  ])('still reports the value: %s', (_label, line) => {
+    expect(found(line)).toEqual(found(line, true));
+    expect(found(line).length).toBe(1);
+  });
+
+  it('scan hides the four comment values and counts them as placeholders', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-444-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'a.py'), `# DATABASE_URL=${uri('postgres', 'host:5432')}\n`);
+      fs.writeFileSync(path.join(dir, 'b.ts'), `/**\n * Connects with ${uri('mongodb+srv', '<hostname>')}\n */\n`);
+      fs.writeFileSync(path.join(dir, 'c.ts'), `// Token format: ${PAT}\n`);
+      fs.writeFileSync(path.join(dir, 'd.ts'), `/* AWS keys start with the prefix AKIA, such as ${AWS} */\n`);
+      const stats: ScanStats = { placeholdersSuppressed: 0, truncated: false };
+      expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+      expect(stats.placeholdersSuppressed).toBe(4);
+      expect(scan(dir, { scanGlobal: false, showPlaceholders: true }).length).toBe(4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('findRealMatch (issue #51 — known-example shadowing)', () => {
   it('mixed-pattern line: AWS example + real GitHub PAT returns the PAT', () => {
     // Intentionally NO `//` or `#` markers — we're testing that the KNOWN_EXAMPLE_KEYS
