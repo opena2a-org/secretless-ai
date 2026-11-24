@@ -27,7 +27,7 @@ import * as os from "os";
 import { McpVault, boundEntryName } from "./mcp/vault";
 import type { McpLaunchVerdict } from "./mcp/vault";
 import { resolveBackendType } from "./backends/config";
-import { readWrapperArgv, wrapperFlag } from "./argv";
+import { MCP_WRAPPER, prepareBinArgv, readWrapperArgv, wrapperFlag } from "./argv";
 import { readWrapperVersion } from "./mcp/wrapper-version";
 import { printedCommand } from "./printed-command";
 import type { McpPlaceVerdict } from "./mcp/discover";
@@ -53,6 +53,16 @@ function parseArgs(argv: string[]): {
   // The child command after `--` is left untouched. protect-mcp and
   // mcp-status read an entry's args with the same function.
   const read = readWrapperArgv(argv);
+
+  // A flag the wrapper does not know is ignored, not refused: these argv lines
+  // live in hand-edited MCP client configs, where a refusal is a server that
+  // will not start (MCP_WRAPPER's `warn` policy). Ignored, but said on stderr,
+  // which an MCP client keeps out of the protocol on stdout. Before this the
+  // warning was built and dropped, so `--bogus` was ignored without a word.
+  // Escaped: a warning quotes the flag as given.
+  for (const warning of prepareBinArgv(MCP_WRAPPER, argv).warnings) {
+    process.stderr.write(`secretless-mcp: ${escapeForDisplay(warning)}\n`);
+  }
 
   // `!== undefined`, not truthiness: `--server ''` is the flag WITH an empty
   // value. Read as "flag absent" it produced an empty server name, and an
