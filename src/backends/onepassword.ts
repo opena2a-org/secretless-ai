@@ -56,6 +56,24 @@ function opTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_OP_TIMEOUT_MS;
 }
 
+/**
+ * The JSON array an `op ... list --format json` printed. Empty output is an
+ * empty list; output that is not a JSON array throws, since reading it as
+ * empty would report that nothing is stored.
+ */
+function parseOpJsonArray<T>(out: string, command: string): T[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(out || '[]');
+  } catch {
+    throw new Error(`1Password returned output that is not JSON (${command}).\n  Verify: ${command} --format json`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`1Password returned JSON that is not a list (${command}).\n  Verify: ${command} --format json`);
+  }
+  return parsed as T[];
+}
+
 /** Minimal shape returned by `op item list --format json`. */
 interface OpItem {
   id: string;
@@ -193,8 +211,18 @@ export class OnePasswordBackend implements WritableSecretBackend {
     }
   }
 
+  /**
+   * Read every item titled `secretPath` (or under it, unless exact).
+   *
+   * Returns {} only when op answered and no listed item carries the title. A
+   * vault lookup, item list or item get that fails rejects with op's message:
+   * an empty result there would read as "not stored" to every caller, and a
+   * skipped item would hand back part of what is stored as if it were all.
+   */
   async resolve(secretPath: string, options?: ResolveOptions): Promise<Record<string, string>> {
-    const vaultId = this.getVaultId();
+    // null here means op listed the vaults and none has this name, so nothing
+    // is stored; a lookup op could not answer throws instead.
+    const vaultId = this.findVaultId();
     if (!vaultId) return {};
 
     // An item is read by its id, and only the list of item names maps a title
@@ -207,13 +235,9 @@ export class OnePasswordBackend implements WritableSecretBackend {
 
     const results: Record<string, string> = {};
     for (const item of matching) {
-      try {
-        const value = this.getItemPassword(item.id, vaultId);
-        if (value) {
-          results[item.title] = value;
-        }
-      } catch {
-        // Item exists in list but value can't be read — skip
+      const value = this.getItemPassword(item.id, vaultId);
+      if (value) {
+        results[item.title] = value;
       }
     }
     return results;
@@ -324,6 +348,20 @@ export class OnePasswordBackend implements WritableSecretBackend {
    * ensureVault() from creating duplicate vaults.
    */
   private getVaultId(): string | null {
+    try {
+      return this.findVaultId();
+    } catch {
+      // CLI not available or not authenticated
+      return null;
+    }
+  }
+
+  /**
+   * As getVaultId(), but a lookup op could not answer throws with op's
+   * message. Returns null only when `op vault list` answered and no vault
+   * carries this name.
+   */
+  private findVaultId(): string | null {
     if (this.cachedVaultId) return this.cachedVaultId;
 
     // Fast path: unambiguous vault lookup
@@ -340,43 +378,33 @@ export class OnePasswordBackend implements WritableSecretBackend {
       // May fail due to: not found, ambiguous name, or auth error
     }
 
-    // Fallback: list all vaults and find by name (handles duplicate names)
-    try {
-      const out = this.op([
-        'vault', 'list', '--format', 'json',
-      ]);
+    // Fallback: list all vaults and find by name (handles duplicate names).
+    // A failure here is op's answer to "which vaults are there", so it throws.
+    const out = this.op([
+      'vault', 'list', '--format', 'json',
+    ]);
 
-      const vaults: Array<{ id: string; name: string }> = JSON.parse(out || '[]');
-      const match = vaults.find(v => v.name === this.vaultName);
-      if (match) {
-        this.cachedVaultId = match.id;
-        return match.id;
-      }
-    } catch {
-      // CLI not available or not authenticated
+    const vaults = parseOpJsonArray<{ id: string; name: string }>(out, 'op vault list');
+    const match = vaults.find(v => v.name === this.vaultName);
+    if (match) {
+      this.cachedVaultId = match.id;
+      return match.id;
     }
-
     return null;
   }
 
   /**
-   * List all secretless-tagged items in the vault.
-   * Returns an empty array if the vault is empty or on error.
+   * List all secretless-tagged items in the vault. Returns an empty array
+   * only when op lists none; a failed list throws with op's message.
    */
   private listItems(vaultId: string): OpItem[] {
-    try {
-      const out = this.op([
-        'item', 'list',
-        '--vault', vaultId,
-        '--tags', ITEM_TAG,
-        '--format', 'json',
-      ]);
-
-      const parsed = JSON.parse(out || '[]');
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+    const out = this.op([
+      'item', 'list',
+      '--vault', vaultId,
+      '--tags', ITEM_TAG,
+      '--format', 'json',
+    ]);
+    return parseOpJsonArray<OpItem>(out, 'op item list');
   }
 
   /**
