@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { isKnownExample, findRealMatch, scan, fixFor, isEnvFile, countDirsEntered, type ScanStats } from './scan';
+import { isKnownExample, findRealMatch, scan, fixFor, isEnvFile, countDirsEntered, newScanStats, type ScanStats } from './scan';
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { buildMatcher, loadSecretlessIgnore } from './secretlessignore';
 
@@ -1680,5 +1680,56 @@ describe('scan() — a truncated walk counts the files a cap would need (#127)',
 
     expect(stats.truncated).toBe(true);
     expect(stats.walkBudgetExceeded).toBe(true);
+  });
+});
+
+describe('scan: each credential on a line is its own finding (#471)', () => {
+  const NPM = 'npm_' + 'q7Wm2Xk9Lp4Zr8Tn3Vb6Hc1Jd5Fg0Ys7Ue2A';
+  const GOOGLE = 'AIza' + 'SyQ8w3Kz7Lm2Xv9Bn4Rt6Yp1Hj5Gd0Fc3Ns7';
+  const project = (name: string, content: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-per-line-'));
+    fs.writeFileSync(path.join(dir, name), content);
+    return dir;
+  };
+
+  it('a line with an npm token and a Google key yields two findings', () => {
+    const dir = project('app.js', `const keys = { npm: "${NPM}", google: "${GOOGLE}" };\n`);
+
+    const findings = scan(dir, { scanGlobal: false });
+
+    expect(findings.map(f => [f.line, f.patternId]).sort()).toEqual([[1, 'google'], [1, 'npm']]);
+    for (const f of findings) {
+      expect(f.preview).not.toContain(NPM);
+      expect(f.preview).not.toContain(GOOGLE);
+    }
+  });
+
+  it('a config file and a file named on the command line report both too', () => {
+    const dir = project('.env', `NPM_TOKEN=${NPM} GOOGLE_API_KEY=${GOOGLE}\n`);
+
+    const walked = scan(dir, { scanGlobal: false });
+    const named = scan(path.join(dir, '.env'));
+
+    expect(walked.map(f => f.patternId).sort()).toEqual(['google', 'npm']);
+    expect(named.map(f => f.patternId).sort()).toEqual(['google', 'npm']);
+  });
+
+  it('two credentials of one pattern on a line are two findings', () => {
+    const other = 'npm_' + 'Zx4Cv8Bn2Mq6Wr0Ty5Ui9Op3As7Df1Gh6Jk2L';
+    const dir = project('app.js', `const a = "${NPM}", b = "${other}";\n`);
+
+    const findings = scan(dir, { scanGlobal: false, retainValues: true });
+
+    expect(findings.map(f => f.patternId)).toEqual(['npm', 'npm']);
+  });
+
+  it('a known example beside a real credential is counted as hidden, not reported', () => {
+    const dir = project('app.js', `const ids = ["AKIAIOSFODNN7EXAMPLE", "${NPM}"];\n`);
+    const stats = newScanStats();
+
+    const findings = scan(dir, { scanGlobal: false }, stats);
+
+    expect(findings.map(f => f.patternId)).toEqual(['npm']);
+    expect(stats.placeholdersSuppressed).toBe(1);
   });
 });

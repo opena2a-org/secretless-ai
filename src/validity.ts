@@ -50,9 +50,10 @@
  * An AWS key is two values: the access key ID and the secret access key from
  * one file are checked as a pair (`awsPairs`), by an STS request signed with
  * the secret (`signing`). The request names the key ID in its signature and
- * holds no part of the secret. A line is one finding at most, so a key ID and
- * its secret on one line are one finding; the values on a finding's line
- * (`lineValuesOf` in scan.ts) are read for the pair too.
+ * holds no part of the secret. A key ID and its secret on one line are two
+ * findings; the values on a finding's line (`lineValuesOf` in scan.ts) are
+ * read for the pair too, as are those on the line of a finding of another
+ * type.
  */
 import { CREDENTIAL_PATTERNS } from './patterns';
 import { VERSION, wrapList } from './commands/utils';
@@ -954,8 +955,8 @@ function pairsInFile(entries: readonly AwsEntry[]): Map<AwsEntry, FilePair | str
  * pairs of each file (`pairsInFile`), compared across the scanned files. A
  * file's values are its AWS findings' own and the AWS values on the line of
  * any of its findings (`lineValuesOf`), each value counted once per line, so
- * a key ID and a secret on one line, which the scanner reports as one
- * finding, both count. A key ID paired with different secrets, or a secret
+ * a key ID and a secret on one line, which the scanner reports as two
+ * findings, are counted once each. A key ID paired with different secrets, or a secret
  * paired with different key IDs, is sent with none of them, so AWS is never
  * asked about one value with two others in a scan. A pair whose key ID and
  * secret are both so paired is given the key ID's reason. Every pair formed
@@ -1180,7 +1181,7 @@ export function validityHelpLines(): string[] {
     ...helpParagraph('An AWS key is checked as a pair: the access key ID and the secret access key found with it '
       + 'in one file, when the file holds one of each, or several of each that, taken in line order two at a '
       + 'time, are each one key ID and one secret. A key ID and a secret found on one line, which the scan '
-      + 'reports as one finding, both count, and are never split between two pairs. '
+      + 'reports as two findings, both count, and are never split between two pairs. '
       + 'The request, GetCallerIdentity, is signed with '
       + 'the secret (Signature Version 4): the key ID and the signature are sent, and the secret is not. A '
       + 'SignatureDoesNotMatch that names the request time reads unknown; check the clock.'),
