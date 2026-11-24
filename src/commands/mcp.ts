@@ -165,7 +165,7 @@ function printSharedNameServers(servers: SharedNameMcpServer[]): void {
 function printRefusedNameServers(servers: RefusedNameMcpServer[]): void {
   printUnderConfigs(servers, (server) => `    ? ${listedName(server.server)}: not protected: ${server.reason}`);
   console.log(`  ${servers.length} server(s) were not protected, so their secrets are still in plaintext.`);
-  console.log('  The store takes only A-Z, a-z, 0-9, - and _ in a server name.');
+  console.log('  The store takes a server name that is not empty, holds only A-Z, a-z, 0-9, - and _, and does not begin with -.');
   console.log(`  Rename each server listed above, then run \`${cliCommand('protect-mcp')}\` again.\n`);
 }
 
