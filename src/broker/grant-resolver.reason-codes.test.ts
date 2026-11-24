@@ -291,6 +291,49 @@ describe('grant record: the reason is a code from a closed set', () => {
   });
 });
 
+describe('grant record: a step that throws after the binding matched names the binding', () => {
+  const AFTER_MATCH: Array<[string, Scenario, string]> = [
+    [
+      'a provider that throws',
+      { provider: { modes: ['exchange'], resolve: async () => fails() } },
+      'provider-error',
+    ],
+    [
+      'an operation path that leaves the origin',
+      { operation: { method: 'GET', path: '//elsewhere.example/collect' } },
+      'operation-path-refused',
+    ],
+    [
+      'an operation outside the JSON value space',
+      { operation: { method: 'POST', path: '/payments', body: { when: new Date(0) } } },
+      'operation-not-canonical',
+    ],
+    [
+      'a downstream call that fails',
+      { caller: { deliversSalt: true, call: async () => fails() } },
+      'downstream-error',
+    ],
+  ];
+
+  it.each(AFTER_MATCH)('records %s under the matched grant', async (_label, scenario, code) => {
+    const { entries } = await run(scenario);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      result: 'denied',
+      reason: code,
+      policyId: 'grant://payments',
+    });
+  });
+
+  it('names no binding for a step that throws before one matched', async () => {
+    for (const scenario of [{ verifier: { verify: fails } }, { policy: policyAnswering(fails) }]) {
+      const { entries } = await run(scenario);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].policyId).toBe('');
+    }
+  });
+});
+
 describe('GrantPolicy: the code a denial names', () => {
   it('names policy-no-binding for a grant name that is not a string, and no code when it grants', () => {
     const policy = new GrantPolicy([bindingDoc()]);
