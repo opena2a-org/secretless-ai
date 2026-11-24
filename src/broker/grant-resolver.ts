@@ -151,6 +151,9 @@ export class GrantResolver {
     let recordedGrant = unparsed(input.grant);
     let cgtJti: string | undefined;
     let committed: string | undefined;
+    // The grant of the binding the policy matched, once it has matched: a step after the match
+    // that throws is recorded against the binding it ran under.
+    let matchedGrant = '';
     const audit = (result: 'allowed' | 'denied', reason: GrantAuditReason, policyId = '') => {
       const entry: CodedAuditEntry = {
         timestamp: new Date().toISOString(),
@@ -214,6 +217,7 @@ export class GrantResolver {
         return DENIED;
       }
       const binding = evaluation.binding;
+      matchedGrant = binding.grant;
 
       // 4. Select the CPI provider and resolve a scoped credential (confined to the broker).
       failure = 'provider-error';
@@ -295,8 +299,8 @@ export class GrantResolver {
       return { ok: true, result };
     } catch {
       // Any provider/worker/transport failure collapses to the same opaque denial, recorded as
-      // the step that failed.
-      audit('denied', failure);
+      // the step that failed, under the binding that matched, if one had.
+      audit('denied', failure, matchedGrant);
       return DENIED;
     }
   }
