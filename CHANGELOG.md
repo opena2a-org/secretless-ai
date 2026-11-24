@@ -22,6 +22,13 @@ none of them, so a PASS could be taken for a clean project. A line under
 and the PASS line ends `(source files: run secretless-ai scan)`.
 `src/docs-sample-output.test.ts` holds the guide's sample to the output.
 
+**`scan` given a `.secretless-bundle` file reports it (#444).** A bundle is a
+finding by its presence in a directory scan, but `scan team.secretless-bundle`
+read the file as text, found no credential pattern in it, and printed `No
+hardcoded credentials found` with exit 0. A named bundle is now reported by the
+same rule, as a high `secretless-bundle` finding, without being read, and the
+scan exits 1. `src/bundle.test.ts` scans a bundle by name.
+
 **`scan` after `init` no longer counts the output check `init` writes as
 holding placeholders (#443).** `.claude/hooks/secretless-output-check.cjs`
 carried the documented example keys of its allowlist whole, so `scan` said

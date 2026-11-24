@@ -14,6 +14,7 @@ import { sealBundle, openBundle, isBundleFile, BUNDLE_TOKEN, type KdfParams } fr
 import { exportBundle, importBundle } from './bundle-transfer';
 import { runExport } from './commands/bundle';
 import { runImport } from './commands/env-run';
+import { runScan } from './commands/core';
 import { scan } from './scan';
 import { scanTranscriptFile } from './transcript';
 import type { WritableSecretBackend } from './backends/types';
@@ -287,6 +288,29 @@ describe('scan and clean treat a bundle as a secret file', () => {
     fs.writeFileSync(path.join(dir, 'team.secretless-bundle'), await sealBundle([{ name: 'A', value: 'v' }], PASS, FAST));
     const findings = scan(dir, { scanGlobal: false });
     expect(findings.some((f) => f.patternId === 'secretless-bundle' && f.file === 'team.secretless-bundle')).toBe(true);
+  });
+
+  it('scan flags a .secretless-bundle file named as the target', async () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'team.secretless-bundle');
+    fs.writeFileSync(file, await sealBundle([{ name: 'A', value: 'v' }], PASS, FAST));
+    const findings = scan(file, { scanGlobal: false });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ patternId: 'secretless-bundle', severity: 'high', line: 1 });
+  });
+
+  it('scan on a named bundle file prints HIGH and exits 1', async () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'team.secretless-bundle');
+    fs.writeFileSync(file, await sealBundle([{ name: 'A', value: 'v' }], PASS, FAST));
+    const out: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.join(' ')); });
+    try {
+      expect(await runScan(file)).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
+    expect(out.join('\n')).toContain('HIGH  Secretless Encrypted Bundle');
   });
 
   it('clean redacts a bundle printed into a transcript', async () => {

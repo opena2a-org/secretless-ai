@@ -822,6 +822,26 @@ export function namedFilePath(filePath: string, sep: string = path.sep): string 
 }
 
 /**
+ * The finding for a bundle written by `export` (*.secretless-bundle), reported
+ * by its presence: it holds every secret it was given, behind one passphrase
+ * that can be guessed at offline.
+ */
+function bundleFinding(file: string, filePath: string, looksLikeFixture: boolean): ScanFinding {
+  return {
+    file,
+    line: 1,
+    patternId: 'secretless-bundle',
+    patternName: 'Secretless Encrypted Bundle',
+    severity: 'high',
+    preview: `${path.basename(filePath)} (encrypted secret bundle from export)`,
+    fix: 'Import it on the machine it was made for, then delete it. Never commit a bundle.',
+    confidence: 0.95,
+    confidenceTier: 'high',
+    looksLikeFixture,
+  };
+}
+
+/**
  * Scan project config files for hardcoded credentials.
  * Also scans global AI tool configs (e.g. ~/.claude/CLAUDE.md).
  * Returns findings sorted by severity then file.
@@ -849,6 +869,13 @@ function scanSingleFile(
   try {
     const stat = fs.statSync(filePath);
     if (!stat.isFile()) return findings;
+    if (path.extname(filePath).toLowerCase() === BUNDLE_EXTENSION) {
+      // The directory scan's bundle rule: presence is the finding, so this is
+      // checked before the size cap and nothing is read. A bundle named on the
+      // command line used to be read as text and reported clean.
+      findings.push(bundleFinding(display, filePath, false));
+      return findings;
+    }
     const singleCap = options?.maxFileSizeBytes ?? CONFIG_FILE_CAP_BYTES;
     if (stat.size > singleCap) {
       // Skipping is fine; skipping silently is not. A named target over the
@@ -1328,18 +1355,11 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           // A bundle from `export` holds every secret it was given, behind one
           // passphrase that can be guessed at offline. Presence is the finding,
           // so this is checked before the size cap and nothing is read.
-          findings.push({
-            file: relPath,
-            line: 1,
-            patternId: 'secretless-bundle',
-            patternName: 'Secretless Encrypted Bundle',
-            severity: 'high',
-            preview: `${path.basename(filePath)} (encrypted secret bundle from export)`,
-            fix: 'Import it on the machine it was made for, then delete it. Never commit a bundle.',
-            confidence: 0.95,
-            confidenceTier: 'high',
-            looksLikeFixture: !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(relPath))),
-          });
+          findings.push(bundleFinding(
+            relPath,
+            filePath,
+            !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(relPath))),
+          ));
           continue;
         }
         if (stat.size > sourceCap) {
