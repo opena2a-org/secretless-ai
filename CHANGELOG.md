@@ -451,6 +451,21 @@ The exit codes in docs/scanning.md and docs/commands.md name an argument
 `clean`, `doctor` or `init` does not take, and a `rules test` pattern it does
 not take, among the cases of 2.
 
+**`secret set` with an empty name or value, and `secretless-mcp` with no
+command, no `--server` or `--client`, or a backend it does not take, exit 2
+(#471).** `secret set FOO=` printed `Error: no value provided.` and its usage
+line and exited 1, the code `scan` gives for credentials found, where
+docs/scanning.md gives 2 for a command given less than it needs. It now
+exits 2, and so does `secret set =bar`, which printed
+`Error: Invalid secret name.` and now prints `Error: no name provided.` with
+the usage line. A name the store cannot hold, an empty clipboard and an empty
+value typed or piped in still exit 1. The `secretless-mcp` wrapper exits 2,
+where it exited 1, when it prints its usage line: with no `--` and command,
+with `--server` or `--client` missing or empty, and with a `--backend` it does
+not take; a launch it refuses for its binding or its secrets still exits 1.
+`src/followups-471.test.ts` runs each case and checks the exit code and the
+refusal.
+
 **`protect-mcp` and the `secretless-mcp` wrapper read and write one store,
 `protect-mcp` goes on past a server name the store refuses, and
 `mcp-unprotect` restores a config as it was before the first `protect-mcp`
