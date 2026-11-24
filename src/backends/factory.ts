@@ -16,7 +16,7 @@ import { OnePasswordBackend } from './onepassword';
 import { VaultBackend } from './vault';
 import { GCPSecretManagerBackend, isGCPAvailable } from './gcp-sm';
 import { CachedBackend, cacheScope } from './cache';
-import { readBackendConfig, readCacheTtl } from './config';
+import { readBackendConfig, readCacheTtl, readUnsupportedBackend } from './config';
 import type { WritableSecretBackend } from './types';
 import type { SelectableBackendType } from './config';
 
@@ -474,7 +474,9 @@ export function isOnePasswordAvailable(
  * builds the file for it without asking this (#365).
  */
 function upgradesToKeychain(type: SelectableBackendType, config?: Record<string, unknown>): boolean {
-  return type === 'local' && !config?.key && readBackendConfig() === undefined;
+  // A config naming a backend this version does not implement is a choice
+  // too, and not one for the keychain (#182).
+  return type === 'local' && !config?.key && readBackendConfig() === undefined && readUnsupportedBackend() === undefined;
 }
 
 /**
