@@ -605,6 +605,50 @@ function isExampleInComment(line: string): boolean {
 }
 
 /**
+ * Words a comment uses when it describes the shape of a credential (its
+ * pattern, format or prefix) rather than holding one value.
+ */
+const PATTERN_DISCUSSION =
+  /\b(?:pattern|regexp?|format|match|shape|prefix|syntax|template|detect|redact)\w*|\be\.g\.|\bi\.e\.|\blooks like\b|\bsuch as\b/i;
+
+/**
+ * The host of a connection URI `value`, as written after the last `@`, up to
+ * its port, path or query. Empty when `value` is not a URI with userinfo.
+ */
+function uriHost(value: string): string {
+  const scheme = value.indexOf('://');
+  const at = value.lastIndexOf('@');
+  if (scheme === -1 || at <= scheme) return '';
+  return value.slice(at + 1).split(/[:/?#]/, 1)[0];
+}
+
+/**
+ * True when the host of connection URI `value` is a bare word, such as `host`,
+ * `hostname`, `db` or `<host>`: a name with no dot that stands for a server in
+ * a description. `localhost` is a real host and is not a bare word here.
+ */
+function hasBareWordHost(value: string): boolean {
+  const host = uriHost(value).replace(/^<(.*)>$/, '$1');
+  return /^[A-Za-z][A-Za-z0-9_-]*$/.test(host) && host.toLowerCase() !== 'localhost';
+}
+
+/**
+ * True when `match` lies inside a comment on `line` that describes a
+ * credential rather than holding one (#444): the matched value is a connection
+ * URI to a bare-word host, or the comment talks about the credential's
+ * pattern, format or prefix. A value in code beside such a comment is not
+ * covered.
+ */
+function isDescribedInComment(line: string, match: RegExpMatchArray): boolean {
+  if (match.index === undefined) return false;
+  const start = match.index;
+  const end = start + match[0].length;
+  const value = match[1] ?? match[0];
+  return commentSpans(line).some(([s, e]) =>
+    s <= start && end <= e && (hasBareWordHost(value) || PATTERN_DISCUSSION.test(line.slice(s, e))));
+}
+
+/**
  * Check if a matched credential is a known example or placeholder.
  * Returns true if the match should be excluded from results.
  *
@@ -625,6 +669,7 @@ export function isKnownExample(line: string, match: RegExpMatchArray): boolean {
   if (value.length >= 20 && new Set(value).size <= 6) return true;
   if (isLocalhostDemoConnectionString(value)) return true;
   if (isExampleInComment(line)) return true;
+  if (isDescribedInComment(line, match)) return true;
   return false;
 }
 
