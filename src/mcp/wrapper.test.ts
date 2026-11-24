@@ -105,6 +105,23 @@ describe('secretless-mcp wrapper', () => {
     expect(result.stderr).toContain('Usage');
   });
 
+  it('warns on stderr about an unknown flag and still starts the server (#444)', async () => {
+    const vault = new McpVault({ storeDir: dir, key: 'test-key', backendType: 'local' });
+    await vault.storeServerSecrets('cursor', 'srv', { SRV_TOKEN: 'srv-value' });
+    const scriptPath = path.join(dir, 'ok.js');
+    fs.writeFileSync(scriptPath, 'console.log("started");');
+    const binding = await bindPair(vault, 'cursor', 'srv', ['node', scriptPath, '--also-unknown']);
+
+    const result = await runWrapper(
+      ['--server', 'srv', '--client', 'cursor', '--bogus', '--vault-dir', dir, '--vault-key', 'test-key', '--backend', 'local', ...binding, '--', 'node', scriptPath, '--also-unknown'],
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('started');
+    // Only the wrapper's own flag: the child's args after `--` are not its to judge.
+    expect(result.stderr).toBe('secretless-mcp: Warning: ignoring unknown flag --bogus.\n');
+  });
+
   it('passes through child exit code', async () => {
     const scriptPath = path.join(dir, 'fail.js');
     fs.writeFileSync(scriptPath, 'process.exit(42);');

@@ -135,7 +135,16 @@ $SL scna; echo "exit=$?"                  # "Unknown command: scna (did you mean
 output is the answer, so a dropped flag is a wrong verdict rather than a wasted
 run. `feedback` and `diff` still warn: they report no verdict. The
 `secretless-mcp` wrapper still warns, because its argv lines live in hand-edited
-client configs where a refusal is a server that will not start.
+client configs where a refusal is a server that will not start:
+
+```bash
+secretless-mcp --bogus --server x --client y -- node -e 0; echo "exit=$?"
+#   secretless-mcp: Warning: ignoring unknown flag --bogus.   (on stderr, then it goes on)
+```
+
+The warning comes first; what follows depends on whether `x`/`y` is bound (an
+unbound pair is refused with exit 1). Only the wrapper's own flags, before the
+`--`, are checked.
 
 ### 2c. `--json` is honored or refused (issue #126)
 

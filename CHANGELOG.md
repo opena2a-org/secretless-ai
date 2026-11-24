@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**`secretless-mcp` says on stderr which flag it ignored (#444).** The wrapper
+ignores a flag it does not know rather than refuse to start the server, as
+`docs/testing/release-smoke.md` says, but it printed nothing, so
+`secretless-mcp --bogus --server … -- …` started the server without a word
+about `--bogus`. It now prints
+`secretless-mcp: Warning: ignoring unknown flag --bogus.` on stderr, away from
+the MCP protocol on stdout, and starts the server as before. Arguments after
+`--` belong to the server and are not checked. `src/mcp/wrapper.test.ts`
+starts a server with an unknown flag and reads the warning.
+
 **`status` and `verify` name the profile, backend, GCP project and identity a
 command run here uses, and the source of each: `flag`, `env`, `manifest`,
 `user-config` or `default` (#181).** `status` prints them in a `Resolved`
