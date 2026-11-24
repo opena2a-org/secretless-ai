@@ -325,7 +325,7 @@ describe('protect-mcp goes on past a name the store refuses (#513 item 2)', () =
       '    ? my.server: not protected: the store refuses its name, since it holds a character other than A-Z, a-z, 0-9, - or _',
       '',
       '  1 server(s) were not protected, so their secrets are still in plaintext.',
-      '  The store takes only A-Z, a-z, 0-9, - and _ in a server name.',
+      '  The store takes a server name that is not empty, holds only A-Z, a-z, 0-9, - and _, and does not begin with -.',
       `  Rename each server listed above, then run \`${sourceCommand('protect-mcp')}\` again.\n`,
     ].join('\n'));
     const servers = JSON.parse(fs.readFileSync(cursorJson, 'utf-8')).mcpServers;
