@@ -77,6 +77,45 @@ describe('guard keys on the file a command opens, not on text it only carries', 
     }
   });
 
+  // The four shapes of the template report: a read of a committed template
+  // (which the Read tool was already allowed), a search whose pattern names
+  // one, a listing piped to a grep for dotfiles, and quoted text that only
+  // mentions such a command. A template operand, a grep pattern, echo and
+  // printf text and a git commit or gh message are dropped, again only when
+  // the analyzer understands the whole command.
+  (hasPython3 ? it : it.skip)('allows a template read, a template search, a dotfile listing and quoted text', () => {
+    for (const c of [
+      'cat .env.example',
+      'head -n 20 config/.env.sample',
+      'cat .env.template | grep -c KEY',
+      'wc -l < .env.dist',
+      'grep -rn "env.example" docs README.md',
+      'grep -n KEY .env.example',
+      String.raw`ls -a | grep '^\.env'`,
+      'echo "Run cat .env.example to see the names"',
+      "git commit -m 'cat .env.example is no longer refused'",
+      'gh pr create --title "Allow cat .env.example" --body "head .env.sample works too"',
+      "git commit -F - <<'EOF'\nRead .env.example with cat .env.example\nEOF",
+    ]) {
+      expect(decide(c), `expected ALLOW: ${c}`).toBeNull();
+    }
+  });
+
+  // The reason names the secret-file word that tripped the rule, the one left
+  // after the template operands are dropped.
+  (hasPython3 ? it : it.skip)('names the secret-file word a refused read matched', () => {
+    for (const [c, word] of [
+      ['cat .env', '.env'],
+      ['cat .env.example .env', '.env'],
+      ['head -5 prod.env', 'prod.env'],
+      ['cat .env.example | xargs cat', '.env.example'],
+    ]) {
+      const reason = decide(c);
+      expect(reason, `expected BLOCK: ${c}`).not.toBeNull();
+      expect(reason).toContain('then the secret-file name `' + word + '`');
+    }
+  });
+
   it('still refuses a real read of a secret file', () => {
     for (const c of [
       'cat .env',
@@ -85,7 +124,9 @@ describe('guard keys on the file a command opens, not on text it only carries', 
       'grep -c x < .env',
       String.raw`grep -e '\.env' .env`,
       'head -5 prod.env',
-      'cat .env.example',
+      'cat .env.example .env',
+      'grep KEY .env.example < .env',
+      'git commit -m "cat .env.example" && cat .env',
       `${countOnlyGrepOnDotfileRegex} && cat .env`,
       `${heredocWritingANote}\ncat .env`,
       'secretless-ai env',
@@ -115,6 +156,10 @@ describe('guard keys on the file a command opens, not on text it only carries', 
   it('still refuses a command that could reuse the dropped text as a filename', () => {
     for (const c of [
       String.raw`grep -o '\.env' notes.md | xargs cat`,
+      'cat .env.example | xargs cat',
+      'cat "$(basename .env.example .example)"',
+      'git -c alias.x=y commit -m "cat .env"',
+      'gh api -f body="cat .env"',
       String.raw`ls -a | grep -x '\.env' | xargs cat`,
       String.raw`grep -c '\.env' src/a.ts; cat "$_"`,
       String.raw`grep -c '\.env' "$(echo src/a.ts)"`,

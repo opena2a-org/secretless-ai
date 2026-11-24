@@ -683,10 +683,11 @@ describe('init', { timeout: 120_000 }, () => {
 
       // Both dead-end shapes named above: a committed template read, and
       // a search pattern that merely contains a secret-file token. A plain grep's
-      // pattern no longer reaches the arms (guard-command-operation.test.ts), so
-      // the pattern shape is a search the hook does not parse.
+      // pattern and a cat of a template no longer reach the arms
+      // (guard-command-operation.test.ts), so both shapes use a program the
+      // hook's analyzer does not parse.
       const deadEnds = [
-        'cat .env.example',
+        'less .env.example',
         'git grep -n "dotenv(.env)"',
       ];
       for (const c of deadEnds) {
@@ -709,13 +710,14 @@ describe('init', { timeout: 120_000 }, () => {
 
       // Pinned pre-change corpus for the secret-file-read arm. Every command
       // here denied before the message change and must still deny — including
-      // the deliberate template over-block (exempting the template NAME from
-      // the command guard is a credential bypass; see init.ts). The pattern-only
-      // search is a git grep: a plain grep with the same pattern is now allowed,
-      // which guard-command-operation.test.ts pins.
+      // the deliberate template over-block outside the commands the analyzer
+      // reads in full (exempting the template NAME from the command guard is a
+      // credential bypass; see init.ts). The pattern-only search is a git grep:
+      // a plain grep with the same pattern, and a cat of a template, are now
+      // allowed, which guard-command-operation.test.ts pins.
       const mustBlock = [
         'cat .env',
-        'cat .env.example',
+        'less .env.example',
         'head -5 prod.env',
         'grep AWS_SECRET .env',
         'git grep -n "dotenv(.env)"',
@@ -868,10 +870,10 @@ describe('init', { timeout: 120_000 }, () => {
 
       // The pinned command corpus of the Bash secret-file deny message change,
       // re-checked here: no command that denied is allowed now, including the
-      // deliberate `cat .env.example` over-block, and nothing allowed is newly
+      // deliberate `less .env.example` over-block, and nothing allowed is newly
       // blocked.
       for (const c of [
-        'cat .env', 'cat .env.example', 'head -5 prod.env', 'grep AWS_SECRET .env',
+        'cat .env', 'less .env.example', 'head -5 prod.env', 'grep AWS_SECRET .env',
         'git grep -n "dotenv(.env)"', 'xxd server.key', 'sed -n 1p client.pem',
         'strings cert.p12',
       ]) {
@@ -1423,7 +1425,7 @@ describe('init', { timeout: 120_000 }, () => {
         // An unquoted delimiter whose body the shell expands keeps the body in
         // the text the rules match.
         ['cat > notes.md <<EOF\nthe head of $HOME/.env\nEOF', 'head of $HOME/.env'],
-        ['cat .env.example', 'cat .env.example'],
+        ['less .env.example', 'less .env.example'],
         [`python3 -c "open('.env').read()"`, `python3 -c "open('.env').read()"`],
         ['\\tail .env', 'tail .env'],
         ["printf 'x\\ncat .env' | sh", "cat .env'"],
