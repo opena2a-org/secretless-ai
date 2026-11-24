@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+**`verify` names the files it read, and its PASS says source files are
+`scan`'s (#444).** `verify` reads a fixed list of AI-context files and the
+five most recent transcripts, not the project's source, but its output named
+none of them, so a PASS could be taken for a clean project. A line under
+`Scope` now lists the files it found and read, and the number of transcripts,
+and the PASS line ends `(source files: run secretless-ai scan)`.
+`src/docs-sample-output.test.ts` holds the guide's sample to the output.
+
 **`scan` after `init` no longer counts the output check `init` writes as
 holding placeholders (#443).** `.claude/hooks/secretless-output-check.cjs`
 carried the documented example keys of its allowlist whole, so `scan` said

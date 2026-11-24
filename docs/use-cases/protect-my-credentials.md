@@ -56,6 +56,7 @@ Expected output in the project from Step 1, in a shell that sets `ANTHROPIC_API_
   Secretless Verify
 
   Scope: this project + global AI config (~/.claude) + current-shell env vars
+         files read: CLAUDE.md, .claude/settings.json
 
   │ + ANTHROPIC_API_KEY
   │ + OPENAI_API_KEY
@@ -63,10 +64,10 @@ Expected output in the project from Step 1, in a shell that sets `ANTHROPIC_API_
 
   AI context: clean (no credentials found)
 
-  PASS Secrets accessible via env vars, hidden from AI context.
+  PASS Secrets accessible via env vars, hidden from AI context (source files: run secretless-ai scan).
 ```
 
-`verify` names each credential variable it knows that your shell sets, without its value, and counts the ones your shell does not set; `verify --all` lists those too. It then looks for credential values in a fixed list of project files, among them `CLAUDE.md`, `.claude/settings.json`, `.cursorrules`, the MCP configs and `.env`, in `~/.claude/CLAUDE.md` and `~/.claude/settings.json`, and in the five most recent transcript files under `~/.claude/projects`. `PASS` means at least one of those variables is set and no value was found; otherwise `verify` exits 1 and prints the command to run next. It does not check the deny rules or the guard hook: `status` in Step 3 reports on those.
+`verify` names each credential variable it knows that your shell sets, without its value, and counts the ones your shell does not set; `verify --all` lists those too. It then looks for credential values in a fixed list of project files, among them `CLAUDE.md`, `.claude/settings.json`, `.cursorrules`, the MCP configs and `.env`, in `~/.claude/CLAUDE.md` and `~/.claude/settings.json`, and in the five most recent transcript files under `~/.claude/projects`; the line under `Scope` names the ones it found and read. `PASS` means at least one of those variables is set and no value was found in those files; otherwise `verify` exits 1 and prints the command to run next. It does not read your source code, which `secretless-ai scan` does, and it does not check the deny rules or the guard hook, which `status` in Step 3 reports on.
 
 ## Step 3: Check status anytime
 
