@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+**The guard hook lets a Bash command read a template file or carry a
+secret-file name in text it only prints or stores, and names the word a
+refused read matched.** `cat .env.example`, `head -n 20 .env.sample`,
+`ls -a | grep '^\.env'`, `echo "cat .env.example"`,
+`git commit -m 'cat .env no longer works'` and
+`gh issue create --body "…"` were refused as secret-file reads, though the
+Read tool was allowed the same template. With python3, the command analyzer
+now also drops a file operand or redirection target named `*.example`,
+`*.sample`, `*.template` or `*.dist`, the text echo and printf print, the
+message of `git commit -m` and the title and body of `gh issue|pr
+create|comment|edit`, as it already dropped a grep pattern and a heredoc body,
+and only from a command it reads in full: no expansion, and no program that
+runs a command or reads file names. `cat .env`, `cat .env.example .env`,
+`cat "$(basename .env.example .example)"`, `cat .env.example | xargs cat`,
+`git -c x=y commit -m "cat .env"` and every command without python3 are refused
+as before. The reason now says ``then the secret-file name `.env` ``, quoting
+the word left after the template operands are dropped. The verdict snapshot
+records each command whose verdict moved, and
+`src/guard-command-operation.test.ts` checks the allowed shapes, the refused
+ones and the word the reason names.
+
 **`secretless-mcp` says on stderr which flag it ignored (#444).** The wrapper
 ignores a flag it does not know rather than refuse to start the server, as
 `docs/testing/release-smoke.md` says, but it printed nothing, so

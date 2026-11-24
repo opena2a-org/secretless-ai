@@ -12,7 +12,7 @@ deny: blocked command that reads secret files | deny: blocked command that reads
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | cat '.env.local'
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | cat \.env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | cat deploy/id_rsa.pem
-deny: blocked command that reads secret files | deny: blocked command that reads secret files | cat .env.example
+allow | deny: blocked command that reads secret files | cat .env.example
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | head -n 5 .env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | head -n 5 .env.local
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | head -n 5 config/server.key
@@ -24,7 +24,7 @@ deny: blocked command that reads secret files | deny: blocked command that reads
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | head -n 5 '.env.local'
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | head -n 5 \.env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | head -n 5 deploy/id_rsa.pem
-deny: blocked command that reads secret files | deny: blocked command that reads secret files | head -n 5 .env.example
+allow | deny: blocked command that reads secret files | head -n 5 .env.example
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | tail -n 20 .env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | tail -n 20 .env.local
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | tail -n 20 config/server.key
@@ -36,7 +36,7 @@ deny: blocked command that reads secret files | deny: blocked command that reads
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | tail -n 20 '.env.local'
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | tail -n 20 \.env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | tail -n 20 deploy/id_rsa.pem
-deny: blocked command that reads secret files | deny: blocked command that reads secret files | tail -n 20 .env.example
+allow | deny: blocked command that reads secret files | tail -n 20 .env.example
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | less .env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | less .env.local
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | less config/server.key
@@ -60,7 +60,7 @@ deny: blocked command that reads secret files | deny: blocked command that reads
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | grep KEY '.env.local'
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | grep KEY \.env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | grep KEY deploy/id_rsa.pem
-deny: blocked command that reads secret files | deny: blocked command that reads secret files | grep KEY .env.example
+allow | deny: blocked command that reads secret files | grep KEY .env.example
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | awk '{print}' .env
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | awk '{print}' .env.local
 deny: blocked command that reads secret files | deny: blocked command that reads secret files | awk '{print}' config/server.key
@@ -626,12 +626,12 @@ allow | allow | git commit -m "Stop tracking .env"
 allow | allow | git commit -m "Rotate the API key used by the deploy job"
 allow | allow | git commit -m "Read GITHUB_TOKEN from the environment"
 allow | allow | git commit -m "set the flag"
-deny: blocked command that reads secret files | deny: blocked command that reads secret files | git commit -m 'cat .env no longer works'
+allow | deny: blocked command that reads secret files | git commit -m 'cat .env no longer works'
 allow | deny: blocked command that reads secret files | json:"git commit -m \"$(cat <<'EOF'\nIgnore .env and *.pem files\nEOF\n)\""
 allow | allow | gh pr create --title "Ignore .env files" --body "Adds .env and secrets/ to .gitignore"
 allow | allow | gh issue create --title "printenv shows tokens" --body "Reproduce with printenv"
 allow | allow | echo "See .env.example for the variable names"
-deny: blocked command that reads secret files | deny: blocked command that reads secret files | echo "cat .env is refused"
+allow | deny: blocked command that reads secret files | echo "cat .env is refused"
 allow | deny: blocked command that reads secret files | printf '%s\n' 'cat .env' > notes.txt
 allow | deny: blocked command that reads secret files | echo 'Run: cat .env' >> NOTES.md
 allow | deny: blocked command that reads secret files | json:"cat > notes.md <<'EOF'\ncat .env\nhead server.key\nEOF"
@@ -1097,3 +1097,17 @@ deny: blocked custom env var pattern | deny: blocked custom env var pattern | ec
 deny: blocked custom env var extraction | deny: blocked custom env var extraction | python3 -c 'import os; print(os.environ["ACME_REGION"])'
 deny: blocked custom bash pattern | deny: blocked custom bash pattern | acme-cli secrets get db
 allow | allow | acme-cli secrets list
+allow | deny: blocked command that reads secret files | head -n 20 .env.sample
+allow | deny: blocked command that reads secret files | cat config/.env.template
+allow | deny: blocked command that reads secret files | cat ./config/.env.dist
+allow | deny: blocked command that reads secret files | grep KEY < .env.example
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | head .env.example.bak
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | cat .env.example .env
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | cat .env.example | xargs cat
+allow | deny: blocked command that reads secret files | ls -a | grep '^\.env'
+allow | deny: blocked command that reads secret files | ls -la | grep -E '^\.env'
+allow | deny: blocked command that reads secret files | echo "cat .env.example"
+allow | deny: blocked command that reads secret files | git commit -am "head .env.sample"
+deny: blocked command that reads secret files | deny: blocked command that reads secret files | git -c x=y commit -m "cat .env"
+allow | deny: blocked command that reads secret files | gh issue create --title "cat .env.example is refused" --body "so is grep '^\.env'"
+allow | deny: blocked command that reads secret files | json:"git commit -F - <<'EOF'\nAllow cat .env.example\nEOF"

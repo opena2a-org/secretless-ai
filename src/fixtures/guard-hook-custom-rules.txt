@@ -282,10 +282,11 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": join
     echo "Secretless: blocked a call the guard could not check: grep exited $rc." >&2
     exit 2
   }
-  # NOTE ON TEMPLATE FILES. The command guard refuses `cat <name>.env.example`
-  # even though the file-path guard below allows template files, so the two
-  # layers disagree about committed placeholders. That is a known, deliberate
-  # over-block, NOT an oversight.
+  # NOTE ON TEMPLATE FILES. The file-path guard below allows template files
+  # (.example, .sample, .template, .dist), but the command guard matches text,
+  # and a textual exemption for a template name is a bypass. Outside the
+  # commands the analyzer reads in full it refuses `cat <name>.env.example`,
+  # a known, deliberate over-block, NOT an oversight.
   #
   # The obvious fix — subtract template-suffixed tokens from the command before
   # matching — was implemented, tested against a 50-command corpus, and then
@@ -302,10 +303,15 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": join
   # still never matches. Any textual exemption for the template NAME permits
   # deriving the real name from it.
   #
-  # Closing the disagreement safely needs the guard to resolve the path a
-  # command would actually open, rather than pattern-matching its text. Until
-  # then, over-blocking a placeholder file is the correct trade against leaking
-  # a real one.
+  # The exemption is therefore granted only where no derivation can happen:
+  # the analyzer below (OPERATION BEFORE TEXT) removes a template file operand
+  # only from a command it understands in full, one with no expansion at all
+  # and no program that runs a command or reads file names from its input, so
+  # the template word is the literal name of the file opened. `cat
+  # .env.example` passes with python3; the basename form above, a pipe into
+  # xargs, any command the analyzer does not read, and every command without
+  # python3 are still judged on their full text, where over-blocking a
+  # placeholder file is the correct trade against leaking a real one.
   #
   # NOTE ON ENVIRONMENT ACCESSORS. `process.env`, `import.meta.env` and
   # `Deno.env` contain the `.env` token, so `grep -c "process\.env" app.ts`,
@@ -345,10 +351,11 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": join
     fi
   fi
   # OPERATION BEFORE TEXT. What the guard CAN remove is text that names no file
-  # the command opens: a plain grep's pattern and a heredoc's body. The analyzer
-  # prints the command without them, and only when it understands the whole
-  # command; otherwise SCAN_TEXT stays the full command. File operands are never
-  # removed, so the template over-block above is unchanged. The arms below that
+  # the command opens: a plain grep's pattern, a heredoc's body, the text echo
+  # and printf print, a git commit or gh message, and a template file operand
+  # (NOTE ON TEMPLATE FILES). The analyzer prints the command without them, and
+  # only when it understands the whole command; otherwise SCAN_TEXT stays the
+  # full command. No other file operand is removed. The arms below that
   # read SCAN_TEXT match the reduced text; the data-directory arm, the arms for
   # process listings, a bare env and git credentials, and custom rules read the
   # full command.
@@ -390,8 +397,13 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "tool_input": {"command": join
     GUARD_ANALYZER='import json, re, sys
 
 SAFE = {"grep", "egrep", "fgrep", "cat", "head", "tail", "wc", "cut", "tr",
-        "tee", "sort", "uniq", "mkdir", "echo", "printf"}
+        "tee", "sort", "uniq", "mkdir", "ls", "echo", "printf", "git", "gh"}
 GREPS = {"grep", "egrep", "fgrep"}
+PRINTS = {"echo", "printf"}
+TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+SECRET_NAME = re.compile(r"\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9]|\Z)", re.I)
+GIT_MESSAGE = ({"-m", "-am", "--message"}, ("--message=",))
+GH_MESSAGE = ({"-t", "-b", "--title", "--body"}, ("--title=", "--body="))
 NOARG = set("abcEFGHhIiLlnoqRrsUvwxZz")
 LONG_NOARG = {
     "--count", "--files-with-matches", "--files-without-match", "--ignore-case",
@@ -648,17 +660,43 @@ def grep_patterns(args):
     return patterns
 
 
+def is_template(w):
+    base = w.value.rsplit("/", 1)[-1].lower()
+    return "\n" not in base and base.endswith(TEMPLATE_SUFFIXES)
+
+
+def message_spans(words, flags):
+    names, prefixes = flags
+    found, k = [], 0
+    while k < len(words):
+        w = words[k]
+        if w.value in names and w.plain and k + 1 < len(words):
+            found.append(words[k + 1])
+            k += 2
+            continue
+        if w.value.startswith(prefixes):
+            found.append(w)
+        k += 1
+    return found
+
+
 def reducible_spans(cmd):
     commands, bodies = tokenize(cmd)
-    spans = [(s, e, "") for s, e in bodies]
+    spans = {s: (s, e, "") for s, e in bodies}
     for tokens in commands:
-        words, k = [], 0
+        words, k, secret_target = [], 0, False
         while k < len(tokens):
             if tokens[k][0] == "op":
                 if tokens[k][2] not in REDIRECTS:
                     raise Bail
                 if k + 1 >= len(tokens) or tokens[k + 1][0] != "word":
                     raise Bail
+                target = tokens[k + 1][1]
+                if tokens[k][2] not in ("<<", "<<-"):
+                    if is_template(target):
+                        spans[target.start] = (target.start, target.end, SQ + SQ)
+                    elif SECRET_NAME.search(target.value):
+                        secret_target = True
                 k += 2
                 continue
             w = tokens[k][1]
@@ -673,12 +711,32 @@ def reducible_spans(cmd):
         name = words[0]
         if cmd[name.start:name.end] != name.value or name.value not in SAFE:
             raise Bail
-        if name.value in GREPS:
-            spans.extend((p.start, p.end, SQ + SQ) for p in grep_patterns(words[1:]))
-        elif name.value not in ("echo", "printf"):
-            if any(w.value.startswith("--") and w.value != "--" for w in words[1:]):
+        args = words[1:]
+        removed = []
+        if name.value == "git":
+            if len(words) < 2 or cmd[words[1].start:words[1].end] != "commit":
                 raise Bail
-    return spans
+            args = words[2:]
+            removed = message_spans(args, GIT_MESSAGE)
+        elif name.value == "gh":
+            if (len(words) < 3 or cmd[words[1].start:words[1].end] not in ("issue", "pr")
+                    or cmd[words[2].start:words[2].end] not in ("create", "comment", "edit")):
+                raise Bail
+            args = words[3:]
+            removed = message_spans(args, GH_MESSAGE)
+        elif name.value in GREPS:
+            removed = grep_patterns(args)
+        elif name.value in PRINTS:
+            # As in the inert-write scan, text written into a file with a
+            # secret-file name stays in the text the arms match.
+            removed = [] if secret_target else args
+        elif any(w.value.startswith("--") and w.value != "--" for w in args):
+            raise Bail
+        if name.value not in PRINTS:
+            removed = removed + [w for w in args if is_template(w)]
+        for w in removed:
+            spans[w.start] = (w.start, w.end, SQ + SQ)
+    return list(spans.values())
 
 
 # ENVIRONMENT PRINTS. Everything below parses the WHOLE command into its simple
@@ -2067,12 +2125,28 @@ main()
       | grep -iE '(^|[^A-Za-z0-9_.-]|\\[nt])((g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[acefhrsuv]?grep)|(pcre2?|zip|pdf)grep|(lol|c|md|so|net)cat|(md|j)less|(g|multi|color|log|x)?tail|g?head|[gmn]?awk|g?sed|g?strings|xxd|type)(\s|\\+t)+.*\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9}]|[}]([^}]|$)|$)' || true
   }
   FILE_READ_MATCH=$(secret_read_lines "$FILE_READ_SCAN")
+  COMMAND_READ_MATCH=$FILE_READ_MATCH
+  SCAN_READ_MATCH=$FILE_READ_MATCH
   if [ -n "$FILE_READ_MATCH" ] \
-    && { [ "$FILE_READ_COMMAND" = "$FILE_READ_SCAN" ] || [ -n "$(secret_read_lines "$FILE_READ_COMMAND")" ]; } \
-    && { [ "$SCAN_TEXT" = "$FILE_READ_SCAN" ] || [ "$SCAN_TEXT" = "$FILE_READ_COMMAND" ] \
-      || [ -n "$(secret_read_lines "$SCAN_TEXT")" ]; }; then
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. Matched `%s`: a reader verb, then a secret-file name. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash. To write a note that names a secret file, use cat > FILE with a single-quoted heredoc delimiter, or printf or echo of single-quoted text into a file."}}\n' \
-      "$(matched_text '(^|[^A-Za-z0-9_.-]|\\[nt])' '((g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[acefhrsuv]?grep)|(pcre2?|zip|pdf)grep|(lol|c|md|so|net)cat|(md|j)less|(g|multi|color|log|x)?tail|g?head|[gmn]?awk|g?sed|g?strings|xxd|type)(\s|\\+t)+.*\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9}]|[}]([^}]|$)|$)' "$FILE_READ_MATCH")"
+    && { [ "$FILE_READ_COMMAND" = "$FILE_READ_SCAN" ] \
+      || { COMMAND_READ_MATCH=$(secret_read_lines "$FILE_READ_COMMAND"); [ -n "$COMMAND_READ_MATCH" ]; }; } \
+    && { [ "$SCAN_TEXT" = "$FILE_READ_SCAN" ] \
+      || { [ "$SCAN_TEXT" = "$FILE_READ_COMMAND" ] && SCAN_READ_MATCH=$COMMAND_READ_MATCH; } \
+      || { SCAN_READ_MATCH=$(secret_read_lines "$SCAN_TEXT"); [ -n "$SCAN_READ_MATCH" ]; }; }; then
+    # The reason names the secret-file word that tripped the rule: the last
+    # word of the match in the reduced text, so in `cat .env.example .env` it
+    # is .env, the file the analyzer left in place, not the template. When the
+    # reduced text matched the same lines, the quote already taken is reused,
+    # so a long command is not read again.
+    FILE_READ_QUOTE=$(matched_text '(^|[^A-Za-z0-9_.-]|\\[nt])' '((g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[acefhrsuv]?grep)|(pcre2?|zip|pdf)grep|(lol|c|md|so|net)cat|(md|j)less|(g|multi|color|log|x)?tail|g?head|[gmn]?awk|g?sed|g?strings|xxd|type)(\s|\\+t)+.*\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9}]|[}]([^}]|$)|$)' "$FILE_READ_MATCH")
+    FILE_READ_TOKEN=$FILE_READ_QUOTE
+    if [ "$SCAN_READ_MATCH" != "$FILE_READ_MATCH" ]; then
+      FILE_READ_TOKEN=$(matched_text '(^|[^A-Za-z0-9_.-]|\\[nt])' '((g|gz|z|bz|xz|lz4?|zstd)?(cat|less|more|[acefhrsuv]?grep)|(pcre2?|zip|pdf)grep|(lol|c|md|so|net)cat|(md|j)less|(g|multi|color|log|x)?tail|g?head|[gmn]?awk|g?sed|g?strings|xxd|type)(\s|\\+t)+.*\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9}]|[}]([^}]|$)|$)' "$SCAN_READ_MATCH")
+    fi
+    FILE_READ_TOKEN=$(printf '%s\n' "$FILE_READ_TOKEN" | grep -oE '[^[:space:]]+' | grep -iE '\.(env|key|pem|p12|pfx|crt)([^A-Za-z0-9}]|[}]([^}]|$)|$)' | sed -n '$p' || true)
+    FILE_READ_TOKEN=${FILE_READ_TOKEN:-?}
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Secretless: blocked command that reads secret files. Matched `%s`: a reader verb, then the secret-file name `%s`. This guard matches command text and cannot tell a filename from a search pattern, so a committed template (like .env.example) or a pattern that merely contains a secret-file token is blocked too. Safe path: open committed template files with the Read tool and search with the Grep tool instead of Bash. To write a note that names a secret file, use cat > FILE with a single-quoted heredoc delimiter, or printf or echo of single-quoted text into a file."}}\n' \
+      "$FILE_READ_QUOTE" "$FILE_READ_TOKEN"
     exit 0
   fi
   # Block python/node one-liners that read secret files. Same dead-end as the arm

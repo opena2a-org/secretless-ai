@@ -1149,3 +1149,22 @@ echo $ACME_REGION
 python3 -c 'import os; print(os.environ["ACME_REGION"])'
 acme-cli secrets get db
 acme-cli secrets list
+
+# Template files, search patterns and quoted text: with
+# python3 the analyzer removes a template operand, a grep pattern, echo and
+# printf text and a git commit or gh message from a command it reads in full,
+# and leaves every other file operand and every command it does not read.
+head -n 20 .env.sample
+cat config/.env.template
+cat ./config/.env.dist
+grep KEY < .env.example
+head .env.example.bak
+cat .env.example .env
+cat .env.example | xargs cat
+ls -a | grep '^\.env'
+ls -la | grep -E '^\.env'
+echo "cat .env.example"
+git commit -am "head .env.sample"
+git -c x=y commit -m "cat .env"
+gh issue create --title "cat .env.example is refused" --body "so is grep '^\.env'"
+json:"git commit -F - <<'EOF'\nAllow cat .env.example\nEOF"
