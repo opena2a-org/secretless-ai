@@ -27,7 +27,7 @@ import * as os from "os";
 import { McpVault, boundEntryName } from "./mcp/vault";
 import type { McpLaunchVerdict } from "./mcp/vault";
 import { resolveBackendType } from "./backends/config";
-import { MCP_WRAPPER, prepareBinArgv, readWrapperArgv, wrapperFlag } from "./argv";
+import { EXIT_USAGE, MCP_WRAPPER, prepareBinArgv, readWrapperArgv, wrapperFlag } from "./argv";
 import { readWrapperVersion } from "./mcp/wrapper-version";
 import { printedCommand } from "./printed-command";
 import type { McpPlaceVerdict } from "./mcp/discover";
@@ -85,7 +85,7 @@ function parseArgs(argv: string[]): {
       process.stderr.write(
         `secretless-mcp: Unknown backend: ${val}. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n`,
       );
-      process.exit(1);
+      process.exit(EXIT_USAGE);
     }
   }
   const backend = wrapperFlag(read, "--backend") ?? "";
@@ -318,7 +318,7 @@ async function main(): Promise<void> {
 
   if (!args) {
     process.stderr.write(`secretless-mcp: ${USAGE}\n`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
 
   // Refuse rather than spawn an unprotected child. An empty server or client
@@ -335,7 +335,7 @@ async function main(): Promise<void> {
       `secretless-mcp: ${missing} must be given a non-empty value. The server was not started.\n`,
     );
     process.stderr.write(`secretless-mcp: ${USAGE}\n`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
 
   // Resolve backend: explicit --backend flag > config file > default ('local').

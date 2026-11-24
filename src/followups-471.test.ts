@@ -12,7 +12,7 @@ import { runSecret } from './commands/secrets';
 import { runBackend, runMigrate } from './commands/backend';
 import { runVault } from './commands/vault';
 import { runProtectMcp } from './commands/mcp';
-import { CLI } from './commands/utils';
+import { CLI, CLI_BARE } from './commands/utils';
 import { exportBundle, importBundle } from './bundle-transfer';
 import type { KdfParams } from './bundle';
 import type { WritableSecretBackend } from './backends/types';
@@ -633,6 +633,42 @@ describe('a usage refusal exits 2, the code docs/scanning.md gives a command lin
     expect(res.code).toBe(2);
     expect(res.text).toContain("  Unknown backend type: bogus. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'.\n");
   });
+
+  it.each([
+    ['FOO=', '  Error: no value provided.\n'],
+    ['=bar', '  Error: no name provided.\n'],
+  ])('`secret set %s`, a NAME=VALUE with one side left empty, is refused with exit 2', async (arg, refusal) => {
+    vi.stubEnv('HOME', tmpDir());
+    const res = await captured(() => runSecret(['set', arg], { createStore: () => { throw new Error('the store was opened'); } }));
+    expect(res.code).toBe(2);
+    expect(res.text).toContain(refusal);
+    expect(res.text).toContain(`  Usage: ${CLI_BARE} secret set NAME=VALUE\n`);
+  });
+
+  it('CONTROL: `secret set a;b=bar`, a name the store cannot hold, is still exit 1', async () => {
+    vi.stubEnv('HOME', tmpDir());
+    const res = await captured(() => runSecret(['set', 'a;b=bar'], { createStore: () => { throw new Error('the store was opened'); } }));
+    expect(res.code).toBe(1);
+    expect(res.text).toContain('Error: Invalid secret name.');
+  });
+
+  const WRAPPER_PATH = path.join(REPO_ROOT, 'dist', 'mcp-wrapper.js');
+  const itIfWrapper = fs.existsSync(WRAPPER_PATH) ? it : it.skip;
+  const wrapperCases: Array<[string[], string]> = [
+    [[], 'secretless-mcp: Usage: secretless-mcp --server <name> --client <client> -- <command> [args...]'],
+    [['--server', 'x', '--', 'node', '-e', '0'], 'secretless-mcp: --client must be given a non-empty value. The server was not started.'],
+    [['--client', 'y', '--', 'node', '-e', '0'], 'secretless-mcp: --server must be given a non-empty value. The server was not started.'],
+    [['--server', 'x', '--client', 'y', '--backend', 'bogus', '--', 'node', '-e', '0'], "secretless-mcp: Unknown backend: bogus. Use 'local', 'keychain', '1password', 'vault', or 'gcp-sm'."],
+  ];
+  for (const [args, refusal] of wrapperCases) {
+    itIfWrapper(`\`secretless-mcp ${args.join(' ')}\` is refused with exit 2`, () => {
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: tmpDir(), OPENA2A_TELEMETRY: 'off', NO_COLOR: '1' };
+      const res = spawnSync(process.execPath, [WRAPPER_PATH, ...args], { encoding: 'utf-8', cwd: tmpDir(), env, stdio: ['ignore', 'pipe', 'pipe'] });
+      expect(res.status).toBe(2);
+      expect(res.stderr.split('\n')).toContain(refusal);
+      expect(res.stdout).toBe('');
+    });
+  }
 
   for (const doc of ['commands.md', 'scanning.md']) {
     it(`docs/${doc} names an argument clean, doctor or init does not take, and a rules test pattern, among the cases of 2`, () => {

@@ -410,7 +410,8 @@ describe('the mcp-wrapper require graph is self-contained within dist/', () => {
       // proves the module graph loaded; a MODULE_NOT_FOUND never gets there.
       expect(stderr).not.toMatch(/MODULE_NOT_FOUND|Cannot find module/);
       expect(stderr).toMatch(/secretless-mcp: Usage:/);
-      expect(exitCode).toBe(1);
+      // No `--` and no command: a usage refusal, EXIT_USAGE (#471).
+      expect(exitCode).toBe(2);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

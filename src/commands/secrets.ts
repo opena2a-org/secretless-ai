@@ -450,10 +450,13 @@ export async function runSecret(args: string[], options: RunSecretOptions = {}):
       if (eqIdx !== -1) {
         name = nameArg.slice(0, eqIdx);
         value = nameArg.slice(eqIdx + 1);
-        if (!value) {
-          console.error('  Error: no value provided.');
+        // A NAME=VALUE with either side left empty is a command line given
+        // less than it needs: refused before anything ran, so exit 2, as a
+        // `secret set` with no argument at all (#471).
+        if (!name || !value) {
+          console.error(`  Error: no ${name ? 'value' : 'name'} provided.`);
           console.error(`  Usage: ${CLI_BARE} secret set NAME=VALUE\n`);
-          return 1;
+          return 2;
         }
         if (!isSettableSecretName(name)) {
           console.error('  Error: Invalid secret name. Use letters, numbers, underscores, hyphens. Must start with a letter.\n');
