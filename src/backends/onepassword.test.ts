@@ -278,9 +278,13 @@ describe('OnePasswordBackend', () => {
       expect(result).toEqual({});
     });
 
-    it('returns empty when vault does not exist', async () => {
-      mockExecFileSync.mockImplementation(() => {
-        throw new Error('vault not found');
+    it('returns empty when op lists the vaults and none is named Secretless', async () => {
+      mockExecFileSync.mockImplementation((cmd, args) => {
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
+        const sub = `${args[0]} ${args[1]}`;
+        if (sub === 'vault get') throw new Error('"Secretless" isn\'t a vault in this account');
+        if (sub === 'vault list') return JSON.stringify([{ id: 'v-1', name: 'Personal' }]);
+        throw new Error(`unexpected op ${sub}`);
       });
 
       const backend = new OnePasswordBackend();
@@ -289,7 +293,46 @@ describe('OnePasswordBackend', () => {
       expect(result).toEqual({});
     });
 
-    it('skips items whose password cannot be read', async () => {
+    it('rejects with op\'s message when the vault lookup fails', async () => {
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error('[ERROR] 2026/11/24 You are not currently signed in.');
+      });
+
+      const backend = new OnePasswordBackend();
+      await expect(backend.resolve('mcp')).rejects.toThrow(/not currently signed in/);
+      await expect(backend.resolve('mcp', { exact: true })).rejects.toThrow(/not currently signed in/);
+    });
+
+    it('rejects with op\'s message when op item list fails', async () => {
+      mockExecFileSync.mockImplementation((cmd, args) => {
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
+        const sub = `${args[0]} ${args[1]}`;
+        if (sub === 'vault get') return JSON.stringify({ id: VAULT_ID });
+        if (sub === 'item list') throw new Error('[ERROR] 2026/11/24 connecting to desktop app: timed out');
+        throw new Error(`unexpected op ${sub}`);
+      });
+
+      const backend = new OnePasswordBackend();
+      const err = await backend.resolve('secret/TOKEN', { exact: true }).catch((e: Error) => e) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain('connecting to desktop app: timed out');
+      expect(err.message).toContain('op item list');
+    });
+
+    it('rejects when op item list prints something that is not a JSON list', async () => {
+      mockExecFileSync.mockImplementation((cmd, args) => {
+        if (cmd !== 'op' || !Array.isArray(args)) return '';
+        const sub = `${args[0]} ${args[1]}`;
+        if (sub === 'vault get') return JSON.stringify({ id: VAULT_ID });
+        if (sub === 'item list') return 'not json';
+        throw new Error(`unexpected op ${sub}`);
+      });
+
+      const backend = new OnePasswordBackend();
+      await expect(backend.resolve('mcp')).rejects.toThrow(/not JSON \(op item list\)/);
+    });
+
+    it('rejects with op\'s message when an item\'s password cannot be read', async () => {
       mockExecFileSync.mockImplementation((cmd, args) => {
         if (cmd !== 'op' || !Array.isArray(args)) return '';
 
@@ -309,15 +352,17 @@ describe('OnePasswordBackend', () => {
           if (itemId === 'item-1') {
             return JSON.stringify({ value: 'val1' });
           }
-          throw new Error('access denied');
+          throw new Error('[ERROR] 2026/11/24 access denied');
         }
         return '';
       });
 
       const backend = new OnePasswordBackend();
-      const result = await backend.resolve('mcp');
+      const err = await backend.resolve('mcp').catch((e: Error) => e) as Error;
 
-      expect(result).toEqual({ 'mcp/KEY1': 'val1' });
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain('access denied');
+      expect(err.message).toContain('op item get');
     });
 
     it('does not match partial prefix without slash boundary', async () => {
