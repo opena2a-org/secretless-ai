@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**A `secretless-mcp` refusal names the store a version before 0.12.3
+wrote.** Those versions stored `local` secrets in the encrypted file under
+`~/.secretless-ai/mcp-vault`, and the wrapper, given neither `--vault-dir`
+nor `--vault-key`, reads the OS keychain where one is available, so a server
+they protected was refused with steps that never named that file. When the
+wrapper read another store and an encrypted file is in that directory, a
+refusal for an unbound entry, a pair with no binding stored or a pair with no
+secrets now adds a line that says to add `--vault-dir` with the directory's
+absolute path to the server's args. `src/mcp/pre-keychain-store-hint.test.ts`
+starts the built wrapper with and without such a store.
+
 **The guard hook lets a Bash command read a template file or carry a
 secret-file name in text it only prints or stores, and names the word a
 refused read matched.** `cat .env.example`, `head -n 20 .env.sample`,
