@@ -117,9 +117,10 @@ export interface LineValue {
 /**
  * The values the patterns match on a finding's line, kept only under
  * `ScanOptions.retainValues` and held beside the finding as MATCHED_VALUES is.
- * A line is reported as one finding at most, for the pattern `lineMatch`
- * picks, so a line holding an AWS access key ID and its secret access key
- * reports the key ID alone; the validity check pairs the two from here.
+ * A credential is reported as one finding, for the pattern `lineMatches`
+ * picks, and the other values a pattern matches on its line are listed here:
+ * the validity check pairs an AWS access key ID with its secret access key
+ * from them.
  */
 const LINE_VALUES = new WeakMap<ScanFinding, readonly LineValue[]>();
 
@@ -140,6 +141,13 @@ export function lineValuesOf(finding: ScanFinding): readonly LineValue[] | undef
  * so it is not in `--json`.
  */
 const SCORED_PATH = new WeakMap<ScanFinding, string>();
+
+/**
+ * Where on its line the value a pattern finding was made for starts, held
+ * beside the finding as MATCHED_VALUES is. Two credentials of one pattern on
+ * one line are two findings, which `dedupeByRealFile` tells apart by it.
+ */
+const FOUND_AT = new WeakMap<ScanFinding, number>();
 
 /**
  * The path the scan gave a finding its severity, confidence and fix for, when
@@ -708,29 +716,60 @@ export function findRealMatch(
   return null;
 }
 
+/** A credential a finding on a line is made for: the pattern it names, and its match. */
+interface LineCredential {
+  pattern: CredentialPattern;
+  match: RegExpMatchArray;
+}
+
 /**
- * The pattern a finding on `line` names, with its match, or null when no
- * pattern has a real match on the line.
+ * The credentials on `line` a finding is made for, one for each, in line
+ * order; empty when no pattern has a real match on the line.
  *
- * The first pattern in list order with a real match finds the line. The
- * preview (`maskCredentials`) writes one marker over a credential that two
+ * The preview (`maskCredentials`) writes one marker over a credential that two
  * patterns match parts of, named for the pattern whose span starts first: a
  * PyPI token whose body holds a Hugging Face token shape is one PyPI marker,
- * though the Hugging Face pattern comes first in the list. When the marker
- * over the found value names another pattern, and that pattern has a real
- * match whose value starts under the marker, the finding takes that pattern
- * and match, so the finding and its preview name one credential (#459). Two
- * credentials under markers of their own leave the first in list order.
+ * though the Hugging Face pattern comes first in the list. A credential is the
+ * part of the line one marker covers, and is found once: by the first pattern
+ * in list order with a real match whose value starts under the marker. When
+ * the marker names another pattern, and that pattern has a real match whose
+ * value starts under it, the finding takes that pattern and match, so the
+ * finding and its preview name one credential (#459). Credentials under
+ * markers of their own are each found: a line holding an npm token and a
+ * Google API key is two findings (#471). It used to be one, for the pattern
+ * first in list order, and the other credential was not reported.
+ *
+ * A known example is passed to `onSuppressed` once for each pattern that
+ * matches it, unless a credential found on the line covers it.
  */
-function lineMatch(
+function lineMatches(
   line: string,
   opts?: Parameters<typeof findRealMatch>[2],
-): { pattern: CredentialPattern; match: RegExpMatchArray } | null {
+): LineCredential[] {
+  const includeExamples = opts?.includeExamples === true;
+  const found: Array<LineCredential & { span: LineSpan }> = [];
+  const suppressed: LineSpan[] = [];
+  const overlaps = (a: LineSpan, b: LineSpan) => a.from < b.to && b.from < a.to;
   for (const pattern of CREDENTIAL_PATTERNS) {
-    const match = findRealMatch(line, pattern, opts);
-    if (match) return matchUnderMarker(line, pattern, match, opts?.includeExamples === true) ?? { pattern, match };
+    const flags = pattern.regex.flags.includes('g') ? pattern.regex.flags : `${pattern.regex.flags}g`;
+    for (const match of line.matchAll(new RegExp(pattern.regex.source, flags))) {
+      const marker = markerAt(line, valueStart(match));
+      const span = marker ? { from: marker.from, to: marker.to } : matchSpan(match);
+      if (!includeExamples && isKnownExample(line, match)) {
+        suppressed.push(span);
+        continue;
+      }
+      if (found.some((f) => overlaps(f.span, span))) continue;
+      const chosen = matchUnderMarker(line, pattern, match, includeExamples) ?? { pattern, match };
+      found.push({ ...chosen, span });
+    }
   }
-  return null;
+  for (const span of suppressed) {
+    if (!found.some((f) => overlaps(f.span, span))) opts?.onSuppressed?.();
+  }
+  return found
+    .sort((a, b) => a.span.from - b.span.from)
+    .map(({ pattern, match }) => ({ pattern, match }));
 }
 
 /**
@@ -933,8 +972,8 @@ function scanSingleFile(
     // A project MCP config's env is read by the env rule, by line. A per-user
     // config mcp-status reads in the home directory is not.
     const env = isProjectMcpConfig(filePath) ? mcpEnvSecretsByLine(content) : undefined;
-    // The span of the match each line's pattern finding was made for.
-    const reported = new Map<number, LineSpan>();
+    // The spans of the matches each line's pattern findings were made for.
+    const reported = new Map<number, LineSpan[]>();
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -945,9 +984,7 @@ function scanSingleFile(
       if (/process\.env\.[A-Z_]+/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
       if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
-      const found = lineMatch(line, matchOpts);
-      if (found) {
-        const { pattern, match } = found;
+      for (const { pattern, match } of lineMatches(line, matchOpts)) {
         const breakdown = scoreFinding({
           pattern: { id: pattern.id, regex: pattern.regex },
           value: match[0],
@@ -974,7 +1011,7 @@ function scanSingleFile(
             LINE_VALUES.set(finding, valuesOnLine(line, matchOpts.includeExamples, minConfidence, name));
           }
           findings.push(finding);
-          reported.set(i + 1, matchSpan(match));
+          reported.set(i + 1, [...(reported.get(i + 1) ?? []), matchSpan(match)]);
         }
       }
     }
@@ -1101,8 +1138,9 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       value: match[0],
       filePath: file,
     });
+    const at = valueStart(match);
     if (breakdown.score < minConfidence) {
-      belowFloor.push({ file, line, patternId: pattern.id });
+      belowFloor.push({ file, line, patternId: pattern.id, at });
       return null;
     }
     const looksLikeFixture = !!(fixtureMatcher && fixtureMatcher.matches(withSlashSeparators(file)));
@@ -1119,6 +1157,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       looksLikeFixture,
       ...(options?.confidenceFactors ? { confidenceFactors: breakdown } : {}),
     };
+    FOUND_AT.set(finding, at);
     if (options?.retainValues) {
       keepMatchedValue(finding, match);
       LINE_VALUES.set(finding, valuesOnLine(lineText, matchOpts.includeExamples, minConfidence, file));
@@ -1165,8 +1204,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
         const line = lines[i];
         if (line.length > 4096) continue;
         if (/\$\{[A-Z_]+\}/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
-        const found = lineMatch(line, matchOpts);
-        if (found) {
+        for (const found of lineMatches(line, matchOpts)) {
           const masked = maskCredentials(line);
           const finding = buildFinding(global.label, i + 1, found.pattern, found.match, 'critical', masked, line);
           if (finding) findings.push(finding);
@@ -1263,8 +1301,8 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
       // A project MCP config's env is read by the env rule, by line. A per-user
       // config mcp-status reads in the home directory is not.
       const env = isProjectMcpConfig(fullPath, homeConfigs()) ? mcpEnvSecretsByLine(content) : undefined;
-      // The span of the match each line's pattern finding was made for.
-      const reported = new Map<number, LineSpan>();
+      // The spans of the matches each line's pattern findings were made for.
+      const reported = new Map<number, LineSpan[]>();
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -1275,9 +1313,8 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           continue;
         }
 
-        // One finding per line
-        const found = lineMatch(line, matchOpts);
-        if (found) {
+        // One finding per credential on the line
+        for (const found of lineMatches(line, matchOpts)) {
           // Mask every credential on the line in the preview, the env
           // secrets the pass found on it first, as they are written.
           const masked = maskCredentials(maskEnvOnLine(line, env?.get(i + 1)));
@@ -1285,7 +1322,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           const finding = buildFinding(configFile, i + 1, found.pattern, found.match, 'critical', masked, line);
           if (finding) {
             findings.push(finding);
-            reported.set(i + 1, matchSpan(found.match));
+            reported.set(i + 1, [...(reported.get(i + 1) ?? []), matchSpan(found.match)]);
           }
         }
       }
@@ -1365,8 +1402,7 @@ export function scan(projectDir: string, options?: ScanOptions, stats?: ScanStat
           // Skip os.environ references (Python)
           if (/os\.environ/.test(line) && !CREDENTIAL_PREFIX_QUICK_CHECK.test(line)) continue;
 
-          const found = lineMatch(line, matchOpts);
-          if (found) {
+          for (const found of lineMatches(line, matchOpts)) {
             const masked = maskCredentials(line);
 
             const finding = buildFinding(relPath, i + 1, found.pattern, found.match, 'high', masked, line);
@@ -1496,10 +1532,13 @@ interface FloorMatch {
   file: string;
   line: number;
   patternId: string;
+  /** Where on the line its value starts; absent for a match of the env rule. */
+  at?: number;
 }
 
 /**
- * Collapse findings that resolve to the same real file, line and pattern.
+ * Collapse findings that resolve to the same real file, line, pattern and
+ * place on the line (`FOUND_AT`).
  *
  * The finding kept is the first of them in `findings`, which `compareFindings`
  * ordered, so its severity, confidence and fix are those of the highest-ranked
@@ -1532,13 +1571,13 @@ function dedupeByRealFile(
 ): { kept: ScanFinding[]; hiddenByFloor: number } {
   const rootReal = realpathOrNull(projectDir) ?? path.resolve(projectDir);
   const realOf = new Map<string, string>();
-  const keyOf = (m: FloorMatch): string => {
+  const keyOf = (m: FloorMatch, at: number | undefined = m.at): string => {
     let real = realOf.get(m.file);
     if (real === undefined) {
       real = realpathOrNull(path.resolve(projectDir, m.file)) ?? m.file;
       realOf.set(m.file, real);
     }
-    return `${real}\u0000${m.line}\u0000${m.patternId}`;
+    return `${real}\u0000${m.line}\u0000${m.patternId}\u0000${at ?? ''}`;
   };
   const pathsOf = new Map<string, string[]>();
   const kept = new Map<string, ScanFinding>();
@@ -1546,7 +1585,7 @@ function dedupeByRealFile(
   // two walks read, keyed on the key and the path.
   const madeFor = new Map<string, ScanFinding>();
   for (const f of findings) {
-    const key = keyOf(f);
+    const key = keyOf(f, FOUND_AT.get(f));
     const at = `${key}\u0000${f.file}`;
     if (!madeFor.has(at)) madeFor.set(at, f);
     const paths = pathsOf.get(key);

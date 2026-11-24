@@ -1249,7 +1249,7 @@ describe('checkFindings pairs an AWS access key ID with the secret access key in
     expect(results.get(secret)).toEqual({ state: 'unchecked', detail: 'the matched value was not kept for checking' });
   });
 
-  it('pairs a key ID with the secret on its line, which the scanner reports as one finding, and signs the request with that secret', async () => {
+  it('pairs a key ID with the secret on its line, read from the values on its line, and signs the request with that secret', async () => {
     const { findings: [id], calls, check, values } = setup([['aws-access', 'deploy.sh', 3, KEY_ID, [['aws-secret', SECRET]]]]);
     const results = await check();
     expect(calls).toHaveLength(1);
@@ -1583,13 +1583,15 @@ describe('the scanner keeps a matched value only when asked', () => {
       const expected = [{ patternId: 'aws-access', value: DOCS_KEY_ID }, { patternId: 'aws-secret', value: DOCS_SECRET }];
       for (const target of [dir, path.join(dir, 'client.js')]) {
         const unkept = scan(target, { scanGlobal: false, showPlaceholders: true });
-        expect(unkept.map((f) => f.patternId), target).toEqual(['aws-access']);
-        expect(lineValuesOf(unkept[0]), target).toBeUndefined();
+        expect(unkept.map((f) => f.patternId).sort(), target).toEqual(['aws-access', 'aws-secret']);
+        for (const f of unkept) expect(lineValuesOf(f), target).toBeUndefined();
 
         const findings = scan(target, { scanGlobal: false, retainValues: true, showPlaceholders: true });
         expect(findings, target).toEqual(unkept);
-        expect(lineValuesOf(findings[0]), target).toEqual(expected);
-        expect(JSON.stringify(findings[0])).not.toContain(DOCS_SECRET);
+        for (const f of findings) {
+          expect(lineValuesOf(f), target).toEqual(expected);
+          expect(JSON.stringify(f)).not.toContain(DOCS_SECRET);
+        }
       }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -1605,10 +1607,12 @@ describe('the scanner keeps a matched value only when asked', () => {
       expect(lineValuesOf(hidden[0])).toEqual([{ patternId: 'github-pat', value: TOKEN }]);
 
       const shown = scan(dir, { scanGlobal: false, retainValues: true, showPlaceholders: true });
-      expect(shown.map((f) => f.patternId)).toEqual(['aws-access']);
-      expect(lineValuesOf(shown[0])).toEqual([
-        { patternId: 'aws-access', value: DOCS_KEY_ID }, { patternId: 'aws-secret', value: DOCS_SECRET }, { patternId: 'github-pat', value: TOKEN },
-      ]);
+      expect(shown.map((f) => f.patternId).sort()).toEqual(['aws-access', 'aws-secret', 'github-pat']);
+      for (const f of shown) {
+        expect(lineValuesOf(f)).toEqual([
+          { patternId: 'aws-access', value: DOCS_KEY_ID }, { patternId: 'aws-secret', value: DOCS_SECRET }, { patternId: 'github-pat', value: TOKEN },
+        ]);
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1632,7 +1636,7 @@ describe('the scanner keeps a matched value only when asked', () => {
 
 describe('the flag, the help and docs/commands.md name what --check-validity contacts', () => {
   /** How the help and docs/commands.md say a key ID and a secret on one line are paired. */
-  const ONE_LINE_PAIR = 'A key ID and a secret found on one line, which the scan reports as one finding, both count, '
+  const ONE_LINE_PAIR = 'A key ID and a secret found on one line, which the scan reports as two findings, both count, '
     + 'and are never split between two pairs.';
 
   it('scan registers --check-validity as a flag without a value, so the parser accepts it', () => {

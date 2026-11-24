@@ -238,11 +238,11 @@ describe('runScan --check-validity', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('an AWS key ID and its secret on one line, reported as one finding, are checked as a pair: the key ID is named in the signature, and the secret is in no request and no output', async () => {
+  it('an AWS key ID and its secret on one line, two findings, are checked as one pair: the key ID is named in the signature, and the secret is in no request and no output', async () => {
     const dir = project({ 'deploy.sh': `AWS_ACCESS_KEY_ID=${AWS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET} aws s3 ls\n` });
     expect(await runScan(dir, { json: true, showPlaceholders: true })).toBe(1);
     const before = JSON.parse(out.join('\n'));
-    expect(before.findings.map((f: { patternId: string }) => f.patternId)).toEqual(['aws-access']);
+    expect(before.findings.map((f: { patternId: string }) => f.patternId)).toEqual(['aws-access', 'aws-secret']);
 
     out.length = 0;
     const calls: Call[] = [];
@@ -255,11 +255,13 @@ describe('runScan --check-validity', () => {
     expect(calls[0].init.headers.Authorization).toContain(`Credential=${AWS_KEY_ID}/`);
     expect(JSON.stringify({ url: calls[0].url, init: { ...calls[0].init, signal: undefined } })).not.toContain(AWS_SECRET);
     expect(text).not.toContain(AWS_SECRET);
-    expect(after.findings).toHaveLength(1);
-    const { validity, ...rest } = after.findings[0];
-    expect(validity).toEqual({ state: 'live', host: 'sts.amazonaws.com', status: 200, detail: 'sts.amazonaws.com answered 200' });
-    expect(rest).toEqual(before.findings[0]);
-    expect(after.summary.validity).toEqual({ live: 1, rejected: 0, unknown: 0, unchecked: 0, hosts: ['sts.amazonaws.com'] });
+    expect(after.findings).toHaveLength(2);
+    after.findings.forEach((finding: Record<string, unknown>, i: number) => {
+      const { validity, ...rest } = finding;
+      expect(validity).toEqual({ state: 'live', host: 'sts.amazonaws.com', status: 200, detail: 'sts.amazonaws.com answered 200' });
+      expect(rest).toEqual(before.findings[i]);
+    });
+    expect(after.summary.validity).toEqual({ live: 2, rejected: 0, unknown: 0, unchecked: 0, hosts: ['sts.amazonaws.com'] });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
