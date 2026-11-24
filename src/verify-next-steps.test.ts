@@ -37,6 +37,8 @@ function run(files: string[], sub = ''): { code: number; text: string } {
     exposedInContext: files.map((file) => ({ envVar: 'OPENAI_API_KEY', patternName: 'OpenAI Project Key', file, line: 1 })),
     exposedInTranscripts: [],
     placeholdersSuppressed: 0,
+    filesRead: [],
+    transcriptsRead: 0,
     passed: false,
   };
   vi.spyOn(process, 'cwd').mockReturnValue(root);

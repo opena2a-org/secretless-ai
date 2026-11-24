@@ -237,6 +237,22 @@ describe('verify', () => {
     expect(result.envVars['OPENAI_API_KEY']).toBe(false);
     expect(result.envVars['AWS_ACCESS_KEY_ID']).toBe(false);
   });
+
+  it('names the files it read, and not the ones it looks for that are not there or not files', () => {
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# Project\n');
+    fs.mkdirSync(path.join(dir, '.claude'));
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{}\n');
+    fs.writeFileSync(path.join(dir, '.env'), 'PORT=3000\n');
+    // A directory where a file is looked for is not read.
+    fs.mkdirSync(path.join(dir, '.cursorrules'));
+    // Source code is not on the list: `scan` reads it.
+    fs.writeFileSync(path.join(dir, 'index.js'), 'console.log(1);\n');
+
+    const result = verify(dir);
+    // The home-directory files are read when this machine has them.
+    expect(result.filesRead.filter(f => !f.startsWith('~'))).toEqual(['CLAUDE.md', '.claude/settings.json', '.env']);
+    expect(result.transcriptsRead).toBe(0);
+  });
 });
 
 describe('verify - use key then prove it is not in context', () => {

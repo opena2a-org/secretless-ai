@@ -46,6 +46,8 @@ function run(exposed: Exposure[]): { code: number; lines: string[]; text: string
     exposedInContext: [],
     exposedInTranscripts: exposed,
     placeholdersSuppressed: 0,
+    filesRead: [],
+    transcriptsRead: 0,
     passed: false,
   };
   let text = '';

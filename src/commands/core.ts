@@ -2134,10 +2134,11 @@ export function runVerify(projectDir: string, showAll = false): number {
   // Scope disclosure: verify spans more than the current project — it reads the
   // current shell's env vars (process-global) and your global AI config under
   // ~/.claude, not just files in this directory. State that so a green PASS is
-  // never mistaken for "this project only".
-  console.log(`  ${c.dim('Scope: this project + global AI config (~/.claude) + current-shell env vars')}\n`);
-
+  // never mistaken for "this project only". It reads a fixed list of files,
+  // not the project's source, so the files it read are named under it.
   const result = verify(projectDir);
+  console.log(`  ${c.dim('Scope: this project + global AI config (~/.claude) + current-shell env vars')}`);
+  console.log(`  ${c.dim(`       ${describeFilesRead(result)}`)}\n`);
 
   // Show env var availability
   const setVars = Object.entries(result.envVars).filter(([, v]) => v);
@@ -2197,7 +2198,9 @@ export function runVerify(projectDir: string, showAll = false): number {
   // Verdict
   console.log();
   if (result.passed) {
-    console.log(`  ${c.boldGreen('PASS')} ${c.green('Secrets accessible via env vars, hidden from AI context.')}`);
+    // PASS covers the files named under Scope: a key in source code is
+    // `scan`'s to find.
+    console.log(`  ${c.boldGreen('PASS')} ${c.green('Secrets accessible via env vars, hidden from AI context (source files: run secretless-ai scan).')}`);
   } else if (result.exposedInContext.length > 0 || result.exposedInTranscripts.length > 0) {
     console.log(`  ${c.boldRed('FAIL')} ${c.red('Credentials found in AI context or transcripts.')}`);
     console.log(divider('Next Steps'));
@@ -2253,6 +2256,18 @@ export function runVerify(projectDir: string, showAll = false): number {
   }
   console.log();
   return 0;
+}
+
+/**
+ * The files `verify` read, for the line under its Scope: the AI-context files
+ * by the labels its findings carry, then the number of transcripts. A file it
+ * looks for that is not there is not named.
+ */
+function describeFilesRead(result: VerifyResult): string {
+  const read: string[] = [...result.filesRead];
+  const n = result.transcriptsRead;
+  if (n > 0) read.push(`${n} recent transcript${n === 1 ? '' : 's'}`);
+  return read.length > 0 ? `files read: ${read.join(', ')}` : 'files read: none (no AI context file or transcript found)';
 }
 
 /**

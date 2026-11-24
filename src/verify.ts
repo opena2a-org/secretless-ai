@@ -41,6 +41,15 @@ export interface VerifyResult {
    * like `sample`/`xxx`, or a real key on a `# example` line, would otherwise vanish.
    */
   placeholdersSuppressed: number;
+  /**
+   * The AI-context files read, by the label findings carry (project-relative,
+   * or under `~`), in the order they were read. A file that is not there, is
+   * not a regular file, is over the size limit or could not be read is left
+   * out: `verify` says nothing about it.
+   */
+  filesRead: string[];
+  /** How many transcript files were read (the most recent five at most). */
+  transcriptsRead: number;
   /** Overall pass/fail */
   passed: boolean;
 }
@@ -90,6 +99,8 @@ export function verify(projectDir: string): VerifyResult {
   const exposedInContext: VerifyResult['exposedInContext'] = [];
   const exposedInTranscripts: VerifyResult['exposedInTranscripts'] = [];
   let placeholdersSuppressed = 0;
+  const filesRead: string[] = [];
+  let transcriptsRead = 0;
 
   // Deduplicate env var names across patterns
   const uniqueEnvVars = [...new Set(CREDENTIAL_PATTERNS.map((p) => p.envPrefix))];
@@ -129,6 +140,7 @@ export function verify(projectDir: string): VerifyResult {
       if (!stat.isFile() || stat.size > 10 * 1024 * 1024) continue;
 
       const content = fs.readFileSync(absPath, 'utf-8');
+      filesRead.push(label);
       const lines = content.split('\n');
       const env = envRule ? mcpEnvSecretsByLine(content) : undefined;
       const fileExposed: VerifyResult['exposedInContext'] = [];
@@ -190,6 +202,7 @@ export function verify(projectDir: string): VerifyResult {
     const recentTranscripts = transcripts.filter(f => f.endsWith('.jsonl')).slice(0, 5);
     for (const file of recentTranscripts) {
       const { findings } = scanTranscriptFile(file, true);
+      transcriptsRead += 1;
       for (const f of findings) {
         exposedInTranscripts.push({
           file: f.file,
@@ -207,5 +220,5 @@ export function verify(projectDir: string): VerifyResult {
   const anyEnvSet = Object.values(envVars).some((v) => v);
   const passed = anyEnvSet && exposedInContext.length === 0 && exposedInTranscripts.length === 0;
 
-  return { envVars, exposedInContext, exposedInTranscripts, placeholdersSuppressed, passed };
+  return { envVars, exposedInContext, exposedInTranscripts, placeholdersSuppressed, filesRead, transcriptsRead, passed };
 }
