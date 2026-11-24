@@ -33,6 +33,11 @@ function configPath(): string {
   return path.join(configDir(), CONFIG_FILENAME);
 }
 
+/** The user config file the backend preference is read from. */
+export function backendConfigPath(): string {
+  return configPath();
+}
+
 /** Read the current backend configuration. Returns undefined if no config file exists. */
 export function readBackendConfig(): SelectableBackendType | undefined {
   try {

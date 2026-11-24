@@ -406,6 +406,12 @@ describe('protect-my-credentials.md', () => {
     env.ANTHROPIC_API_KEY = 'not-a-real-key';
     env.OPENAI_API_KEY = 'not-a-real-key';
 
+    // `verify` names the backend a command here uses (#181). Unset, that is
+    // the keychain on macOS and the local file on a Linux runner without
+    // secret-tool; naming the keychain in the config prints one line on both.
+    fs.mkdirSync(path.join(home, '.secretless-ai'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.secretless-ai', 'config.json'), JSON.stringify({ backend: 'keychain' }));
+
     const res = cli(['verify'], { home, cwd: project, env });
     expect(res.status).toBe(0);
     expect(normalize(res.output, home)).toBe(sampleAfter(PROTECT_GUIDE, 'verify'));

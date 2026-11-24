@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+**`status` and `verify` name the profile, backend, GCP project and identity a
+command run here uses, and the source of each: `flag`, `env`, `manifest`,
+`user-config` or `default` (#181).** `status` prints them in a `Resolved`
+block above its observations and `status --json` carries them as `resolved`;
+`verify` prints them under its `Scope` lines. The backend is the store a command
+builds, so with none set on macOS it is `keychain-macos`, upgraded from
+`local`. An identity is named (a service account's e-mail, a Google or
+1Password account, the variable a token is read from), never its value. No
+profile is read yet, so the profile is `none (default)`.
+`src/resolved-settings.test.ts` checks each source and that no token, key or
+refresh token value is printed.
+
 **`verify` names the files it read, and its PASS says source files are
 `scan`'s (#444).** `verify` reads a fixed list of AI-context files and the
 five most recent transcripts, not the project's source, but its output named
