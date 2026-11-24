@@ -16,6 +16,7 @@ import { readBackendConfig, resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import { GCP_PROJECT_KEY, resolveGcpProject } from '../backends/gcp-project';
 import type { GcpProjectResolution } from '../backends/gcp-project';
+import { resolveSettings, resolvedSettingsLines } from '../resolved-settings';
 import { readManifestDetailed } from '../manifest';
 import { getDaemonStatus } from '../broker/daemon';
 import { getSessionStatus } from '../session/session-state';
@@ -1662,6 +1663,9 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   // Which GCP project names resolve from in this directory, and why (#177).
   // File reads only: status makes no request to GCP.
   const gcpProject = effectiveBackend === 'gcp-sm' ? resolveGcpProject({ projectDir }) : undefined;
+  // The profile, backend, project and identity a command here uses, and the
+  // source of each (#181). Names only, never a value.
+  const resolved = resolveSettings(projectDir);
 
   // Build observation rows. Each row: glyph + label + optional → command.
   // Satisfied observations use ✓; needs-action use ⚠. Every ⚠ ends in a
@@ -2040,6 +2044,10 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // explicit, manifest, user-config, service-account-key,
       // adc-quota-project or none; `from` says where it was read.
       gcpProject: gcpProject ?? null,
+      // The profile, backend, project and identity a command here uses: each
+      // a `value`, a `source` (flag, env, manifest, user-config or default)
+      // and, where there is one, `from`. Names only, never a value.
+      resolved,
       session: { relevant: sessionRelevant, warm: session.warm },
       broker: {
         installed: brokerInstalled,
@@ -2061,6 +2069,9 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   // target's path in a label padded every row to over 200 columns; the path
   // is now a `detail` line under its row.
   const headerLine = '──────────────────────────────────────────────────────────';
+  console.log(`  ── Resolved ${headerLine.slice(0, 48)}`);
+  for (const line of resolvedSettingsLines(resolved)) console.log(`  ${line}`);
+  console.log();
   console.log(`  ── Observations ${headerLine.slice(0, Math.max(0, 44))}`);
   let leftWidth = 0;
   for (const row of rows) {
@@ -2139,6 +2150,11 @@ export function runVerify(projectDir: string, showAll = false): number {
   const result = verify(projectDir);
   console.log(`  ${c.dim('Scope: this project + global AI config (~/.claude) + current-shell env vars')}`);
   console.log(`  ${c.dim(`       ${describeFilesRead(result)}`)}\n`);
+
+  // The profile, backend, project and identity a command here uses, and the
+  // source of each (#181). Names only, never a value.
+  for (const line of resolvedSettingsLines(resolveSettings(projectDir))) console.log(`  ${c.dim(line)}`);
+  console.log();
 
   // Show env var availability
   const setVars = Object.entries(result.envVars).filter(([, v]) => v);

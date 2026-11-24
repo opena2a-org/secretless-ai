@@ -107,7 +107,7 @@ $SL status --json . | python3 -c "import sys,json; d=json.load(sys.stdin); \
   denyRuleCount, detectedTools,
   configuredTools, ignoreFileTools, secretsFound, scanIncomplete, settingsUnreadable,
   settingsAmbiguous, userSettings, transcriptProtection, exposuresOpen, gitCredentials, backend,
-  configuredBackend, gcpProject, session, broker, summary}`).
+  configuredBackend, gcpProject, resolved, session, broker, summary}`).
   Exit 0; CI consumers gate on `summary.verdict`.
 - Neither may print the human banner or any ANSI color in JSON mode.
 

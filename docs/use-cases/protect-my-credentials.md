@@ -58,6 +58,11 @@ Expected output in the project from Step 1, in a shell that sets `ANTHROPIC_API_
   Scope: this project + global AI config (~/.claude) + current-shell env vars
          files read: CLAUDE.md, .claude/settings.json
 
+  Profile   none (default)
+  Backend   keychain (user-config: ~/.secretless-ai/config.json)
+  Project   none, keychain has no project (default)
+  Identity  this OS user (default)
+
   │ + ANTHROPIC_API_KEY
   │ + OPENAI_API_KEY
     44 known env vars not set (use --all to list)
@@ -67,7 +72,7 @@ Expected output in the project from Step 1, in a shell that sets `ANTHROPIC_API_
   PASS Secrets accessible via env vars, hidden from AI context (source files: run secretless-ai scan).
 ```
 
-`verify` names each credential variable it knows that your shell sets, without its value, and counts the ones your shell does not set; `verify --all` lists those too. It then looks for credential values in a fixed list of project files, among them `CLAUDE.md`, `.claude/settings.json`, `.cursorrules`, the MCP configs and `.env`, in `~/.claude/CLAUDE.md` and `~/.claude/settings.json`, and in the five most recent transcript files under `~/.claude/projects`; the line under `Scope` names the ones it found and read. `PASS` means at least one of those variables is set and no value was found in those files; otherwise `verify` exits 1 and prints the command to run next. It does not read your source code, which `secretless-ai scan` does, and it does not check the deny rules or the guard hook, which `status` in Step 3 reports on.
+`verify` first names the profile, backend, GCP project and identity a command run here uses, and the source of each: `flag`, `env`, `manifest`, `user-config` or `default`. An identity is named, such as a service account's e-mail or the variable a token is read from, never shown. The sample is from a machine whose backend is set to `keychain`; with none set, the line names the store secrets go to, `keychain-macos` on macOS. It then names each credential variable it knows that your shell sets, without its value, and counts the ones your shell does not set; `verify --all` lists those too. Next it looks for credential values in a fixed list of project files, among them `CLAUDE.md`, `.claude/settings.json`, `.cursorrules`, the MCP configs and `.env`, in `~/.claude/CLAUDE.md` and `~/.claude/settings.json`, and in the five most recent transcript files under `~/.claude/projects`; the line under `Scope` names the ones it found and read. `PASS` means at least one of those variables is set and no value was found in those files; otherwise `verify` exits 1 and prints the command to run next. It does not read your source code, which `secretless-ai scan` does, and it does not check the deny rules or the guard hook, which `status` in Step 3 reports on.
 
 ## Step 3: Check status anytime
 
@@ -81,6 +86,12 @@ Expected output in the project from Step 1:
 
 ```
   Secretless Status
+
+  ── Resolved ────────────────────────────────────────────────
+  Profile   none (default)
+  Backend   keychain (user-config: ~/.secretless-ai/config.json)
+  Project   none, keychain has no project (default)
+  Identity  this OS user (default)
 
   ── Observations ────────────────────────────────────────────
   ✓ Claude Code hook installed (.claude/settings.json — 147 deny patterns)
@@ -97,7 +108,7 @@ Expected output in the project from Step 1:
   Protected (3 observations need attention)
 ```
 
-Each `⚠` row names the command that addresses it. The `Biometric session` row appears only when secrets are stored in the OS keychain (the default on macOS) or 1Password.
+The `Resolved` block holds the four lines `verify` prints first; `status --json` carries them as `resolved`. Each `⚠` row names the command that addresses it. The `Biometric session` row appears only when secrets are stored in the OS keychain (the default on macOS) or 1Password.
 
 ## What happened
 
