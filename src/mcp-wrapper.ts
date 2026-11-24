@@ -40,6 +40,8 @@ function parseArgs(argv: string[]): {
   client: string;
   vaultDir: string;
   vaultKey: string;
+  /** Whether the args give --vault-dir or --vault-key, which choose the encrypted file. */
+  vaultFlagGiven: boolean;
   backend: string;
   binding: string | undefined;
   childCommand: string;
@@ -98,6 +100,7 @@ function parseArgs(argv: string[]): {
   // A key here made `local` the file while `protect-mcp` stored in the
   // keychain, and a server it protected found none of its secrets (#513).
   const home = os.homedir();
+  const vaultFlagGiven = Boolean(vaultDir || vaultKey);
   if (vaultDir && !vaultKey)
     vaultKey = `${home}-secretless-${process.env.USER ?? "default"}`;
   if (!vaultDir) vaultDir = path.join(home, ".secretless-ai", "mcp-vault");
@@ -107,6 +110,7 @@ function parseArgs(argv: string[]): {
     client,
     vaultDir,
     vaultKey,
+    vaultFlagGiven,
     backend,
     binding: wrapperFlag(read, "--binding"),
     childCommand: read.child.command,
@@ -126,6 +130,44 @@ function cliCommand(command: string): string {
 const bindingFix = (): string =>
   `secretless-mcp: Run '${cliCommand("mcp-status")}' to see which config entries are bound, then '${cliCommand("protect-mcp")}' to bind the entries it protected.\n`;
 
+/** Where versions before 0.12.3 stored `local` with no backend configured: the encrypted file's directory. */
+function preKeychainVaultDir(): string {
+  return path.resolve(os.homedir(), ".secretless-ai", "mcp-vault");
+}
+
+/**
+ * The line that names the store a server protected by a version before 0.12.3
+ * reads, or undefined when there is none to name. Those versions stored
+ * `local` with no backend configured in the encrypted file under
+ * ~/.secretless-ai/mcp-vault; this wrapper, given neither --vault-dir nor
+ * --vault-key, builds the store protect-mcp builds now, the OS keychain where
+ * one is available. Such a server finds none of its secrets there, and reads
+ * that file again when its args give --vault-dir with the file's directory.
+ * Named only when this wrapper built another store and an encrypted file is
+ * in that directory. A path only: nothing in the file is read.
+ */
+function preKeychainStoreHint(vault: McpVault, args: { vaultFlagGiven: boolean }): string | undefined {
+  if (args.vaultFlagGiven || vault.backendName === "local") return undefined;
+  const dir = preKeychainVaultDir();
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  const hasStore = names.some((name) => {
+    if (!name.endsWith(".enc")) return false;
+    try {
+      return fs.statSync(path.join(dir, name)).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (!hasStore) return undefined;
+  const shown = listedName(dir);
+  return `secretless-mcp: An encrypted store is in ${shown}, where versions before 0.12.3 stored MCP server secrets, and this wrapper read the ${vault.backendName} backend. If a version before 0.12.3 protected this server, add --vault-dir ${shown} to the server's args, before '--', so the wrapper reads that store.\n`;
+}
+
 /**
  * Print why checkLaunch refused this launch, then the fix line, and exit 1
  * with nothing started. Names, paths and the store's name only: never a
@@ -136,6 +178,7 @@ async function refuseLaunch(
   client: string,
   server: string,
   vault: McpVault,
+  hint: string | undefined,
 ): Promise<never> {
   const entry = `client "${listedName(client)}", server "${listedName(server)}"`;
   switch (verdict.refused) {
@@ -169,6 +212,10 @@ async function refuseLaunch(
         `secretless-mcp: The command or arguments in the config entry for ${entry} are not the ones its stored secrets were bound to, so no secret was read. The server was not started.\n`,
       );
       break;
+  }
+  // Not for another binding or command: the pair is bound in the store read.
+  if (hint !== undefined && (verdict.refused === "entry-not-bound" || verdict.refused === "no-binding-stored")) {
+    process.stderr.write(hint);
   }
   process.stderr.write(bindingFix());
   process.exit(1);
@@ -335,7 +382,7 @@ async function main(): Promise<void> {
       args: args.childArgs,
     });
     if ("launch" in start) {
-      await refuseLaunch(start.launch, args.client, args.server, vault);
+      await refuseLaunch(start.launch, args.client, args.server, vault, preKeychainStoreHint(vault, args));
       return;
     }
     if ("place" in start) refusePlace(start.place, args.client, args.server, start.binding.scope);
@@ -374,6 +421,8 @@ async function main(): Promise<void> {
           : `secretless-mcp: The ${store} backend holds no MCP server secrets.\n`,
       );
     }
+    const hint = preKeychainStoreHint(vault, args);
+    if (hint !== undefined) process.stderr.write(hint);
     process.stderr.write(
       `secretless-mcp: Run '${cliCommand("mcp-unprotect")}' to restore your MCP configs from their backups, then '${cliCommand("protect-mcp")}' to protect them again. Run '${cliCommand("mcp-status")}' to list the protected servers.\n`,
     );
