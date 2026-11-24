@@ -47,8 +47,18 @@ export function readBackendConfig(): SelectableBackendType | undefined {
   }
 }
 
-/** The version of secretless-ai that is running. */
-const INSTALLED_VERSION: string = require('../../package.json').version;
+/**
+ * The version of secretless-ai that is running. Read only when a config names
+ * an unsupported backend: the MCP wrapper runs from a copy of dist/ with no
+ * package.json above it, and loading this module must not fail there.
+ */
+function installedVersion(): string {
+  try {
+    return String(require('../../package.json').version);
+  } catch {
+    return 'unknown';
+  }
+}
 
 /**
  * The first release that implemented each backend this version implements.
@@ -109,7 +119,8 @@ function unsupportedBackendMessage(backend: UnsupportedBackend): string {
     '',
     `  Verify:  cat ${configPath()}`,
     `  Fix:     install a version that supports "${backend.name}"`,
-    '  Fix:     secretless-ai backend set local   (choose a backend this version has)',
+    '  Or choose a backend this version has:',
+    '  Fix:     secretless-ai backend set local',
   ].join('\n');
 }
 
@@ -129,7 +140,7 @@ export function readUnsupportedBackend(): UnsupportedBackend | undefined {
   const named: unknown = (config as { backend?: unknown }).backend;
   if (named === undefined || isSelectableBackendType(named)) return undefined;
   const name = typeof named === 'string' ? named : JSON.stringify(named);
-  return { name, installedVersion: INSTALLED_VERSION, firstSupportedVersion: null };
+  return { name, installedVersion: installedVersion(), firstSupportedVersion: null };
 }
 
 /**
