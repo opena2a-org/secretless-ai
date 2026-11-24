@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+**A config that names a backend this version does not implement is refused,
+not replaced by the default store (#182).** `~/.secretless-ai/config.json`
+naming, say, `aws-sm` was read as no config at all, so `secret set` stored in
+the local file or the keychain and reported success. Every secret command now
+exits non-zero with `Configured backend "aws-sm" is not supported by
+secretless-ai <version>, the installed version.`, the first version that
+supports it, and `backend set local` as the way out; nothing is read or
+written. `status` shows `backend: aws-sm (unsupported by secretless-ai
+<version>)`, and `status --json` gains `unsupportedBackend`.
+`src/backends/unsupported-backend.test.ts` covers the refusal and both forms
+of `status`.
+
 **`scan --history` passes over a value `clean-history` already redacted
 (#471).** The `[REDACTED:<pattern id>]` marker `clean-history` writes is 20
 characters or more, so a line such as `export GITHUB_TOKEN="ghp_…"`, cleaned

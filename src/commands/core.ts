@@ -12,7 +12,7 @@ import { verify, type VerifyResult } from '../verify';
 import { toolDisplayName, toolEnforcement, AIDER_IGNORE_FILE, type AITool, type Enforcement } from '../detect';
 import { doctor, quickDiagnosis, fixProfiles, noKeysFinding, type StoreCount } from '../doctor';
 import { SecretStore } from '../secret-store';
-import { readBackendConfig, resolveBackendType } from '../backends/config';
+import { describeUnsupportedBackend, readBackendConfig, readUnsupportedBackend, resolveBackendType } from '../backends/config';
 import { effectiveBackendName } from '../backends/factory';
 import { GCP_PROJECT_KEY, resolveGcpProject } from '../backends/gcp-project';
 import type { GcpProjectResolution } from '../backends/gcp-project';
@@ -1657,7 +1657,10 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
   // Session warmth only matters for backends that trigger OS auth prompts, and
   // that is a property of the EFFECTIVE backend: `local` upgrades to the
   // platform keychain, which prompts.
-  const effectiveBackend = effectiveBackendName(resolveBackendType());
+  // A config naming a backend this version does not implement makes every
+  // secret command refuse; status says so instead of naming another (#182).
+  const unsupportedBackend = readUnsupportedBackend();
+  const effectiveBackend = unsupportedBackend ? describeUnsupportedBackend(unsupportedBackend) : effectiveBackendName(resolveBackendType());
   const sessionRelevant = effectiveBackend.startsWith('keychain') || effectiveBackend === '1password';
   // Which GCP project names resolve from in this directory, and why (#177).
   // File reads only: status makes no request to GCP.
@@ -1883,6 +1886,14 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
     addRow({ glyph: '✓', label: 'No credentials detected in scanned files' });
   }
 
+  if (unsupportedBackend) {
+    addRow({
+      glyph: '⚠',
+      label: `backend: ${describeUnsupportedBackend(unsupportedBackend)}; secret commands refuse`,
+      action: 'secretless-ai backend set local',
+    });
+  }
+
   // GCP project (gcp-sm only). A repository's .secretless may name its own.
   if (gcpProject?.error) {
     addRow({ glyph: '⚠', label: gcpProject.error, action: 'fix that line, then re-run: secretless-ai status' });
@@ -2035,7 +2046,11 @@ export async function runStatus(projectDir: string, options?: { json?: boolean }
       // the Verify and Fix lines `doctor` prints for each.
       gitCredentials: { ...gitCredentials, findings: gitCredentialFindings },
       backend: effectiveBackend,
-      configuredBackend: configuredBackend ?? null,
+      configuredBackend: configuredBackend ?? unsupportedBackend?.name ?? null,
+      // Null unless the config file names a backend this version does not
+      // implement: its name, this version, and the first that implements it
+      // (null when that is later than this one). Secret commands then refuse.
+      unsupportedBackend: unsupportedBackend ?? null,
       // Null unless the backend is gcp-sm. `source` says which rule applied:
       // explicit, manifest, user-config, service-account-key,
       // adc-quota-project or none; `from` says where it was read.
