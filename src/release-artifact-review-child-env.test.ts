@@ -168,6 +168,30 @@ describe("each child of the review starts from an allowlist; npm configuration r
     });
   });
 
+  it("childEnv passes no provider API key variables to the child", async () => {
+    const { childEnv } = await loadChildEnv();
+    const providerKeys = {
+      ANTHROPIC_API_KEY: "anthropic-key-probe",
+      OPENAI_API_KEY: "openai-key-probe",
+      GEMINI_API_KEY: "gemini-key-probe",
+      GOOGLE_API_KEY: "google-key-probe",
+      AZURE_OPENAI_API_KEY: "azure-key-probe",
+      MISTRAL_API_KEY: "mistral-key-probe",
+      COHERE_API_KEY: "cohere-key-probe",
+      GROQ_API_KEY: "groq-key-probe",
+      OPENROUTER_API_KEY: "openrouter-key-probe",
+      HF_TOKEN: "huggingface-token-probe",
+    };
+    const result = childEnv({}, { ...env, ...providerKeys });
+    for (const name of Object.keys(providerKeys)) {
+      expect(result).not.toHaveProperty(name);
+    }
+    for (const value of Object.values(providerKeys)) {
+      expect(Object.values(result)).not.toContain(value);
+    }
+    expect(result).toEqual(kept);
+  });
+
   it("npmChildEnv adds npm configuration in either case, and nothing else", async () => {
     const { npmChildEnv } = await loadChildEnv();
     expect(npmChildEnv({}, env)).toEqual({ ...kept, ...npmConfig });
