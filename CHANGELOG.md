@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**`scan` after `init` no longer counts the output check `init` writes as
+holding placeholders (#443).** `.claude/hooks/secretless-output-check.cjs`
+carried the documented example keys of its allowlist whole, so `scan` said
+two placeholders were hidden and `scan --show-placeholders` reported the
+allowlist line as an AWS Access Key. Each example key is now written in two
+halves joined when the hook loads, and the hook still passes over those keys
+in command output. `src/init.test.ts` scans a project after `init` and finds
+nothing, shown or hidden.
+
 **`scan --history` passes over a value `clean-history` already redacted
 (#471).** The `[REDACTED:<pattern id>]` marker `clean-history` writes is 20
 characters or more, so a line such as `export GITHUB_TOKEN="ghp_…"`, cleaned

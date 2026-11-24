@@ -3251,6 +3251,18 @@ describe('PostToolUse output check for credentials a command prints (#129)', () 
     }
   });
 
+  // The check's own allowlist of documented example keys was written whole, so
+  // a scan after init hid two placeholders from it and, with
+  // --show-placeholders, reported one as an AWS Access Key (#443).
+  it('is not a finding or a hidden placeholder to the scan init points to', () => {
+    init(dir);
+    const stats = newScanStats();
+    expect(scan(dir, { scanGlobal: false }, stats)).toEqual([]);
+    expect(stats.placeholdersSuppressed).toBe(0);
+    const shown = scan(dir, { scanGlobal: false, showPlaceholders: true });
+    expect(shown.map(f => `${f.file}:${f.line}`)).toEqual([]);
+  });
+
   it('warns when the output of a command carries a credential, naming the pattern and never the value', () => {
     init(dir);
     const body = JSON.stringify({ envs: [{ key: 'GH_TOKEN', value: ghToken }, { key: 'AWS', value: awsKey }] });

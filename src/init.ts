@@ -4012,6 +4012,11 @@ exit 0
  */
 function generateClaudeOutputCheckScript(): string {
   const patterns = CREDENTIAL_PATTERNS.map(p => [p.name, p.regex.source, p.regex.flags.replace('g', '')]);
+  // Each example key is written in two halves joined at load time. Written
+  // whole, the hook's own allowlist matched the catalog, so a scan after
+  // `init` reported this file as holding placeholders, and as a credential
+  // under --show-placeholders (#443).
+  const examples = [...KNOWN_EXAMPLE_KEYS].map(k => [k.slice(0, k.length >> 1), k.slice(k.length >> 1)]);
 
   return `#!/usr/bin/env node
 // Secretless output check — PostToolUse hook for Claude Code
@@ -4022,7 +4027,8 @@ function generateClaudeOutputCheckScript(): string {
 'use strict';
 
 const PATTERNS = ${JSON.stringify(patterns)};
-const KNOWN_EXAMPLE_KEYS = new Set(${JSON.stringify([...KNOWN_EXAMPLE_KEYS])});
+// Each key is written in two halves so this file does not match the patterns above.
+const KNOWN_EXAMPLE_KEYS = new Set(${JSON.stringify(examples)}.map(parts => parts.join('')));
 const PLACEHOLDER_INDICATORS = ${JSON.stringify(PLACEHOLDER_INDICATORS)};
 
 // Scan long output in overlapping windows. Some catalog patterns have an
