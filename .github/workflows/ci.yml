@@ -152,22 +152,27 @@ jobs:
         run: node .github/scripts/ci-gate.mjs verdict
 
   build-and-test:
-    # Unchanged: same job id, same check names (`Node 20`, `Node 22`), same
-    # matrix, same steps. Only its gating moved, and it had to: the workflow-level
-    # `paths:` filter that used to keep this job off non-code changes is gone, so
-    # without the `if:` below the full matrix would start running on every README
-    # commit. The condition is the same classification the old filter expressed,
-    # read from the gate job, so the set of changes this job runs on is the set it
-    # ran on before.
+    # Reports on every change, like `gate`. The job has no job-level `if:`: a
+    # job skipped before its matrix expands never reports `Node 20` or
+    # `Node 22`, and those two contexts are required, so a change that is not
+    # code could never merge. Instead each leg starts, and the setup, install,
+    # build and test steps are conditioned on the gate job's `code` output. The
+    # last step always runs and calls the same verdict script the gate job
+    # calls: an unknown classification fails, a change that is not code passes,
+    # and a code change passes only when all three steps succeeded.
+    #
+    # A failed gate job still leaves these legs unreported (they need it), so
+    # such a change stays blocked.
     #
     # The gate deliberately does not delegate to this job. A required context
     # whose verdict is assembled from other jobs' results is one `if:` away from
     # reporting green because its dependency was skipped; `gate` runs the suite
-    # itself and answers for itself. The cost is that Node 20 is exercised twice
-    # on a code change, and that is the intended trade.
+    # itself and answers for itself, and so does each leg here: its verdict is
+    # taken from its own steps, never from another job's result. The cost is
+    # that Node 20 is exercised twice on a code change, and that is the intended
+    # trade.
     name: Node ${{ matrix.node-version }}
     needs: gate
-    if: needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -175,7 +180,7 @@ jobs:
         # `node:util.styleText` which was added in Node 19.
         node-version: [20, 22]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Guard against tracked install-config files
         run: |
@@ -184,11 +189,33 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@v4
+      - id: setup
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: needs.gate.outputs.code == 'true'
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
+      - id: npm_ci
+        if: needs.gate.outputs.code == 'true'
+        run: npm ci
+
+      - id: build
+        if: needs.gate.outputs.code == 'true'
+        run: npm run build
+
+      - id: test
+        if: needs.gate.outputs.code == 'true'
+        run: npm test
+
+      - name: Leg verdict
+        # always(): a failed or skipped suite step must still reach the verdict,
+        # because "the suite did not run on a code change" is precisely the state
+        # this step exists to fail on.
+        if: always()
+        env:
+          GATE_CODE: ${{ needs.gate.outputs.code }}
+          GATE_NPM_CI_OUTCOME: ${{ steps.npm_ci.outcome }}
+          GATE_BUILD_OUTCOME: ${{ steps.build.outcome }}
+          GATE_TEST_OUTCOME: ${{ steps.test.outcome }}
+        run: node .github/scripts/ci-gate.mjs verdict

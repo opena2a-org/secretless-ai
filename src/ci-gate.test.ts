@@ -335,25 +335,66 @@ describe('the gate cannot silently skip the suite on a code change', () => {
     expect(bad.status).toBe(2);
   });
 
-  it('SLS-01.AC2 the build-and-test matrix job keeps its id, its check names and its steps', () => {
+  it('SLS-01.AC2 the build-and-test matrix job keeps its id, its check names and its matrix', () => {
     const matrix = jobBlock('build-and-test');
 
     // Not deleted, not renamed: same job id, same interpolated name, same two
-    // Node versions, same three commands.
+    // Node versions.
     expect(matrix).toMatch(/^ {4}name: Node \$\{\{ matrix\.node-version \}\}$/m);
     expect(matrix).toMatch(/^ {8}node-version: \[20, 22\]$/m);
-    expect(matrix).toContain('uses: actions/checkout@v4');
-    expect(matrix).toContain('uses: actions/setup-node@v4');
-    expect(matrix).toContain('- run: npm ci');
-    expect(matrix).toContain('- run: npm run build');
-    expect(matrix).toContain('- run: npm test');
-
-    // Its run set is unchanged too. The workflow-level `paths:` filter that used
-    // to keep it off non-code changes is gone, so the same classification now
-    // gates it here — without this the whole matrix would run on every README
-    // commit.
     expect(matrix).toMatch(/^ {4}needs: gate$/m);
-    expect(matrix).toMatch(/^ {4}if: needs\.gate\.outputs\.code == 'true'$/m);
+  });
+
+  it('SLS-01.AC2 each matrix leg reports on every change: no job-level condition, steps conditioned on the gate output', () => {
+    const matrix = jobBlock('build-and-test');
+
+    // A job skipped before its matrix expands never reports `Node 20` or
+    // `Node 22`, so a change that is not code could never merge.
+    expect(jobLevelKeys(matrix)).not.toContain('if');
+
+    // Setup, install, build and test are conditioned on the gate's output and
+    // each has an id the verdict step reads.
+    const conditioned = matrix.match(/^ {8}if: needs\.gate\.outputs\.code == 'true'$/gm);
+    expect(conditioned).toHaveLength(4);
+    for (const id of ['setup', 'npm_ci', 'build', 'test']) {
+      expect(matrix).toMatch(new RegExp(`^ {6}- id: ${id}$`, 'm'));
+    }
+    for (const step of ['run: npm ci', 'run: npm run build', 'run: npm test']) {
+      expect(matrix).toContain(step);
+    }
+  });
+
+  it('SLS-01.AC2 each matrix leg ends with an always() step that calls the same verdict script as the gate', () => {
+    const matrix = stripComments(jobBlock('build-and-test'));
+    const gate = stripComments(jobBlock(GATE_CHECK_NAME));
+
+    const verdictStep = (block: string): string => {
+      const at = block.indexOf('        if: always()');
+      expect(at).toBeGreaterThanOrEqual(0);
+      return block.slice(at);
+    };
+    const leg = verdictStep(matrix);
+    expect(leg).toContain('GATE_CODE: ${{ needs.gate.outputs.code }}');
+    expect(leg).toContain('GATE_NPM_CI_OUTCOME: ${{ steps.npm_ci.outcome }}');
+    expect(leg).toContain('GATE_BUILD_OUTCOME: ${{ steps.build.outcome }}');
+    expect(leg).toContain('GATE_TEST_OUTCOME: ${{ steps.test.outcome }}');
+    expect(leg).toContain('run: node .github/scripts/ci-gate.mjs verdict');
+    // It is the last step of the job.
+    expect(leg.trimEnd().split('\n').pop()).toBe('        run: node .github/scripts/ci-gate.mjs verdict');
+    expect(gate).toContain('run: node .github/scripts/ci-gate.mjs verdict');
+
+    // A leg answers for itself: nothing reads another job's result.
+    expect(matrix).not.toMatch(/needs\.[A-Za-z_-]+\.result/);
+  });
+
+  it('SLS-01.AC2 every action the matrix job uses is pinned to a full commit with its tag in a comment', () => {
+    const uses = stripComments(jobBlock('build-and-test'))
+      .split('\n')
+      .filter((line) => /\buses:/.test(line));
+    expect(uses).toHaveLength(2);
+    for (const line of uses) {
+      expect(line).toMatch(/uses: actions\/[a-z-]+@[0-9a-f]{40} # v4\.\d+\.\d+$/);
+    }
   });
 });
 
